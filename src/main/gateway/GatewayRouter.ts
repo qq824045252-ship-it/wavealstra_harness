@@ -63,7 +63,7 @@ export class GatewayRouter {
     }
     const fallback = gatewayConversationId(origin);
     const db = this.options.db;
-    const route = db?.connection ? reserveGatewayConversation(db.connection, origin, command)
+    const route = db?.connection ? reserveGatewayConversation(db.connection, origin, command, undefined, db.runtimeAuditReader)
       : { taskId: fallback, currentTaskId: fallback, command: false };
     if (command && !db?.connection) return "会话存储不可用，未开启新会话。";
     // Same provider ID cannot turn an original ordinary message into a new command on reply retry.

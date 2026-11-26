@@ -39,10 +39,14 @@ export class WorkspaceLibraryBindingService {
     if (!librarySpaceId) throw new Error("资料库空间不能为空");
     const mutation = { kind, workspaceId, librarySpaceId, collectionId, at: Date.now() };
     const worker = this.db.runtimeAuditReader;
-    if (!worker || this.db.connection.inTransaction) return this.writeTargetOnHost(mutation);
+    const rustRequired = Boolean(this.db.connection.readonly || worker?.supervised);
+    if (!worker || this.db.connection.inTransaction) {
+      if (rustRequired) throw new Error("工作空间资料关联需要通过 Rust 核心执行");
+      return this.writeTargetOnHost(mutation);
+    }
     const result = await worker.writeWorkspaceBinding(mutation);
     if (result?.status === "saved") return;
-    if (result?.status === "needsHost") return this.writeTargetOnHost(mutation);
+    if (result?.status === "needsHost" && !rustRequired) return this.writeTargetOnHost(mutation);
     if (result?.status === "rejected") throw new Error(result.message);
     throw new Error("未收到资料关联保存确认，请刷新后查看状态");
   }

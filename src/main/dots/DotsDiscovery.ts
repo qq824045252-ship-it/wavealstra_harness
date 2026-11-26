@@ -60,6 +60,7 @@ function keepUnique(values: string[], max: number) { return [...new Set(values)]
 
 export class DotsDiscovery {
   private timer?: ReturnType<typeof setInterval>;
+  private started = false;
   private readonly active = new Map<string, { controller: AbortController; done: Promise<void> }>();
 
   constructor(
@@ -72,17 +73,22 @@ export class DotsDiscovery {
     private readonly fetchFeed = readDotsRss,
     private readonly now = Date.now,
     private readonly random = Math.random,
+    private readonly options: { coreControlled?: boolean } = {},
   ) {}
 
   start() {
-    if (this.timer) return;
-    this.timer = setInterval(() => this.refresh(), 15_000);
-    this.timer.unref();
+    if (this.started) return;
+    this.started = true;
+    if (!this.options.coreControlled && !this.timer) {
+      this.timer = setInterval(() => this.refresh(), 15_000);
+      this.timer.unref();
+    }
     this.refresh();
   }
 
   async close() {
-    clearInterval(this.timer);
+    this.started = false;
+    if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     const pending = [...this.active.values()];
     for (const { controller } of pending) controller.abort();
@@ -174,7 +180,7 @@ export class DotsDiscovery {
   }
 
   refresh() {
-    if (!this.timer) return;
+    if (!this.started) return;
     const { rss, dream, paused } = this.preferences();
     if (paused) {
       for (const { controller } of this.active.values()) controller.abort();
@@ -191,6 +197,11 @@ export class DotsDiscovery {
     for (const feed of due) void this.run("rss", feed.id, false).catch(() => undefined);
     if (dream.enabled && dream.tags.some(tag => tag.enabled) && !this.active.has("dream"))
       void this.run("dream", undefined, false).catch(() => undefined);
+  }
+
+  async runCycle(): Promise<void> {
+    this.refresh();
+    await Promise.allSettled([...this.active.values()].map(item => item.done));
   }
 
   async run(kind: "rss" | "dream", id?: string, manual = true) {

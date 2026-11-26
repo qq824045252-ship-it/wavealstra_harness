@@ -27,11 +27,36 @@ pub enum Request {
         id: String,
         revision: i64,
     },
+    Annotate {
+        id: String,
+        revision: i64,
+        note: String,
+    },
+    RecordTurn {
+        task_id: String,
+        input_id: String,
+        rule_id: String,
+        revision: i64,
+        title: String,
+        at: i64,
+        detail: String,
+        phrase: String,
+        evidence: Option<String>,
+        scope: String,
+        status: String,
+        snapshot: String,
+    },
 }
 
 impl Request {
     pub fn is_read(&self) -> bool {
-        !matches!(self, Self::Save { .. } | Self::Remove { .. })
+        !matches!(
+            self,
+            Self::Save { .. }
+                | Self::Remove { .. }
+                | Self::Annotate { .. }
+                | Self::RecordTurn { .. }
+        )
     }
 }
 
@@ -41,6 +66,8 @@ pub struct Draft {
     id: String,
     expected_revision: Option<i64>,
     project_id: Option<String>,
+    #[serde(default)]
+    source_id: Option<String>,
     title: String,
     enabled: bool,
     config: String,
@@ -186,15 +213,58 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
         }
         Request::Save { draft } => save(db, draft),
         Request::Remove { id, revision } => {
-            let changed = db.execute(
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let changed = tx.execute(
                 "DELETE FROM answer_rules WHERE id=?1 AND revision=?2",
                 params![id, revision],
             )?;
+            tx.commit()?;
             Ok(if changed == 1 {
                 Reply::Removed
             } else {
                 Reply::Conflict
             })
+        }
+        Request::Annotate { id, revision, note } => {
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let changed = tx.execute(
+                "UPDATE answer_rule_versions SET note=?1 WHERE rule_id=?2 AND revision=?3",
+                params![note, id, revision],
+            )?;
+            tx.commit()?;
+            Ok(if changed > 0 {
+                Reply::Saved { revision }
+            } else {
+                Reply::Rejected {
+                    message: "找不到这个版本".into(),
+                }
+            })
+        }
+        Request::RecordTurn {
+            task_id,
+            input_id,
+            rule_id,
+            revision,
+            title,
+            at,
+            detail,
+            phrase,
+            evidence,
+            scope,
+            status,
+            snapshot,
+        } => {
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            tx.execute(
+                "INSERT INTO answer_rule_turns(task_id,input_id,rule_id,revision,title,at,detail,phrase,evidence,scope,status,snapshot)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+                 ON CONFLICT(task_id,input_id) DO UPDATE SET detail=excluded.detail,evidence=excluded.evidence,status=excluded.status
+                 WHERE answer_rule_turns.rule_id=excluded.rule_id AND answer_rule_turns.revision=excluded.revision
+                   AND (answer_rule_turns.status<>'revoked' OR excluded.status='revoked')",
+                params![task_id, input_id, rule_id, revision, title, at, detail, phrase, evidence, scope, status, snapshot],
+            )?;
+            tx.commit()?;
+            Ok(Reply::Saved { revision })
         }
     }
 }
@@ -271,13 +341,13 @@ fn save(db: &mut Connection, draft: Draft) -> Result<Reply> {
         }
         if config == draft.config
             && project == draft.project_id
-            && source.is_none()
+            && source == draft.source_id
             && enabled == i64::from(draft.enabled)
         {
             return Ok(Reply::Saved { revision });
         }
-        tx.execute("UPDATE answer_rules SET project_id=?1,source_id=NULL,source_hash=NULL,enabled=?2,config=?3,
-            revision=revision+1 WHERE id=?4", params![draft.project_id, draft.enabled, draft.config, draft.id])?;
+        tx.execute("UPDATE answer_rules SET project_id=?1,source_id=?2,source_hash=NULL,enabled=?3,config=?4,
+            revision=revision+1 WHERE id=?5", params![draft.project_id, draft.source_id, draft.enabled, draft.config, draft.id])?;
         if !draft.enabled {
             tx.execute("UPDATE answer_rule_turns SET status='revoked' WHERE rule_id=?1 AND status='applied'", [&draft.id])?;
         }
@@ -287,8 +357,8 @@ fn save(db: &mut Connection, draft: Draft) -> Result<Reply> {
     } else {
         tx.execute(
             "INSERT INTO answer_rules(project_id,source_id,source_hash,enabled,config,id,revision)
-            VALUES(?1,NULL,NULL,?2,?3,?4,1)",
-            params![draft.project_id, draft.enabled, draft.config, draft.id],
+            VALUES(?1,?2,NULL,?3,?4,?5,1)",
+            params![draft.project_id, draft.source_id, draft.enabled, draft.config, draft.id],
         )?;
         1
     };

@@ -27,6 +27,7 @@ export type RuntimeWorkCardReadReply =
   | { status: "needsHost" };
 
 export interface WorkQueueNativeReader {
+  readonly supervised?: boolean;
   readWorkQueue(query: RuntimeWorkQueueQuery): Promise<RuntimeWorkQueueSnapshot | undefined>;
   markWorkCardRead(request: RuntimeWorkCardRead): Promise<RuntimeWorkCardReadReply | undefined>;
 }
@@ -44,6 +45,10 @@ export async function readWorkQueueWithProjection<T>(
   const version = db.pragma("data_version", { simple: true });
   const snapshot = await native.readWorkQueue(query);
   if (!snapshot || snapshot.kind === "needsHost") return host();
+  if (db.readonly) {
+    if (before !== totalChanges.get() || version !== db.pragma("data_version", { simple: true })) return host();
+    return project(snapshot);
+  }
   return db.transaction(() => {
     // Projection facts and the cursor retain the same commit boundary as the old
     // single transaction. A concurrent writer invalidates the sidecar snapshot.

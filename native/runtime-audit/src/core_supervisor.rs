@@ -1,15 +1,17 @@
 //! A Core owns its worker independently of any UI connection. Network I/O never runs
-//! on the supervisor loop or while holding its routing mutex. Every queue is bounded.
-use crate::core_lease::{self, Lease};
+//! on the supervisor loop or while holding its routing mutex. Every queue is bounded,
+//! connections are role-scoped, and control/event notifications do not share bulk data capacity.
+use crate::core_lease::{self, CoreStatus, Lease};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     io::{self, BufRead, BufReader, Read, Write},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     path::Path,
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
@@ -21,23 +23,134 @@ const POLL: Duration = Duration::from_millis(10);
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(1);
 const WRITE_DEADLINE: Duration = Duration::from_millis(750);
 const MAX_HANDSHAKES: usize = 16;
+const MAX_CLIENTS: usize = 12;
+const MAX_UI_CLIENTS: usize = 6;
 const MAX_PENDING: usize = 512;
 const MAX_FRAME: usize = 32 * 1024 * 1024;
 const MAX_QUEUE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_NOTIFY_QUEUED: usize = 64;
+const MAX_DATA_QUEUED: usize = 16;
 const MAX_INPUT_QUEUED: usize = 32;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ClientRole {
+    LegacyExclusive,
+    Ui,
+    ExecutionHost,
+    BackgroundService,
+}
+
+impl ClientRole {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::LegacyExclusive => "legacy",
+            Self::Ui => "ui",
+            Self::ExecutionHost => "execution-host",
+            Self::BackgroundService => "background-service",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "ui" => Some(Self::Ui),
+            "execution-host" => Some(Self::ExecutionHost),
+            "background-service" => Some(Self::BackgroundService),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Default)]
+struct ClientQueues {
+    notify: VecDeque<Vec<u8>>,
+    data: VecDeque<Vec<u8>>,
+    bytes: usize,
+    closed: bool,
+}
+
+struct PriorityOutput {
+    state: Mutex<ClientQueues>,
+    ready: Condvar,
+}
+
+impl PriorityOutput {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(ClientQueues::default()),
+            ready: Condvar::new(),
+        })
+    }
+
+    fn push(&self, bytes: Vec<u8>, notify: bool) -> bool {
+        let Ok(mut guard) = self.state.lock() else {
+            return false;
+        };
+        if guard.closed || guard.bytes.saturating_add(bytes.len()) > MAX_QUEUE_BYTES {
+            return false;
+        }
+        if notify {
+            if guard.notify.len() >= MAX_NOTIFY_QUEUED {
+                return false;
+            }
+            guard.bytes += bytes.len();
+            guard.notify.push_back(bytes);
+        } else {
+            if guard.data.len() >= MAX_DATA_QUEUED {
+                return false;
+            }
+            guard.bytes += bytes.len();
+            guard.data.push_back(bytes);
+        }
+        self.ready.notify_one();
+        true
+    }
+
+    fn pop(&self) -> Option<Vec<u8>> {
+        let mut guard = self.state.lock().ok()?;
+        loop {
+            if let Some(frame) = guard.notify.pop_front() {
+                guard.bytes = guard.bytes.saturating_sub(frame.len());
+                return Some(frame);
+            }
+            if let Some(frame) = guard.data.pop_front() {
+                guard.bytes = guard.bytes.saturating_sub(frame.len());
+                return Some(frame);
+            }
+            if guard.closed {
+                return None;
+            }
+            guard = self.ready.wait(guard).ok()?;
+        }
+    }
+
+    fn close(&self) {
+        if let Ok(mut guard) = self.state.lock() {
+            guard.closed = true;
+            self.ready.notify_all();
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct EventSubscription {
+    core_generation: String,
+    last_seq: i64,
+}
 
 struct ActiveClient {
     epoch: u64,
-    output: mpsc::SyncSender<Vec<u8>>,
-    queued_bytes: Arc<AtomicUsize>,
+    role: ClientRole,
+    client_id: String,
+    output: Arc<PriorityOutput>,
     socket: TcpStream,
     history: HashSet<String>,
     gadget_generations: HashSet<String>,
+    subscribed: Option<EventSubscription>,
 }
 
 #[derive(Default)]
 struct Routing {
-    active: Option<ActiveClient>,
+    clients: HashMap<u64, ActiveClient>,
     owners: HashMap<String, u64>,
 }
 
@@ -49,6 +162,8 @@ struct Relay {
     handshakes: AtomicUsize,
     next_epoch: AtomicU64,
     stopping: AtomicBool,
+    explicit_stop: AtomicBool,
+    generation: String,
 }
 
 fn frame(value: Value) -> Vec<u8> {
@@ -106,8 +221,6 @@ fn write_frame(stream: &mut TcpStream, bytes: &[u8]) -> io::Result<()> {
 }
 
 impl Relay {
-    /// Must be called with the routing mutex held, making request admission and client
-    /// cleanup one ordering boundary. The pipe writer is a different thread.
     fn enqueue(&self, bytes: Vec<u8>, cleanup: bool) -> bool {
         if !cleanup
             && (self.input_count.load(Ordering::Acquire) >= MAX_INPUT_QUEUED
@@ -134,75 +247,178 @@ impl Relay {
         let Ok(mut state) = self.routing.lock() else {
             return;
         };
-        if state
-            .active
-            .as_ref()
-            .is_none_or(|client| client.epoch != epoch)
-        {
+        let Some(client) = state.clients.remove(&epoch) else {
             return;
-        }
-        let client = state.active.take().unwrap();
+        };
+        client.output.close();
         let _ = client.socket.shutdown(Shutdown::Both);
         state.owners.retain(|_, owner| *owner != epoch);
+        // Only clean up resources belonging to this specific connection. A disconnected
+        // UI connection must NEVER revoke background-service or execution-host leases.
         if !client.gadget_generations.is_empty()
             && !self.enqueue(
-                frame(json!({"operation":"control","action":"revokeGadgets",
-                "generations":client.gadget_generations,"requestId":format!("core-revoke-{epoch}"),
-                "deadlineAt":core_lease::now_ms()+30_000})),
+                frame(json!({
+                    "operation": "control",
+                    "action": "revokeGadgets",
+                    "generations": client.gadget_generations,
+                    "requestId": format!("core-revoke-{epoch}"),
+                    "deadlineAt": core_lease::now_ms() + 30_000
+                })),
                 true,
             )
         {
-            // A lost revocation cannot leave a disconnected runtime authorized. Ending
-            // the worker is fail-closed; already started effects retain unknown receipts.
             self.stopping.store(true, Ordering::Release);
         }
-        // Reserved slots: at most 32 admitted frames, one revoke batch, 16 closes.
-        // Enqueuing under the same mutex ensures every admitted open precedes its close.
         for session in client.history {
             let id = format!("core-cleanup-{epoch}-{session}");
-            if !self.enqueue(frame(json!({"operation":"historyRead","action":"close",
-                "session":session,"requestId":id,"deadlineAt":core_lease::now_ms()+30_000,"lane":"history"})), true) {
-                // Losing cleanup is not safe: retire this generation instead of leaking
-                // snapshots indefinitely. Worker ownership still fences replacement.
+            if !self.enqueue(
+                frame(json!({
+                    "operation": "historyRead",
+                    "action": "close",
+                    "session": session,
+                    "requestId": id,
+                    "deadlineAt": core_lease::now_ms() + 30_000,
+                    "lane": "history"
+                })),
+                true,
+            ) {
                 self.stopping.store(true, Ordering::Release);
             }
+        }
+        if client.role == ClientRole::ExecutionHost {
+            let _ = self.enqueue(
+                frame(json!({
+                    "operation": "coreExecutorPresence",
+                    "online": false,
+                    "epoch": epoch,
+                    "clientId": client.client_id,
+                    "generation": self.generation,
+                    "requestId": format!("core-exec-offline-{epoch}"),
+                    "deadlineAt": core_lease::now_ms() + 30_000
+                })),
+                true,
+            );
         }
     }
 
     fn deliver(&self, bytes: Vec<u8>, value: &Value) {
-        let mut failed = None;
+        if value.get("coreShutdownRequested").and_then(Value::as_bool) == Some(true) {
+            self.explicit_stop.store(true, Ordering::Release);
+            self.stopping.store(true, Ordering::Release);
+            return;
+        }
+        let mut failed_epochs: Vec<u64> = Vec::new();
         if let Ok(mut state) = self.routing.lock() {
-            let owner = value
-                .get("replyId")
-                .or_else(|| value.get("historyRequestId"))
-                .and_then(Value::as_str)
-                .and_then(|id| state.owners.remove(id));
-            if let Some(client) = state.active.as_ref() {
-                // Capability startup notices are replayed at connect. Unsolicited watch
-                // notices may be delivered, but a reply always belongs to its old caller.
-                let notice = value.get("dotsFileWatches").is_some();
-                if owner == Some(client.epoch) || notice {
-                    let size = bytes.len();
-                    if client
-                        .queued_bytes
-                        .load(Ordering::Acquire)
-                        .saturating_add(size)
-                        > MAX_QUEUE_BYTES
+            if let Some(event) = value.get("coreEvent") {
+                let seq = event.get("seq").and_then(Value::as_i64).unwrap_or(0);
+                let event_gen = event
+                    .get("coreGeneration")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                for client in state.clients.values_mut() {
+                    if let Some(sub) = client.subscribed.as_mut()
+                        && sub.core_generation == event_gen
+                        && seq > sub.last_seq
                     {
-                        failed = Some(client.epoch);
-                    } else {
-                        client.queued_bytes.fetch_add(size, Ordering::AcqRel);
-                        if client.output.try_send(bytes).is_err() {
-                            client.queued_bytes.fetch_sub(size, Ordering::AcqRel);
-                            failed = Some(client.epoch);
+                        if client.output.push(bytes.clone(), true) {
+                            sub.last_seq = seq;
+                        } else {
+                            failed_epochs.push(client.epoch);
                         }
+                    }
+                }
+            } else if let Some(dispatch) = value.get("coreExecutionDispatch") {
+                let target_epoch = dispatch.get("targetEpoch").and_then(Value::as_u64);
+                for client in state.clients.values() {
+                    if client.role == ClientRole::ExecutionHost
+                        && target_epoch.is_none_or(|e| e == client.epoch)
+                        && !client.output.push(bytes.clone(), true)
+                    {
+                        failed_epochs.push(client.epoch);
+                    }
+                }
+            } else {
+                let owner = value
+                    .get("replyId")
+                    .or_else(|| value.get("historyRequestId"))
+                    .and_then(Value::as_str)
+                    .and_then(|id| state.owners.remove(id));
+                let notice = value.get("dotsFileWatches").is_some();
+                if notice {
+                    for client in state.clients.values() {
+                        if matches!(
+                            client.role,
+                            ClientRole::LegacyExclusive
+                                | ClientRole::Ui
+                                | ClientRole::BackgroundService
+                        ) && !client.output.push(bytes.clone(), true)
+                        {
+                            failed_epochs.push(client.epoch);
+                        }
+                    }
+                } else if let Some(owner_epoch) = owner
+                    && let Some(client) = state.clients.get(&owner_epoch)
+                {
+                    if !client.output.push(bytes, false) {
+                        failed_epochs.push(owner_epoch);
                     }
                 }
             }
         }
-        if let Some(epoch) = failed {
+        for epoch in failed_epochs {
             self.disconnect(epoch);
         }
+    }
+
+    fn handle_subscribe(&self, epoch: u64, value: &Value) -> bool {
+        let Some(id) = value.get("requestId").and_then(Value::as_str) else {
+            return false;
+        };
+        let action = value
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("subscribe");
+        let reply = if action == "unsubscribe" {
+            if let Ok(mut state) = self.routing.lock()
+                && let Some(client) = state.clients.get_mut(&epoch)
+            {
+                client.subscribed = None;
+            }
+            json!({ "replyId": id, "status": "ok", "data": { "subscribed": false } })
+        } else {
+            let core_gen = value
+                .get("coreGeneration")
+                .and_then(Value::as_str)
+                .unwrap_or(&self.generation)
+                .to_owned();
+            let after_seq = value.get("afterSeq").and_then(Value::as_i64).unwrap_or(0);
+            if let Ok(mut state) = self.routing.lock()
+                && let Some(client) = state.clients.get_mut(&epoch)
+            {
+                client.subscribed = Some(EventSubscription {
+                    core_generation: core_gen.clone(),
+                    last_seq: after_seq,
+                });
+            }
+            json!({
+                "replyId": id,
+                "status": "ok",
+                "data": { "subscribed": true, "coreGeneration": core_gen, "afterSeq": after_seq }
+            })
+        };
+        let mut disconnect = false;
+        if let Ok(state) = self.routing.lock()
+            && let Some(client) = state.clients.get(&epoch)
+        {
+            if !client.output.push(frame(reply), true) {
+                disconnect = true;
+            }
+        }
+        if disconnect {
+            self.disconnect(epoch);
+            return false;
+        }
+        true
     }
 
     fn admit(&self, epoch: u64, bytes: Vec<u8>, value: &Value) -> bool {
@@ -216,59 +432,72 @@ impl Relay {
         let Ok(mut state) = self.routing.lock() else {
             return false;
         };
-        if state
-            .active
-            .as_ref()
-            .is_none_or(|client| client.epoch != epoch)
-            || state.owners.len() >= MAX_PENDING
-            || state.owners.contains_key(id)
-        {
+        if state.owners.len() >= MAX_PENDING || state.owners.contains_key(id) {
             return false;
         }
+        let Some(client) = state.clients.get(&epoch) else {
+            return false;
+        };
         let history = value.get("operation").and_then(Value::as_str) == Some("historyRead");
         let session = value.get("session").and_then(Value::as_str);
         let action = value.get("action").and_then(Value::as_str);
         let generation = if value.get("operation").and_then(Value::as_str) == Some("gadgetState") {
-            value
-                .pointer("/request/authorization/generation")
-                .and_then(Value::as_str)
+            let is_ui_owned = client.role == ClientRole::LegacyExclusive
+                || value
+                    .pointer("/request/authorization/ownerScope")
+                    .and_then(Value::as_str)
+                    == Some("ui");
+            if is_ui_owned {
+                value
+                    .pointer("/request/authorization/generation")
+                    .and_then(Value::as_str)
+            } else {
+                None
+            }
         } else {
             None
         };
         if let Some(generation) = generation {
-            let generations = &state.active.as_ref().unwrap().gadget_generations;
+            let generations = &client.gadget_generations;
             if generation.len() > 128
                 || (!generations.contains(generation) && generations.len() >= 8192)
             {
                 return false;
             }
         }
-        if history
-            && action == Some("open")
-            && (session.is_none() || state.active.as_ref().unwrap().history.len() >= 16)
-        {
+        if history && action == Some("open") && (session.is_none() || client.history.len() >= 16) {
             return false;
         }
-        if !self.enqueue(bytes, false) {
+        // Authenticate sender role, clientId, epoch, and generation from supervisor state,
+        // overwriting any caller-supplied `__client`.
+        let enriched_bytes = if let Some(mut map) = value.as_object().cloned() {
+            map.insert(
+                "__client".to_owned(),
+                json!({
+                    "epoch": client.epoch,
+                    "role": client.role.as_str(),
+                    "clientId": client.client_id,
+                    "generation": self.generation,
+                }),
+            );
+            frame(Value::Object(map))
+        } else {
+            bytes
+        };
+        if !self.enqueue(enriched_bytes, false) {
             return false;
         }
         state.owners.insert(id.to_owned(), epoch);
+        let client_mut = state.clients.get_mut(&epoch).unwrap();
         if let Some(generation) = generation {
-            state
-                .active
-                .as_mut()
-                .unwrap()
-                .gadget_generations
-                .insert(generation.to_owned());
+            client_mut.gadget_generations.insert(generation.to_owned());
         }
         if history && let Some(session) = session {
-            let sessions = &mut state.active.as_mut().unwrap().history;
             if action == Some("open") {
-                sessions.insert(session.to_owned());
+                client_mut.history.insert(session.to_owned());
             }
-            // A close is already ordered behind its open in the worker input stream.
             if action == Some("close") {
-                sessions.remove(session);
+                client_mut.history.remove(session);
             }
         }
         true
@@ -316,22 +545,62 @@ fn relay_worker_output(
     });
 }
 
-fn read_handshake(stream: &mut TcpStream, expected: &[u8]) -> io::Result<bool> {
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HandshakeOptions {
+    role: String,
+    client_id: Option<String>,
+}
+
+struct ParsedHandshake {
+    role: ClientRole,
+    client_id: String,
+    legacy: bool,
+}
+
+fn read_handshake(stream: &mut TcpStream, token: &str) -> io::Result<Option<ParsedHandshake>> {
     let deadline = Instant::now() + HANDSHAKE_DEADLINE;
-    let mut bytes = Vec::with_capacity(expected.len());
-    while bytes.len() < 128 {
+    let mut bytes = Vec::with_capacity(128);
+    while bytes.len() < 1024 {
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "handshake timeout"))?;
         stream.set_read_timeout(Some(remaining))?;
         let mut byte = [0];
         stream.read_exact(&mut byte)?;
-        bytes.push(byte[0]);
         if byte[0] == b'\n' {
-            return Ok(bytes == expected);
+            let line = std::str::from_utf8(&bytes)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "utf8"))?;
+            let prefix = format!("hello {token}");
+            if line == prefix {
+                return Ok(Some(ParsedHandshake {
+                    role: ClientRole::LegacyExclusive,
+                    client_id: "legacy".to_owned(),
+                    legacy: true,
+                }));
+            }
+            if let Some(rest) = line.strip_prefix(&format!("{prefix} ")) {
+                let Ok(opts) = serde_json::from_str::<HandshakeOptions>(rest.trim()) else {
+                    return Ok(None);
+                };
+                let Some(role) = ClientRole::parse(&opts.role) else {
+                    return Ok(None);
+                };
+                let client_id = opts
+                    .client_id
+                    .filter(|s| !s.trim().is_empty() && s.len() <= 128)
+                    .unwrap_or_else(|| format!("{}-client", role.as_str()));
+                return Ok(Some(ParsedHandshake {
+                    role,
+                    client_id,
+                    legacy: false,
+                }));
+            }
+            return Ok(None);
         }
+        bytes.push(byte[0]);
     }
-    Ok(false)
+    Ok(None)
 }
 
 fn accept_client(
@@ -354,24 +623,23 @@ fn accept_client(
         return;
     }
     let relay = Arc::clone(relay);
-    let expected = format!("hello {token}\n").into_bytes();
+    let token = token.to_owned();
     let generation = generation.to_owned();
     let binary_hash = binary_hash.to_owned();
     thread::spawn(move || {
-        let accepted = stream
+        let parsed = stream
             .set_nonblocking(false)
             .and_then(|()| stream.set_nodelay(true))
-            .and_then(|()| read_handshake(&mut stream, &expected))
-            .unwrap_or(false);
+            .and_then(|()| read_handshake(&mut stream, &token))
+            .unwrap_or(None);
         relay.handshakes.fetch_sub(1, Ordering::AcqRel);
-        if !accepted {
+        let Some(handshake) = parsed else {
             let _ = stream.shutdown(Shutdown::Both);
             return;
-        }
+        };
         let _ = stream.set_read_timeout(None);
         let epoch = relay.next_epoch.fetch_add(1, Ordering::AcqRel);
-        let (output, rx) = mpsc::sync_channel::<Vec<u8>>(8);
-        let queued_bytes = Arc::new(AtomicUsize::new(0));
+        let output = PriorityOutput::new();
         let mut writer = match stream.try_clone() {
             Ok(value) => value,
             Err(_) => return,
@@ -380,32 +648,111 @@ fn accept_client(
             let Ok(mut state) = relay.routing.lock() else {
                 return;
             };
-            if state.active.is_some() || relay.stopping.load(Ordering::Acquire) {
+            if relay.stopping.load(Ordering::Acquire) {
+                drop(state);
+                let _ = write_frame(&mut writer, &frame(json!({"coreRejected":"stopping"})));
+                return;
+            }
+            if state.clients.len() >= MAX_CLIENTS {
                 drop(state);
                 let _ = write_frame(&mut writer, &frame(json!({"coreRejected":"busy"})));
+                return;
+            }
+            let conflict = match handshake.role {
+                ClientRole::LegacyExclusive => (!state.clients.is_empty()).then_some("busy"),
+                ClientRole::Ui => state
+                    .clients
+                    .values()
+                    .any(|c| c.role == ClientRole::LegacyExclusive)
+                    .then_some("busy")
+                    .or_else(|| {
+                        (state
+                            .clients
+                            .values()
+                            .filter(|c| c.role == ClientRole::Ui)
+                            .count()
+                            >= MAX_UI_CLIENTS)
+                            .then_some("too_many_ui_clients")
+                    }),
+                ClientRole::ExecutionHost | ClientRole::BackgroundService => state
+                    .clients
+                    .values()
+                    .find_map(|c| {
+                        if c.role == ClientRole::LegacyExclusive {
+                            Some("busy")
+                        } else if c.role == handshake.role {
+                            Some("role_busy")
+                        } else {
+                            None
+                        }
+                    }),
+            };
+            if let Some(reason) = conflict {
+                drop(state);
+                let _ = write_frame(&mut writer, &frame(json!({"coreRejected": reason})));
                 return;
             }
             let socket = match stream.try_clone() {
                 Ok(value) => value,
                 Err(_) => return,
             };
-            state.active = Some(ActiveClient {
+            state.clients.insert(
                 epoch,
-                output,
-                queued_bytes: queued_bytes.clone(),
-                socket,
-                history: HashSet::new(),
-                gadget_generations: HashSet::new(),
-            });
+                ActiveClient {
+                    epoch,
+                    role: handshake.role.clone(),
+                    client_id: handshake.client_id.clone(),
+                    output: Arc::clone(&output),
+                    socket,
+                    history: HashSet::new(),
+                    gadget_generations: HashSet::new(),
+                    subscribed: None,
+                },
+            );
+        }
+        if handshake.role == ClientRole::ExecutionHost {
+            let _ = relay.enqueue(
+                frame(json!({
+                    "operation": "coreExecutorPresence",
+                    "online": true,
+                    "epoch": epoch,
+                    "clientId": handshake.client_id,
+                    "generation": generation,
+                    "requestId": format!("core-exec-online-{epoch}"),
+                    "deadlineAt": core_lease::now_ms() + 30_000
+                })),
+                true,
+            );
         }
         let writer_relay = Arc::clone(&relay);
+        let ack_role = handshake.role.clone();
+        let ack_client_id = handshake.client_id.clone();
+        let legacy = handshake.legacy;
         thread::spawn(move || {
-            let ack = frame(
-                json!({"coreConnected":true,"generation":generation,"binaryHash":binary_hash,"workerPid":worker_pid,"protocol":core_lease::PROTOCOL,"historyReady":true}),
-            );
-            if write_frame(&mut writer, &ack).is_ok() {
-                for bytes in rx {
-                    queued_bytes.fetch_sub(bytes.len(), Ordering::AcqRel);
+            let ack = if legacy {
+                json!({
+                    "coreConnected": true,
+                    "generation": generation,
+                    "binaryHash": binary_hash,
+                    "workerPid": worker_pid,
+                    "protocol": core_lease::PROTOCOL,
+                    "historyReady": true
+                })
+            } else {
+                json!({
+                    "coreConnected": true,
+                    "generation": generation,
+                    "binaryHash": binary_hash,
+                    "workerPid": worker_pid,
+                    "protocol": core_lease::PROTOCOL,
+                    "historyReady": true,
+                    "role": ack_role.as_str(),
+                    "clientId": ack_client_id,
+                    "connectionEpoch": epoch
+                })
+            };
+            if write_frame(&mut writer, &frame(ack)).is_ok() {
+                while let Some(bytes) = output.pop() {
                     if write_frame(&mut writer, &bytes).is_err() {
                         break;
                     }
@@ -418,9 +765,17 @@ fn accept_client(
             let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
                 break;
             };
-            if value.get("operation").and_then(Value::as_str) == Some("coreShutdown") {
+            let op = value.get("operation").and_then(Value::as_str);
+            if op == Some("coreShutdown") {
+                relay.explicit_stop.store(true, Ordering::Release);
                 relay.stopping.store(true, Ordering::Release);
                 break;
+            }
+            if op == Some("coreSubscribe") {
+                if !relay.handle_subscribe(epoch, &value) {
+                    break;
+                }
+                continue;
             }
             if !relay.admit(epoch, bytes, &value) {
                 break;
@@ -445,6 +800,10 @@ fn stop_worker(worker: &mut Child) -> crate::Result<()> {
     Err("core worker did not exit after termination; its OS guard still fences takeover".into())
 }
 
+fn write_status_best_effort(directory: &Path, status: CoreStatus) {
+    let _ = core_lease::write_core_status(directory, &status);
+}
+
 pub fn run(data_dir: &Path, db_path: &Path) -> crate::Result<()> {
     let mut lease = Lease::acquire(data_dir, db_path)?;
     let executable = std::env::current_exe()?;
@@ -456,11 +815,14 @@ pub fn run(data_dir: &Path, db_path: &Path) -> crate::Result<()> {
         .arg(db_path)
         .env(core_lease::DATA_DIRECTORY_ENV, lease.directory())
         .env(core_lease::GENERATION_ENV, lease.nonce())
+        .env("MYBUDDY_CORE_SUPERVISED", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;
     lease.handoff_worker();
+    let worker_pid = worker.id();
+    let mut explicitly_stopped = false;
     let result = (|| -> crate::Result<()> {
         let input = worker.stdin.take().ok_or("worker stdin unavailable")?;
         let output = worker.stdout.take().ok_or("worker stdout unavailable")?;
@@ -475,6 +837,8 @@ pub fn run(data_dir: &Path, db_path: &Path) -> crate::Result<()> {
             handshakes: AtomicUsize::new(0),
             next_epoch: AtomicU64::new(1),
             stopping: AtomicBool::new(false),
+            explicit_stop: AtomicBool::new(false),
+            generation: lease.nonce().to_owned(),
         });
         let (finished, worker_finished) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -484,12 +848,28 @@ pub fn run(data_dir: &Path, db_path: &Path) -> crate::Result<()> {
             .recv_timeout(Duration::from_secs(5))
             .map_err(|_| "core worker did not become ready")?;
         if ready.get("generation").and_then(Value::as_str) != Some(lease.nonce())
-            || ready.get("workerPid").and_then(Value::as_u64) != Some(worker.id().into())
+            || ready.get("workerPid").and_then(Value::as_u64) != Some(worker_pid.into())
             || ready.get("protocol").and_then(Value::as_u64) != Some(core_lease::PROTOCOL.into())
         {
             return Err("core worker ownership handshake mismatch".into());
         }
-        let endpoint = lease.publish(&listener, &token, db_path, worker.id(), &binary_hash)?;
+        let endpoint = lease.publish(&listener, &token, db_path, worker_pid, &binary_hash)?;
+        let prev_status = core_lease::read_core_status(lease.directory());
+        write_status_best_effort(
+            lease.directory(),
+            CoreStatus {
+                pid: endpoint.pid,
+                worker_pid,
+                generation: endpoint.generation.clone(),
+                state: "running".to_owned(),
+                worker_restart_count: prev_status.as_ref().map(|s| s.worker_restart_count).unwrap_or(0),
+                consecutive_failures: 0,
+                circuit_open: false,
+                circuit_reason: None,
+                last_worker_exit: None,
+                updated_at: core_lease::now_ms(),
+            },
+        );
         eprintln!(
             "[core] supervising {} on 127.0.0.1:{} (pid {}, worker {})",
             data_dir.display(),
@@ -499,6 +879,7 @@ pub fn run(data_dir: &Path, db_path: &Path) -> crate::Result<()> {
         );
         let outcome = loop {
             if relay.stopping.load(Ordering::Acquire) {
+                explicitly_stopped = relay.explicit_stop.load(Ordering::Acquire);
                 break Ok(());
             }
             if worker_finished.try_recv().is_ok() {
@@ -512,30 +893,185 @@ pub fn run(data_dir: &Path, db_path: &Path) -> crate::Result<()> {
                 &token,
                 lease.nonce(),
                 &binary_hash,
-                worker.id(),
+                worker_pid,
                 &relay,
             );
             thread::sleep(POLL);
         };
         relay.stopping.store(true, Ordering::Release);
-        let epoch = relay
+        let epochs: Vec<u64> = relay
             .routing
             .lock()
             .ok()
-            .and_then(|state| state.active.as_ref().map(|client| client.epoch));
-        if let Some(epoch) = epoch {
+            .map(|state| state.clients.keys().copied().collect())
+            .unwrap_or_default();
+        for epoch in epochs {
             relay.disconnect(epoch);
         }
         outcome
     })();
     let stopped = stop_worker(&mut worker);
+    let generation = lease.nonce().to_owned();
+    let prev = core_lease::read_core_status(lease.directory());
+    let restart_count = prev.as_ref().map(|s| s.worker_restart_count).unwrap_or(0);
+    if explicitly_stopped {
+        write_status_best_effort(
+            lease.directory(),
+            CoreStatus {
+                pid: std::process::id(),
+                worker_pid: 0,
+                generation,
+                state: "stopped".to_owned(),
+                worker_restart_count: restart_count,
+                consecutive_failures: 0,
+                circuit_open: false,
+                circuit_reason: None,
+                last_worker_exit: Some("explicit_stop".to_owned()),
+                updated_at: core_lease::now_ms(),
+            },
+        );
+    } else if let Err(ref error) = result {
+        write_status_best_effort(
+            lease.directory(),
+            CoreStatus {
+                pid: std::process::id(),
+                worker_pid: 0,
+                generation,
+                state: "failed".to_owned(),
+                worker_restart_count: restart_count,
+                consecutive_failures: prev.as_ref().map(|s| s.consecutive_failures + 1).unwrap_or(1),
+                circuit_open: false,
+                circuit_reason: None,
+                last_worker_exit: Some(error.to_string()),
+                updated_at: core_lease::now_ms(),
+            },
+        );
+    }
     drop(lease);
     result.and(stopped)
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+/// Unattended Core watchdog: keeps `--supervise` running across worker or supervisor crashes
+/// with exponential backoff and a bounded crash-streak circuit breaker, while strictly
+/// respecting `stopped_explicitly` (`停止助理`) so explicit stops are never auto-restarted.
+pub fn run_watchdog(data_dir: &Path, db_path: &Path, recover: bool) -> crate::Result<()> {
+    let executable = std::env::current_exe()?;
+    std::fs::create_dir_all(data_dir)?;
+    let canon_dir = std::fs::canonicalize(data_dir)?;
+    if recover {
+        let mut lifecycle = core_lease::read_lifecycle_state(&canon_dir);
+        lifecycle.mode = "active".to_owned();
+        lifecycle.reason = "explicit_recover".to_owned();
+        lifecycle.updated_at = core_lease::now_ms();
+        core_lease::write_lifecycle_state(&canon_dir, &lifecycle)?;
+        if let Some(mut status) = core_lease::read_core_status(&canon_dir) {
+            status.circuit_open = false;
+            status.circuit_reason = None;
+            status.consecutive_failures = 0;
+            status.state = "recovering".to_owned();
+            status.updated_at = core_lease::now_ms();
+            write_status_best_effort(&canon_dir, status);
+        }
+    }
+    let initial_lifecycle = core_lease::read_lifecycle_state(&canon_dir);
+    if initial_lifecycle.mode == "stopped_explicitly" {
+        return Ok(());
+    }
+    if core_lease::read_core_status(&canon_dir).is_some_and(|s| s.circuit_open) {
+        return Err("core watchdog circuit breaker is open; explicit recovery required".into());
+    }
+
+    let base_backoff_ms = env_u64("MYBUDDY_CORE_BACKOFF_MS", 100).max(10);
+    let window_ms = env_u64("MYBUDDY_CORE_RESTART_WINDOW_MS", 30_000).max(500);
+    let max_restarts = env_u64("MYBUDDY_CORE_MAX_RESTARTS", 5).max(1) as usize;
+    let mut failure_times: VecDeque<Instant> = VecDeque::new();
+    let mut total_restarts: u32 = core_lease::read_core_status(&canon_dir)
+        .map(|s| s.worker_restart_count)
+        .unwrap_or(0);
+
+    loop {
+        let lifecycle = core_lease::read_lifecycle_state(&canon_dir);
+        if lifecycle.mode == "stopped_explicitly" {
+            return Ok(());
+        }
+        let mut child = Command::new(&executable)
+            .arg("--supervise")
+            .arg(&canon_dir)
+            .arg(db_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()?;
+        let status = child.wait()?;
+        let lifecycle_after = core_lease::read_lifecycle_state(&canon_dir);
+        if status.success() || lifecycle_after.mode == "stopped_explicitly" {
+            return Ok(());
+        }
+        let now = Instant::now();
+        while failure_times
+            .front()
+            .is_some_and(|t| now.saturating_duration_since(*t) > Duration::from_millis(window_ms))
+        {
+            failure_times.pop_front();
+        }
+        failure_times.push_back(now);
+        if failure_times.len() >= max_restarts {
+            write_status_best_effort(
+                &canon_dir,
+                CoreStatus {
+                    pid: std::process::id(),
+                    worker_pid: 0,
+                    generation: core_lease::read_core_status(&canon_dir)
+                        .map(|s| s.generation)
+                        .unwrap_or_default(),
+                    state: "circuit_open".to_owned(),
+                    worker_restart_count: total_restarts,
+                    consecutive_failures: failure_times.len() as u32,
+                    circuit_open: true,
+                    circuit_reason: Some(format!(
+                        "exceeded {max_restarts} crashes within {window_ms}ms"
+                    )),
+                    last_worker_exit: Some(format!("supervisor exit: {status}")),
+                    updated_at: core_lease::now_ms(),
+                },
+            );
+            return Err("core watchdog circuit breaker opened".into());
+        }
+        total_restarts = total_restarts.saturating_add(1);
+        let exp = (failure_times.len().saturating_sub(1)).min(5) as u32;
+        let delay_ms = base_backoff_ms.saturating_mul(1u64 << exp).min(2_000);
+        write_status_best_effort(
+            &canon_dir,
+            CoreStatus {
+                pid: std::process::id(),
+                worker_pid: 0,
+                generation: core_lease::read_core_status(&canon_dir)
+                    .map(|s| s.generation)
+                    .unwrap_or_default(),
+                state: "restarting".to_owned(),
+                worker_restart_count: total_restarts,
+                consecutive_failures: failure_times.len() as u32,
+                circuit_open: false,
+                circuit_reason: None,
+                last_worker_exit: Some(format!("supervisor exit: {status}")),
+                updated_at: core_lease::now_ms(),
+            },
+        );
+        thread::sleep(Duration::from_millis(delay_ms));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn frame_reader_never_returns_partial_or_oversize_json() {
         assert_eq!(

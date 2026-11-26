@@ -106,6 +106,8 @@ export interface AppSettings {
   /** Explicitly paired external owner identities, scoped to a verified channel account. */
   /** Keep an independent host alive after the desktop client exits. */
   residentHostEnabled: boolean;
+  /** Auto-start background Core watchdog at OS login. */
+  autostartEnabled: boolean;
   /** 统一通知中心 / 桌面通知策略。 */
   notificationPreferences: NotificationPreferencesDto;
   /**
@@ -253,6 +255,7 @@ const DEFAULTS: AppSettings = {
   skillModeFilterEnabled: true,
   closeToTray: true,
   residentHostEnabled: false,
+  autostartEnabled: false,
   notificationPreferences: { ...DEFAULT_NOTIFICATION_PREFERENCES },
   dotsPromptOverride: "",
   dotsPromptSections: {},
@@ -331,6 +334,7 @@ export class AppSettingsStore {
       merged.dotsPromptSections = normalizeDotsPromptSections(raw.dotsPromptSections);
       merged.dotsPromptAppend = normalizeDotsPromptText(raw.dotsPromptAppend);
       merged.residentHostEnabled = raw.residentHostEnabled === true;
+      merged.autostartEnabled = raw.autostartEnabled === true;
       delete (merged as AppSettings & Record<string, unknown>).gatewayBotBindings;
       delete (merged as AppSettings & Record<string, unknown>).backupFiles;
       const piSettings = SettingsManager.create(process.cwd(), getMyBuddyDir());

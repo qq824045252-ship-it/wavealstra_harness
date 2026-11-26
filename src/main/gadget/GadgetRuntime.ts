@@ -27,25 +27,80 @@ interface RuntimeInstance {
   /** Invocations whose queued writes must no longer commit. */
   retiredInvocations: Set<string>;
   retired: boolean;
+  inFlightRequests: number;
+  lastActivityAt: number;
+  idleTimer?: ReturnType<typeof setTimeout>;
+}
+
+interface RustStaticInstance {
+  gadgetId: string;
+  state: GadgetRuntimeState;
+  token: string;
+  generation: string;
+  active: boolean;
+}
+
+export interface GadgetRuntimeOptions {
+  idleTimeoutMs?: number;
+  onIdleReclaimed?: (gadgetId: string) => void;
+}
+
+function isMissingRuntimeMessage(message: string): boolean {
+  return /未安装或不在\s*PATH\s*中|COMMAND_NOT_FOUND|\bENOENT\b|not found|找不到.*可执行|Program not found/i.test(message);
 }
 
 function hostScript(options: GadgetHostOptions): string {
-  return `(${runGadgetHost.toString()})(${JSON.stringify(options)}, ${createGadgetState.toString()}, ${createGadgetCommandRunner.toString()}, ${startGadgetProcessBackend.toString()})` +
+  return `var __require = typeof require === "function" ? require : undefined;\n(${runGadgetHost.toString()})(${JSON.stringify(options)}, ${createGadgetState.toString()}, ${createGadgetCommandRunner.toString()}, ${startGadgetProcessBackend.toString()})` +
     '.catch(error => { console.error(error); process.exit(1); });';
 }
 
 export class GadgetRuntime {
   private readonly instances = new Map<string, RuntimeInstance>();
+  private readonly rustStaticInstances = new Map<string, RustStaticInstance>();
   // All public operations share one queue. Internal operations never re-enter it.
   private readonly operations = new Map<string, Promise<unknown>>();
   private readonly commandCleanup = new Map<string, { pids: Set<number>; flight?: Promise<void> }>();
+  private rustHostSupported?: Promise<boolean>;
 
   constructor(
     private readonly storage: GadgetStorage,
     private readonly registry: GadgetRegistry,
     private readonly onState?: (state: GadgetRuntimeState) => void,
     private readonly runtimeAudit?: RuntimeAuditReader,
+    private readonly options: GadgetRuntimeOptions = {},
   ) {}
+
+  private supportsRustHost(): Promise<boolean> {
+    const audit = this.runtimeAudit;
+    if (!audit || typeof audit.gadgetHost !== "function") return Promise.resolve(false);
+    this.rustHostSupported ??= audit.gadgetHost<{ supported?: boolean }>({ action: "supported" })
+      .then((res) => res?.supported === true, () => false);
+    return this.rustHostSupported;
+  }
+
+  activeProcessCount(): number {
+    let count = 0;
+    for (const inst of this.instances.values()) {
+      if (this.isAlive(inst)) count += 1;
+    }
+    return count;
+  }
+
+  trackedPids(id?: string): number[] {
+    const pids: number[] = [];
+    for (const [gadgetId, inst] of this.instances) {
+      if (id && gadgetId !== id) continue;
+      if (inst.child.pid) pids.push(inst.child.pid);
+      for (const pid of inst.commandPids) pids.push(pid);
+    }
+    if (!id || this.commandCleanup.has(id)) {
+      for (const [gadgetId, pending] of this.commandCleanup) {
+        if (id && gadgetId !== id) continue;
+        for (const pid of pending.pids) pids.push(pid);
+      }
+    }
+    return [...new Set(pids)];
+  }
 
   private enqueue<T>(id: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.operations.get(id) ?? Promise.resolve();
@@ -70,7 +125,8 @@ export class GadgetRuntime {
   private async startOne(descriptor: GadgetDescriptor): Promise<GadgetRuntimeState> {
     await this.cleanupCommands(descriptor.id);
     const existing = this.instances.get(descriptor.id);
-    if (existing) {
+    const existingRust = this.rustStaticInstances.get(descriptor.id);
+    if (existing || existingRust) {
       const checked = await this.healthOne(descriptor.id);
       if (checked.status === "running") return checked;
       await this.stopOne(descriptor.id, "restart");
@@ -81,20 +137,60 @@ export class GadgetRuntime {
     };
     this.setState(starting);
     let instance: RuntimeInstance | undefined;
+    let missingCommandHint: string | undefined;
     try {
       this.storage.materializeLegacyLocalHtmlRedirect(descriptor.id);
       const manifest = this.storage.readManifest(descriptor.id);
+      if (manifest.backend && "kind" in manifest.backend) {
+        missingCommandHint = manifest.backend.command;
+      }
       const token = randomBytes(32).toString("hex");
       const generation = randomUUID();
       const { dataPath, sourcePath } = this.storage.paths(descriptor.id);
+      const sdkSource = `(${installGadgetClient.toString()})(${JSON.stringify(token)});`;
       const nativeState = await this.runtimeAudit?.openGadgetState(dataPath);
       if (nativeState && nativeState.kind !== "opened") {
         const code = nativeState.kind === "error" ? nativeState.error : "STORAGE_UNAVAILABLE";
         throw new Error(`Gadget 持久数据无法打开（${code}）`);
       }
+
+      if (!manifest.backend && await this.supportsRustHost()) {
+        const reply = await this.runtimeAudit!.gadgetHost<{
+          status?: string; url?: string; port?: number; startedAt?: number;
+        }>({
+          action: "startStatic",
+          gadgetId: descriptor.id,
+          name: manifest.name,
+          sourcePath,
+          dataPath,
+          entry: manifest.entry,
+          defaultConfig: manifest.defaultConfig ?? {},
+          sdkSource,
+          token,
+          generation,
+        });
+        if (!reply || reply.status !== "running" || !reply.url || !reply.port) {
+          throw new Error("Rust 共享静态 Gadget Host 启动失败");
+        }
+        const state: GadgetRuntimeState = {
+          gadgetId: descriptor.id,
+          status: "running",
+          url: reply.url,
+          port: reply.port,
+          startedAt: reply.startedAt ?? Date.now(),
+          hostKind: "rust-shared",
+          diagnostics: starting.diagnostics,
+        };
+        this.rustStaticInstances.set(descriptor.id, {
+          gadgetId: descriptor.id, state, token, generation, active: true,
+        });
+        this.setState(state);
+        return await this.healthOne(descriptor.id);
+      }
+
       const options: GadgetHostOptions = {
         gadgetId: descriptor.id, manifest, dataPath, token, nativeState: Boolean(nativeState),
-        sdkSource: `(${installGadgetClient.toString()})(${JSON.stringify(token)});`, platform: currentNodePlatform,
+        sdkSource, platform: currentNodePlatform,
         generation,
       };
       // Deliver source over stdin: no token in argv, no extra packaged worker asset,
@@ -113,6 +209,7 @@ export class GadgetRuntime {
       const owned: RuntimeInstance = {
         child, state: starting, stderr: "", token, backend: Boolean(manifest.backend), commandPids: new Set(), stateCalls: new Set(),
         generation, retiredInvocations: new Set(), retired: false,
+        inFlightRequests: 0, lastActivityAt: Date.now(),
       };
       instance = owned;
       this.instances.set(descriptor.id, owned);
@@ -143,23 +240,42 @@ export class GadgetRuntime {
       // when exit was not requested (a successful exit is not a healthy server).
       child.once("close", (code, signal) => {
         if (this.instances.get(descriptor.id) !== owned) return;
+        if (owned.idleTimer) clearTimeout(owned.idleTimer);
+        owned.idleTimer = undefined;
         this.instances.delete(descriptor.id);
         this.retireGeneration(owned);
+        if (owned.backend && this.runtimeAudit && typeof this.runtimeAudit.gadgetHost === "function") {
+          void this.runtimeAudit.gadgetHost({
+            action: "unregisterBackend",
+            gadgetId: descriptor.id,
+            generation: owned.generation,
+            reason: owned.termination?.reason ?? "close",
+          }).catch(() => undefined);
+        }
         if (owned.commandPids.size) {
           this.commandCleanup.set(descriptor.id, { pids: new Set(owned.commandPids) });
           void this.cleanupCommands(descriptor.id).catch(error => console.warn("[GadgetRuntime] command cleanup failed", error));
         }
+        const diagError = owned.termination?.error;
+        const missing = Boolean(diagError && isMissingRuntimeMessage(diagError)) || isMissingRuntimeMessage(owned.stderr);
         const diagnostics: GadgetRuntimeDiagnostics = {
           ...owned.termination,
           reason: owned.termination?.reason ?? (owned.state.status === "starting" ? "startup_failure" : "unexpected_exit"),
           occurredAt: owned.termination?.occurredAt ?? Date.now(), exitedAt: Date.now(),
           exitCode: code, signal, stderr: owned.stderr, pid: child.pid,
           url: owned.state.url ?? owned.termination?.url,
+          hostKind: "node-host",
+          ...(missing ? { blocked: true, code: "RUNTIME_ENVIRONMENT_MISSING" } : {}),
         };
         const expected = diagnostics.reason === "explicit_stop" || diagnostics.reason === "restart";
         const state: GadgetRuntimeState = {
-          gadgetId: descriptor.id, status: expected ? "stopped" : "error", diagnostics,
-          ...(expected ? {} : { error: diagnostics.error ?? `Gadget 进程退出（code=${code}, signal=${signal ?? "none"}）` }),
+          gadgetId: descriptor.id, status: expected ? "stopped" : "error",
+          hostKind: "node-host",
+          diagnostics,
+          ...(expected ? {} : {
+            error: diagnostics.error ?? `Gadget 进程退出（code=${code}, signal=${signal ?? "none"}）`,
+            ...(missing ? { blocked: true, code: "RUNTIME_ENVIRONMENT_MISSING" } : {}),
+          }),
         };
         owned.state = state;
         this.setState(state);
@@ -181,9 +297,10 @@ export class GadgetRuntime {
           if (!match) return;
           const port = Number(match[1]);
           if (!this.isAlive(owned) || port < 1 || port > 65535) return finish(new Error("Gadget 启动状态无效"));
+          owned.lastActivityAt = Date.now();
           owned.state = {
             gadgetId: descriptor.id, status: "running", url: `http://127.0.0.1:${port}/`,
-            port, pid: child.pid, startedAt: Date.now(), diagnostics: starting.diagnostics,
+            port, pid: child.pid, startedAt: Date.now(), hostKind: "node-host", diagnostics: starting.diagnostics,
           };
           finish();
         };
@@ -199,9 +316,21 @@ export class GadgetRuntime {
         });
         child.stdin?.end(hostScript(options));
       });
+      if (owned.backend && child.pid && await this.supportsRustHost()) {
+        void this.runtimeAudit!.gadgetHost({
+          action: "registerBackend",
+          gadgetId: descriptor.id,
+          generation,
+          pid: child.pid,
+          command: missingCommandHint ?? "node",
+          kind: manifest.backend && "kind" in manifest.backend ? manifest.backend.kind : "node",
+        }).catch(() => undefined);
+      }
+      this.armIdleTimer(descriptor.id, owned);
       return await this.healthOne(descriptor.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const missing = isMissingRuntimeMessage(message) || Boolean(missingCommandHint && message.includes(missingCommandHint));
       if (instance && this.instances.get(descriptor.id) === instance) {
         this.fail(instance, "startup_failure", message);
         await this.stopOne(descriptor.id, "restart");
@@ -215,8 +344,10 @@ export class GadgetRuntime {
         ? instance.state.diagnostics : undefined;
       const state: GadgetRuntimeState = {
         gadgetId: descriptor.id, status: "error", error: message,
+        ...(missing ? { blocked: true, code: "RUNTIME_ENVIRONMENT_MISSING" } : {}),
         diagnostics: { ...closedDiagnostics,
-          reason: "startup_failure", occurredAt: closedDiagnostics?.occurredAt ?? Date.now(), error: message },
+          reason: "startup_failure", occurredAt: closedDiagnostics?.occurredAt ?? Date.now(), error: message,
+          ...(missing ? { blocked: true, code: "RUNTIME_ENVIRONMENT_MISSING" } : {}) },
       };
       this.setState(state);
       return state;
@@ -295,28 +426,61 @@ export class GadgetRuntime {
     return state;
   }
 
+  private armIdleTimer(id: string, instance: RuntimeInstance): void {
+    if (instance.idleTimer) clearTimeout(instance.idleTimer);
+    instance.idleTimer = undefined;
+    const idleMs = this.options.idleTimeoutMs ?? 0;
+    if (!instance.backend || idleMs <= 0 || instance.inFlightRequests > 0 || instance.state.status !== "running") return;
+    const elapsed = Date.now() - instance.lastActivityAt;
+    const delay = Math.max(10, idleMs - elapsed);
+    instance.idleTimer = setTimeout(() => {
+      void this.reclaimIdleOne(id).catch(() => undefined);
+    }, delay);
+    instance.idleTimer.unref?.();
+  }
+
+  private async reclaimIdleOne(id: string): Promise<boolean> {
+    const idleMs = this.options.idleTimeoutMs ?? 0;
+    if (idleMs <= 0) return false;
+    return await this.enqueue(id, async () => {
+      const instance = this.instances.get(id);
+      if (!instance || !instance.backend || instance.state.status !== "running") return false;
+      if (instance.inFlightRequests > 0) return false;
+      if (Date.now() - instance.lastActivityAt < idleMs) {
+        this.armIdleTimer(id, instance);
+        return false;
+      }
+      await this.stopOne(id, "explicit_stop", true);
+      this.options.onIdleReclaimed?.(id);
+      return true;
+    });
+  }
+
+  async reclaimIdle(now = Date.now()): Promise<string[]> {
+    const idleMs = this.options.idleTimeoutMs ?? 0;
+    if (idleMs <= 0) return [];
+    const reclaimed: string[] = [];
+    for (const id of [...this.instances.keys()]) {
+      const didReclaim = await this.enqueue(id, async () => {
+        const instance = this.instances.get(id);
+        if (!instance || !instance.backend || instance.state.status !== "running") return false;
+        if (instance.inFlightRequests > 0) return false;
+        if (now - instance.lastActivityAt < idleMs) return false;
+        await this.stopOne(id, "explicit_stop", true);
+        this.options.onIdleReclaimed?.(id);
+        return true;
+      });
+      if (didReclaim) reclaimed.push(id);
+    }
+    return reclaimed;
+  }
+
   health(id: string): Promise<GadgetRuntimeState> {
     return this.enqueue(id, () => this.healthOne(id));
   }
 
-  private async healthOne(id: string): Promise<GadgetRuntimeState> {
-    const instance = this.instances.get(id);
-    if (!instance) {
-      const current = this.registry.runtime(id);
-      if (current.status !== "running" && current.status !== "starting") return current;
-      const error = "Gadget 没有关联的运行进程";
-      const failed: GadgetRuntimeState = {
-        gadgetId: id, status: "error", error,
-        diagnostics: { reason: "health_failure", occurredAt: Date.now(),
-          pid: current.pid, url: current.url, error },
-      };
-      this.setState(failed);
-      return failed;
-    }
-    if (instance.state.status !== "running") return { ...instance.state };
-    const url = instance.state.url;
-    if (!this.isAlive(instance) || !url) return this.fail(instance, "health_failure", "Gadget 进程已停止");
-    const ok = await new Promise<boolean>((resolve) => {
+  private async probeHealthUrl(url: string): Promise<boolean> {
+    return await new Promise<boolean>((resolve) => {
       // Absolute deadline also covers a peer that trickles data indefinitely.
       const timer = setTimeout(() => { request.destroy(); resolve(false); }, 1_500);
       const finish = (ok: boolean): void => { clearTimeout(timer); resolve(ok); };
@@ -334,6 +498,50 @@ export class GadgetRuntime {
       });
       request.once("error", () => finish(false));
     });
+  }
+
+  private async healthOne(id: string): Promise<GadgetRuntimeState> {
+    const rustStatic = this.rustStaticInstances.get(id);
+    if (rustStatic) {
+      if (rustStatic.state.status !== "running" || !rustStatic.state.url || !rustStatic.active) {
+        return { ...rustStatic.state };
+      }
+      const ok = await this.probeHealthUrl(rustStatic.state.url);
+      if (this.rustStaticInstances.get(id) !== rustStatic) return this.registry.runtime(id);
+      if (ok && rustStatic.active) {
+        this.setState(rustStatic.state);
+        return { ...rustStatic.state };
+      }
+      rustStatic.active = false;
+      this.rustStaticInstances.delete(id);
+      const failed: GadgetRuntimeState = {
+        gadgetId: id,
+        status: "error",
+        error: "Gadget health check 失败",
+        hostKind: "rust-shared",
+        diagnostics: { reason: "health_failure", occurredAt: Date.now(), url: rustStatic.state.url, hostKind: "rust-shared", error: "Gadget health check 失败" },
+      };
+      this.setState(failed);
+      return failed;
+    }
+
+    const instance = this.instances.get(id);
+    if (!instance) {
+      const current = this.registry.runtime(id);
+      if (current.status !== "running" && current.status !== "starting") return current;
+      const error = "Gadget 没有关联的运行进程";
+      const failed: GadgetRuntimeState = {
+        gadgetId: id, status: "error", error,
+        diagnostics: { reason: "health_failure", occurredAt: Date.now(),
+          pid: current.pid, url: current.url, error },
+      };
+      this.setState(failed);
+      return failed;
+    }
+    if (instance.state.status !== "running") return { ...instance.state };
+    const url = instance.state.url;
+    if (!this.isAlive(instance) || !url) return this.fail(instance, "health_failure", "Gadget 进程已停止");
+    const ok = await this.probeHealthUrl(url);
     // Exit events may have run while HTTP was pending. Never revive that child.
     if (this.instances.get(id) !== instance) return this.registry.runtime(id);
     if (instance.termination) return { ...instance.state };
@@ -348,7 +556,29 @@ export class GadgetRuntime {
     return this.enqueue(id, () => this.stopOne(id, "explicit_stop"));
   }
 
-  private async stopOne(id: string, reason: "explicit_stop" | "restart"): Promise<GadgetRuntimeState> {
+  private async stopOne(id: string, reason: "explicit_stop" | "restart", idleReclaimed = false): Promise<GadgetRuntimeState> {
+    const rustStatic = this.rustStaticInstances.get(id);
+    if (rustStatic) {
+      rustStatic.active = false;
+      this.rustStaticInstances.delete(id);
+      await this.runtimeAudit?.gadgetHost?.({ action: "stopStatic", gadgetId: id, reason }).catch(() => undefined);
+      const now = Date.now();
+      const stopped: GadgetRuntimeState = {
+        gadgetId: id,
+        status: "stopped",
+        hostKind: "rust-shared",
+        diagnostics: {
+          reason,
+          occurredAt: now,
+          exitedAt: now,
+          url: rustStatic.state.url,
+          hostKind: "rust-shared",
+        },
+      };
+      this.setState(stopped);
+      return stopped;
+    }
+
     const instance = this.instances.get(id);
     if (!instance) {
       await this.cleanupCommands(id);
@@ -356,9 +586,13 @@ export class GadgetRuntime {
       this.setState(stopped);
       return stopped;
     }
+    if (instance.idleTimer) clearTimeout(instance.idleTimer);
+    instance.idleTimer = undefined;
     // Preserve an already recorded failure while reaping its child.
     instance.termination ??= {
       reason, occurredAt: Date.now(), pid: instance.child.pid, url: instance.state.url,
+      hostKind: "node-host",
+      ...(idleReclaimed ? { idleReclaimed: true } : {}),
     };
     // Retire before the child goes away: nothing it queued may commit afterwards.
     this.retireGeneration(instance);
@@ -390,18 +624,22 @@ export class GadgetRuntime {
 
   sourceChanged(descriptor: GadgetDescriptor, hasBackend: boolean): void {
     const current = this.instances.get(descriptor.id);
-    if (!current || (!current.backend && !hasBackend)) return;
+    const rustStatic = this.rustStaticInstances.get(descriptor.id);
+    if (!current && !rustStatic) return;
+    if (rustStatic && !hasBackend) return;
+    if (current && !current.backend && !hasBackend) return;
     // Static edits retain their URL. Executable edits get a fresh process/module
     // cache and revoke outstanding calls, while the independent data/ stays put.
     this.configurationChanged(descriptor);
   }
 
   configurationChanged(descriptor: GadgetDescriptor): void {
-    const current = this.instances.get(descriptor.id);
+    const current = this.instances.get(descriptor.id) ?? this.rustStaticInstances.get(descriptor.id);
     if (!current) return;
     void this.enqueue(descriptor.id, async () => {
       // A preceding explicit stop wins over this automatic source activation.
-      if (this.instances.get(descriptor.id) !== current) return;
+      const stillCurrent = this.instances.get(descriptor.id) ?? this.rustStaticInstances.get(descriptor.id);
+      if (stillCurrent !== current) return;
       await this.stopOne(descriptor.id, "restart");
       await this.startOne(descriptor);
     }).catch(error => {
@@ -420,34 +658,78 @@ export class GadgetRuntime {
     const state = options.start === false ? this.registry.runtime(descriptor.id) : await this.start(descriptor);
     options.authorize?.();
     signal?.throwIfAborted();
+
+    const rustStatic = this.rustStaticInstances.get(descriptor.id);
+    if (rustStatic && state.status === "running" && state.url && rustStatic.active) {
+      const response = await fetch(new URL(`__mybuddy/${route}`, state.url), {
+        method: input === undefined ? "GET" : "POST",
+        headers: { "x-mybuddy-gadget-token": rustStatic.token, ...(input === undefined ? {} : { "content-type": "application/json" }) },
+        ...(input === undefined ? {} : { body: JSON.stringify(input) }),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(125_000)]) : AbortSignal.timeout(125_000),
+      });
+      const result: unknown = await response.json();
+      options.authorize?.();
+      if (this.rustStaticInstances.get(descriptor.id) !== rustStatic || !rustStatic.active) {
+        throw new Error("Gadget 已重启或停止；本次操作不会自动重放");
+      }
+      if (!result || typeof result !== "object") throw new Error("Gadget 返回无效结果");
+      if (!response.ok) {
+        const error = "error" in result ? result.error : null;
+        if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
+          throw Object.assign(new Error(error.message), { code: "code" in error ? error.code : "REQUEST_FAILED" });
+        }
+        throw new Error(`Gadget 请求失败 (${response.status})`);
+      }
+      if (!("value" in result)) throw new Error("Gadget 返回缺少结果");
+      return result.value as GadgetJson;
+    }
+
     const instance = this.instances.get(descriptor.id);
     if (state.status !== "running" || !state.url || !instance) throw new Error(state.error || "Gadget 后台不可用");
-    const response = await fetch(new URL(`__mybuddy/${route}`, state.url), {
-      method: input === undefined ? "GET" : "POST",
-      headers: { "x-mybuddy-gadget-token": instance.token, ...(input === undefined ? {} : { "content-type": "application/json" }) },
-      ...(input === undefined ? {} : { body: JSON.stringify(input) }),
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(125_000)]) : AbortSignal.timeout(125_000),
-    });
-    const result: unknown = await response.json();
-    options.authorize?.();
-    if (this.instances.get(descriptor.id) !== instance || !this.isAlive(instance)) throw new Error("Gadget 已重启或停止；本次操作不会自动重放");
-    if (!result || typeof result !== "object") throw new Error("Gadget 返回无效结果");
-    if (!response.ok) {
-      const error = "error" in result ? result.error : null;
-      if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
-        throw Object.assign(new Error(error.message), { code: "code" in error ? error.code : "REQUEST_FAILED" });
-      }
-      throw new Error(`Gadget 请求失败 (${response.status})`);
+    instance.inFlightRequests += 1;
+    if (instance.idleTimer) {
+      clearTimeout(instance.idleTimer);
+      instance.idleTimer = undefined;
     }
-    if (!("value" in result)) throw new Error("Gadget 返回缺少结果");
-    // Only JSON from the owned host reaches this boundary.
-    return result.value as GadgetJson;
+    try {
+      const response = await fetch(new URL(`__mybuddy/${route}`, state.url), {
+        method: input === undefined ? "GET" : "POST",
+        headers: { "x-mybuddy-gadget-token": instance.token, ...(input === undefined ? {} : { "content-type": "application/json" }) },
+        ...(input === undefined ? {} : { body: JSON.stringify(input) }),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(125_000)]) : AbortSignal.timeout(125_000),
+      });
+      const result: unknown = await response.json();
+      options.authorize?.();
+      if (this.instances.get(descriptor.id) !== instance || !this.isAlive(instance)) throw new Error("Gadget 已重启或停止；本次操作不会自动重放");
+      if (!result || typeof result !== "object") throw new Error("Gadget 返回无效结果");
+      if (!response.ok) {
+        const error = "error" in result ? result.error : null;
+        if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
+          throw Object.assign(new Error(error.message), { code: "code" in error ? error.code : "REQUEST_FAILED" });
+        }
+        throw new Error(`Gadget 请求失败 (${response.status})`);
+      }
+      if (!("value" in result)) throw new Error("Gadget 返回缺少结果");
+      // Only JSON from the owned host reaches this boundary.
+      return result.value as GadgetJson;
+    } finally {
+      instance.inFlightRequests = Math.max(0, instance.inFlightRequests - 1);
+      instance.lastActivityAt = Date.now();
+      if (this.instances.get(descriptor.id) === instance && this.isAlive(instance)) {
+        this.armIdleTimer(descriptor.id, instance);
+      }
+    }
   }
 
   async dispose(id: string): Promise<void> { await this.stop(id); }
 
   async disposeAll(): Promise<void> {
-    const ids = new Set([...this.instances.keys(), ...this.operations.keys(), ...this.commandCleanup.keys()]);
+    const ids = new Set([
+      ...this.instances.keys(),
+      ...this.rustStaticInstances.keys(),
+      ...this.operations.keys(),
+      ...this.commandCleanup.keys(),
+    ]);
     await Promise.all([...ids].map((id) => this.stop(id)));
   }
 

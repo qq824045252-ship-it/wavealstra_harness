@@ -9,6 +9,28 @@ import { ActiveDurableConversation } from "./DurableConversationBranch";
 import { durableHistoryIdentity } from "./DurableHistoryIdentity";
 import { durableStorageExists, openRustDurableStorage } from "./DurableStorage";
 
+export const PASSIVE_READONLY_MODELS = {
+  getProviders: () => [],
+  getProvider: () => undefined,
+  getModels: () => [],
+  getModel: () => undefined,
+  getModelsOfType: () => [],
+  getModelOfType: () => undefined,
+  getAllModels: () => [],
+  refresh: async () => undefined,
+  checkAuth: async () => undefined,
+  getAvailable: async () => [],
+  getAvailableOfType: async () => [],
+  getAllAvailable: async () => [],
+  getAuth: async () => undefined,
+  login: async () => { throw new Error("Read-only history model stub cannot login"); },
+  logout: async () => { throw new Error("Read-only history model stub cannot logout"); },
+  stream: () => { throw new Error("Read-only history model stub cannot execute models"); },
+  complete: async () => { throw new Error("Read-only history model stub cannot execute models"); },
+  streamSimple: () => { throw new Error("Read-only history model stub cannot execute models"); },
+  completeSimple: async () => { throw new Error("Read-only history model stub cannot execute models"); },
+} as unknown as Models;
+
 interface PassiveSource {
   directory: string;
   cwd: string;

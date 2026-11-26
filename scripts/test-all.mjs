@@ -241,6 +241,15 @@ const DATASET_TESTS = new Set([
   "test:runtime-audit-native-contract", // Real native worker binary (prepare-runtime-audit.cjs); missing binary must fail.
   "test:core-supervisor", // Same binary; proves the supervisor keeps the worker alive across clients.
   "test:core-client", // Production Core socket adapter; requires the real supervised worker.
+  "test:core-business-protocol", // Step 3 multi-role Core protocol, cursor events, execution bridge, and watchdog recovery.
+  "test:rust-writer-boundary", // Step 4 RC-09 unique Rust writer, readonly app.db boundary, and Pi companion RW exclusion.
+  "test:rust-domain-equivalence", // Step 4 RC-10 host RW vs supervised Rust readonly equivalence and rollback parity.
+  "test:rust-work-scheduler", // Step 5 RC-11..13 Rust Core Work scheduler, owner fencing, conflict concurrency, and crash recovery.
+  "test:rust-background-services", // Step 6 RC-14..16 Rust Core Cron, Dots, Gateway, Remote background orchestration & notification catch-up.
+  "test:rust-gadget-host", // Step 7 RC-17..19 Shared Rust HTTP static Gadget host, on-demand backends, and generation split.
+  "test:pi-node-host", // Step 8 RC-20..22 Isolated Pi Node Host, crash/restart single-lease recovery, and passive Main reads.
+  "test:thin-main", // Step 9 RC-23..24 20 UI close/reopen cycles, WebContents reclaim/restore, platform waiting, and zero Main business timers/fallbacks.
+  "test:core-production-lifecycle", // Step 10 §6 End-to-end production lifecycle story across Core, Pi Node Host, offline activity, faults, stop, and upgrade.
   "test:runtime-audit-lifecycle", // Real write contention, overload and crash/restart receipts.
   "test:google-workspace-write", // Existing POSIX Python runtime required for isolated SDK subprocess fixtures.
   // node-pty 原生模块 + 真实 pty。

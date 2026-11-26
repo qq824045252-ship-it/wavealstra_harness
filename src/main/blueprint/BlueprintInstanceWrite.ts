@@ -42,10 +42,17 @@ export class BlueprintCommitUnconfirmed extends Error {}
 
 export async function writeBlueprintInstance(db: AppDatabase, instance: RuntimeBlueprintInstance): Promise<RuntimeBlueprintInstanceStatus | undefined> {
   const reader = db.runtimeAuditReader;
-  if (!reader || db.connection.inTransaction) return;
+  const rustRequired = Boolean(db.connection.readonly || reader?.supervised);
+  if (!reader || db.connection.inTransaction) {
+    if (rustRequired) throw new Error("只读数据库模式下蓝图实例化需要 Rust 核心确认");
+    return;
+  }
   const operationId = randomUUID();
   const result = await reader.instantiateBlueprint(operationId, instance);
-  if (result === "needsHost") return;
+  if (result === "needsHost") {
+    if (rustRequired) throw new Error("蓝图实例化未获 Rust 核心授权");
+    return;
+  }
   if (result) return result;
 
   const receipt = readReceipt(db, operationId);

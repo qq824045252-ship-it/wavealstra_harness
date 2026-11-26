@@ -269,7 +269,7 @@ async function main(): Promise<void> {
   const agentSrc = readFileSync(join(repo, "src/main/agent/AgentService.ts"), "utf8");
   const approvalBridgeSrc = readFileSync(join(repo, "src/main/agent/SessionApprovalBridge.ts"), "utf8");
   ok(
-    /agentService\.revokeTaskWriteGrant\(taskId, path\)/.test(mainIndexSrc),
+    /agentService\.revokeTaskWriteGrant(?:Async)?\(taskId, path\)/.test(mainIndexSrc),
     "G1 deleteTaskWriteGrant IPC 必须经 AgentService（DB + 存活会话 policy 同步失效）",
   );
   ok(

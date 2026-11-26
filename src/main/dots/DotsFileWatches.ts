@@ -62,17 +62,42 @@ export class DotsFileWatches {
   private readonly dirty = new Set<string>();
   private timer?: ReturnType<typeof setInterval>;
   private started = false;
+  private writeTail = Promise.resolve();
+  private pendingWriteCount = 0;
+  private readonly pendingRows = new Map<string, FileWatch>();
 
   constructor(private readonly db: AppDatabase, private readonly host: Host) {
-    db.connection.exec(`CREATE TABLE IF NOT EXISTS dots_file_watches(
-      id TEXT PRIMARY KEY,task_id TEXT NOT NULL,space_id TEXT NOT NULL,root TEXT NOT NULL,file TEXT NOT NULL,
-      instruction TEXT NOT NULL,source TEXT NOT NULL,baseline TEXT NOT NULL,input_version TEXT NOT NULL,
-      state TEXT NOT NULL,note TEXT NOT NULL DEFAULT '');
-      CREATE TABLE IF NOT EXISTS dots_file_watch_notices(watch_id TEXT NOT NULL,revision TEXT NOT NULL,PRIMARY KEY(watch_id,revision))`);
+    if (!db.readonly) {
+      db.connection.exec(`CREATE TABLE IF NOT EXISTS dots_file_watches(
+        id TEXT PRIMARY KEY,task_id TEXT NOT NULL,space_id TEXT NOT NULL,root TEXT NOT NULL,file TEXT NOT NULL,
+        instruction TEXT NOT NULL,source TEXT NOT NULL,baseline TEXT NOT NULL,input_version TEXT NOT NULL,
+        state TEXT NOT NULL,note TEXT NOT NULL DEFAULT '');
+        CREATE TABLE IF NOT EXISTS dots_file_watch_notices(watch_id TEXT NOT NULL,revision TEXT NOT NULL,PRIMARY KEY(watch_id,revision))`);
+    }
+  }
+
+  private get requiresRustWrites(): boolean {
+    return this.db.readonly || Boolean(this.db.runtimeAuditReader?.supervised);
+  }
+
+  flushWrites(): Promise<void> {
+    return this.writeTail;
+  }
+
+  private enqueue(request: Record<string, unknown>, label: string): void {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error(`只读模式下缺少 Dots 文件订阅 Rust 写入通道: ${label}`);
+    this.pendingWriteCount += 1;
+    this.writeTail = this.writeTail.then(() => reader.batch4aWrite(request)).then(() => undefined, error => {
+      console.warn(`[DotsFileWatches] ${label} failed`, error);
+    }).finally(() => {
+      this.pendingWriteCount -= 1;
+      if (this.pendingWriteCount === 0) this.pendingRows.clear();
+    });
   }
 
   private get(id: string) {
-    return this.db.connection.prepare("SELECT * FROM dots_file_watches WHERE id=?").get(id) as FileWatch | undefined;
+    return this.pendingRows.get(id) ?? (this.db.connection.prepare("SELECT * FROM dots_file_watches WHERE id=?").get(id) as FileWatch | undefined);
   }
 
   private async revision(root: string, file: string, verifyRoot = false): Promise<string> {
@@ -89,7 +114,11 @@ export class DotsFileWatches {
 
   list(taskId?: string) {
     const rows = this.db.connection.prepare("SELECT * FROM dots_file_watches WHERE (? IS NULL OR task_id=?) ORDER BY rowid DESC").all(taskId ?? null, taskId ?? null) as FileWatch[];
-    return rows.map(row => this.project(row));
+    const byId = new Map(rows.map(r => [r.id, r]));
+    for (const [id, pending] of this.pendingRows) {
+      if (!taskId || pending.task_id === taskId) byId.set(id, pending);
+    }
+    return [...byId.values()].map(row => this.project(row));
   }
 
   async create(input: {taskId: string; spaceId: string; file: string; instruction: string; source: string}) {
@@ -105,6 +134,24 @@ export class DotsFileWatches {
     const baseline = await this.revision(root, local);
     const version = await this.host.inputVersion(taskId);
     if (resolvedPathKey(this.host.root(taskId, spaceId)) !== resolvedPathKey(root)) throw new Error("订阅时空间绑定已变化");
+    if (this.requiresRustWrites) {
+      const row: FileWatch = { id, task_id: taskId, space_id: spaceId, root, file: local, instruction, source, baseline, input_version: version, state: "watching", note: "" };
+      this.pendingRows.set(id, row);
+      this.enqueue({
+        kind: "dotsFileWatchCreate",
+        id,
+        taskId,
+        spaceId,
+        root,
+        file: local,
+        instruction,
+        source,
+        baseline,
+        inputVersion: version,
+      }, "create");
+      this.wake(id);
+      return this.project(this.get(id)!);
+    }
     this.db.connection.prepare(`INSERT OR IGNORE INTO dots_file_watches
       (id,task_id,space_id,root,file,instruction,source,baseline,input_version,state) VALUES(?,?,?,?,?,?,?,?,?,'watching')`)
       .run(id, taskId, spaceId, root, local, instruction, source, baseline, version);
@@ -124,14 +171,36 @@ export class DotsFileWatches {
   }
 
   controlTarget(taskId: string, action: "pause" | "stop") {
-    const rows = this.db.connection.prepare("SELECT * FROM dots_file_watches WHERE task_id=? AND state IN ('watching','sending','paused')").all(taskId) as FileWatch[];
-    for (const row of rows) this.update(row.id, action === "pause" ? "paused" : "cancelled", action === "pause" ? "原事项已暂停" : "原事项已停止");
+    for (const projected of this.list(taskId)) {
+      if (projected.state === "watching" || projected.state === "sending" || projected.state === "paused") {
+        this.update(projected.id, action === "pause" ? "paused" : "cancelled", action === "pause" ? "原事项已暂停" : "原事项已停止");
+      }
+    }
   }
 
   resumeTarget(taskId: string, inputVersion: string) {
-    const rows = this.db.connection.prepare("SELECT id FROM dots_file_watches WHERE task_id=? AND state='paused'").all(taskId) as {id:string}[];
-    this.db.connection.prepare("UPDATE dots_file_watches SET state='watching',note='',input_version=? WHERE task_id=? AND state='paused'").run(inputVersion,taskId);
-    for (const row of rows) this.wake(row.id);
+    const ids = this.list(taskId).filter(row => row.state === "paused").map(row => row.id);
+    if (this.requiresRustWrites) {
+      for (const id of ids) {
+        const cur = this.get(id);
+        if (cur && cur.state === "paused") this.pendingRows.set(id, { ...cur, state: "watching", note: "", input_version: inputVersion });
+      }
+      if (ids.length) {
+        this.enqueue({
+          kind: "dotsFileWatchUpdate",
+          id: null,
+          taskId,
+          state: "watching",
+          note: "",
+          inputVersion,
+          resumePaused: true,
+        }, "resumeTarget");
+      }
+      for (const id of ids) this.wake(id);
+      return;
+    }
+    this.db.connection.prepare("UPDATE dots_file_watches SET state='watching',note='',input_version=? WHERE task_id=? AND state='paused'").run(inputVersion, taskId);
+    for (const id of ids) this.wake(id);
   }
 
   validate(request: AgentPromptRequest) {
@@ -160,14 +229,17 @@ export class DotsFileWatches {
   start() {
     if (this.started) return;
     this.started = true;
-    this.timer = setInterval(() => this.refresh(), 30_000);
-    this.timer.unref();
+    if (!this.db.runtimeAuditReader?.supervised) {
+      this.timer = setInterval(() => this.refresh(), 30_000);
+      this.timer.unref();
+    }
     this.refresh();
   }
 
   async close() {
     this.started = false;
-    clearInterval(this.timer);
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
     for (const handle of this.handles.values()) handle.close();
     this.handles.clear();
     this.dirty.clear();
@@ -175,12 +247,29 @@ export class DotsFileWatches {
   }
 
   private update(id: string, state: FileWatch["state"], note: string) {
-    const result = this.db.connection.prepare("UPDATE dots_file_watches SET state=?, note=? WHERE id=? AND (state<>? OR note<>?)").run(state, note, id, state, note);
+    let changed = false;
+    if (this.requiresRustWrites) {
+      const current = this.get(id);
+      changed = Boolean(current && (current.state !== state || current.note !== note));
+      if (current && changed) this.pendingRows.set(id, { ...current, state, note });
+      this.enqueue({
+        kind: "dotsFileWatchUpdate",
+        id,
+        taskId: null,
+        state,
+        note,
+        inputVersion: null,
+        resumePaused: false,
+      }, "update");
+    } else {
+      const result = this.db.connection.prepare("UPDATE dots_file_watches SET state=?, note=? WHERE id=? AND (state<>? OR note<>?)").run(state, note, id, state, note);
+      changed = result.changes > 0;
+    }
     if (state !== "watching" && state !== "sending") {
       this.handles.get(id)?.close();
       this.handles.delete(id);
     }
-    if (result.changes) this.host.changed();
+    if (changed) this.host.changed();
   }
 
   private async arm(row: FileWatch) {

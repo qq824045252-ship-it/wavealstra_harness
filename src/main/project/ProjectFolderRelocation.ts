@@ -99,11 +99,32 @@ export class ProjectFolderRelocation {
     return { ...preview, token };
   }
 
-  commit(token: string): void {
+  async commit(token: string): Promise<void> {
     const pending = this.pending.get(token);
     this.pending.delete(token);
     if (!pending || pending.expires < Date.now()) throw new Error("预览已失效，请重新选择文件夹");
     let artifactEvents: ArtifactUpdatedEvent[] = [];
+    const reader = this.db.runtimeAuditReader;
+    if (this.db.connection.readonly || reader?.supervised) {
+      if (!reader) throw new Error("目录迁移失败：Rust 写入核心未就绪");
+      const fresh = this.inspect(pending.projectId, pending.target);
+      if (hash(JSON.stringify(fresh)) !== pending.fingerprint) throw new Error("目录、任务或资料已发生变化，请重新预览");
+      const now = Date.now();
+      await reader.batch2Write({
+        kind: "relocateProjectFolder",
+        now,
+        folders: (fresh.folders ?? []).map((folder) => ({ id: folder.id, newPath: folder.newPath })),
+        references: fresh.references.map((resource) => ({ id: resource.id, projectId: resource.projectId, newPath: resource.newPath })),
+        affectedProjectIds: (fresh.affectedProjects ?? []).map((affected) => affected.id),
+      });
+      if (fresh.artifactChanges.length > 0) {
+        const artifacts = this.getArtifacts();
+        if (!artifacts) throw new Error("产物服务尚未就绪，请稍后重试");
+        artifactEvents = await artifacts.applyFolderRelocationAsync(fresh.artifactChanges);
+      }
+      this.getArtifacts()?.publishFolderRelocation(artifactEvents);
+      return;
+    }
     this.db.connection.transaction(() => {
       const fresh = this.inspect(pending.projectId, pending.target);
       if (hash(JSON.stringify(fresh)) !== pending.fingerprint) throw new Error("目录、任务或资料已发生变化，请重新预览");

@@ -123,8 +123,28 @@ function mapProfile(row: Record<string, unknown>): MemoryCoreProfileDto {
  * memory_records remains the sole durable cognition truth; these rows are disposable/rebuildable views over L1.
  */
 export class MemoryProjectionRepository {
+  private writeTail: Promise<void> = Promise.resolve();
+
   constructor(private readonly db: AppDatabase) {}
   private get conn() { return this.db.connection; }
+
+  private get requiresRustWrites(): boolean {
+    return Boolean(this.db.readonly || this.db.runtimeAuditReader?.supervised);
+  }
+
+  async flush(): Promise<void> {
+    await this.writeTail;
+  }
+
+  private enqueueBatch3(context: string, request: Record<string, unknown>): void {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error(`${context}：Rust 写入核心未就绪`);
+    const next = this.writeTail.then(async () => {
+      const result = await reader.batch3Write(request);
+      if (result === undefined) throw new Error(`${context}：Rust 写入未收到确认`);
+    });
+    this.writeTail = next.then(() => undefined, () => undefined);
+  }
 
   captureSourceVersions(kind: "scenario" | "profile", scope: MemoryProjectionScope, ids: readonly string[]): string | undefined {
     return this.sourceStamp(kind, scope, ids);
@@ -196,6 +216,47 @@ export class MemoryProjectionRepository {
 
     const dismissed = this.dismissedIds("scenario");
     for (const id of dismissed) normalized.delete(id);
+
+    if (this.requiresRustWrites) {
+      const existingById = new Map(beforeActive.map((item) => [item.id, item]));
+      const rows = [...normalized.values()].map((row) => ({
+        id: row.id,
+        title: row.title,
+        summary: row.summary,
+        sourceMemoryIdsJson: JSON.stringify(row.sourceMemoryIds),
+        contentHash: row.contentHash,
+        createdAt: existingById.get(row.id)?.createdAt ?? now,
+        updatedAt: now,
+      }));
+      this.enqueueBatch3("同步情景投影", {
+        kind: "memoryProjectionSyncScenarios",
+        scopeType: scope.scopeType,
+        scopeId: scope.scopeId ?? null,
+        rows,
+        now,
+      });
+      const active: MemoryScenarioDto[] = [...normalized.values()]
+        .map((row) => {
+          const prev = existingById.get(row.id);
+          return {
+            id: row.id,
+            scopeType: scope.scopeType,
+            scopeId: scope.scopeId,
+            title: row.title,
+            summary: row.summary,
+            status: "active" as const,
+            sourceMemoryIds: row.sourceMemoryIds,
+            contentHash: row.contentHash,
+            createdAt: prev?.createdAt ?? now,
+            updatedAt: prev && prev.contentHash === row.contentHash ? prev.updatedAt : now,
+          };
+        })
+        .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+      if (projectionSignature(active) !== beforeSignature) {
+        this.invalidateProfilesForScope(scope, now);
+      }
+      return active;
+    }
 
     let active: MemoryScenarioDto[] = [];
     this.conn.transaction(() => {
@@ -287,6 +348,29 @@ export class MemoryProjectionRepository {
     if (affectedScenarios.size === 0) return { scenarios: 0, profiles: 0 };
 
     const affectedProfiles = this.findProfilesByScenarioIds([...affectedScenarios]);
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("失效场景投影", {
+        kind: "memoryProjectionMarkStale",
+        projAction: "scenarioByMemory",
+        id: null,
+        scopeType: null,
+        scopeId: null,
+        sourceMemoryIds: ids,
+        now,
+      });
+      for (const profileIdToStale of affectedProfiles) {
+        this.enqueueBatch3("失效画像投影", {
+          kind: "memoryProjectionMarkStale",
+          projAction: "profileById",
+          id: profileIdToStale,
+          scopeType: null,
+          scopeId: null,
+          sourceMemoryIds: [],
+          now,
+        });
+      }
+      return { scenarios: affectedScenarios.size, profiles: affectedProfiles.size };
+    }
     this.conn.transaction(() => {
       const staleScenario = this.conn.prepare("UPDATE memory_scenarios SET status='stale',updated_at=? WHERE id=? AND status='active'");
       for (const id of affectedScenarios) staleScenario.run(now, id);
@@ -312,6 +396,30 @@ export class MemoryProjectionRepository {
       const normalized: MemoryProjectionScope = { scopeType: scope.scopeType, scopeId: scope.scopeId };
       unique.set(`${scope.scopeType}:${scope.scopeId ?? ""}`, normalized);
     }
+    if (this.requiresRustWrites) {
+      let scenarios = 0;
+      let profiles = 0;
+      for (const scope of unique.values()) {
+        const scenarioWhere = whereScope("memory_scenarios", scope);
+        scenarios += Number((this.conn.prepare(
+          `SELECT COUNT(1) n FROM memory_scenarios WHERE ${scenarioWhere.sql} AND status='active'`,
+        ).get(...scenarioWhere.args) as { n: number }).n);
+        const profileWhere = whereScope("memory_core_profiles", scope);
+        profiles += Number((this.conn.prepare(
+          `SELECT COUNT(1) n FROM memory_core_profiles WHERE ${profileWhere.sql} AND status='active'`,
+        ).get(...profileWhere.args) as { n: number }).n);
+        this.enqueueBatch3("按范围失效派生投影", {
+          kind: "memoryProjectionMarkStale",
+          projAction: "byScope",
+          id: null,
+          scopeType: scope.scopeType,
+          scopeId: scope.scopeId ?? null,
+          sourceMemoryIds: [],
+          now,
+        });
+      }
+      return { scenarios, profiles };
+    }
     let scenarios = 0;
     let profiles = 0;
     this.conn.transaction(() => {
@@ -330,6 +438,13 @@ export class MemoryProjectionRepository {
   }
 
   purgeStaleDotsViews(): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("清理过期 Dots 视图", {
+        kind: "memoryProjectionPruneTask",
+        taskId: DOTS_TASK_ID,
+      });
+      return;
+    }
     for (const table of ["memory_core_profiles", "memory_scenarios"]) {
       this.conn.prepare(`DELETE FROM ${table} WHERE scope_type='task' AND scope_id=? AND status='stale'`)
         .run(DOTS_TASK_ID);
@@ -342,6 +457,32 @@ export class MemoryProjectionRepository {
       WHERE scope_type='task' AND scope_id=? AND EXISTS
         (SELECT 1 FROM json_each(s.source_memory_ids_json) WHERE value=?)`)
       .pluck().all(DOTS_TASK_ID, memoryId) as string[];
+    if (this.requiresRustWrites) {
+      for (const id of scenarios) {
+        this.enqueueBatch3("删除遗忘相关的 Dots 情景", {
+          kind: "memoryProjectionDelete",
+          scope: "one",
+          projKind: "scenario",
+          id,
+        });
+      }
+      const profileIds = new Set<string>();
+      for (const id of scenarios) {
+        const rows = this.conn.prepare(
+          `SELECT id FROM memory_core_profiles WHERE scope_type='task' AND scope_id=? AND EXISTS (SELECT 1 FROM json_each(source_scenario_ids_json) WHERE value=?)`,
+        ).pluck().all(DOTS_TASK_ID, id) as string[];
+        for (const pid of rows) profileIds.add(pid);
+      }
+      for (const pid of profileIds) {
+        this.enqueueBatch3("删除遗忘相关的 Dots 画像", {
+          kind: "memoryProjectionDelete",
+          scope: "one",
+          projKind: "profile",
+          id: pid,
+        });
+      }
+      return;
+    }
     const removeProfile = this.conn.prepare(`DELETE FROM memory_core_profiles
       WHERE scope_type='task' AND scope_id=? AND EXISTS
         (SELECT 1 FROM json_each(source_scenario_ids_json) WHERE value=?)`);
@@ -357,6 +498,20 @@ export class MemoryProjectionRepository {
   private invalidateProfilesByScenarioIds(scenarioIds: readonly string[], now = Date.now()): number {
     const affected = this.findProfilesByScenarioIds(scenarioIds);
     if (affected.size === 0) return 0;
+    if (this.requiresRustWrites) {
+      for (const id of affected) {
+        this.enqueueBatch3("失效关联画像投影", {
+          kind: "memoryProjectionMarkStale",
+          projAction: "profileById",
+          id,
+          scopeType: null,
+          scopeId: null,
+          sourceMemoryIds: [],
+          now,
+        });
+      }
+      return affected.size;
+    }
     const stmt = this.conn.prepare("UPDATE memory_core_profiles SET status='stale',updated_at=? WHERE id=? AND status='active'");
     this.conn.transaction(() => { for (const id of affected) stmt.run(now, id); })();
     return affected.size;
@@ -364,6 +519,23 @@ export class MemoryProjectionRepository {
 
   private invalidateProfilesForScope(scope: MemoryProjectionScope, now = Date.now()): number {
     const scoped = whereScope("memory_core_profiles", scope);
+    if (this.requiresRustWrites) {
+      const count = Number((this.conn.prepare(
+        `SELECT COUNT(1) n FROM memory_core_profiles WHERE ${scoped.sql} AND status='active'`,
+      ).get(...scoped.args) as { n: number }).n);
+      if (count > 0) {
+        this.enqueueBatch3("按范围失效画像投影", {
+          kind: "memoryProjectionMarkStale",
+          projAction: "profilesByScope",
+          id: null,
+          scopeType: scope.scopeType,
+          scopeId: scope.scopeId ?? null,
+          sourceMemoryIds: [],
+          now,
+        });
+      }
+      return count;
+    }
     return this.conn.prepare(
       `UPDATE memory_core_profiles SET status='stale',updated_at=? WHERE ${scoped.sql} AND status='active'`,
     ).run(now, ...scoped.args).changes;
@@ -388,6 +560,18 @@ export class MemoryProjectionRepository {
     const content = draft?.content.trim().slice(0, 4200) ?? "";
     const sourceScenarioIds = [...new Set(draft?.sourceScenarioIds.filter(Boolean) ?? [])].slice(0, 48);
     if (!title || !content || sourceScenarioIds.length === 0) {
+      if (this.requiresRustWrites) {
+        this.enqueueBatch3("失效核心画像", {
+          kind: "memoryProjectionMarkStale",
+          projAction: "profilesByScope",
+          id: null,
+          scopeType: scope.scopeType,
+          scopeId: scope.scopeId ?? null,
+          sourceMemoryIds: [],
+          now,
+        });
+        return undefined;
+      }
       this.conn.prepare(`UPDATE memory_core_profiles SET status='stale',updated_at=? WHERE ${scoped.sql} AND status='active'`)
         .run(now, ...scoped.args);
       return undefined;
@@ -396,6 +580,33 @@ export class MemoryProjectionRepository {
     const id = profileId(scope);
     if (this.dismissedIds("profile").has(id)) return undefined;
     const contentHash = hash(`${title}\n${content}\n${[...sourceScenarioIds].sort().join("\n")}`);
+    if (this.requiresRustWrites) {
+      const existing = this.listCoreProfiles(scope, "all", 5).find((p) => p.id === id);
+      this.enqueueBatch3("保存核心画像", {
+        kind: "memoryProjectionUpsertProfile",
+        id,
+        scopeType: scope.scopeType,
+        scopeId: scope.scopeId ?? null,
+        title,
+        content,
+        sourceScenarioIdsJson: JSON.stringify(sourceScenarioIds),
+        contentHash,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      });
+      return {
+        id,
+        scopeType: scope.scopeType,
+        scopeId: scope.scopeId,
+        title,
+        content,
+        status: "active",
+        sourceScenarioIds,
+        contentHash,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: existing && existing.contentHash === contentHash && existing.status === "active" ? existing.updatedAt : now,
+      };
+    }
     this.conn.prepare(
       `INSERT INTO memory_core_profiles (
         id,scope_type,scope_id,title,content,status,source_scenario_ids_json,content_hash,created_at,updated_at
@@ -442,6 +653,18 @@ export class MemoryProjectionRepository {
       | { id: string; title: string; scope_type: string; scope_id: string | null }
       | undefined;
     if (!row) return false;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("忽略派生记忆", {
+        kind: "memoryProjectionDismiss",
+        id,
+        projKind: kind,
+        title: row.title ?? "",
+        scopeType: row.scope_type,
+        scopeId: row.scope_id,
+        dismissedAt: now,
+      });
+      return true;
+    }
     this.conn.transaction(() => {
       this.conn.prepare(
         `INSERT INTO memory_projection_dismissals (id,kind,title,scope_type,scope_id,dismissed_at)
@@ -486,6 +709,57 @@ export class MemoryProjectionRepository {
     }
     const kind = request.kind;
     const table = kind === "scenario" ? "memory_scenarios" : "memory_core_profiles";
+    if (this.requiresRustWrites) {
+      const result: MemoryProjectionDeleteResult = { projections: 0, dismissals: 0, proposals: 0, invalidatedProfiles: 0, dependentProposals: 0 };
+      const targetIds = request.all
+        ? (this.conn.prepare(`SELECT id FROM ${table}
+            UNION SELECT id FROM memory_projection_dismissals WHERE kind=?
+            UNION SELECT target_id AS id FROM memory_projection_proposals WHERE kind=?`).all(kind, kind) as Array<{ id: string }>).map((row) => row.id)
+        : [...new Set(request.targetIds ?? [])];
+      if (kind === "scenario") {
+        result.invalidatedProfiles = this.invalidateProfilesByScenarioIds(targetIds, now);
+        const countDependent = this.conn.prepare(`SELECT COUNT(1) n FROM memory_projection_proposals
+          WHERE kind='profile' AND EXISTS (SELECT 1 FROM json_each(source_ids_json) j WHERE j.value=?)`);
+        for (const id of targetIds) result.dependentProposals += Number((countDependent.get(id) as { n: number }).n);
+      }
+      if (request.all) {
+        result.projections = Number((this.conn.prepare(`SELECT COUNT(1) n FROM ${table}`).get() as { n: number }).n);
+        result.dismissals = Number((this.conn.prepare("SELECT COUNT(1) n FROM memory_projection_dismissals WHERE kind=?").get(kind) as { n: number }).n);
+        result.proposals = Number((this.conn.prepare("SELECT COUNT(1) n FROM memory_projection_proposals WHERE kind=?").get(kind) as { n: number }).n);
+        this.enqueueBatch3("清空派生投影记录", {
+          kind: "memoryProjectionDelete",
+          scope: "all",
+          projKind: kind,
+          id: null,
+        });
+      } else {
+        const countProj = this.conn.prepare(`SELECT COUNT(1) n FROM ${table} WHERE id=?`);
+        const countDismissal = this.conn.prepare("SELECT COUNT(1) n FROM memory_projection_dismissals WHERE id=? AND kind=?");
+        const countProposals = this.conn.prepare("SELECT COUNT(1) n FROM memory_projection_proposals WHERE target_id=? AND kind=?");
+        const countProposal = this.conn.prepare("SELECT COUNT(1) n FROM memory_projection_proposals WHERE id=? AND kind=?");
+        for (const id of targetIds) {
+          result.projections += Number((countProj.get(id) as { n: number }).n);
+          result.dismissals += Number((countDismissal.get(id, kind) as { n: number }).n);
+          result.proposals += Number((countProposals.get(id, kind) as { n: number }).n);
+          this.enqueueBatch3("删除派生投影记录", {
+            kind: "memoryProjectionDelete",
+            scope: "one",
+            projKind: kind,
+            id,
+          });
+        }
+        for (const id of new Set(request.proposalIds ?? [])) {
+          result.proposals += Number((countProposal.get(id, kind) as { n: number }).n);
+          this.enqueueBatch3("删除派生投影提案", {
+            kind: "memoryProjectionDelete",
+            scope: "one",
+            projKind: kind,
+            id,
+          });
+        }
+      }
+      return result;
+    }
     return this.conn.transaction(() => {
       const result: MemoryProjectionDeleteResult = { projections: 0, dismissals: 0, proposals: 0, invalidatedProfiles: 0, dependentProposals: 0 };
       const targetIds = request.all
@@ -522,6 +796,12 @@ export class MemoryProjectionRepository {
 
   /** Allow a dismissed projection id to be regenerated by the next manual L2/L3 proposal. */
   restoreProjection(id: string): boolean {
+    if (this.requiresRustWrites) {
+      const exists = Boolean(this.conn.prepare("SELECT 1 FROM memory_projection_dismissals WHERE id=?").get(id));
+      if (!exists) return false;
+      this.enqueueBatch3("恢复已忽略派生记忆", { kind: "memoryProjectionRestoreDismissal", id });
+      return true;
+    }
     return this.conn.prepare("DELETE FROM memory_projection_dismissals WHERE id=?").run(id).changes > 0;
   }
 
@@ -545,6 +825,40 @@ export class MemoryProjectionRepository {
    */
   proposeScenarios(scope: MemoryProjectionScope, drafts: readonly MemoryScenarioDraft[], now = Date.now()): number {
     const dismissed = this.dismissedIds("scenario");
+    const live = this.conn.prepare("SELECT status, content_hash FROM memory_scenarios WHERE id=?");
+    if (this.requiresRustWrites) {
+      const proposals: Array<{ id: string; targetId: string; title: string; body: string; sourceIdsJson: string }> = [];
+      let created = 0;
+      const existingStatusStmt = this.conn.prepare("SELECT status FROM memory_projection_proposals WHERE id=?");
+      for (const draft of drafts) {
+        const title = draft.title.trim().slice(0, 160);
+        const summary = draft.summary.trim().slice(0, 2400);
+        const sourceIds = [...new Set(draft.sourceMemoryIds.filter(Boolean))].slice(0, 32);
+        if (!title || !summary || sourceIds.length === 0) continue;
+        const sources = this.sourceStamp("scenario", scope, sourceIds);
+        if (!sources) continue;
+        const targetId = scenarioId(scope, title);
+        if (dismissed.has(targetId)) continue;
+        const contentHash = hash(`${title}\n${summary}\n${[...sourceIds].sort().join("\n")}`);
+        const existing = live.get(targetId) as { status: string; content_hash: string } | undefined;
+        if (existing?.status === "active" && existing.content_hash === contentHash) continue;
+        const id = proposalId("scenario", scope, title, summary, sources);
+        const existingProposal = existingStatusStmt.get(id) as { status: string } | undefined;
+        if (!existingProposal || existingProposal.status === "pending") created += 1;
+        proposals.push({ id, targetId, title, body: summary, sourceIdsJson: JSON.stringify(sourceIds) });
+      }
+      if (proposals.length > 0) {
+        this.enqueueBatch3("提交情景记忆提案", {
+          kind: "memoryProjectionPropose",
+          projKind: "scenario",
+          scopeType: scope.scopeType,
+          scopeId: scope.scopeId ?? null,
+          proposals,
+          now,
+        });
+      }
+      return created;
+    }
     const stmt = this.conn.prepare(
       `INSERT INTO memory_projection_proposals
          (id,kind,scope_type,scope_id,title,body,source_ids_json,target_id,status,created_at,updated_at)
@@ -554,7 +868,6 @@ export class MemoryProjectionRepository {
          target_id=excluded.target_id, updated_at=excluded.updated_at
        WHERE memory_projection_proposals.status='pending'`,
     );
-    const live = this.conn.prepare("SELECT status, content_hash FROM memory_scenarios WHERE id=?");
     let created = 0;
     this.conn.transaction(() => {
       for (const draft of drafts) {
@@ -593,6 +906,21 @@ export class MemoryProjectionRepository {
     const existing = this.conn.prepare("SELECT status, content_hash FROM memory_core_profiles WHERE id=?").get(targetId) as
       | { status: string; content_hash: string } | undefined;
     if (existing?.status === "active" && existing.content_hash === contentHash) return false;
+    const id = proposalId("profile", scope, title, content, sources);
+    if (this.requiresRustWrites) {
+      const existingProposal = this.conn.prepare("SELECT status FROM memory_projection_proposals WHERE id=?").get(id) as
+        | { status: string }
+        | undefined;
+      this.enqueueBatch3("提交画像记忆提案", {
+        kind: "memoryProjectionPropose",
+        projKind: "profile",
+        scopeType: scope.scopeType,
+        scopeId: scope.scopeId ?? null,
+        proposals: [{ id, targetId, title, body: content, sourceIdsJson: JSON.stringify(sourceIds) }],
+        now,
+      });
+      return !existingProposal || existingProposal.status === "pending";
+    }
     const result = this.conn.prepare(
       `INSERT INTO memory_projection_proposals
          (id,kind,scope_type,scope_id,title,body,source_ids_json,target_id,status,created_at,updated_at)
@@ -602,7 +930,7 @@ export class MemoryProjectionRepository {
          target_id=excluded.target_id, updated_at=excluded.updated_at
        WHERE memory_projection_proposals.status='pending'`,
     ).run(
-      proposalId("profile", scope, title, content, sources),
+      id,
       "profile", scope.scopeType, scope.scopeId ?? null, title, content,
       JSON.stringify(sourceIds), targetId, now, now,
     );
@@ -627,6 +955,31 @@ export class MemoryProjectionRepository {
     const proposal = this.getProposal(id);
     if (!proposal || proposal.status !== "pending" || !proposal.targetId) return false;
     const sourceIdsJson = JSON.stringify(proposal.sourceIds);
+    if (this.requiresRustWrites) {
+      const scope = { scopeType: proposal.scopeType, scopeId: proposal.scopeId };
+      const sources = this.sourceStamp(proposal.kind, scope, proposal.sourceIds);
+      if (!sources || proposal.id !== proposalId(proposal.kind, scope, proposal.title, proposal.body, sources)) {
+        throw new Error("派生记忆提案的来源已变化或缺少版本证据，请重新生成后再批准");
+      }
+      const contentHash = hash(`${proposal.title}\n${proposal.body}\n${[...proposal.sourceIds].sort().join("\n")}`);
+      this.enqueueBatch3("批准派生记忆提案", {
+        kind: "memoryProjectionProposalAction",
+        projAction: proposal.kind === "scenario" ? "approveScenario" : "approveProfile",
+        id,
+        now,
+        createdId: proposal.targetId,
+        scopeType: proposal.scopeType,
+        scopeId: proposal.scopeId ?? null,
+        title: proposal.title,
+        body: proposal.body,
+        sourcesJson: sourceIdsJson,
+        contentHash,
+      });
+      if (proposal.kind === "scenario") {
+        this.invalidateProfilesForScope({ scopeType: proposal.scopeType, scopeId: proposal.scopeId }, now);
+      }
+      return true;
+    }
     this.conn.transaction(() => {
       const scope = { scopeType: proposal.scopeType, scopeId: proposal.scopeId };
       const sources = this.sourceStamp(proposal.kind, scope, proposal.sourceIds);
@@ -664,6 +1017,24 @@ export class MemoryProjectionRepository {
   }
 
   rejectProposal(id: string, now = Date.now()): boolean {
+    if (this.requiresRustWrites) {
+      const existing = this.getProposal(id);
+      if (!existing || existing.status !== "pending") return false;
+      this.enqueueBatch3("拒绝派生记忆提案", {
+        kind: "memoryProjectionProposalAction",
+        projAction: "reject",
+        id,
+        now,
+        createdId: null,
+        scopeType: null,
+        scopeId: null,
+        title: null,
+        body: null,
+        sourcesJson: null,
+        contentHash: null,
+      });
+      return true;
+    }
     return this.conn.prepare(
       "UPDATE memory_projection_proposals SET status='rejected',updated_at=? WHERE id=? AND status='pending'",
     ).run(now, id).changes > 0;
@@ -671,6 +1042,24 @@ export class MemoryProjectionRepository {
 
   /** Move a rejected proposal back to pending so it can be approved or re-evaluated. */
   restoreProposal(id: string, now = Date.now()): boolean {
+    if (this.requiresRustWrites) {
+      const existing = this.getProposal(id);
+      if (!existing || existing.status !== "rejected") return false;
+      this.enqueueBatch3("恢复派生记忆提案", {
+        kind: "memoryProjectionProposalAction",
+        projAction: "restore",
+        id,
+        now,
+        createdId: null,
+        scopeType: null,
+        scopeId: null,
+        title: null,
+        body: null,
+        sourcesJson: null,
+        contentHash: null,
+      });
+      return true;
+    }
     return this.conn.prepare(
       "UPDATE memory_projection_proposals SET status='pending',updated_at=? WHERE id=? AND status='rejected'",
     ).run(now, id).changes > 0;

@@ -48,6 +48,9 @@ export class MemoryPipelineManager {
   private async storeCapture(capture: RuntimeMemoryCapture): Promise<number> {
     const saved = await this.db.runtimeAuditReader?.captureMemory(capture);
     if (saved !== undefined) return saved;
+    if (this.db.readonly || this.db.runtimeAuditReader?.supervised) {
+      throw new Error("保存对话记忆回执失败：Rust 写入核心未就绪或未确认");
+    }
     const recovered = this.turns.captureCompletedOnHost(capture);
     // A worker that exited after commit already advanced the Durable watermark.
     // Any pending originals can still be picked up by the extraction queue.
@@ -64,10 +67,14 @@ export class MemoryPipelineManager {
 
   async flushCaptureWrites(): Promise<void> {
     await this.captureWrites;
+    await this.turns.flush();
   }
 
   closeCaptureWrites(): Promise<void> {
-    return this.withCaptureWrites(() => { this.capturesClosed = true; });
+    return this.withCaptureWrites(async () => {
+      this.capturesClosed = true;
+      await this.turns.flush();
+    });
   }
 
   capture(input: CaptureMemoryTurnInput): MemoryCaptureDecision {

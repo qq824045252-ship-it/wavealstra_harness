@@ -50,6 +50,15 @@ export interface GatewayPlatformRegistryOptions {
   authorize?: (message: GatewayInboundMessage) => boolean;
   onReplySent?: (deliveryId: string) => void;
   replyCurrent?: (deliveryId: string) => boolean;
+  coreControlled?: boolean;
+  onScheduleRecover?: (channelId: string, delayMs: number) => void;
+  onOutboundUnknown?: (info: {
+    deliveryId: string;
+    channelId: string;
+    channelType: GatewayChannelType;
+    accountKey: string;
+    queryable: boolean;
+  }) => void;
 }
 
 /** Fixed-position tuples preserve the native session's identity. Object key order
@@ -297,6 +306,14 @@ export class GatewayPlatformRegistry {
       } else {
         journal.sendFailed(entry.delivery_id, { status: "unknown", reason: "provider_receipt_unknown" });
         this.report(adapter.id, "Gateway 回复回执未确认，已保留记录；为避免重复发送已停止自动重试");
+        const queryable = typeof (adapter as RegisteredGatewayAdapter & { lookupOutboundDelivery?: unknown }).lookupOutboundDelivery === "function";
+        this.options.onOutboundUnknown?.({
+          deliveryId: entry.delivery_id,
+          channelId: adapter.id,
+          channelType: adapter.type,
+          accountKey: entry.account_key,
+          queryable,
+        });
       }
       throw new Error(error instanceof GatewayReplyNotSentError ? "Gateway 回复尚未发送，结果已保存" : "Gateway 回复回执未确认，未自动重发");
     }
@@ -366,6 +383,10 @@ export class GatewayPlatformRegistry {
 
   private scheduleResume(channelId: string, delay: number): void {
     if (this.suspended || this.pausedChannels.has(channelId)) return;
+    if (this.options.coreControlled && this.options.onScheduleRecover) {
+      this.options.onScheduleRecover(channelId, delay);
+      return;
+    }
     const at = this.now() + delay;
     const old = this.recoveryTimers.get(channelId);
     if (old && old.at <= at) return;

@@ -14,7 +14,7 @@ export class ProjectNotesService {
   private readonly persistence: ScopedNotePersistence;
 
   constructor(private readonly db: AppDatabase) {
-    this.persistence = new ScopedNotePersistence(db.runtimeAuditReader, "project", PROJECT_NOTE_MAX_CHARS, errors);
+    this.persistence = new ScopedNotePersistence(db.runtimeAuditReader, "project", PROJECT_NOTE_MAX_CHARS, errors, db.connection?.readonly);
   }
 
   private project(id: string) {

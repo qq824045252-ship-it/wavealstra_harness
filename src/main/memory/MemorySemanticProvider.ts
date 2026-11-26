@@ -90,6 +90,22 @@ export class MemorySemanticProvider {
     // Late vectors must not resurrect forgotten records or overwrite a newer revision.
     // This check and upsert are synchronous, so no JS mutation can interleave them.
     if (!current || current.status !== "active" || current.content_hash !== record.contentHash) return "skipped";
+    if (conn.readonly || this.db.runtimeAuditReader?.supervised) {
+      const reader = this.db.runtimeAuditReader;
+      if (!reader) throw new Error("写入记忆语义索引：Rust 写入核心未就绪");
+      const reply = await reader.batch3Write<{ outcome?: IndexOutcome }>({
+        kind: "memoryUpsertEmbedding",
+        memoryId: record.id,
+        modelId: SEMANTIC_MODEL_ID,
+        modelVersion: SEMANTIC_MODEL_VERSION,
+        contentHash: record.contentHash,
+        dimension: SEMANTIC_DIMENSION,
+        embeddingBase64: f32ToBlob(vector).toString("base64"),
+        createdAt: Date.now(),
+      });
+      if (reply === undefined) throw new Error("写入记忆语义索引未收到确认");
+      return reply.outcome ?? "indexed";
+    }
     const saved = conn.prepare(
       `INSERT INTO memory_embeddings (memory_id,model_id,model_version,content_hash,dimension,embedding,created_at)
        VALUES (?,?,?,?,?,?,?)

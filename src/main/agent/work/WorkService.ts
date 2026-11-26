@@ -14,6 +14,7 @@ import { recordClosureCorrection, type ClosureReviewEvidence } from "./WorkClosu
 import type { WorkClosureReviewRequest } from "../../../shared/work-closure-review";
 import type { WorkResultDecision } from "./WorkResultDecision";
 import type { Fail, Mutation, ResolvedActor } from "./WorkControlTypes";
+import { overlayFindAll, overlayReadOne, requiresWorkRustWrites, workDomainRunTx } from "./WorkDomainRuntime";
 import { WorkListQuery } from "./WorkListQuery";
 import type { WorkQueueNativeReader } from "./WorkQueueData";
 import { WorkProjectionBuilder } from "./WorkProjectionBuilder";
@@ -193,7 +194,10 @@ export class WorkService {
     const pendingBefore = new Set(this.pendingProjections);
     this.transactionDepth++;
     try {
-      return this.db.transaction(fn).immediate();
+      const queue = this.nativeQueue && typeof (this.nativeQueue as { batch4bWrite?: unknown }).batch4bWrite === "function"
+        ? (this.nativeQueue as unknown as import("./WorkDomainRuntime").Batch4bWriter)
+        : undefined;
+      return workDomainRunTx(this.db, fn, queue);
     } catch (error) {
       this.pendingProjections.clear();
       for (const workId of pendingBefore) this.pendingProjections.add(workId);
@@ -263,7 +267,12 @@ export class WorkService {
     if (!options.force && work.stateVersion <= last) return undefined;
     this.lastEmitted.set(workId, Math.max(last, work.stateVersion));
     // Push is a wakeup plus a bounded list shell. Details are requested explicitly.
-    const projection = this.listQuery.get(work.userId, workId);
+    const sqlProjection = this.listQuery.get(work.userId, workId);
+    const projection = sqlProjection
+      && sqlProjection.stateVersion >= work.stateVersion
+      && (!requiresWorkRustWrites(this.db) || !options.force)
+      ? sqlProjection
+      : (requiresWorkRustWrites(this.db) ? this.project(work) : sqlProjection);
     if (projection) this.emit(projection);
     return projection;
   }
@@ -624,8 +633,9 @@ export class WorkService {
     const binding = this.repo.bindingForTask(taskId);
     if (!binding) return undefined;
     if (input.actionKind !== "workspace:read") {
-      const request = this.db.prepare("SELECT continuation_plan_id FROM work_dispatch_requests WHERE task_id=?")
-        .get(taskId) as { continuation_plan_id: string | null } | undefined;
+      const dispatchRows = this.db.prepare("SELECT operation_id, task_id, continuation_plan_id FROM work_dispatch_requests WHERE task_id=?")
+        .all(taskId) as Array<{ operation_id: string; task_id: string; continuation_plan_id: string | null }>;
+      const request = overlayFindAll(this.db, "work_dispatch_requests", dispatchRows, r => String(r.operation_id), r => r.task_id === taskId)[0];
       const plan = request?.continuation_plan_id && this.partialResults.plans(binding.workId).find(item => item.planId === request.continuation_plan_id);
       const work = this.repo.getWork(binding.workId);
       const event = binding.inboxEventId ? this.repo.getInbox(binding.inboxEventId) : undefined;
@@ -666,9 +676,16 @@ export class WorkService {
       guard: "full", ownerOnly: true, allowLifecycles: ["active"],
     }, (work, _resolved, now) => dispatchExecutionMutation({
       repo: this.repo, bots: this.bots, teams: this.teams, causal: this.causal,
-      recoveryRequest: taskId => this.db.prepare(`SELECT plan.source_binding_id FROM work_dispatch_requests request
-        JOIN work_continuation_plans plan ON plan.plan_id=request.continuation_plan_id
-        JOIN work_automatic_recovery recovery ON recovery.plan_id=plan.plan_id WHERE request.task_id=?`).get(taskId) as { source_binding_id: string } | undefined,
+      recoveryRequest: taskId => {
+        const rows = this.db.prepare("SELECT operation_id, task_id, continuation_plan_id FROM work_dispatch_requests WHERE task_id=?")
+          .all(taskId) as Array<{ operation_id: string; task_id: string; continuation_plan_id: string | null }>;
+        const req = overlayFindAll(this.db, "work_dispatch_requests", rows, r => String(r.operation_id), r => r.task_id === taskId)[0];
+        const rec = req?.continuation_plan_id ? this.partialResults.recovery.record(req.continuation_plan_id) : undefined;
+        if (!rec) return undefined;
+        const plan = overlayReadOne<{ plan_id: string; source_binding_id: string }>(this.db, "work_continuation_plans", rec.plan_id, () =>
+          this.db.prepare("SELECT plan_id, source_binding_id FROM work_continuation_plans WHERE plan_id=?").get(rec.plan_id) as { plan_id: string; source_binding_id: string } | undefined);
+        return plan ? { source_binding_id: plan.source_binding_id } : undefined;
+      },
       requestExpert: this.requestExpert,
       snapshotOf: bot => this.snapshotOf(bot),
       outbox: params => this.outbox(params),

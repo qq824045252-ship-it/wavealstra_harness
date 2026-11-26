@@ -78,7 +78,14 @@ export function gadgetInsertValues(descriptor: GadgetDescriptor): RuntimeGadgetI
 export class GadgetRepository {
   constructor(private readonly db: Database.Database, private readonly native?: RuntimeAuditReader) {}
 
+  private assertHostWriteAllowed(action: string): void {
+    if (this.db.readonly || this.native?.supervised) {
+      throw new Error(`Gadget 同步写入（${action}）已由 Rust 接管，请使用异步路径`);
+    }
+  }
+
   create(descriptor: GadgetDescriptor): GadgetDescriptor {
+    this.assertHostWriteAllowed("create");
     const values = gadgetInsertValues(descriptor);
     this.db.prepare(
       `INSERT INTO gadgets (
@@ -125,6 +132,7 @@ export class GadgetRepository {
   }
 
   update(descriptor: GadgetDescriptor): GadgetDescriptor {
+    this.assertHostWriteAllowed("update");
     const result = this.db.prepare(
       `UPDATE gadgets
        SET name = @name, description = @description, metadata_json = @metadataJson, updated_at = @updatedAt
@@ -180,6 +188,7 @@ export class GadgetRepository {
   }
 
   moveScope(id: string, scope: GadgetScope): GadgetDescriptor {
+    this.assertHostWriteAllowed("moveScope");
     const { scopeType, scopeId } = scopeColumns(scope);
     const updatedAt = Date.now();
     const result = this.db.transaction(() => this.db.prepare(
@@ -198,6 +207,7 @@ export class GadgetRepository {
   }
 
   delete(id: string): boolean {
+    this.assertHostWriteAllowed("delete");
     return this.db.prepare("DELETE FROM gadgets WHERE id = ?").run(id).changes === 1;
   }
 

@@ -146,8 +146,10 @@ const DDL = `
 
 export class ArtifactRepository {
   constructor(private readonly db: Database) {
-    db.exec(DDL);
-    this.migrateProvenanceColumns();
+    if (!db.readonly) {
+      db.exec(DDL);
+      this.migrateProvenanceColumns();
+    }
     // FK 对已有连接默认关闭；message_refs/dependencies 依赖 CASCADE
     try {
       db.pragma("foreign_keys = ON");
@@ -442,6 +444,7 @@ export class ArtifactRepository {
   }
 
   get inTransaction(): boolean { return this.db.inTransaction; }
+  get readonly(): boolean { return this.db.readonly; }
 
   getWriteReceipt<T>(taskId: string, operationId: string): T | undefined {
     const receipt = this.db.prepare("SELECT result_json FROM artifact_write_receipts WHERE task_id=? AND operation_id=?")

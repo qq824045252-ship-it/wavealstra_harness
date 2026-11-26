@@ -61,7 +61,7 @@ import type { ContentExtractionStatus } from "../library/ContentExtractorRegistr
 import type { SemanticInstallation } from "../retrieval/SemanticModelManager";
 import type { RuntimeUsageJob, RuntimeUsageReport, UsageReportResult } from "../usage/UsageStatsService";
 import { currentPlatformId } from "./index";
-import { connectCoreWorker } from "./core-client";
+import { connectCoreWorker, type CoreClientRole } from "./core-client";
 
 function utf16Units(text: string): number[] {
   return Array.from({ length: text.length }, (_, index) => text.charCodeAt(index));
@@ -160,6 +160,8 @@ export class RuntimeAuditOperationFailedError extends Error {
 export interface RuntimeAuditReaderOptions {
   /** Production opts in to the directory-owned Core. Isolated fixtures use direct stdio. */
   coreDataDirectory?: string;
+  coreRole?: CoreClientRole;
+  coreClientId?: string;
 }
 
 /** One worker per host database for read-only queries and bounded writes. */
@@ -307,10 +309,52 @@ export class RuntimeAuditReader {
     return this.read({ operation: "workHostLease", request }, "database", false, 5_000);
   }
 
+  workScheduler<T = Record<string, unknown>>(command: Record<string, unknown> & { action: string }): Promise<T | undefined> {
+    return this.read({ operation: "coreWorkScheduler", ...command }, "database", false, 15_000);
+  }
+
+  cronScheduler<T = Record<string, unknown>>(command: Record<string, unknown> & { action: string }): Promise<T | undefined> {
+    if (!this.supervised) return Promise.resolve(undefined);
+    return this.read({ operation: "coreCronScheduler", ...command }, "database", false, 15_000);
+  }
+
+  dotsScheduler<T = Record<string, unknown>>(command: Record<string, unknown> & { action: string }): Promise<T | undefined> {
+    if (!this.supervised) return Promise.resolve(undefined);
+    return this.read({ operation: "coreDotsScheduler", ...command }, "database", false, 15_000);
+  }
+
+  gatewayScheduler<T = Record<string, unknown>>(command: Record<string, unknown> & { action: string }): Promise<T | undefined> {
+    if (!this.supervised) return Promise.resolve(undefined);
+    return this.read({ operation: "coreGatewayScheduler", ...command }, "database", false, 15_000);
+  }
+
+  remoteControl<T = Record<string, unknown>>(command: Record<string, unknown> & { action: string }): Promise<T | undefined> {
+    if (!this.supervised) return Promise.resolve(undefined);
+    return this.read({ operation: "coreRemoteControl", ...command }, "database", false, 15_000);
+  }
+
+  gadgetHost<T = Record<string, unknown>>(command: Record<string, unknown> & { action: string }): Promise<T | undefined> {
+    if (!this.executable) return Promise.resolve(undefined);
+    return this.read({ operation: "coreGadgetHost", ...command }, "database", false, 15_000);
+  }
+
+  piHost<T = Record<string, unknown>>(command: Record<string, unknown> & { action: string }): Promise<T | undefined> {
+    if (!this.supervised) return Promise.resolve(undefined);
+    return this.read({ operation: "corePiHost", ...command }, "database", false, 20_000);
+  }
+
   async queryOperation(requestId: string): Promise<RuntimeOperationReceipt | undefined> {
     const receipt = await this.control<RuntimeOperationReceipt>({ action: "status", targetRequestId: requestId });
     if (receipt?.requestId === requestId) this.applyReceipt(receipt);
     return receipt?.requestId === requestId ? receipt : undefined;
+  }
+
+  get supervised(): boolean {
+    return Boolean(this.options.coreDataDirectory);
+  }
+
+  get hasExecutable(): boolean {
+    return Boolean(this.executable);
   }
 
   async cancelOperation(requestId: string): Promise<RuntimeOperationReceipt | undefined> {
@@ -902,6 +946,42 @@ export class RuntimeAuditReader {
   async dismissExecutionFailure(taskId: string, id: string, at: number): Promise<ExecutionFailureDismissReply | undefined> {
     if (!Number.isSafeInteger(at) || !await this.supportsExecutionFailures()) return { status: "needsHost" };
     const result = await this.read<ExecutionFailureDismissReply>({ operation: "dismissExecutionFailure", taskId, id, at });
+    if (result === undefined) await this.stopping;
+    return result;
+  }
+
+  async writeExecutionFailures<T = unknown>(request: Record<string, unknown>): Promise<T | undefined> {
+    const result = await this.read<T>({ operation: "writeExecutionFailures", request });
+    if (result === undefined) await this.stopping;
+    return result;
+  }
+
+  async batch1Write<T = unknown>(request: Record<string, unknown>): Promise<T | undefined> {
+    const result = await this.read<T>({ operation: "batch1Write", request });
+    if (result === undefined) await this.stopping;
+    return result;
+  }
+
+  async batch2Write<T = unknown>(request: Record<string, unknown>): Promise<T | undefined> {
+    const result = await this.read<T>({ operation: "batch2Write", request });
+    if (result === undefined) await this.stopping;
+    return result;
+  }
+
+  async batch3Write<T = unknown>(request: Record<string, unknown>): Promise<T | undefined> {
+    const result = await this.read<T>({ operation: "batch3Write", request });
+    if (result === undefined) await this.stopping;
+    return result;
+  }
+
+  async batch4aWrite<T = unknown>(request: Record<string, unknown>): Promise<T | undefined> {
+    const result = await this.read<T>({ operation: "batch4aWrite", request });
+    if (result === undefined) await this.stopping;
+    return result;
+  }
+
+  async batch4bWrite<T = unknown>(request: Record<string, unknown>): Promise<T | undefined> {
+    const result = await this.read<T>({ operation: "batch4bWrite", request });
     if (result === undefined) await this.stopping;
     return result;
   }
@@ -1547,7 +1627,7 @@ export class RuntimeAuditReader {
       this.liveUsageReady = true;
       console.info("[RuntimeAudit] Rust live usage writer ready");
     }
-    if ((job.kind === "session" || job.kind === "subagents") && !this.usageHistoryReady && result > 0) {
+    if ((job.kind === "session" || job.kind === "subagents" || job.kind === "subagentBatch") && !this.usageHistoryReady && result > 0) {
       this.usageHistoryReady = true;
       console.info("[RuntimeAudit] Rust usage history writer ready");
     }
@@ -2082,7 +2162,11 @@ export class RuntimeAuditReader {
 
   private async start(executable: string): Promise<AuditSession | undefined> {
     const child: AuditTransport = this.options.coreDataDirectory
-      ? await connectCoreWorker(executable, this.dbPath, { dataDirectory: this.options.coreDataDirectory })
+      ? await connectCoreWorker(executable, this.dbPath, {
+        dataDirectory: this.options.coreDataDirectory,
+        role: this.options.coreRole ?? "ui",
+        clientId: this.options.coreClientId,
+      })
       : spawn(executable, [this.dbPath], {
         windowsHide: true,
         env: {
@@ -2981,9 +3065,15 @@ interface AuditSession {
 /** Conservative classification: an unlisted command may mutate and cannot silently replay. */
 function mutatesPersistentState(request: object, lane: AuditLane): boolean {
   if (lane === "inference") return false;
-  const value = request as { operation?: string; request?: { kind?: string; action?: { operation?: string } } };
+  const value = request as { operation?: string; action?: string; request?: { kind?: string; action?: { operation?: string } } };
   const operation = value.operation ?? "";
   if (operation.endsWith("Supported") || READ_ONLY_OPERATIONS.has(operation)) return false;
+  if (operation === "coreGadgetHost") {
+    return !["supported", "list", "health"].includes(value.action ?? "");
+  }
+  if (operation === "corePiHost") {
+    return !["status", "verifyLease"].includes(value.action ?? "");
+  }
   if (operation === "gadgetState") {
     return value.request?.kind === "access" && !["read", "keys"].includes(value.request.action?.operation ?? "");
   }

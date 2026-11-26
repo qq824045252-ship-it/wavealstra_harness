@@ -238,40 +238,46 @@ export class ConversationBranchService {
     // ---- §10.1 DB 单事务 commit point ----
     let childTask: TaskDto;
     try {
-      childTask = this.deps.db.connection.transaction(() => {
-        const parentBranch = this.deps.db.getConversationBranchInfo(task.id);
-        const candidate: TaskDto = {
-          id: childTaskId,
-          title: this.confirmBranchTitle(task.title, proposedTitle),
-          spaceId: task.spaceId ?? undefined,
-          projectId: task.projectId ?? undefined,
-          // §3.4 派生状态：结束于助手消息 → completed；结束于用户消息 → pending
-          status: req.position === "after_reply" && resolved.leafEntryId !== resolved.userEntryId ? "completed" : "pending",
-          updatedAt: Date.now(),
-          cwd: childCwd,
-          welcomeMode: task.welcomeMode,
-          modelId: task.modelId,
-          permissionMode: task.permissionMode,
-          expertId: task.expertId,
-          modePresetId: task.modePresetId,
-        };
-        this.deps.db.createConversationBranchTask({
-          childTaskId,
-          parentTaskId: task.id,
-          rootTaskId: parentBranch?.rootTaskId ?? task.id,
-          parentTitleSnapshot: task.title,
-          sourceSessionFile: `durable:${task.id}:${resolved.conversationId}`,
-          sourceLeafEntryId: resolved.leafEntryId,
-          sourceUserMessageIndex: resolved.resolvedUserMessageIndex,
-          requestId: req.requestId,
-          position: req.position,
-          workspaceStrategy: strategy,
-          createdAt: Date.now(),
-          task: candidate,
-        });
+      const parentBranch = this.deps.db.getConversationBranchInfo(task.id);
+      const candidate: TaskDto = {
+        id: childTaskId,
+        title: this.confirmBranchTitle(task.title, proposedTitle),
+        spaceId: task.spaceId ?? undefined,
+        projectId: task.projectId ?? undefined,
+        // §3.4 派生状态：结束于助手消息 → completed；结束于用户消息 → pending
+        status: req.position === "after_reply" && resolved.leafEntryId !== resolved.userEntryId ? "completed" : "pending",
+        updatedAt: Date.now(),
+        cwd: childCwd,
+        welcomeMode: task.welcomeMode,
+        modelId: task.modelId,
+        permissionMode: task.permissionMode,
+        expertId: task.expertId,
+        modePresetId: task.modePresetId,
+      };
+      const branchParams = {
+        childTaskId,
+        parentTaskId: task.id,
+        rootTaskId: parentBranch?.rootTaskId ?? task.id,
+        parentTitleSnapshot: task.title,
+        sourceSessionFile: `durable:${task.id}:${resolved.conversationId}`,
+        sourceLeafEntryId: resolved.leafEntryId,
+        sourceUserMessageIndex: resolved.resolvedUserMessageIndex,
+        requestId: req.requestId,
+        position: req.position,
+        workspaceStrategy: strategy,
+        createdAt: Date.now(),
+        task: candidate,
+      };
+      if (this.deps.db.connection.readonly || this.deps.db.runtimeAuditReader?.supervised) {
+        await this.deps.db.createConversationBranchTaskAsync(branchParams);
         this.deps.agent.commitConversationBranch(childTaskId, childCwd, materialized);
-        return candidate;
-      }).immediate();
+      } else {
+        this.deps.db.connection.transaction(() => {
+          this.deps.db.createConversationBranchTask(branchParams);
+          this.deps.agent.commitConversationBranch(childTaskId, childCwd, materialized);
+        }).immediate();
+      }
+      childTask = candidate;
     } catch (err) {
       // Keep an unbound store for diagnosis if publishing the task fails.
       this.deps.brancher.cleanupPending(childTaskId, req.requestId);

@@ -4,9 +4,11 @@ import { z } from "zod";
 import type { WorkActor, WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import { workCollaborationInputSchema, type WorkCollaborationInput, type WorkCollaborationMessage } from "../../../shared/bot-work-collaboration";
 import type { BotRegistry } from "./BotRegistry";
+import { enqueueWorkOp, overlayDelete, overlayFindAll, overlayMutate, overlayReadOne, overlaySet, requiresWorkRustWrites, workDomainInTx } from "./WorkDomainRuntime";
 import type { WorkService } from "./WorkService";
 
 export function ensureWorkCollaborationTables(db: Database.Database): void {
+  if (db.readonly) return;
   db.exec(`
     CREATE TABLE IF NOT EXISTS work_collaboration_messages (
       message_id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES works(work_id),
@@ -67,6 +69,11 @@ export class WorkCollaborationService {
     ensureWorkCollaborationTables(db);
   }
 
+  private getCollabMessage(messageId: string) {
+    return overlayReadOne<Record<string, unknown>>(this.db, "work_collaboration_messages", messageId, () =>
+      this.db.prepare("SELECT * FROM work_collaboration_messages WHERE message_id=?").get(messageId) as Record<string, unknown> | undefined);
+  }
+
   send(actor: WorkActor, input: WorkCollaborationInput): { replayed: boolean; message: WorkCollaborationMessage } {
     const parsed = workCollaborationInputSchema.parse(input);
     return this.works.transaction(() => {
@@ -74,7 +81,7 @@ export class WorkCollaborationService {
       const work = this.requireWork(parsed.workId);
       const sender = this.sender(actor, work);
       const hash = digest([parsed, sender.kind, sender.botId, sender.userId]);
-      const stored = storedMessageSchema.optional().parse(this.db.prepare("SELECT * FROM work_collaboration_messages WHERE message_id=?").get(parsed.messageId));
+      const stored = storedMessageSchema.optional().parse(this.getCollabMessage(parsed.messageId));
       if (stored) {
         if (stored.payload_hash !== hash) throw new Error("idempotency_conflict: 协作消息标识已用于另一请求");
         return { replayed: true, message: this.decode(stored) };
@@ -107,7 +114,8 @@ export class WorkCollaborationService {
         while (cause) {
           if (visited.has(cause) || ++depth > 32) throw new Error("协作因果链超过上限或形成循环");
           visited.add(cause);
-          const previous = storedMessageSchema.optional().parse(this.db.prepare("SELECT * FROM work_collaboration_messages WHERE message_id=? AND work_id=?").get(cause, work.workId));
+          const prevRaw = this.getCollabMessage(cause);
+          const previous = prevRaw && prevRaw.work_id === work.workId ? storedMessageSchema.parse(prevRaw) : undefined;
           if (!previous) throw new Error("回复或因果消息不属于当前事项");
           const decoded = this.decode(previous);
           if (sender.kind !== "user" && decoded.senderBotId !== sender.botId && !decoded.recipientBotIds.includes(sender.botId ?? "")) throw new Error("不能引用调用者不可见的协作消息");
@@ -128,10 +136,26 @@ export class WorkCollaborationService {
       const message: WorkCollaborationMessage = { ...parsed, senderBotId: sender.botId, senderKind: sender.kind,
         userId: work.userId, intentRevision: work.intentRevision, inputSnapshotId: work.inputSnapshotId,
         ownerEpoch: work.ownerEpoch, createdAt: this.options.now?.() ?? Date.now() };
-      this.db.prepare(`INSERT INTO work_collaboration_messages(message_id,work_id,sender_bot_id,sender_kind,user_id,kind,payload_hash,
-        payload_json,intent_revision,input_snapshot_id,owner_epoch,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(parsed.messageId, work.workId, sender.botId, sender.kind, work.userId, parsed.kind, hash, JSON.stringify(parsed),
-          work.intentRevision, work.inputSnapshotId, work.ownerEpoch, message.createdAt);
+      const payloadJson = JSON.stringify(parsed);
+      if (requiresWorkRustWrites(this.db)) {
+        overlaySet(this.db, "work_collaboration_messages", parsed.messageId, {
+          message_id: parsed.messageId, work_id: work.workId, sender_bot_id: sender.botId, sender_kind: sender.kind,
+          user_id: work.userId, kind: parsed.kind, payload_hash: hash, payload_json: payloadJson,
+          intent_revision: work.intentRevision, input_snapshot_id: work.inputSnapshotId,
+          owner_epoch: work.ownerEpoch, created_at: message.createdAt,
+        });
+        enqueueWorkOp(this.db, {
+          op: "workCollaborationMessageInsert", messageId: parsed.messageId, workId: work.workId,
+          senderBotId: sender.botId, senderKind: sender.kind, userId: work.userId, kind: parsed.kind,
+          payloadHash: hash, payloadJson, intentRevision: work.intentRevision,
+          inputSnapshotId: work.inputSnapshotId, ownerEpoch: work.ownerEpoch, createdAt: message.createdAt,
+        });
+      } else {
+        this.db.prepare(`INSERT INTO work_collaboration_messages(message_id,work_id,sender_bot_id,sender_kind,user_id,kind,payload_hash,
+          payload_json,intent_revision,input_snapshot_id,owner_epoch,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .run(parsed.messageId, work.workId, sender.botId, sender.kind, work.userId, parsed.kind, hash, payloadJson,
+            work.intentRevision, work.inputSnapshotId, work.ownerEpoch, message.createdAt);
+      }
       this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: message.createdAt });
       this.works.phase5?.observeOwnerSummary(work.workId, message.createdAt);
       this.works.emitCurrentProjection(work.workId);
@@ -146,7 +170,10 @@ export class WorkCollaborationService {
 
   /** Trusted projection only; user-facing callers must pass through list(). */
   history(workId: string): WorkCollaborationMessage[] {
-    return this.db.prepare("SELECT * FROM work_collaboration_messages WHERE work_id=? ORDER BY created_at,message_id").all(workId)
+    const dbRows = this.db.prepare("SELECT * FROM work_collaboration_messages WHERE work_id=? ORDER BY created_at,message_id")
+      .all(workId) as Array<Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_collaboration_messages", dbRows, r => String(r.message_id),
+      r => r.work_id === workId, (a, b) => Number(a.created_at) - Number(b.created_at) || String(a.message_id).localeCompare(String(b.message_id)))
       .map(row => this.decode(storedMessageSchema.parse(row)));
   }
 
@@ -160,10 +187,27 @@ export class WorkCollaborationService {
       if (error) throw new Error(error);
       const bindingIds = this.works.repo.listBindings(workId).filter(binding => currentDelegation(binding, work)).map(binding => binding.bindingId);
       const preparationId = digest([workId, targetBotId, work.stateVersion, work.ownerEpoch]);
-      this.db.prepare(`INSERT OR IGNORE INTO work_handoff_preparations(preparation_id,work_id,target_bot_id,state_version,
-        owner_epoch,input_snapshot_id,snapshot_json,created_at) VALUES (?,?,?,?,?,?,?,?)`)
-        .run(preparationId, workId, targetBotId, work.stateVersion, work.ownerEpoch, work.inputSnapshotId,
-          JSON.stringify({ work, bindingIds, deliverableIds: work.acceptedDeliverableIds }), this.options.now?.() ?? Date.now());
+      const snapshotJson = JSON.stringify({ work, bindingIds, deliverableIds: work.acceptedDeliverableIds });
+      const createdAt = this.options.now?.() ?? Date.now();
+      if (requiresWorkRustWrites(this.db)) {
+        overlayMutate(this.db, "work_handoff_preparations", preparationId, () =>
+          this.db.prepare("SELECT * FROM work_handoff_preparations WHERE preparation_id=?").get(preparationId) as Record<string, unknown> | undefined,
+        cur => cur ?? {
+          preparation_id: preparationId, work_id: workId, target_bot_id: targetBotId,
+          state_version: work.stateVersion, owner_epoch: work.ownerEpoch,
+          input_snapshot_id: work.inputSnapshotId, snapshot_json: snapshotJson, created_at: createdAt,
+        });
+        enqueueWorkOp(this.db, {
+          op: "workHandoffPreparationInsert", preparationId, workId, targetBotId,
+          stateVersion: work.stateVersion, ownerEpoch: work.ownerEpoch,
+          inputSnapshotId: work.inputSnapshotId, snapshotJson, createdAt,
+        });
+      } else {
+        this.db.prepare(`INSERT OR IGNORE INTO work_handoff_preparations(preparation_id,work_id,target_bot_id,state_version,
+          owner_epoch,input_snapshot_id,snapshot_json,created_at) VALUES (?,?,?,?,?,?,?,?)`)
+          .run(preparationId, workId, targetBotId, work.stateVersion, work.ownerEpoch, work.inputSnapshotId,
+            snapshotJson, createdAt);
+      }
       return { preparationId, work, bindingIds };
     });
   }
@@ -176,8 +220,11 @@ export class WorkCollaborationService {
   }
 
   preparationError(preparationId: string, work: WorkDto, targetBotId: string): string | undefined {
-    const row = z.object({ state_version: z.number(), owner_epoch: z.number(), input_snapshot_id: z.string(), target_bot_id: z.string() })
-      .optional().parse(this.db.prepare("SELECT * FROM work_handoff_preparations WHERE preparation_id=? AND work_id=?").get(preparationId, work.workId));
+    const raw = overlayReadOne(this.db, "work_handoff_preparations", preparationId, () =>
+      this.db.prepare("SELECT * FROM work_handoff_preparations WHERE preparation_id=?").get(preparationId) as Record<string, unknown> | undefined);
+    const row = raw && raw.work_id === work.workId
+      ? z.object({ state_version: z.number(), owner_epoch: z.number(), input_snapshot_id: z.string(), target_bot_id: z.string() }).parse(raw)
+      : undefined;
     if (!row || row.target_bot_id !== targetBotId) return "找不到对应交接准备快照";
     if (row.state_version !== work.stateVersion || row.owner_epoch !== work.ownerEpoch || row.input_snapshot_id !== work.inputSnapshotId) return "交接准备快照已过期，需要重新读取当前事项";
     return undefined;
@@ -186,36 +233,88 @@ export class WorkCollaborationService {
   /** Called in handoffOwner's existing immediate control transaction, after its Work update. */
   commitHandoffFacts(before: WorkDto, next: WorkDto, operationId: string, now: number): void {
     this.assertAuthority();
-    if (!this.db.inTransaction || next.ownerEpoch !== before.ownerEpoch + 1 || next.intentRevision !== before.intentRevision
+    if (!workDomainInTx(this.db) || next.ownerEpoch !== before.ownerEpoch + 1 || next.intentRevision !== before.intentRevision
       || next.inputSnapshotId !== before.inputSnapshotId) throw new Error("交接必须与单一负责人 CAS 原子提交");
+    const rust = requiresWorkRustWrites(this.db);
     const error = this.handoffError(before, next.ownerBotId);
     if (error) throw new Error(error);
     for (const binding of this.works.repo.listBindings(before.workId)) {
       if (!currentDelegation(binding, next)) continue;
       const scope = binding.delegatedScope;
-      this.db.prepare(`INSERT INTO work_delegation_adoptions(binding_id,owner_epoch,adopted_by_bot_id,intent_revision,
-        input_snapshot_id,delegated_scope_json,operation_id,created_at) VALUES (?,?,?,?,?,?,?,?)`)
-        .run(binding.bindingId, next.ownerEpoch, next.ownerBotId, next.intentRevision, next.inputSnapshotId, JSON.stringify(scope), operationId, now);
+      const scopeJson = JSON.stringify(scope);
+      if (rust) {
+        overlaySet(this.db, "work_delegation_adoptions", `${binding.bindingId}\0${next.ownerEpoch}`, {
+          binding_id: binding.bindingId, owner_epoch: next.ownerEpoch, adopted_by_bot_id: next.ownerBotId,
+          intent_revision: next.intentRevision, input_snapshot_id: next.inputSnapshotId,
+          delegated_scope_json: scopeJson, operation_id: operationId, created_at: now,
+        });
+        enqueueWorkOp(this.db, {
+          op: "workDelegationAdoptionInsert", bindingId: binding.bindingId, ownerEpoch: next.ownerEpoch,
+          adoptedByBotId: next.ownerBotId, intentRevision: next.intentRevision, inputSnapshotId: next.inputSnapshotId,
+          delegatedScopeJson: scopeJson, operationId, createdAt: now,
+        });
+      } else {
+        this.db.prepare(`INSERT INTO work_delegation_adoptions(binding_id,owner_epoch,adopted_by_bot_id,intent_revision,
+          input_snapshot_id,delegated_scope_json,operation_id,created_at) VALUES (?,?,?,?,?,?,?,?)`)
+          .run(binding.bindingId, next.ownerEpoch, next.ownerBotId, next.intentRevision, next.inputSnapshotId, scopeJson, operationId, now);
+      }
     }
     // Old unsubmitted decisions do not acquire new-owner authority by changing ownerBotId.
     // Existing bindings keep their native recovery namespace and explicit adoption above.
     if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_dispatch_requests'").get()) {
-      this.db.prepare(`UPDATE work_dispatch_requests SET state='cancelled',error='等待新负责人重新核对派发计划'
-        WHERE work_id=? AND bot_id=? AND state IN ('pending','blocked') AND NOT EXISTS (
-          SELECT 1 FROM work_execution_bindings b WHERE b.work_id=work_dispatch_requests.work_id
-          AND b.operation_id='dispatch:' || work_dispatch_requests.operation_id)`)
-        .run(before.workId, before.ownerBotId);
+      if (rust) {
+        const dispatchOps = new Set(this.works.repo.listBindings(before.workId).map(b => b.operationId));
+        const dbReqs = this.db.prepare("SELECT * FROM work_dispatch_requests WHERE work_id=? AND bot_id=? AND state IN ('pending','blocked')")
+          .all(before.workId, before.ownerBotId) as Array<Record<string, unknown>>;
+        for (const r of overlayFindAll(this.db, "work_dispatch_requests", dbReqs, row => String(row.operation_id),
+          row => row.work_id === before.workId && row.bot_id === before.ownerBotId && ["pending", "blocked"].includes(String(row.state)))) {
+          if (!dispatchOps.has(`dispatch:${String(r.operation_id)}`)) {
+            overlaySet(this.db, "work_dispatch_requests", String(r.operation_id), { ...r, state: "cancelled", error: "等待新负责人重新核对派发计划" });
+          }
+        }
+        enqueueWorkOp(this.db, {
+          op: "workDispatchRequestUpdate", mode: "cancelOnHandoff", planId: null,
+          botId: before.ownerBotId, workId: before.workId,
+        });
+      } else {
+        this.db.prepare(`UPDATE work_dispatch_requests SET state='cancelled',error='等待新负责人重新核对派发计划'
+          WHERE work_id=? AND bot_id=? AND state IN ('pending','blocked') AND NOT EXISTS (
+            SELECT 1 FROM work_execution_bindings b WHERE b.work_id=work_dispatch_requests.work_id
+            AND b.operation_id='dispatch:' || work_dispatch_requests.operation_id)`)
+          .run(before.workId, before.ownerBotId);
+      }
     }
-    this.db.prepare("DELETE FROM work_participants WHERE work_id=? AND bot_id=?").run(before.workId, before.ownerBotId);
+    if (rust) {
+      overlayDelete(this.db, "work_participants", `${before.workId}\0${before.ownerBotId}`);
+      enqueueWorkOp(this.db, { op: "workParticipantDelete", workId: before.workId, botId: before.ownerBotId });
+    } else {
+      this.db.prepare("DELETE FROM work_participants WHERE work_id=? AND bot_id=?").run(before.workId, before.ownerBotId);
+    }
     const input = { messageId: `handoff:${next.workId}:${operationId}`, workId: next.workId, kind: "handoff" as const,
       recipientBotIds: [next.ownerBotId], body: `负责人由 ${this.bots.getBot(before.ownerBotId)?.displayName ?? "原负责人"} 交接为 ${this.bots.getBot(next.ownerBotId)?.displayName ?? "新负责人"}，沿用当前要求、输入、成果`,
       artifactRefs: [], executionRefs: this.works.repo.listBindings(next.workId).filter(binding => this.isDelegationAdopted(binding, next)).map(binding => ({
         bindingId: binding.bindingId, taskId: binding.taskId, durableStoreKey: binding.durableStoreKey,
         conversationId: binding.conversationId, workspaceBinding: binding.workspaceBinding })),
       versionGuard: { expectedStateVersion: before.stateVersion, expectedIntentRevision: before.intentRevision, expectedOwnerEpoch: before.ownerEpoch } };
-    this.db.prepare(`INSERT INTO work_collaboration_messages(message_id,work_id,sender_bot_id,sender_kind,user_id,kind,payload_hash,
-      payload_json,intent_revision,input_snapshot_id,owner_epoch,created_at) VALUES (?,?,?,'bot',?,'handoff',?,?,?,?,?,?)`)
-      .run(input.messageId, next.workId, before.ownerBotId, next.userId, digest(input), JSON.stringify(input), next.intentRevision, next.inputSnapshotId, next.ownerEpoch, now);
+    const payloadHash = digest(input);
+    const payloadJson = JSON.stringify(input);
+    if (rust) {
+      overlaySet(this.db, "work_collaboration_messages", input.messageId, {
+        message_id: input.messageId, work_id: next.workId, sender_bot_id: before.ownerBotId, sender_kind: "bot",
+        user_id: next.userId, kind: "handoff", payload_hash: payloadHash, payload_json: payloadJson,
+        intent_revision: next.intentRevision, input_snapshot_id: next.inputSnapshotId, owner_epoch: next.ownerEpoch, created_at: now,
+      });
+      enqueueWorkOp(this.db, {
+        op: "workCollaborationMessageInsert", messageId: input.messageId, workId: next.workId,
+        senderBotId: before.ownerBotId, senderKind: "bot", userId: next.userId, kind: "handoff",
+        payloadHash, payloadJson, intentRevision: next.intentRevision, inputSnapshotId: next.inputSnapshotId,
+        ownerEpoch: next.ownerEpoch, createdAt: now,
+      });
+    } else {
+      this.db.prepare(`INSERT INTO work_collaboration_messages(message_id,work_id,sender_bot_id,sender_kind,user_id,kind,payload_hash,
+        payload_json,intent_revision,input_snapshot_id,owner_epoch,created_at) VALUES (?,?,?,'bot',?,'handoff',?,?,?,?,?,?)`)
+        .run(input.messageId, next.workId, before.ownerBotId, next.userId, payloadHash, payloadJson, next.intentRevision, next.inputSnapshotId, next.ownerEpoch, now);
+    }
     // Ordinary handoff has no post-commit adoption gap. If a previously retained
     // receipt was waiting for adoption, replay it in this same control transaction.
     this.works.nativeResults.consume(next.workId);
@@ -225,9 +324,12 @@ export class WorkCollaborationService {
   isDelegationAdopted(binding: WorkExecutionBindingDto, work: WorkDto): boolean {
     if (!currentDelegation(binding, work)) return false;
     if (binding.ownerEpoch === work.ownerEpoch) return true;
-    return Boolean(this.db.prepare(`SELECT 1 FROM work_delegation_adoptions WHERE binding_id=? AND owner_epoch=?
-      AND adopted_by_bot_id=? AND intent_revision=? AND input_snapshot_id=?`).get(binding.bindingId, work.ownerEpoch,
-      work.ownerBotId, work.intentRevision, work.inputSnapshotId));
+    const row = overlayReadOne<Record<string, unknown>>(this.db, "work_delegation_adoptions", `${binding.bindingId}\0${work.ownerEpoch}`, () =>
+      this.db.prepare(`SELECT * FROM work_delegation_adoptions WHERE binding_id=? AND owner_epoch=?
+        AND adopted_by_bot_id=? AND intent_revision=? AND input_snapshot_id=?`).get(binding.bindingId, work.ownerEpoch,
+        work.ownerBotId, work.intentRevision, work.inputSnapshotId) as Record<string, unknown> | undefined);
+    return Boolean(row && row.adopted_by_bot_id === work.ownerBotId && row.intent_revision === work.intentRevision
+      && row.input_snapshot_id === work.inputSnapshotId);
   }
 
   /** Missing adoption delays publication, never invalidates otherwise current native facts. */

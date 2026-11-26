@@ -34,6 +34,7 @@ export interface RemoteAccessServerOptions {
   events: RemoteEventBus;
   /** Work sync/detail/feedback for paired devices; omitted means the feature is off. */
   work?: RemoteWorkBridge;
+  remoteControl?: <T = Record<string, unknown>>(command: Record<string, unknown> & { action: string }) => Promise<T | undefined>;
 }
 
 /**
@@ -331,7 +332,8 @@ export class RemoteAccessServer {
         if (request.method === "POST" && action === "prompt") {
           const body = remotePromptSchema.parse(await readJson(request, PROMPT_BODY_LIMIT));
           if (!body.operationId) throw new RemoteValidationError("缺少输入操作身份");
-          const result = await this.options.commands.promptExisting(taskId, { ...body, operationId: body.operationId });
+          const result = await this.runIdempotentCommand("prompt", body.operationId, taskId, body, () =>
+            this.options.commands.promptExisting(taskId, { ...body, operationId: body.operationId! }));
           return replyJson(200, result);
         }
         // ACP 外部 Agent：在电脑端起真实 ACP 进程执行本轮（长任务，流式结果走 /v1/events）
@@ -342,14 +344,22 @@ export class RemoteAccessServer {
           return replyJson(202, result);
         }
         if (request.method === "POST" && action === "abort") {
-          await this.options.commands.abort(taskId);
-          return replyJson(200, { ok: true });
+          const idempKey = typeof request.headers["x-idempotency-key"] === "string" ? request.headers["x-idempotency-key"].trim() : undefined;
+          const result = await this.runIdempotentCommand("abort", idempKey, taskId, { taskId }, async () => {
+            await this.options.commands.abort(taskId);
+            return { ok: true };
+          });
+          return replyJson(200, result);
         }
         // 「已结束」绿点确认：手机端打开任务即已查看；广播 task.changed 让其它设备同步刷新
         if (request.method === "POST" && action === "ackDone") {
-          await this.options.commands.ackTaskDone(taskId);
-          this.options.events.publish("task.changed", { taskId });
-          return replyJson(200, { ok: true });
+          const idempKey = typeof request.headers["x-idempotency-key"] === "string" ? request.headers["x-idempotency-key"].trim() : undefined;
+          const result = await this.runIdempotentCommand("ackDone", idempKey, taskId, { taskId }, async () => {
+            await this.options.commands.ackTaskDone(taskId);
+            this.options.events.publish("task.changed", { taskId });
+            return { ok: true };
+          });
+          return replyJson(200, result);
         }
       }
       const interactionMatch = /^\/v1\/tasks\/([^/]+)\/interactions\/([^/]+)\/(respond|cancel)$/.exec(path);
@@ -444,6 +454,50 @@ export class RemoteAccessServer {
       if (status === 400 || status === 413) return replyJson(status, errorBody(status === 413 ? "payload_too_large" : "invalid_json", (error as Error).message));
       console.warn("[RemoteAccessServer] request failed", error instanceof Error ? error.message : String(error));
       replyJson(500, errorBody("internal_error", "Remote Access 请求失败"));
+    }
+  }
+
+  private async runIdempotentCommand<T>(
+    commandType: string,
+    operationId: string | undefined,
+    taskId: string | undefined,
+    requestPayload: unknown,
+    execute: () => Promise<T>,
+  ): Promise<T> {
+    const rc = this.options.remoteControl;
+    if (!rc || !operationId) return await execute();
+    const admitted = await rc<{ duplicate?: boolean; commandStatus?: string; response?: T; errorMessage?: string; code?: string }>({
+      action: "admitCommand",
+      operationId,
+      commandType,
+      taskId: taskId ?? null,
+      requestPayload,
+    });
+    if (admitted?.code === "PAYLOAD_CONFLICT") throw new RemoteConflictError("同一请求标识与原命令参数不一致");
+    if (admitted?.duplicate) {
+      if (admitted.commandStatus === "completed" && admitted.response !== undefined) return admitted.response;
+      if (admitted.commandStatus === "failed") throw new RemoteValidationError(admitted.errorMessage ?? "原命令执行失败");
+      throw new RemoteConflictError("原命令正在处理中，请稍后读取状态");
+    }
+    try {
+      const result = await execute();
+      await rc({
+        action: "completeCommand",
+        operationId,
+        commandType,
+        status: "completed",
+        response: result,
+      }).catch(() => undefined);
+      return result;
+    } catch (error) {
+      await rc({
+        action: "completeCommand",
+        operationId,
+        commandType,
+        status: "failed",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }).catch(() => undefined);
+      throw error;
     }
   }
 

@@ -31,6 +31,7 @@ type RecoveryRow = z.infer<typeof recoveryRowSchema>;
 const TERMINAL_BINDING = new Set(["completed", "failed", "stopped", "invalidated"]);
 /** Storage schema retained for historical team records. */
 export function ensureWorkTeamSchema(db: Database.Database): void {
+  if (db.readonly) return;
   db.exec(`CREATE TABLE IF NOT EXISTS work_teams (
     work_id TEXT PRIMARY KEY REFERENCES works(work_id), user_id TEXT NOT NULL,
     operation_id TEXT NOT NULL, request_hash TEXT NOT NULL, plan_json TEXT NOT NULL,

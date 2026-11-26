@@ -132,9 +132,9 @@ export class ArchivedContentDeletion {
         // Previously trashed tasks keep their original lifecycle; never override a concurrent restore.
         if (!wasTrashed && db.getTask(task.id) && db.getTaskExecutionWorkspaceState(task.id)?.state === "trashed") {
           try {
-            lifecycle.restore(task.id);
+            await lifecycle.restoreFromTrash(task.id);
             if (task.cwd) db.bindTaskExecutionWorkspaceCwd(task.id, task.cwd);
-            if (task.archived) lifecycle.archive(task.id);
+            if (task.archived) await lifecycle.writeArchive(task.id, true);
           } catch (recoveryError) {
             fail("task", task.id, `恢复归档以便重试失败：${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`);
           }

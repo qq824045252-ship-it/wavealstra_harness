@@ -12,7 +12,7 @@ import { once } from 'node:events';
 const platform = process.platform === 'win32' ? 'win-x64' : 'linux-x64';
 const executable = process.env.MYBUDDY_TEST_RUNTIME_AUDIT_BIN || join(process.cwd(), 'out', 'native', platform, process.platform === 'win32' ? 'mybuddy-runtime-audit.exe' : 'mybuddy-runtime-audit');
 assert(existsSync(executable), `missing real native worker: ${executable}`);
-assert.equal(execFileSync(executable, ['--protocol-version'], { encoding: 'utf8', timeout: 5000 }).trim(), '88');
+assert.equal(execFileSync(executable, ['--protocol-version'], { encoding: 'utf8', timeout: 5000 }).trim(), '89');
 const root = mkdtempSync(join(tmpdir(), 'runtime-lifecycle-'));
 const databasePath = join(root, 'app.db');
 const database = new DatabaseSync(databasePath, { timeout: 1000 });

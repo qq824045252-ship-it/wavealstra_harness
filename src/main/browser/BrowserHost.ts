@@ -19,6 +19,7 @@ import { runtimeProbeService } from "../capabilities/RuntimeProbeService";
 import { tryHandleBrowserBeforeUnload } from "../capabilities/browser/BrowserPrompt";
 import { BrowserSessionRenewal } from "./BrowserSessionRenewal";
 import { BrowserSpaceControls } from "./BrowserSpaceControls";
+import type { WebContentsReclaimManager } from "../host/WebContentsReclaimManager";
 
 export const BROWSER_CAPTURE_ARTIFACT_ID = "extension-browser";
 const DEFAULT_BROWSER_VIEWPORT = { x: 0, y: 0, width: 1280, height: 720 };
@@ -71,6 +72,8 @@ class BrowserTabSurface {
   private preserveScreenshotSurface: (() => void) | null = null;
   private layoutVersion = 0;
   private screenshotQueue: Promise<void> = Promise.resolve();
+  private savedPreferences?: Electron.WebPreferences;
+  private reclaimed = false;
 
   onUrlChanged: ((url: string) => void) | null = null;
   onCaptureStateChanged: ((state: CaptureModeState, error?: string) => void) | null = null;
@@ -92,8 +95,47 @@ class BrowserTabSurface {
 
   onCreatePopup: ((options: Electron.BrowserWindowConstructorOptions) => Electron.WebContents) | null = null;
 
+  get isReclaimed(): boolean {
+    return this.reclaimed;
+  }
+
+  reclaimView(): { url: string; partition: string } | null {
+    if (!this.view) return null;
+    const wc = this.view.webContents;
+    if (!wc.isDestroyed()) {
+      const liveUrl = wc.getURL();
+      if (liveUrl) this.currentUrl = liveUrl;
+    }
+    this.reclaimed = true;
+    this.exitCapture();
+    if (this.win && !this.win.isDestroyed()) {
+      this.win.contentView.removeChildView(this.view);
+    }
+    if (!wc.isDestroyed()) wc.close();
+    this.view = null;
+    this.isVisible = false;
+    return { url: this.currentUrl, partition: BROWSER_PARTITION };
+  }
+
+  restoreView(snapshotUrl?: string): Electron.WebContents | null {
+    if (snapshotUrl) this.currentUrl = snapshotUrl;
+    if (this.view && !this.view.webContents.isDestroyed()) return this.view.webContents;
+    this.reclaimed = false;
+    this.create(this.savedPreferences);
+    if (this.win && !this.win.isDestroyed() && this.view) {
+      this.win.contentView.addChildView(this.view);
+    }
+    const targetUrl = snapshotUrl || this.currentUrl;
+    if (targetUrl) {
+      this.open(targetUrl, { preserveDocument: true });
+    }
+    return this.view?.webContents ?? null;
+  }
+
   create(preferences?: Electron.WebPreferences, webContents?: Electron.WebContents): void {
     if (this.view) return;
+    if (preferences) this.savedPreferences = preferences;
+    this.reclaimed = false;
     this.view = new WebContentsView({
       ...(webContents ? { webContents } : {}),
       webPreferences: {
@@ -635,6 +677,7 @@ interface ManagedBrowserTab {
   gadgetId?: string;
   openerTabId?: string;
   dirty?: boolean;
+  lastActiveAt?: number;
   surface: BrowserTabSurface;
 }
 
@@ -651,6 +694,7 @@ export class BrowserHost {
   private readonly blockers = new Set<string>();
   private selectionVersion = 0;
   private readonly controls = new BrowserSpaceControls(id => this.controlChanged(id));
+  private reclaimManager: WebContentsReclaimManager | null = null;
   onUrlChanged: ((url: string) => void) | null = null;
   onTabsChanged: ((state: BrowserTabsState) => void) | null = null;
   onCaptureStateChanged: BrowserTabSurface["onCaptureStateChanged"] = null;
@@ -672,6 +716,48 @@ export class BrowserHost {
   initialize(): void {
     if (this.available) return;
     this.renewal = new BrowserSessionRenewal(session.fromPartition(BROWSER_PARTITION));
+  }
+
+  setReclaimManager(manager: WebContentsReclaimManager): void {
+    if (this.reclaimManager === manager) return;
+    this.reclaimManager = manager;
+    for (const tab of this.tabs.values()) this.registerTabForReclaim(tab);
+  }
+
+  private registerTabForReclaim(tab: ManagedBrowserTab): void {
+    this.reclaimManager?.register({
+      surfaceId: `browser-tab:${tab.id}`,
+      kind: "browser-tab",
+      isVisible: () => this.activeId === tab.id && Boolean(this.win && !this.win.isDestroyed()),
+      isLiveViewPresent: () => Boolean(tab.surface.inspectionWebContents && !tab.surface.inspectionWebContents.isDestroyed()),
+      getUrl: () => this.info(tab).url || tab.surface.url,
+      getPartition: () => BROWSER_PARTITION,
+      hasUnsavedInput: () => false,
+      hasActivePlatformTask: () => Boolean(this.tabControl(tab)),
+      lastActiveAt: () => tab.lastActiveAt ?? Date.now(),
+      destroyView: () => {
+        tab.surface.reclaimView();
+      },
+      restoreView: async (snapshot) => {
+        const restored = tab.surface.restoreView(snapshot?.url);
+        if (restored) this.bindTabWebContents(tab, restored);
+      },
+    });
+  }
+
+  private bindTabWebContents(tab: ManagedBrowserTab, wc: Electron.WebContents): void {
+    wc.on("page-title-updated", () => this.emitTabs());
+    wc.on("did-start-loading", () => this.emitTabs());
+    wc.on("did-stop-loading", () => this.emitTabs());
+    wc.once("destroyed", () => {
+      if (!tab.surface.isReclaimed) this.removeTab(tab.id);
+    });
+  }
+
+  private restoreIfReclaimed(tab: ManagedBrowserTab): void {
+    if (!tab.surface.isReclaimed && tab.surface.inspectionWebContents) return;
+    const restored = tab.surface.restoreView();
+    if (restored) this.bindTabWebContents(tab, restored);
   }
 
   attach(win: BrowserWindow): void {
@@ -844,10 +930,8 @@ export class BrowserHost {
       return this.tabs.get(popup.id)!.surface.inspectionWebContents!;
     };
     const wc = surface.inspectionWebContents!;
-    wc.on("page-title-updated", () => this.emitTabs());
-    wc.on("did-start-loading", () => this.emitTabs());
-    wc.on("did-stop-loading", () => this.emitTabs());
-    wc.once("destroyed", () => this.removeTab(tab.id));
+    this.bindTabWebContents(tab, wc);
+    this.registerTabForReclaim(tab);
     if (openerTabId) {
       // Finish Chromium's native-child adoption handshake before publishing or
       // selecting the new tab. Never replace options.webContents with a second
@@ -872,6 +956,8 @@ export class BrowserHost {
   selectTab(id: string, refreshDirty = true): boolean {
     const tab = this.tabs.get(id);
     if (!tab) return false;
+    this.restoreIfReclaimed(tab);
+    tab.lastActiveAt = Date.now();
     if (this.activeId !== id) {
       this.active?.exitCapture();
       const previous = this.tabs.get(this.activeId ?? "");
@@ -925,6 +1011,7 @@ export class BrowserHost {
       if (opener) this.controls.transfer(tab.taskId, opener.id);
       else this.controls.clear(tab.taskId);
     }
+    this.reclaimManager?.unregister(`browser-tab:${id}`);
     this.tabs.delete(id);
     if (tab.taskId && this.taskTabs.get(tab.taskId) === id) {
       const next = this.listTaskTabs(tab.taskId).at(-1);
@@ -954,6 +1041,8 @@ export class BrowserHost {
       tab = this.tabs.get(this.activeId ?? "");
     }
     if (!tab) return;
+    this.restoreIfReclaimed(tab);
+    tab.lastActiveAt = Date.now();
     if (options?.activate !== false) this.selectTab(tab.id, false);
     const reload = options?.reload || tab.dirty;
     tab.dirty = false;
@@ -1007,6 +1096,7 @@ export class BrowserHost {
   async readDocumentHtml(): Promise<string | null> { return await this.active?.readDocumentHtml() ?? null; }
   dispose(): void {
     const tabs = [...this.tabs.values()];
+    for (const id of this.tabs.keys()) this.reclaimManager?.unregister(`browser-tab:${id}`);
     for (const taskId of this.taskTabs.keys()) this.controls.clear(taskId);
     this.renewal?.dispose(); this.renewal = undefined;
     this.tabs.clear(); this.taskTabs.clear(); this.activeId = null;

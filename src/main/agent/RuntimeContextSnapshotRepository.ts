@@ -214,12 +214,23 @@ function prepareSnapshot(input: RuntimeContextSnapshotRecordInput) {
 
 export class RuntimeContextSnapshotRepository {
   private readonly epoch?: number;
+  private readonly epochPromise?: Promise<number>;
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
 
   constructor(private readonly db: Database.Database, private readonly reader?: RuntimeAuditReader) {
-    if (reader) this.epoch = db.prepare(`UPDATE runtime_snapshot_writer SET epoch=epoch+1, write_id='', result=0
-      WHERE id=1 RETURNING epoch`).pluck().get() as number;
+    if (reader) {
+      if (db.readonly || reader.supervised) {
+        this.epochPromise = reader.batch1Write<{ epoch: number }>({ kind: "claimSnapshotEpoch" })
+          .then(res => {
+            if (!res || typeof res.epoch !== "number") throw new Error("Rust 核心未能分配快照代次");
+            return res.epoch;
+          });
+      } else {
+        this.epoch = db.prepare(`UPDATE runtime_snapshot_writer SET epoch=epoch+1, write_id='', result=0
+          WHERE id=1 RETURNING epoch`).pluck().get() as number;
+      }
+    }
   }
 
   async flush(): Promise<void> { await this.tail; }
@@ -231,13 +242,22 @@ export class RuntimeContextSnapshotRepository {
 
   private write(mutation: RuntimeSnapshotMutation, fallback: () => number): number | Promise<number> {
     if (this.closed) return 0;
-    if (!this.reader || this.epoch === undefined) return fallback();
+    if (!this.reader) {
+      if (this.db.readonly) throw new Error("只读数据库模式下无法写入运行时快照");
+      return fallback();
+    }
     const reader = this.reader;
-    const epoch = this.epoch;
+    const rustRequired = this.db.readonly || reader.supervised;
+    if (this.epoch === undefined && !this.epochPromise) {
+      if (rustRequired) throw new Error("Rust 核心未能分配快照代次");
+      return fallback();
+    }
     const writeId = randomUUID();
     const pending = this.tail.then(async () => {
+      const epoch = this.epoch ?? await this.epochPromise!;
       const result = await reader.mutateSnapshot(epoch, writeId, mutation);
       if (result !== undefined) return result;
+      if (rustRequired) throw new Error("运行时上下文快照写入未获 Rust 核心确认");
       return this.db.transaction(() => {
         const receipt = this.db.prepare("SELECT epoch,write_id,result FROM runtime_snapshot_writer WHERE id=1")
           .get() as { epoch: number; write_id: string; result: number };

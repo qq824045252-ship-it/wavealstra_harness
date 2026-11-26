@@ -17,13 +17,18 @@ export async function readSoulProfile(db: AppDatabase): Promise<SoulDto> {
 
 export async function writeSoulProfile(db: AppDatabase, partial: Partial<SoulDto>): Promise<SoulDto> {
   const reader = db.runtimeAuditReader;
-  // Preserve the binding behavior for callers outside the typed IPC contract.
-  if (!reader || Object.entries(partial ?? {}).some(([field, value]) =>
+  const rustRequired = db.connection.readonly || reader?.supervised === true;
+  if (!reader) {
+    if (db.connection.readonly) throw new Error("只读数据库模式下无法保存身份资料");
+    return db.updateSoul(partial);
+  }
+  if (Object.entries(partial ?? {}).some(([field, value]) =>
     !soulFields.includes(field as keyof SoulDto) || typeof value !== "string" || /[\uD800-\uDFFF]/u.test(value))) {
+    if (rustRequired) throw new Error("身份资料包含不受支持的字符或字段");
     return db.updateSoul(partial);
   }
   const result = await reader.soulProfile({ kind: "update", patch: partial ?? {} });
   if (result?.status === "applied") return result.profile;
-  if (result?.status === "needsHost") return db.updateSoul(partial);
+  if (result?.status === "needsHost" && !rustRequired) return db.updateSoul(partial);
   throw new Error(result?.status === "rejected" ? result.message : "保存身份资料未获确认");
 }

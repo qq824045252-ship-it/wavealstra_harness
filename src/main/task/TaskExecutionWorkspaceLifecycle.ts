@@ -212,6 +212,7 @@ export class TaskExecutionWorkspaceLifecycle {
     this.assertTaskId(taskId);
     if (taskId === DOTS_TASK_ID && archived) throw new Error("Dots 对话不能作为普通任务归档");
     const worker = this.db.runtimeAuditReader;
+    const rustRequired = Boolean(this.db.connection.readonly || worker?.supervised);
     if (worker) {
       const result = await worker.setSidebarArchive({
         kind: "task", id: taskId, archived, directoryName: getTaskDirectoryName(taskId), at: Date.now(),
@@ -220,6 +221,9 @@ export class TaskExecutionWorkspaceLifecycle {
       if (result?.status === "trashed") throw archiveTrashError(taskId, archived);
       if (result?.status === "rejected") throw new TaskLifecycleError(result.message);
       if (result?.status !== "needsHost") throw new TaskLifecycleError("未收到归档确认，请刷新后查看状态");
+      if (rustRequired) throw new TaskLifecycleError("归档状态写入仅允许通过 Rust 核心完成");
+    } else if (rustRequired) {
+      throw new TaskLifecycleError("归档状态写入：Rust 核心未就绪");
     }
     this.setArchiveOnHost(taskId, archived);
   }
@@ -318,7 +322,7 @@ export class TaskExecutionWorkspaceLifecycle {
 
       // move 已成功：DB 必须跟上；失败则尝试移回
       try {
-        this.commitTrashedMetadata(taskId, directoryName, trashPath);
+        await this.commitTrashedMetadata(taskId, directoryName, trashPath);
       } catch (dbErr) {
         try {
           if (!existsSync(workspaceDir) && existsSync(trashPath)) {
@@ -339,7 +343,7 @@ export class TaskExecutionWorkspaceLifecycle {
     }
 
     // 无目录：仅 metadata
-    this.commitTrashedMetadata(taskId, directoryName, undefined);
+    await this.commitTrashedMetadata(taskId, directoryName, undefined);
     return { taskId, state: "trashed", trashPath: undefined, directoryMissing };
   }
 
@@ -368,9 +372,24 @@ export class TaskExecutionWorkspaceLifecycle {
     const candidate = join(this.trashRoot, name);
     return existsSync(candidate) ? candidate : undefined;
   }
-  private commitTrashedMetadata(taskId: string, directoryName: string, trashPath?: string): void {
+  private async commitTrashedMetadata(taskId: string, directoryName: string, trashPath?: string): Promise<void> {
     const now = Date.now();
     const existing = this.db.getTaskExecutionWorkspaceState(taskId);
+    if (this.db.connection.readonly || this.db.runtimeAuditReader?.supervised) {
+      const reader = this.db.runtimeAuditReader;
+      if (!reader) throw new TaskLifecycleError("回收区元数据写入：Rust 核心未就绪");
+      const res = await reader.batch2Write({
+        kind: "commitTaskWorkspaceTrashed",
+        taskId,
+        directoryName,
+        createdAt: existing?.createdAt ?? null,
+        trashedAt: now,
+        purgeAfter: now + this.purgeAfterMs,
+        trashPath: trashPath ?? null,
+      });
+      if (res === undefined) throw new TaskLifecycleError("回收区元数据写入未收到 Rust 确认");
+      return;
+    }
     this.db.transaction(() => {
       // 保留 task 行与 Artifact；侧栏用 archived 隐藏。cwd 保留作审计，下次 restore/ensure 会重绑。
       this.db.archiveTask(taskId, true);
@@ -407,7 +426,18 @@ export class TaskExecutionWorkspaceLifecycle {
   /** The settings action uses the resident worker for ordinary task metadata. */
   async restoreFromTrash(taskId: string): Promise<RestoreResult> {
     const worker = this.db.runtimeAuditReader;
-    if (!worker || this.db.connection.inTransaction || isGatewayConversation(taskId)) return this.restore(taskId);
+    const rustRequired = Boolean(this.db.connection.readonly || worker?.supervised);
+    if (isGatewayConversation(taskId)) {
+      if (rustRequired) {
+        return this.withPendingRestoreOrPurge(taskId, async () =>
+          this.restoreGatewayWorkspaceAsync(taskId, this.restoreState(taskId)));
+      }
+      return this.restore(taskId);
+    }
+    if (!worker || this.db.connection.inTransaction) {
+      if (rustRequired) throw new TaskLifecycleError("任务恢复写入：Rust 核心未就绪");
+      return this.restore(taskId);
+    }
 
     return this.withPendingRestoreOrPurge(taskId, async () => {
       const state = this.restoreState(taskId);
@@ -422,8 +452,10 @@ export class TaskExecutionWorkspaceLifecycle {
         cwd: files.cwd,
         at,
       });
-      if (reply?.status === "needsHost") this.commitRestoreOnHost(state, files, at);
-      else if (reply?.status === "rejected") this.rollbackLocalRestore(state, files, new TaskLifecycleError(reply.message));
+      if (reply?.status === "needsHost") {
+        if (rustRequired) this.rollbackLocalRestore(state, files, new TaskLifecycleError("任务恢复写入仅允许通过 Rust 核心完成"));
+        this.commitRestoreOnHost(state, files, at);
+      } else if (reply?.status === "rejected") this.rollbackLocalRestore(state, files, new TaskLifecycleError(reply.message));
       else if (!reply) {
         // A lost reply may follow a successful commit. Keep the files recoverable in either case.
         const current = this.db.getTaskExecutionWorkspaceState(taskId);
@@ -571,6 +603,60 @@ export class TaskExecutionWorkspaceLifecycle {
           taskId, directoryName, state: "active", createdAt: state.createdAt, updatedAt: Date.now(),
         });
       });
+    } catch (error) {
+      if (renamed) {
+        try {
+          if (isPlainDirectory(source) || !isPlainDirectory(destination)) throw new Error("渠道恢复路径发生变化");
+          renameSync(destination, source);
+        } catch (rollback) {
+          throw new TaskLifecycleRepairRequiredError("渠道恢复失败且无法原路移回；未删除仍存的目录", { cause: rollback });
+        }
+      }
+      throw error;
+    }
+    return { taskId, state: "active", workspaceDir: destination };
+  }
+
+  private async restoreGatewayWorkspaceAsync(taskId: string, state: TaskExecutionWorkspaceStateRow): Promise<RestoreResult> {
+    const prepare = this.prepareGatewayWorkspaceRestore;
+    const reader = this.db.runtimeAuditReader;
+    if (!prepare) throw new TaskLifecycleError("渠道安全恢复服务尚未就绪");
+    if (!reader) throw new TaskLifecycleError("渠道恢复写入：Rust 核心未就绪");
+    const directoryName = getTaskDirectoryName(taskId);
+    const legacy = this.activeWorkspaceDir(taskId);
+    const destination = gatewayTaskWorkspace(this.db, taskId).resolveTaskExecutionWorkspaceDir(taskId);
+    const source = this.resolveTrashPath(state.trashPath);
+    if (!source) throw new TaskLifecycleError("渠道任务的原回收目录不存在，不创建空目录");
+    this.assertTrashPathSafe(source);
+    if (!isPlainDirectory(this.trashRoot) || !isPlainDirectory(source)
+      || state.directoryName !== directoryName || !basename(source).startsWith(directoryName + "--")) {
+      throw new TaskPathBoundaryError("渠道原回收目录不是可信的任务目录");
+    }
+    validatePlainTaskManifest(source);
+    this.assertManifestMatches(source, taskId);
+    if (isPlainDirectory(legacy) || isPlainDirectory(destination)) {
+      throw new TaskLifecycleConflictError("渠道原位或目标已存在，不覆盖任何副本");
+    }
+
+    let renamed = false;
+    try {
+      prepare(taskId, legacy, destination);
+      renameSync(source, destination);
+      renamed = true;
+      await this.db.archiveTaskAsync(taskId, false);
+      const now = Date.now();
+      const res = await reader.batch2Write({
+        kind: "upsertTaskExecutionWorkspaceState",
+        taskId,
+        directoryName,
+        state: "active",
+        createdAt: state.createdAt,
+        updatedAt: now,
+        trashedAt: null,
+        purgeAfter: null,
+        trashPath: null,
+      });
+      if (res === undefined) throw new TaskLifecycleError("渠道恢复工作区状态未收到 Rust 确认");
     } catch (error) {
       if (renamed) {
         try {
@@ -839,6 +925,20 @@ export class TaskExecutionWorkspaceLifecycle {
 
     const workspaceDir = this.workspace.resolveTaskExecutionWorkspaceDir(resolvedTaskId);
     const now = Date.now();
+    if (this.db.connection.readonly || this.db.runtimeAuditReader?.supervised) {
+      const reader = this.db.runtimeAuditReader;
+      if (!reader) throw new TaskLifecycleError("认领孤儿工作区：Rust 核心未就绪");
+      void reader.batch2Write({
+        kind: "commitTaskWorkspaceAdopt",
+        taskId: resolvedTaskId,
+        workspaceDir,
+        directoryName: expected,
+        now,
+      }).catch((err) => {
+        console.warn("[TaskExecutionWorkspaceLifecycle] adoptOrphan Rust 写入失败", err);
+      });
+      return { taskId: resolvedTaskId, workspaceDir };
+    }
     this.db.transaction(() => {
       if (!this.db.getTask(resolvedTaskId)) {
         this.db.bindTaskExecutionWorkspaceCwd(resolvedTaskId, workspaceDir);

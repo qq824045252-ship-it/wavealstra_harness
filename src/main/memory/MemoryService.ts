@@ -110,10 +110,11 @@ export class MemoryService {
   readonly learning: MemorySkillLearningService;
   private readonly semantic: MemorySemanticProvider | null;
   private readonly forgetWatermarks: MemoryForgetWatermarks;
+  private writeTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly db: AppDatabase, opts?: { semantic?: boolean }) {
     this.repository = new MemoryRepository(db);
-    this.forgetWatermarks = new MemoryForgetWatermarks(db.connection);
+    this.forgetWatermarks = new MemoryForgetWatermarks(db.connection, db.runtimeAuditReader);
     this.cognition = new MemoryCognitionService(db, (id, revision) => this.getDotsRevisionSource(id, revision));
     this.learning = new MemorySkillLearningService(db, this.repository);
     this.semantic = opts?.semantic === false ? null : new MemorySemanticProvider(db);
@@ -128,6 +129,40 @@ export class MemoryService {
         console.warn("[MemoryKernel] stale candidate reap failed", error);
       }
     }
+  }
+
+  private get requiresRustWrites(): boolean {
+    return Boolean(this.db.readonly || this.db.runtimeAuditReader?.supervised);
+  }
+
+  async flushWrites(): Promise<void> {
+    await Promise.all([
+      this.writeTail,
+      this.repository.flush(),
+      this.forgetWatermarks.flush(),
+      this.cognition.flush(),
+      this.learning.flush(),
+    ]);
+  }
+
+  queueWorkSnapshotRepairMeta(memoryId: string, sourceKey: string): void {
+    this.repository.queueWorkSnapshotRepairMeta(memoryId, sourceKey);
+  }
+
+  private enqueueBatch3(context: string, request: Record<string, unknown>): void {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error(`${context}：Rust 写入核心未就绪`);
+    const next = this.writeTail.then(async () => {
+      const result = await reader.batch3Write(request);
+      if (result === undefined) throw new Error(`${context}：Rust 写入未收到确认`);
+    });
+    this.writeTail = next.then(() => undefined, () => undefined);
+  }
+
+  private runTx<T>(fn: () => T, immediate = false): T {
+    if (this.requiresRustWrites) return fn();
+    const tx = this.db.connection.transaction(fn);
+    return immediate ? tx.immediate() : tx();
   }
 
   get(id: string): MemoryRecordDto | undefined { return this.repository.get(id); }
@@ -165,7 +200,7 @@ export class MemoryService {
     }
     const id = "mem_weekly_" + createHash("sha256").update(JSON.stringify([reference, scope.kind, scope.id])).digest("hex");
     const request = { taskId: observation.taskId };
-    return this.db.connection.transaction(() => {
+    return this.runTx(() => {
       const existing = this.repository.get(id);
       if (existing) {
         const live = this.getWeeklyObservationMemory(id, request);
@@ -192,7 +227,7 @@ export class MemoryService {
         scopes: record.scopes.map(binding => ({ ...binding, memoryId: id })),
         evidence: record.evidence.map(evidence => ({ ...evidence, memoryId: id })),
       });
-    }).immediate();
+    }, true);
   }
 
   getWeeklyObservationMemory(id: string, request: Pick<MemorySearchRequest, "taskId">): MemoryRecordDto | undefined {
@@ -355,6 +390,39 @@ export class MemoryService {
     }
     const table = request.kind === "candidate" ? "memory_skill_candidates" : "memory_skill_revision_candidates";
     const conn = this.db.connection;
+    if (this.requiresRustWrites) {
+      if (request.all) {
+        const count = Number((conn.prepare(`SELECT COUNT(1) n FROM ${table} WHERE status IN ('stale','rejected')`).get() as { n: number }).n);
+        if (count > 0) {
+          this.enqueueBatch3("清空技能历史记录", {
+            kind: "memorySkillHistoryDelete",
+            kindName: request.kind,
+            deleteAll: true,
+            ids: [],
+          });
+        }
+        return count;
+      }
+      const ids = [...new Set(request.ids!)];
+      const lookup = conn.prepare(`SELECT status FROM ${table} WHERE id=?`);
+      let count = 0;
+      for (const id of ids) {
+        const row = lookup.get(id) as { status: string } | undefined;
+        if (row && row.status !== "stale" && row.status !== "rejected") {
+          throw new Error("只能删除已过期或已拒绝的历史记录；待处理记录请拒绝，已生成技能请在技能中心管理。");
+        }
+        if (row) count += 1;
+      }
+      if (count > 0) {
+        this.enqueueBatch3("删除技能历史记录", {
+          kind: "memorySkillHistoryDelete",
+          kindName: request.kind,
+          deleteAll: false,
+          ids,
+        });
+      }
+      return count;
+    }
     return conn.transaction(() => {
       if (request.all) return conn.prepare(`DELETE FROM ${table} WHERE status IN ('stale','rejected')`).run().changes;
       const ids = [...new Set(request.ids!)];
@@ -436,6 +504,15 @@ export class MemoryService {
         .filter((scope) => scope.scopeType === "project" && scope.scopeId)
         .map((scope) => scope.scopeId!),
     );
+    if (projectIds.size === 0) return;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("更新项目活动时间", {
+        kind: "memoryTouchProjectScopes",
+        projectIds: [...projectIds],
+        now,
+      });
+      return;
+    }
     const touch = this.db.connection.prepare(
       "UPDATE projects SET updated_at = MAX(updated_at + 1, ?) WHERE id = ?",
     );
@@ -452,12 +529,12 @@ export class MemoryService {
   }
 
   persistPreparedCreation(record: MemoryRecordDto, revisionReason?: string): MemoryRecordDto {
-    return this.db.connection.transaction(() => {
+    return this.runTx(() => {
       const inserted = this.repository.insert(record, revisionReason);
       this.invalidateProjectionScopes(inserted.scopes);
       this.touchProjectScopes(inserted.scopes, inserted.updatedAt);
       return inserted;
-    })();
+    });
   }
 
   publishCreatedMemory(saved: MemoryRecordDto): void {
@@ -483,7 +560,10 @@ export class MemoryService {
     const mutation = createMemoryWrite(prepared);
     if (!nativeMemoryWriteCompatible(mutation)) return this.create(request);
     const reply = await worker.writeMemoryRecord(mutation);
-    if (reply?.status === "needsHost") return this.create(request);
+    if (reply?.status === "needsHost") {
+      if (this.requiresRustWrites) throw new Error("记忆新建需要 Rust 核心确认，不会回退到 Node 宿主");
+      return this.create(request);
+    }
     if (reply?.status === "rejected") throw new Error(reply.message);
     if (reply?.status !== "applied") throw new Error("记忆新建未确认，请刷新后再试");
     const saved = memoryRecordFromWire(reply.record);
@@ -529,14 +609,14 @@ export class MemoryService {
         metadata: { ...request.metadata, dotsApplicability: bound.applicability } } : {}),
       evidence: [{ evidenceKind: "message", refId: source.messageId, excerpt: bound.quote }] };
     const content = cleanMultilineText(bound.content, MEMORY_CONTENT_MAX_CHARS);
-    return this.db.connection.transaction(() => {
+    return this.runTx(() => {
       const existing = this.repository.listByEvidence("message", source.messageId).find(record =>
         record.sourceTaskId === DOTS_TASK_ID && record.status === "active" && record.content === content
         && record.evidence.some(evidence => evidence.evidenceKind === "message" && evidence.refId === source.messageId && evidence.excerpt === bound.quote)
         && record.scopes.some(scope => scope.scopeType === groundedRequest.scopeType && scope.scopeId === groundedRequest.scopeId)
         && sameDotsApplicability(dotsRecordApplicability(record), bound.applicability));
       return existing ?? this.create(groundedRequest, bound.reason);
-    })();
+    });
   }
 
   private resolveDotsScope = (kind: "project" | "workspace", name: string, id?: string, allowTaskId = true): { id?: string; name: string } | undefined => {
@@ -571,7 +651,7 @@ export class MemoryService {
 
   updateFromTask(taskId: string, request: MemoryUpdateRequest, source?: DotsSourceInput, sourceQuote?: string,
     applicability?: unknown): MemoryRecordDto {
-    return this.db.connection.transaction(() => {
+    return this.runTx(() => {
       this.assertTaskMemoryWritable(taskId, request.id);
       if (taskId === DOTS_TASK_ID && source) {
         const record = this.repository.get(request.id)!;
@@ -614,7 +694,7 @@ export class MemoryService {
       if (source) this.repository.addEvidence({ id: `mev_${randomUUID()}`, memoryId: request.id, evidenceKind: "message",
         refId: source.messageId, excerpt: source.text.slice(0, 1200), createdAt: source.createdAt });
       return this.update(request);
-    })();
+    });
   }
 
   prepareUpdate(current: MemoryRecordDto, request: MemoryUpdateRequest): MemoryRecordDto | undefined {
@@ -660,12 +740,12 @@ export class MemoryService {
     if (!current) throw new Error(`记忆不存在：${request.id}`);
     const next = this.prepareUpdate(current, request);
     if (!next) return current;
-    const saved = this.db.connection.transaction(() => {
+    const saved = this.runTx(() => {
       const updated = this.repository.update(next, request.changedBy ?? "manual", request.changeReason);
       this.invalidateProjectionScopes(updated.scopes, updated.id);
       this.touchProjectScopes(updated.scopes, updated.updatedAt);
       return updated;
-    })();
+    });
     if (current.kind === "procedure" || saved.kind === "procedure") {
       try {
         const procedureMeaningChanged = current.kind !== saved.kind || current.status !== saved.status || current.contentHash !== saved.contentHash;
@@ -693,7 +773,10 @@ export class MemoryService {
       if (!nativeMemoryWriteCompatible(mutation)) return this.update(request);
       const reply = await worker.writeMemoryRecord(mutation);
       if (reply?.status === "stale") continue;
-      if (reply?.status === "needsHost") return this.update(request);
+      if (reply?.status === "needsHost") {
+        if (this.requiresRustWrites) throw new Error("记忆更新需要 Rust 核心确认");
+        return this.update(request);
+      }
       if (reply?.status === "rejected") throw new Error(reply.message);
       if (reply?.status !== "applied") throw new Error("记忆更新未确认，请刷新后再试");
       const saved = memoryRecordFromWire(reply.record);
@@ -729,7 +812,7 @@ export class MemoryService {
       toMemoryId: old.id,
       createdAt: now,
     };
-    const created = this.db.connection.transaction(() => {
+    const created = this.runTx(() => {
       const inserted = this.repository.supersede(
         superseded,
         replacement,
@@ -741,7 +824,7 @@ export class MemoryService {
       this.invalidateProjectionScopes([...old.scopes, ...inserted.scopes], old.id);
       this.touchProjectScopes([...old.scopes, ...inserted.scopes], now);
       return inserted;
-    })();
+    });
     if (old.kind === "procedure") {
       try { this.learning.invalidateByMemoryIds([old.id]); }
       catch (error) { console.warn("[MemoryKernel] skill candidate invalidation failed", error); }
@@ -759,7 +842,7 @@ export class MemoryService {
   }
 
   forget(id: string): void {
-    const current = this.db.connection.transaction(() => {
+    const current = this.runTx(() => {
       const current = this.repository.get(id);
       if (current) this.assertRecordWritable(current);
       if (current) this.forgetWatermarks.withdrawRecord(current, this.repository.listRevisions(id), current.scopes);
@@ -771,7 +854,7 @@ export class MemoryService {
         this.touchProjectScopes(current.scopes, Date.now());
       }
       return current;
-    }).immediate();
+    }, true);
     if (current?.kind === "procedure") {
       try { this.learning.invalidateByMemoryIds([id]); }
       catch (error) { console.warn("[MemoryKernel] skill candidate invalidation failed", error); }
@@ -796,7 +879,10 @@ export class MemoryService {
         },
       });
       if (reply?.status === "stale") continue;
-      if (reply?.status === "needsHost") return this.forget(id);
+      if (reply?.status === "needsHost") {
+        if (this.requiresRustWrites) throw new Error("记忆删除需要 Rust 核心确认");
+        return this.forget(id);
+      }
       if (reply?.status === "rejected") throw new Error(reply.message);
       if (reply?.status !== "forgotten") throw new Error("记忆删除未确认，请刷新后再试");
       if (reply.refreshDots) this.cognition.queueDotsViews();
@@ -839,12 +925,14 @@ export class MemoryService {
     );
     if (!target) return { detached: false, forgotten: false };
 
-    const forgotten = this.db.connection.transaction(() => {
+    const forgotten = this.runTx(() => {
       this.forgetWatermarks.withdrawRecord(current, this.repository.listRevisions(id), [target], source);
       if (current.id.startsWith("mem_weekly_")) this.forgetWatermarks.withdraw([target], [current.id], source?.createdAt, source?.messageId);
       if (scopeType === "task" && scopeId === DOTS_TASK_ID) this.cognition.projections.forgetDotsSource(id);
       this.repository.removeScope(id, scopeType, scopeId);
-      const remaining = this.repository.get(id)?.scopes ?? [];
+      const remaining = current.scopes.filter(
+        (scope) => !(scope.scopeType === scopeType && (scope.scopeId ?? "") === (scopeId ?? "")),
+      );
       if (remaining.length === 0) {
         this.repository.hardDelete(id);
         this.invalidateProjectionScopes(current.scopes);
@@ -854,7 +942,7 @@ export class MemoryService {
       this.invalidateProjectionScopes([target]);
       this.touchProjectScopes([target], Date.now());
       return false;
-    })();
+    });
 
     if (current.kind === "procedure") {
       try {
@@ -889,7 +977,7 @@ export class MemoryService {
         return { detached: true, forgotten: reply.forgotten };
       }
     }
-    return this.db.connection.transaction(() => {
+    return this.runTx(() => {
       if (scopeType === "project" && scopeId) {
         const row = this.db.connection.prepare("SELECT archived FROM projects WHERE id=?").get(scopeId) as { archived: number } | undefined;
         if (row?.archived) throw new Error("项目已归档（只读），不能修改其关联记忆");
@@ -901,7 +989,7 @@ export class MemoryService {
       const result = this.detachScope(id, scopeType, scopeId);
       if (!result.detached) throw new Error("作用域绑定不存在");
       return result;
-    }).immediate();
+    }, true);
   }
 
   /** Project/Workspace lifecycle cleanup. Exact scope only; inherited scopes are untouched. */
@@ -946,13 +1034,13 @@ export class MemoryService {
   }
 
   promoteFromTask(taskId: string, id: string, scopeType: MemoryScopeType, scopeId?: string): MemoryRecordDto {
-    return this.db.connection.transaction(() => {
+    return this.runTx(() => {
       this.assertTaskMemoryWritable(taskId, id);
       if (taskId !== "transient" && !this.canPromoteFromTask(taskId, scopeType, scopeId)) {
         throw new Error("目标作用域不属于当前任务可写范围，拒绝越界提升");
       }
       return this.promote(id, scopeType, scopeId);
-    })();
+    });
   }
 
   promote(id: string, scopeType: MemoryScopeType, scopeId?: string): MemoryRecordDto {
@@ -960,13 +1048,18 @@ export class MemoryService {
     if (!memory) throw new Error(`记忆不存在：${id}`);
     this.assertScope(scopeType, scopeId);
     const now = Date.now();
-    const promoted = this.db.connection.transaction(() => {
+    const promoted = this.runTx(() => {
       const scope = { memoryId: id, scopeType, scopeId, binding: "promoted" as const, createdAt: now };
       this.repository.addScope(scope);
       this.invalidateProjectionScopes([scope]);
       this.touchProjectScopes([scope], now);
+      if (this.requiresRustWrites) {
+        return this.repository.get(id) ?? (memory.scopes.some((s) => s.scopeType === scopeType && (s.scopeId ?? "") === (scopeId ?? ""))
+          ? memory
+          : { ...memory, scopes: [...memory.scopes, scope] });
+      }
       return this.repository.get(id)!;
-    })();
+    });
     if (promoted.kind === "procedure") {
       try { this.learning.invalidateByMemoryIds([promoted.id]); } catch (error) { console.warn("[MemoryKernel] skill candidate invalidation failed", error); }
     }
@@ -979,7 +1072,10 @@ export class MemoryService {
     const reply = await worker.writeMemoryRecord({
       kind: "promoteScope", id, scope: { id: randomUUID(), scopeType, scopeId }, userId: LOCAL_USER_ID, now: Date.now(),
     });
-    if (reply?.status === "needsHost") return this.promote(id, scopeType, scopeId);
+    if (reply?.status === "needsHost") {
+      if (this.requiresRustWrites) throw new Error("作用域提升需要 Rust 核心确认");
+      return this.promote(id, scopeType, scopeId);
+    }
     if (reply?.status === "rejected") throw new Error(reply.message);
     if (reply?.status !== "applied") throw new Error("作用域提升未确认，请刷新后再试");
     if (scopeType === "task" && scopeId === DOTS_TASK_ID) this.cognition.queueDotsViews();
@@ -1384,10 +1480,10 @@ export class MemoryService {
           // A crash must not expose this automatic Bot path as pending/needs_review.
           // Keep source validation, reconciliation and rejection in one commit.
           if (automaticOnly) {
-            this.db.connection.transaction(() => { this.repository.insertCandidate(dto); reconcile(); }).immediate();
+            this.runTx(() => { this.repository.insertCandidate(dto); reconcile(); }, true);
           } else {
             this.repository.insertCandidate(dto);
-            this.db.connection.transaction(reconcile).immediate();
+            this.runTx(reconcile, true);
           }
         } catch (error) {
           if (input.skillBatch) throw error;
@@ -1421,7 +1517,7 @@ export class MemoryService {
         reviewCount,
       };
     };
-    return input.skillBatch ? this.db.connection.transaction(applyCandidates)() : applyCandidates();
+    return input.skillBatch ? this.runTx(applyCandidates) : applyCandidates();
   }
 
   /**
@@ -1429,7 +1525,7 @@ export class MemoryService {
    * confidence/overlap gates are bypassed, but physically impossible operations still fail.
    */
   resolveCandidateReview(id: string, decision: "approve" | "reject"): { status: "committed" | "rejected" | "needs_review"; memoryId?: string } {
-    const { candidate, result } = this.db.connection.transaction(() => {
+    const { candidate, result } = this.runTx(() => {
       const candidate = this.repository.getCandidate(id);
       if (!candidate) throw new Error(`候选不存在：${id}`);
       if (candidate.status !== "needs_review" && candidate.status !== "pending") {
@@ -1441,7 +1537,7 @@ export class MemoryService {
       }
       const sourceTurns = this.candidateSourceTurns(candidate);
       return { candidate, result: this.reconcileCandidateInTransaction(candidate, sourceTurns, true) };
-    }).immediate();
+    }, true);
     if (candidate.kind === "procedure" && result.status === "committed") this.learning.refresh();
     return result;
   }
@@ -1454,7 +1550,14 @@ export class MemoryService {
       const reply = await worker.writeMemoryRecord({ kind: "rejectCandidate", id, at: Date.now() });
       if (reply?.status === "candidateRejected") return { status: "rejected" };
       if (reply?.status === "rejected") throw new Error(reply.message);
-      if (reply?.status !== "needsHost") throw new Error("候选拒绝未确认，请刷新后再试");
+      if (reply?.status === "needsHost") {
+        if (this.requiresRustWrites) throw new Error("候选拒绝需要 Rust 核心确认");
+      } else {
+        throw new Error("候选拒绝未确认，请刷新后再试");
+      }
+    }
+    if (this.requiresRustWrites && decision === "reject") {
+      throw new Error("候选拒绝需要 Rust 核心授权，不会回退到 Node 宿主");
     }
     return this.resolveCandidateReview(id, decision);
   }

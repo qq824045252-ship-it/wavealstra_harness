@@ -87,10 +87,14 @@ export type RuntimeAnswerRoutingRequest =
   | { kind: "versions"; id: string }
   | HistoryRequest
   | { kind: "save"; draft: {
-      id: string; expectedRevision?: number; projectId: string | null; title: string;
+      id: string; expectedRevision?: number; projectId: string | null; sourceId?: string | null; title: string;
       enabled: boolean; config: string; at: number; maxVersions: number; source: "save" | "restore";
     } }
-  | { kind: "remove"; id: string; revision: number };
+  | { kind: "remove"; id: string; revision: number }
+  | { kind: "annotate"; id: string; revision: number; note: string }
+  | { kind: "recordTurn"; taskId: string; inputId: string; ruleId: string; revision: number;
+      title: string; at: number; detail: string; phrase: string; evidence: string | null;
+      scope: string; status: string; snapshot: string };
 export type RuntimeAnswerRoutingReply =
   | { status: "rules"; rows: RuleRow[] }
   | { status: "versions"; rows: VersionRow[] }
@@ -237,12 +241,14 @@ type PreparedRoute = {
 export class AnswerRoutingService {
   private readonly foreground: DotsForegroundReads;
   private readonly turns = new Map<string, Map<string, Promise<PreparedRoute | undefined>>>();
+  private writeTail: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly db: AppDatabase, private readonly source: (id: string, taskId?: string) => MemoryRecordDto | undefined,
     private readonly memoryEnabled: () => boolean = () => true,
     private readonly library?: () => LibraryService,
     private readonly canAccessEvidence?: (taskId: string, evidence: AnswerEvidenceScope) => boolean) {
     this.foreground = new DotsForegroundReads(db.connection);
+    if (db.connection.readonly) return;
     db.connection.exec(`
       CREATE TABLE IF NOT EXISTS answer_rules (
         id TEXT PRIMARY KEY, revision INTEGER NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
@@ -334,34 +340,54 @@ export class AnswerRoutingService {
     return rows.map(row => this.currentRule(row, taskId)).filter(rule => !rule.sourceUnavailable);
   }
 
-  saveForTask(taskId: string, input: unknown): AnswerRule {
+  flush(): Promise<void> {
+    return this.writeTail.then(() => undefined, () => undefined);
+  }
+
+  private get rustRequired(): boolean {
+    return Boolean(this.db.connection.readonly || this.db.runtimeAuditReader?.supervised);
+  }
+
+  private resolveSaveForTaskDraft(taskId: string, input: unknown): { draft: AnswerRuleDraft; updating: { id: string; revision: number } | undefined } {
     const { changes, version, scope } = z.object({
       changes: chatChanges, version: versionSchema.strict().optional(), scope: z.enum(["project", "global"]).optional(),
     }).strict().parse(input);
+    const project = this.taskScope(taskId);
+    if (scope === "project" && !project) throw new Error("当前对话没有所属项目");
+    const projectId = scope === "global" ? null : project;
+    const rules = this.rulesForTask(taskId);
+    const current = version && rules.find(rule => rule.id === version.id);
+    if (version && (!current || current.revision !== version.revision)) throw conflict();
+    if (current?.projectId && projectId !== current.projectId) throw new Error("项目规则不能直接改为全局，请另建全局规则。");
+    const updating = current && current.projectId === projectId;
+    if (current && !updating && changes.enabled === false) throw new Error("这是全局规则。若要在所有对话停用，请明确选择 global。");
+    const draft = { ...(current ?? newAnswerRule()), ...changes, projectId };
+    if (draft.sourcePrefixLength && current && !draft.instruction.startsWith(current.instruction.slice(0, draft.sourcePrefixLength) + "\n")) {
+      delete draft.sourcePrefixLength;
+    }
+    if (changes.evidenceFile && changes.evidenceLibraryItemId === undefined) draft.evidenceLibraryItemId = null;
+    if (changes.evidenceLibraryItemId) {
+      if (!eligibleAnswerEvidenceItem(this.readableLibraryItem(taskId, changes.evidenceLibraryItemId))) throw new Error("请选择可预读的文本资料");
+      if (changes.evidenceFile === undefined) draft.evidenceFile = "";
+    }
+    if (!updating && rules.some(rule => rule.projectId === projectId && rule.title === draft.title.trim())) {
+      throw new Error("已有同名规则，请读取该规则的 ID 和版本后修改。");
+    }
+    return { draft, updating: updating ? version : undefined };
+  }
+
+  saveForTask(taskId: string, input: unknown): AnswerRule {
+    if (this.db.connection.readonly) throw new Error("只读数据库模式下请使用 saveForTaskAsync");
     return this.db.connection.transaction(() => {
-      const project = this.taskScope(taskId);
-      if (scope === "project" && !project) throw new Error("当前对话没有所属项目");
-      const projectId = scope === "global" ? null : project;
-      const rules = this.rulesForTask(taskId);
-      const current = version && rules.find(rule => rule.id === version.id);
-      if (version && (!current || current.revision !== version.revision)) throw conflict();
-      if (current?.projectId && projectId !== current.projectId) throw new Error("项目规则不能直接改为全局，请另建全局规则。");
-      const updating = current && current.projectId === projectId;
-      if (current && !updating && changes.enabled === false) throw new Error("这是全局规则。若要在所有对话停用，请明确选择 global。");
-      const draft = { ...(current ?? newAnswerRule()), ...changes, projectId };
-      if (draft.sourcePrefixLength && current && !draft.instruction.startsWith(current.instruction.slice(0, draft.sourcePrefixLength) + "\n")) {
-        delete draft.sourcePrefixLength;
-      }
-      if (changes.evidenceFile && changes.evidenceLibraryItemId === undefined) draft.evidenceLibraryItemId = null;
-      if (changes.evidenceLibraryItemId) {
-        if (!eligibleAnswerEvidenceItem(this.readableLibraryItem(taskId, changes.evidenceLibraryItemId))) throw new Error("请选择可预读的文本资料");
-        if (changes.evidenceFile === undefined) draft.evidenceFile = "";
-      }
-      if (!updating && rules.some(rule => rule.projectId === projectId && rule.title === draft.title.trim())) {
-        throw new Error("已有同名规则，请读取该规则的 ID 和版本后修改。");
-      }
-      return this.save(draft, updating ? version : undefined);
+      const { draft, updating } = this.resolveSaveForTaskDraft(taskId, input);
+      return this.save(draft, updating);
     }).immediate();
+  }
+
+  async saveForTaskAsync(taskId: string, input: unknown): Promise<AnswerRule> {
+    if (!this.db.runtimeAuditReader) return this.saveForTask(taskId, input);
+    const { draft, updating } = this.resolveSaveForTaskDraft(taskId, input);
+    return this.persistSettings(draft, updating, "save");
   }
 
   private parseDraft(input: AnswerRuleDraft, expected?: { id: string; revision: number }): AnswerRuleDraft {
@@ -375,21 +401,39 @@ export class AnswerRoutingService {
     return this.persistSettings(input, expected, "save");
   }
 
+  private prepareStoredDraft(draft: AnswerRuleDraft): { stored: AnswerRuleDraft } {
+    if (!draft.sourceMemoryId) return { stored: draft };
+    const memory = this.source(draft.sourceMemoryId);
+    if (!memory || !this.validSource(memory) || !this.memoryEnabled() || memory.contentHash !== draft.sourceHash)
+      throw new Error("来源记忆已变化，请刷新后再编辑");
+    const extra = draft.instruction === memory.content ? "" : draft.instruction.startsWith(memory.content + "\n")
+      ? draft.instruction.slice(memory.content.length + 1) : undefined;
+    if (extra === undefined) throw new Error("请在记忆中修改来源内容");
+    return { stored: { ...draft, instruction: extra, sourceHash: undefined, sourcePrefixLength: undefined } };
+  }
+
   private async persistSettings(input: AnswerRuleDraft, expected: { id: string; revision: number } | undefined,
     source: "save" | "restore"): Promise<AnswerRule> {
     const rust = this.db.runtimeAuditReader;
-    if (!rust || this.db.connection.inTransaction) return this.save(input, expected, source);
+    const rustRequired = this.rustRequired;
+    if (!rust || this.db.connection.inTransaction) {
+      if (rustRequired) throw new Error("只读数据库模式下无法通过宿主机保存回答规则");
+      return this.save(input, expected, source);
+    }
     const draft = this.parseDraft(input, expected);
     const version = expected === undefined ? undefined : versionSchema.parse(expected);
     const id = version?.id ?? randomUUID();
-    if (draft.sourceMemoryId || (version && !Number.isSafeInteger(version.revision))
-      || [id, draft.projectId, draft.title].some(hasLoneSurrogate)) return this.save(input, expected, source);
+    if ((version && !Number.isSafeInteger(version.revision)) || [id, draft.projectId, draft.title].some(hasLoneSurrogate)) {
+      if (rustRequired) throw new Error("回答规则包含无效字段");
+      return this.save(input, expected, source);
+    }
+    const { stored } = this.prepareStoredDraft(draft);
     const result = await rust.answerRoutingData({ kind: "save", draft: {
-      id, expectedRevision: version?.revision, projectId: draft.projectId, title: draft.title,
-      enabled: draft.enabled, config: JSON.stringify(draft), at: Date.now(), maxVersions: maxAnswerRuleVersions, source,
+      id, expectedRevision: version?.revision, projectId: stored.projectId, sourceId: stored.sourceMemoryId,
+      title: stored.title, enabled: stored.enabled, config: JSON.stringify(stored), at: Date.now(), maxVersions: maxAnswerRuleVersions, source,
     } });
     if (result?.status === "saved") return { ...draft, id, revision: result.revision };
-    if (result?.status === "needsHost") return this.save(input, expected, source);
+    if (result?.status === "needsHost" && !rustRequired) return this.save(input, expected, source);
     if (result?.status === "conflict") throw conflict();
     if (result?.status === "rejected") throw new Error(result.message);
     throw new Error("未能确认规则是否已保存，请刷新后重试");
@@ -507,6 +551,21 @@ export class AnswerRoutingService {
     if (!result.changes) throw new Error("找不到这个版本");
   }
 
+  async annotateSettings(id: string, revision: number, note: string): Promise<void> {
+    const target = versionSchema.parse({ id, revision });
+    const text = z.string().trim().max(120, "备注最多 120 字").parse(note);
+    const rust = this.db.runtimeAuditReader;
+    const rustRequired = this.rustRequired;
+    if (!rust || this.db.connection.inTransaction) {
+      if (rustRequired) throw new Error("只读数据库模式下无法备注规则版本");
+      return this.annotate(id, revision, note);
+    }
+    const result = await rust.answerRoutingData({ kind: "annotate", id: target.id, revision: target.revision, note: text });
+    if (result?.status === "saved") return;
+    if (result?.status === "needsHost" && !rustRequired) return this.annotate(id, revision, note);
+    throw new Error(result?.status === "rejected" ? result.message : "找不到这个版本");
+  }
+
   /** 两版设置的逐项对比，只返回有差异的项。 */
   compare(id: string, from: number, to: number): AnswerRuleDiff {
     const ruleId = identifier.parse(id);
@@ -581,10 +640,14 @@ export class AnswerRoutingService {
     versionSchema.parse({ id, revision });
     if (id === defaultAnswerRuleId) throw new Error("默认调度策略不可删除");
     const rust = this.db.runtimeAuditReader;
-    if (!rust || this.db.connection.inTransaction || !Number.isSafeInteger(revision) || hasLoneSurrogate(id)) return this.remove(id, revision);
+    const rustRequired = this.rustRequired;
+    if (!rust || this.db.connection.inTransaction || !Number.isSafeInteger(revision) || hasLoneSurrogate(id)) {
+      if (rustRequired) throw new Error("只读数据库模式下无法删除回答规则");
+      return this.remove(id, revision);
+    }
     const result = await rust.answerRoutingData({ kind: "remove", id, revision });
     if (result?.status === "removed") return;
-    if (result?.status === "needsHost") return this.remove(id, revision);
+    if (result?.status === "needsHost" && !rustRequired) return this.remove(id, revision);
     if (result?.status === "conflict") throw conflict();
     if (result?.status === "rejected") throw new Error(result.message);
     throw new Error("未能确认规则是否已删除，请刷新后重试");
@@ -773,12 +836,39 @@ export class AnswerRoutingService {
     }
     const at = prior?.at ?? Date.now();
     const record = () => {
+      const status = revocationReason ? "revoked" : "applied";
+      const evidenceJson = evidence ? JSON.stringify(evidence) : null;
+      const snapshotJson = JSON.stringify(rule);
+      const rust = this.db.runtimeAuditReader;
+      if (rust && this.rustRequired) {
+        const next = this.writeTail.then(async () => {
+          const reply = await rust.answerRoutingData({
+            kind: "recordTurn",
+            taskId: task.id,
+            inputId: input.inputId,
+            ruleId: rule.id,
+            revision: rule.revision,
+            title: rule.title,
+            at,
+            detail,
+            phrase,
+            evidence: evidenceJson,
+            scope,
+            status,
+            snapshot: snapshotJson,
+          });
+          if (reply?.status !== "saved") throw new Error(reply?.status === "rejected" ? reply.message : "回答调度记录写入未获 Rust 确认");
+        });
+        this.writeTail = next.catch(err => console.warn(`[AnswerRouting] recordTurn failed: ${err instanceof Error ? err.message : String(err)}`));
+        return;
+      }
+      if (this.db.connection.readonly) throw new Error("只读数据库模式下无法写入回答调度记录");
       this.db.connection.prepare(`INSERT INTO answer_rule_turns(task_id,input_id,rule_id,revision,title,at,detail,phrase,evidence,scope,status,snapshot)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id,input_id) DO UPDATE SET detail=excluded.detail,evidence=excluded.evidence,status=excluded.status
         WHERE answer_rule_turns.rule_id=excluded.rule_id AND answer_rule_turns.revision=excluded.revision
           AND (answer_rule_turns.status<>'revoked' OR excluded.status='revoked')`)
-        .run(task.id, input.inputId, rule.id, rule.revision, rule.title, at, detail, phrase, evidence ? JSON.stringify(evidence) : null,
-          scope, revocationReason ? "revoked" : "applied", JSON.stringify(rule));
+        .run(task.id, input.inputId, rule.id, rule.revision, rule.title, at, detail, phrase, evidenceJson,
+          scope, status, snapshotJson);
     };
     const revoke = (reason: string): never => {
       revocationReason = reason;

@@ -13,6 +13,9 @@ import type { ArtifactInspection, WorkArtifactValidation } from "./WorkArtifactV
 import { ensureWorkCollaborationTables } from "./WorkCollaborationService";
 import type { WorkService } from "./WorkService";
 import { workHostLeaseIdentity } from "./WorkHostAuthority";
+import {
+  enqueueWorkOp, overlayFindAll, overlayMutate, overlayReadOne, overlaySet, requiresWorkRustWrites,
+} from "./WorkDomainRuntime";
 
 const identitySchema = z.object({ input_snapshot_id: z.string(), owner_epoch: z.number(), sender_bot_id: z.string(),
   semantic_validity: z.enum(["active", "superseded", "cancelled"]) });
@@ -103,12 +106,28 @@ export class WorkNotificationDelivery {
   }
 
   identity(notificationId: string): WorkNotificationIdentity | undefined {
-    const row = identitySchema.optional().parse(this.db.prepare("SELECT * FROM work_notification_identity WHERE notification_id=?").get(notificationId));
-    return row ? { inputSnapshotId: row.input_snapshot_id, ownerEpoch: row.owner_epoch,
-      senderBotId: row.sender_bot_id, semanticValidity: row.semantic_validity } : undefined;
+    const row = overlayReadOne<Record<string, unknown>>(this.db, "work_notification_identity", notificationId,
+      () => this.db.prepare("SELECT * FROM work_notification_identity WHERE notification_id=?").get(notificationId) as Record<string, unknown> | undefined);
+    const parsed = identitySchema.optional().parse(row);
+    return parsed ? { inputSnapshotId: parsed.input_snapshot_id, ownerEpoch: parsed.owner_epoch,
+      senderBotId: parsed.sender_bot_id, semanticValidity: parsed.semantic_validity } : undefined;
   }
 
   supersede(workId: string, validity: "superseded" | "cancelled"): void {
+    if (requiresWorkRustWrites(this.db)) {
+      const resultNotifs = this.works.repo.listNotifications(workId).filter(n => n.kind === "result");
+      for (const notif of resultNotifs) {
+        overlayMutate(this.db, "work_notification_identity", notif.notificationId,
+          () => this.db.prepare("SELECT * FROM work_notification_identity WHERE notification_id=?").get(notif.notificationId) as Record<string, unknown> | undefined,
+          cur => cur ? { ...cur, semantic_validity: validity } : undefined);
+      }
+      enqueueWorkOp(this.db, {
+        op: "workNotificationIdentityUpdate", mode: "setValidityByWork", workId,
+        notificationId: null, intentRevision: null, inputSnapshotId: null,
+        ownerEpoch: null, senderBotId: null, semanticValidity: validity,
+      });
+      return;
+    }
     this.db.prepare(`UPDATE work_notification_identity SET semantic_validity=? WHERE notification_id IN (
       SELECT notification_id FROM work_notifications WHERE work_id=? AND kind='result')`)
       .run(validity, workId);
@@ -116,8 +135,13 @@ export class WorkNotificationDelivery {
 
   /** Persisted attempts for the expanded diagnostics view. */
   attempts(notificationId: string): WorkDeliveryAttemptDto[] {
-    return this.db.prepare("SELECT * FROM work_notification_attempts WHERE notification_id=? ORDER BY ordinal ASC")
-      .all(notificationId).map(row => this.toAttemptDto(attemptSchema.parse(row)));
+    const dbRows = this.db.prepare("SELECT * FROM work_notification_attempts WHERE notification_id=? ORDER BY ordinal ASC")
+      .all(notificationId) as Array<Record<string, unknown>>;
+    const rows = requiresWorkRustWrites(this.db)
+      ? overlayFindAll(this.db, "work_notification_attempts", dbRows, r => String(r.attempt_id),
+          r => r.notification_id === notificationId, (a, b) => Number(a.ordinal) - Number(b.ordinal))
+      : dbRows;
+    return rows.map(row => this.toAttemptDto(attemptSchema.parse(row)));
   }
 
   /**
@@ -151,18 +175,42 @@ export class WorkNotificationDelivery {
       attemptCount: notification.attemptCount + 1, channel: notification.channel ?? prior.channel,
       targetKey, inputSnapshotId: work.inputSnapshotId, ownerEpoch: work.ownerEpoch,
       senderBotId: work.ownerBotId, semanticValidity: "active" };
-    const payloadHash = sha256(canonicalJson(payload));
+    const payloadText = canonicalJson(payload);
+    const payloadHash = sha256(payloadText);
     const effectKey = `effect:${input.notificationId}:resend:${input.operationId}`;
-    this.db.prepare(`INSERT OR IGNORE INTO work_notification_effects (
-      effect_key,notification_id,payload_hash,payload_json,channel,target_key,delivery_guarantee,
-      supports_idempotency_key,supports_receipt_query,authorization_kind,authorization_operation_id,
-      authorization_reason,resend_of_attempt_id,created_at
-    ) VALUES (?,?,?,?,?,?,?,?,?, 'manual-resend', ?,?,?,?)`).run(
-      effectKey, input.notificationId, payloadHash, canonicalJson(payload), prior.channel,
-      targetKey ?? null, capability.deliveryGuarantee,
-      capability.supportsIdempotencyKey ? 1 : 0, capability.supportsReceiptQuery ? 1 : 0,
-      input.operationId, input.reason, prior.attempt_id, this.now(),
-    );
+    const createdAt = this.now();
+    const supportsIdem = capability.supportsIdempotencyKey ? 1 : 0;
+    const supportsQuery = capability.supportsReceiptQuery ? 1 : 0;
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_notification_effects", effectKey,
+        () => this.db.prepare("SELECT * FROM work_notification_effects WHERE effect_key=?").get(effectKey) as Record<string, unknown> | undefined,
+        cur => cur ?? {
+          effect_key: effectKey, notification_id: input.notificationId, payload_hash: payloadHash,
+          payload_json: payloadText, channel: prior.channel, target_key: targetKey ?? null,
+          delivery_guarantee: capability.deliveryGuarantee, supports_idempotency_key: supportsIdem,
+          supports_receipt_query: supportsQuery, authorization_kind: "manual-resend",
+          authorization_operation_id: input.operationId, authorization_reason: input.reason,
+          resend_of_attempt_id: prior.attempt_id, created_at: createdAt,
+        });
+      enqueueWorkOp(this.db, {
+        op: "workNotificationEffectInsert", effectKey, notificationId: input.notificationId,
+        payloadHash, payloadJson: payloadText, channel: prior.channel, targetKey: targetKey ?? null,
+        deliveryGuarantee: capability.deliveryGuarantee, supportsIdempotencyKey: supportsIdem,
+        supportsReceiptQuery: supportsQuery, authorizationKind: "manual-resend",
+        authorizationOperationId: input.operationId, authorizationReason: input.reason,
+        resendOfAttemptId: prior.attempt_id, createdAt,
+      });
+    } else {
+      this.db.prepare(`INSERT OR IGNORE INTO work_notification_effects (
+        effect_key,notification_id,payload_hash,payload_json,channel,target_key,delivery_guarantee,
+        supports_idempotency_key,supports_receipt_query,authorization_kind,authorization_operation_id,
+        authorization_reason,resend_of_attempt_id,created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?, 'manual-resend', ?,?,?,?)`).run(
+        effectKey, input.notificationId, payloadHash, payloadText, prior.channel,
+        targetKey ?? null, capability.deliveryGuarantee, supportsIdem, supportsQuery,
+        input.operationId, input.reason, prior.attempt_id, createdAt,
+      );
+    }
     this.works.repo.updateNotificationLinks(input.notificationId, { effectKey, cardKey: notification.cardKey, targetKey });
     this.works.repo.updateNotificationDelivery(input.notificationId, { delivery: "pending", channel: notification.channel ?? prior.channel });
     return { ok: true, effectKey };
@@ -357,6 +405,24 @@ export class WorkNotificationDelivery {
             // A provider may ignore AbortSignal and report a partial receipt after close.
             // Check lifecycle before touching SQLite; the original unknown claim survives.
             if (!this.asyncActive(options)) return;
+            if (requiresWorkRustWrites(this.db)) {
+              overlayMutate(this.db, "work_notification_attempts", claim.attempt.attempt_id,
+                () => this.db.prepare("SELECT * FROM work_notification_attempts WHERE attempt_id=?").get(claim.attempt.attempt_id) as Record<string, unknown> | undefined,
+                cur => cur && cur.status === "unknown"
+                  && (cur.provider_effect_key ?? null) === (claim.attempt.provider_effect_key ?? null)
+                  && Number(cur.claim_generation ?? 1) === (claim.attempt.claim_generation ?? 1)
+                  && (cur.payload_hash ?? null) === (claim.attempt.payload_hash ?? null)
+                  ? { ...cur, receipt } : cur);
+              enqueueWorkOp(this.db, {
+                op: "workNotificationAttemptWrite", mode: "receiptProgress", attemptId: claim.attempt.attempt_id,
+                notificationId: null, ordinal: null, channel: null, idempotencyKey: null,
+                providerEffectKey: claim.attempt.provider_effect_key ?? null,
+                payloadHash: claim.attempt.payload_hash ?? null, deliveryGuarantee: null,
+                claimGeneration: claim.attempt.claim_generation ?? 1, payloadJson: null,
+                status: null, now: null, receipt,
+              });
+              return;
+            }
             this.db.prepare(`UPDATE work_notification_attempts SET receipt=? WHERE attempt_id=? AND status='unknown'
               AND provider_effect_key=? AND claim_generation=? AND payload_hash=?`)
               .run(receipt, claim.attempt.attempt_id, claim.attempt.provider_effect_key,
@@ -446,7 +512,9 @@ export class WorkNotificationDelivery {
       const identity = this.admit(notification, latest, inspection);
       if (!identity) return undefined;
       const ownerChanged = identity.ownerEpoch !== latest.ownerEpoch || identity.senderBotId !== latest.ownerBotId;
-      const ownerName = z.object({ display_name: z.string() }).parse(this.db.prepare("SELECT display_name FROM bots WHERE bot_id=?").get(latest.ownerBotId)).display_name;
+      const ownerRow = overlayReadOne<Record<string, unknown>>(this.db, "bots", latest.ownerBotId,
+        () => this.db.prepare("SELECT display_name FROM bots WHERE bot_id=?").get(latest.ownerBotId) as Record<string, unknown> | undefined);
+      const ownerName = z.object({ display_name: z.string() }).parse(ownerRow).display_name;
       const ordinal = notification.attemptCount + 1;
       // Content identity for the external effect. Delivery bookkeeping (attempt counter,
       // claim state) is not part of the message, so a safe retry of the same intent keeps
@@ -472,24 +540,51 @@ export class WorkNotificationDelivery {
       // The physical attempt always sends the frozen effect payload, never a rebuilt one.
       const payload = notificationSchema.parse(JSON.parse(effect.payload_json));
       if (!this.payloadIsCurrent(payload, latest) || sha256(canonicalJson(payload)) !== effect.payload_hash) return undefined;
-      const siblings = (this.db.prepare("SELECT COUNT(*) AS count FROM work_notification_attempts WHERE provider_effect_key=?")
-        .get(effect.effect_key) as { count: number }).count;
+      const rust = requiresWorkRustWrites(this.db);
+      const siblings = rust
+        ? overlayFindAll(this.db, "work_notification_attempts",
+            this.db.prepare("SELECT * FROM work_notification_attempts WHERE provider_effect_key=?").all(effect.effect_key) as Array<Record<string, unknown>>,
+            r => String(r.attempt_id), r => r.provider_effect_key === effect.effect_key).length
+        : (this.db.prepare("SELECT COUNT(*) AS count FROM work_notification_attempts WHERE provider_effect_key=?")
+            .get(effect.effect_key) as { count: number }).count;
       if (siblings >= 3) { this.works.repo.updateNotificationDelivery(notificationId, { delivery: "failed" }); return undefined; }
       const payloadHash = effect.payload_hash;
       const attemptKey = `${notificationId}:${ordinal}`;
       const providerEffectKey = effect.effect_key;
       // A changed payload is assigned a fresh provider identity only after the old
       // attempt has an explicit missing/failed receipt. Unknown is never overwritten.
+      const claimedAt = this.now();
       const attempt: Attempt = { attempt_id: attemptKey, notification_id: notificationId, ordinal,
         channel: channel.channel, idempotency_key: providerEffectKey, payload_json: JSON.stringify(payload), status: "unknown",
         provider_effect_key: providerEffectKey, payload_hash: payloadHash,
-        delivery_guarantee: capability.deliveryGuarantee, claim_generation: siblings + 1, claimed_at: this.now() };
-      this.db.prepare(`INSERT INTO work_notification_attempts(attempt_id,notification_id,ordinal,channel,idempotency_key,
-        provider_effect_key,payload_hash,delivery_guarantee,claim_generation,payload_json,status,claimed_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,'unknown',?)`).run(attempt.attempt_id, notificationId, ordinal, channel.channel,
-        attempt.idempotency_key, providerEffectKey, payloadHash, capability.deliveryGuarantee, attempt.claim_generation, attempt.payload_json, this.now());
-      this.db.prepare("UPDATE work_notification_identity SET owner_epoch=?,sender_bot_id=? WHERE notification_id=?")
-        .run(latest.ownerEpoch, latest.ownerBotId, notificationId);
+        delivery_guarantee: capability.deliveryGuarantee, claim_generation: siblings + 1, claimed_at: claimedAt };
+      if (rust) {
+        overlaySet(this.db, "work_notification_attempts", attempt.attempt_id, {
+          ...attempt, settled_at: null, receipt: null,
+        });
+        enqueueWorkOp(this.db, {
+          op: "workNotificationAttemptWrite", mode: "insert", attemptId: attempt.attempt_id, notificationId,
+          ordinal, channel: channel.channel, idempotencyKey: attempt.idempotency_key,
+          providerEffectKey, payloadHash, deliveryGuarantee: capability.deliveryGuarantee,
+          claimGeneration: attempt.claim_generation ?? 1, payloadJson: attempt.payload_json,
+          status: null, now: claimedAt, receipt: null,
+        });
+        overlayMutate(this.db, "work_notification_identity", notificationId,
+          () => this.db.prepare("SELECT * FROM work_notification_identity WHERE notification_id=?").get(notificationId) as Record<string, unknown> | undefined,
+          cur => cur ? { ...cur, owner_epoch: latest.ownerEpoch, sender_bot_id: latest.ownerBotId } : undefined);
+        enqueueWorkOp(this.db, {
+          op: "workNotificationIdentityUpdate", mode: "setOwner", workId: null, notificationId,
+          intentRevision: null, inputSnapshotId: null, ownerEpoch: latest.ownerEpoch,
+          senderBotId: latest.ownerBotId, semanticValidity: null,
+        });
+      } else {
+        this.db.prepare(`INSERT INTO work_notification_attempts(attempt_id,notification_id,ordinal,channel,idempotency_key,
+          provider_effect_key,payload_hash,delivery_guarantee,claim_generation,payload_json,status,claimed_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,'unknown',?)`).run(attempt.attempt_id, notificationId, ordinal, channel.channel,
+          attempt.idempotency_key, providerEffectKey, payloadHash, capability.deliveryGuarantee, attempt.claim_generation, attempt.payload_json, claimedAt);
+        this.db.prepare("UPDATE work_notification_identity SET owner_epoch=?,sender_bot_id=? WHERE notification_id=?")
+          .run(latest.ownerEpoch, latest.ownerBotId, notificationId);
+      }
       this.works.repo.updateNotificationLinks(notificationId, { cardKey: notification.cardKey, effectKey: providerEffectKey, targetKey: channel.targetKey });
       this.works.repo.updateNotificationDelivery(notificationId, { delivery: "unknown", channel: channel.channel,
         attemptCount: ordinal, idempotencyKey: attempt.idempotency_key });
@@ -516,22 +611,41 @@ export class WorkNotificationDelivery {
       const effect = this.effectOf(prior);
       if (!effect || !this.matchesChannel(effect, channel, capability)) return undefined;
       if (effect.payload_hash !== (prior.payload_hash ?? sha256(canonicalJson(JSON.parse(prior.payload_json))))) return undefined;
-      const siblingAttempts = (this.db.prepare("SELECT COUNT(*) AS count FROM work_notification_attempts WHERE provider_effect_key=?")
-        .get(effectKey) as { count: number }).count;
+      const rust = requiresWorkRustWrites(this.db);
+      const siblingAttempts = rust
+        ? overlayFindAll(this.db, "work_notification_attempts",
+            this.db.prepare("SELECT * FROM work_notification_attempts WHERE provider_effect_key=?").all(effectKey) as Array<Record<string, unknown>>,
+            r => String(r.attempt_id), r => r.provider_effect_key === effectKey).length
+        : (this.db.prepare("SELECT COUNT(*) AS count FROM work_notification_attempts WHERE provider_effect_key=?")
+            .get(effectKey) as { count: number }).count;
       // Exhausting the automatic budget does not prove that an earlier external
       // effect failed. Keep unknown so receipt reconciliation/manual resend remain valid.
       if (siblingAttempts >= 3) return undefined;
       const ordinal = notification.attemptCount + 1;
       const payload = notificationSchema.parse(JSON.parse(prior.payload_json));
       if (!this.payloadIsCurrent(payload, latest) || sha256(canonicalJson(payload)) !== effect.payload_hash) return undefined;
+      const claimedAt = this.now();
       const attempt: Attempt = { attempt_id: `${notificationId}:${ordinal}`, notification_id: notificationId, ordinal,
         channel: channel.channel, idempotency_key: effectKey, payload_json: prior.payload_json, status: "unknown",
         provider_effect_key: effectKey, payload_hash: effect.payload_hash, delivery_guarantee: effect.delivery_guarantee,
-        claim_generation: siblingAttempts + 1, claimed_at: this.now() };
-      this.db.prepare(`INSERT INTO work_notification_attempts(attempt_id,notification_id,ordinal,channel,idempotency_key,
-        provider_effect_key,payload_hash,delivery_guarantee,claim_generation,payload_json,status,claimed_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,'unknown',?)`).run(attempt.attempt_id, notificationId, ordinal, channel.channel,
-        effectKey, effectKey, effect.payload_hash, effect.delivery_guarantee, attempt.claim_generation, prior.payload_json, this.now());
+        claim_generation: siblingAttempts + 1, claimed_at: claimedAt };
+      if (rust) {
+        overlaySet(this.db, "work_notification_attempts", attempt.attempt_id, {
+          ...attempt, settled_at: null, receipt: null,
+        });
+        enqueueWorkOp(this.db, {
+          op: "workNotificationAttemptWrite", mode: "insert", attemptId: attempt.attempt_id, notificationId,
+          ordinal, channel: channel.channel, idempotencyKey: effectKey, providerEffectKey: effectKey,
+          payloadHash: effect.payload_hash, deliveryGuarantee: effect.delivery_guarantee,
+          claimGeneration: attempt.claim_generation ?? 1, payloadJson: prior.payload_json,
+          status: null, now: claimedAt, receipt: null,
+        });
+      } else {
+        this.db.prepare(`INSERT INTO work_notification_attempts(attempt_id,notification_id,ordinal,channel,idempotency_key,
+          provider_effect_key,payload_hash,delivery_guarantee,claim_generation,payload_json,status,claimed_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,'unknown',?)`).run(attempt.attempt_id, notificationId, ordinal, channel.channel,
+          effectKey, effectKey, effect.payload_hash, effect.delivery_guarantee, attempt.claim_generation, prior.payload_json, claimedAt);
+      }
       this.works.repo.updateNotificationLinks(notificationId, { effectKey });
       this.works.repo.updateNotificationDelivery(notificationId, { delivery: "unknown", channel: channel.channel,
         attemptCount: ordinal, idempotencyKey: effectKey });
@@ -570,8 +684,20 @@ export class WorkNotificationDelivery {
       || card.currency === "current";
     // Closed:succeeded still has a valid delivery obligation.
     if (cancelled || revisionChanged || !artifactsValid || !currentDeliverable || !currentSummary || !currentEscalation) {
-      this.db.prepare("UPDATE work_notification_identity SET semantic_validity=? WHERE notification_id=?")
-        .run(cancelled ? "cancelled" : "superseded", notificationId);
+      const validity = cancelled ? "cancelled" : "superseded";
+      if (requiresWorkRustWrites(this.db)) {
+        overlayMutate(this.db, "work_notification_identity", notificationId,
+          () => this.db.prepare("SELECT * FROM work_notification_identity WHERE notification_id=?").get(notificationId) as Record<string, unknown> | undefined,
+          cur => cur ? { ...cur, semantic_validity: validity } : undefined);
+        enqueueWorkOp(this.db, {
+          op: "workNotificationIdentityUpdate", mode: "setValidity", workId: null,
+          notificationId, intentRevision: null, inputSnapshotId: null,
+          ownerEpoch: null, senderBotId: null, semanticValidity: validity,
+        });
+      } else {
+        this.db.prepare("UPDATE work_notification_identity SET semantic_validity=? WHERE notification_id=?")
+          .run(validity, notificationId);
+      }
       const changed = this.works.getWork(latest.workId)!;
       this.works.repo.updateWork({ ...changed, stateVersion: changed.stateVersion + 1, updatedAt: this.now() });
       this.works.emitCurrentProjection(latest.workId);
@@ -590,8 +716,10 @@ export class WorkNotificationDelivery {
   }
 
   private effectOf(attempt: Attempt): Effect | undefined {
-    return effectSchema.optional().parse(this.db.prepare("SELECT * FROM work_notification_effects WHERE effect_key=?")
-      .get(attempt.provider_effect_key ?? attempt.idempotency_key));
+    const effectKey = attempt.provider_effect_key ?? attempt.idempotency_key;
+    const row = overlayReadOne<Record<string, unknown>>(this.db, "work_notification_effects", effectKey,
+      () => this.db.prepare("SELECT * FROM work_notification_effects WHERE effect_key=?").get(effectKey) as Record<string, unknown> | undefined);
+    return effectSchema.optional().parse(row);
   }
 
   private payloadIsCurrent(payload: WorkNotificationDto, work: WorkDto): boolean {
@@ -604,20 +732,63 @@ export class WorkNotificationDelivery {
   private ensureInitialEffect(notificationId: string, payload: WorkNotificationDto, payloadHash: string,
     channel: Endpoint, capability: WorkChannelCapability): Effect | undefined {
     const effectKey = `effect:${notificationId}:initial`;
+    const existing = overlayReadOne<Record<string, unknown>>(this.db, "work_notification_effects", effectKey,
+      () => this.db.prepare("SELECT * FROM work_notification_effects WHERE effect_key=?").get(effectKey) as Record<string, unknown> | undefined);
+    if (existing) return effectSchema.optional().parse(existing);
+    const now = this.now();
+    const payloadText = canonicalJson(payload);
+    const supportsIdem = capability.supportsIdempotencyKey ? 1 : 0;
+    const supportsQuery = capability.supportsReceiptQuery ? 1 : 0;
+    if (requiresWorkRustWrites(this.db)) {
+      const row = {
+        effect_key: effectKey, notification_id: notificationId, payload_hash: payloadHash,
+        payload_json: payloadText, channel: channel.channel, target_key: channel.targetKey ?? null,
+        delivery_guarantee: capability.deliveryGuarantee, supports_idempotency_key: supportsIdem,
+        supports_receipt_query: supportsQuery, authorization_kind: "initial",
+        authorization_operation_id: `notification:${notificationId}`, authorization_reason: null,
+        resend_of_attempt_id: null, created_at: now,
+      };
+      overlaySet(this.db, "work_notification_effects", effectKey, row);
+      enqueueWorkOp(this.db, {
+        op: "workNotificationEffectInsert", effectKey, notificationId, payloadHash, payloadJson: payloadText,
+        channel: channel.channel, targetKey: channel.targetKey ?? null,
+        deliveryGuarantee: capability.deliveryGuarantee, supportsIdempotencyKey: supportsIdem,
+        supportsReceiptQuery: supportsQuery, authorizationKind: "initial",
+        authorizationOperationId: `notification:${notificationId}`, authorizationReason: null,
+        resendOfAttemptId: null, createdAt: now,
+      });
+      return effectSchema.parse(row);
+    }
     this.db.prepare(`INSERT OR IGNORE INTO work_notification_effects (
       effect_key,notification_id,payload_hash,payload_json,channel,target_key,delivery_guarantee,
       supports_idempotency_key,supports_receipt_query,authorization_kind,authorization_operation_id,
       authorization_reason,resend_of_attempt_id,created_at
     ) VALUES (?,?,?,?,?,?,?,?,?, 'initial', ?, NULL, NULL, ?)`).run(
-      effectKey, notificationId, payloadHash, canonicalJson(payload), channel.channel, channel.targetKey ?? null,
-      capability.deliveryGuarantee, capability.supportsIdempotencyKey ? 1 : 0,
-      capability.supportsReceiptQuery ? 1 : 0, `notification:${notificationId}`, this.now(),
+      effectKey, notificationId, payloadHash, payloadText, channel.channel, channel.targetKey ?? null,
+      capability.deliveryGuarantee, supportsIdem, supportsQuery, `notification:${notificationId}`, now,
     );
     return effectSchema.optional().parse(this.db.prepare("SELECT * FROM work_notification_effects WHERE effect_key=?").get(effectKey));
   }
 
   /** A manual resend authorization waiting for its physical attempt. */
   private pendingResendEffect(notificationId: string): Effect | undefined {
+    if (requiresWorkRustWrites(this.db)) {
+      const notif = this.works.repo.getNotification(notificationId);
+      if (!notif?.effectKey) return undefined;
+      const usedKeys = new Set(
+        overlayFindAll(this.db, "work_notification_attempts",
+          this.db.prepare("SELECT * FROM work_notification_attempts WHERE provider_effect_key IS NOT NULL").all() as Array<Record<string, unknown>>,
+          r => String(r.attempt_id), r => r.provider_effect_key !== null && r.provider_effect_key !== undefined)
+          .map(r => String(r.provider_effect_key)),
+      );
+      if (usedKeys.has(notif.effectKey)) return undefined;
+      const rows = overlayFindAll(this.db, "work_notification_effects",
+        this.db.prepare("SELECT * FROM work_notification_effects WHERE notification_id=?").all(notificationId) as Array<Record<string, unknown>>,
+        r => String(r.effect_key),
+        r => r.notification_id === notificationId && r.authorization_kind === "manual-resend" && r.effect_key === notif.effectKey,
+        (a, b) => Number(b.created_at) - Number(a.created_at));
+      return rows[0] ? effectSchema.parse(rows[0]) : undefined;
+    }
     const effect = effectSchema.optional().parse(this.db.prepare(`SELECT * FROM work_notification_effects
       WHERE notification_id=? AND authorization_kind='manual-resend'
         AND effect_key=(SELECT effect_key FROM work_notifications WHERE notification_id=?)
@@ -657,11 +828,39 @@ export class WorkNotificationDelivery {
       if (!effect || effect.channel !== attempt.channel || effect.payload_hash !== attempt.payload_hash
         || (effect.target_key ?? undefined) !== payload.targetKey
         || sha256(canonicalJson(payload)) !== effect.payload_hash) return;
-      const updated = this.db.prepare(`UPDATE work_notification_attempts SET status=?,settled_at=?,receipt=COALESCE(?,receipt)
-        WHERE attempt_id=? AND status='unknown' AND claim_generation=? AND payload_hash=? AND provider_effect_key=? AND channel=?`)
-        .run(status, this.now(), receipt ?? null, attempt.attempt_id, attempt.claim_generation ?? 1,
-          attempt.payload_hash, attempt.provider_effect_key, attempt.channel);
-      if (!updated.changes) return;
+      const now = this.now();
+      let settled = false;
+      if (requiresWorkRustWrites(this.db)) {
+        const cur = overlayReadOne<Record<string, unknown>>(this.db, "work_notification_attempts", attempt.attempt_id,
+          () => this.db.prepare("SELECT * FROM work_notification_attempts WHERE attempt_id=?").get(attempt.attempt_id) as Record<string, unknown> | undefined);
+        const matches = Boolean(
+          cur && cur.status === "unknown"
+          && Number(cur.claim_generation ?? 1) === (attempt.claim_generation ?? 1)
+          && (cur.payload_hash ?? null) === (attempt.payload_hash ?? null)
+          && (cur.provider_effect_key ?? null) === (attempt.provider_effect_key ?? null)
+          && cur.channel === attempt.channel,
+        );
+        if (matches && cur) {
+          overlaySet(this.db, "work_notification_attempts", attempt.attempt_id, {
+            ...cur, status, settled_at: now, receipt: receipt ?? cur.receipt ?? null,
+          });
+          enqueueWorkOp(this.db, {
+            op: "workNotificationAttemptWrite", mode: "settle", attemptId: attempt.attempt_id,
+            notificationId: null, ordinal: null, channel: attempt.channel, idempotencyKey: null,
+            providerEffectKey: attempt.provider_effect_key ?? null, payloadHash: attempt.payload_hash ?? null,
+            deliveryGuarantee: null, claimGeneration: attempt.claim_generation ?? 1, payloadJson: null,
+            status, now, receipt: receipt ?? null,
+          });
+          settled = true;
+        }
+      } else {
+        const updated = this.db.prepare(`UPDATE work_notification_attempts SET status=?,settled_at=?,receipt=COALESCE(?,receipt)
+          WHERE attempt_id=? AND status='unknown' AND claim_generation=? AND payload_hash=? AND provider_effect_key=? AND channel=?`)
+          .run(status, now, receipt ?? null, attempt.attempt_id, attempt.claim_generation ?? 1,
+            attempt.payload_hash, attempt.provider_effect_key, attempt.channel);
+        settled = updated.changes > 0;
+      }
+      if (!settled) return;
       const notification = this.works.repo.getNotification(attempt.notification_id);
       // The receipt belongs to this original attempt. A newer manual authorization or
       // claim may already own the notification; its delivery state cannot be overwritten.
@@ -682,6 +881,13 @@ export class WorkNotificationDelivery {
   }
 
   private lastAttempt(notificationId: string): Attempt | undefined {
+    if (requiresWorkRustWrites(this.db)) {
+      const dbRows = this.db.prepare("SELECT * FROM work_notification_attempts WHERE notification_id=? ORDER BY ordinal DESC")
+        .all(notificationId) as Array<Record<string, unknown>>;
+      const rows = overlayFindAll(this.db, "work_notification_attempts", dbRows, r => String(r.attempt_id),
+        r => r.notification_id === notificationId, (a, b) => Number(b.ordinal) - Number(a.ordinal));
+      return rows[0] ? attemptSchema.parse(rows[0]) : undefined;
+    }
     return attemptSchema.optional().parse(this.db.prepare("SELECT * FROM work_notification_attempts WHERE notification_id=? ORDER BY ordinal DESC LIMIT 1").get(notificationId));
   }
 

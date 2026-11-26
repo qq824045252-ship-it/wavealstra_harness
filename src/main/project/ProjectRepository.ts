@@ -277,8 +277,16 @@ export class ProjectRepository {
     return rows[0].path;
   }
 
+  get requiresRustWrites(): boolean {
+    return Boolean(this.db.readonly || this.runtimeAuditReader?.supervised);
+  }
+
   supportsNativeWrites(kind: ProjectWriteDomain = "project"): Promise<boolean> {
-    if (!this.runtimeAuditReader || this.db.inTransaction) return Promise.resolve(false);
+    if (!this.runtimeAuditReader) return Promise.resolve(false);
+    if (this.db.inTransaction) {
+      if (this.requiresRustWrites) return Promise.reject(new Error(`Project write (${kind}) cannot run inside a host SQLite transaction when Rust owns writes`));
+      return Promise.resolve(false);
+    }
     return this.runtimeAuditReader.supportsProjectWrites(kind);
   }
 
@@ -587,14 +595,20 @@ export class ProjectRepository {
   async requestProjectPosts(request: RuntimeProjectPostRequest): Promise<RuntimeProjectPostReply | undefined> {
     const fields = request.kind === "create" ? [request.post.projectId, request.post.body]
       : [request.kind === "list" ? request.projectId : request.id];
-    if (!this.runtimeAuditReader || this.db.inTransaction ||
-        fields.some(value => typeof value !== "string" || /[\uD800-\uDFFF]/u.test(value))) {
+    const invalidWire = fields.some(value => typeof value !== "string" || /[\uD800-\uDFFF]/u.test(value));
+    if (!this.runtimeAuditReader || this.db.inTransaction || invalidWire) {
+      if (request.kind !== "list" && this.requiresRustWrites) {
+        return { status: "rejected", message: invalidWire ? "留言内容包含不支持的代理字符，无法保存" : "项目数据库当前仅允许 Rust 写入" };
+      }
       return { status: "needsHost" };
     }
     return this.runtimeAuditReader.projectPosts(request);
   }
 
-  commitWriteOnHost<T>(write: () => T): T { return this.db.transaction(write).immediate(); }
+  commitWriteOnHost<T>(write: () => T): T {
+    if (this.requiresRustWrites) throw new Error("Project database writes are owned by the Rust core");
+    return this.db.transaction(write).immediate();
+  }
 
   createPost(post: ProjectPostDto): ProjectPostDto {
     this.db.prepare(
@@ -710,7 +724,12 @@ export class ProjectRepository {
   private async requestProjectEvent(request: RuntimeProjectEventRequest): Promise<RuntimeProjectEventReply | undefined> {
     const ids = request.kind === "triage" ? [request.projectId, request.eventId] : [request.eventId];
     if (!this.runtimeAuditReader || this.db.inTransaction ||
-        ids.some(id => typeof id !== "string" || /[\uD800-\uDFFF]/u.test(id))) return { status: "needsHost" };
+        ids.some(id => typeof id !== "string" || /[\uD800-\uDFFF]/u.test(id))) {
+      if (request.kind === "triage" && this.requiresRustWrites) {
+        throw new Error("事件处理状态写入仅允许通过 Rust 核心完成");
+      }
+      return { status: "needsHost" };
+    }
     return this.runtimeAuditReader.projectEventData(request);
   }
 
@@ -1190,8 +1209,11 @@ export class ProjectRepository {
     const fields = [request.projectId];
     if (request.kind !== "list") fields.push(request.itemId);
     if (request.kind === "pin" && request.note !== undefined) fields.push(request.note);
-    if (!this.runtimeAuditReader || this.db.inTransaction ||
-        fields.some(value => typeof value !== "string" || /[\uD800-\uDFFF]/u.test(value))) {
+    const invalidWire = fields.some(value => typeof value !== "string" || /[\uD800-\uDFFF]/u.test(value));
+    if (!this.runtimeAuditReader || this.db.inTransaction || invalidWire) {
+      if (request.kind !== "list" && this.requiresRustWrites) {
+        return { status: "rejected", message: invalidWire ? "固定资料内容包含不支持的代理字符，无法保存" : "项目数据库当前仅允许 Rust 写入" };
+      }
       return { status: "needsHost" };
     }
     return this.runtimeAuditReader.projectPins(request);

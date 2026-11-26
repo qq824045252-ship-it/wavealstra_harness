@@ -136,6 +136,10 @@ export class MemoryCognitionService {
     dotsViewStates.set(db, this.dotsViews);
   }
 
+  async flush(): Promise<void> {
+    await this.projections.flush();
+  }
+
   targetScopes(taskId?: string, projectId?: string, workspaceId?: string): MemoryProjectionScope[] {
     const task = taskId ? this.db.getTask(taskId) : undefined;
     const effectiveProjectId = projectId ?? task?.projectId ?? undefined;
@@ -466,7 +470,7 @@ export class MemoryCognitionService {
       }
       if (ids.length) drafts.push({ title: group.title, summary: quotes.join("\n"), sourceMemoryIds: ids });
     }
-    conn.transaction(() => {
+    const runRefresh = () => {
       const scenarios = this.projections.replaceScenarios(DOTS_SCOPE, drafts, now);
       const content: string[] = [];
       const ids: string[] = [];
@@ -485,7 +489,12 @@ export class MemoryCognitionService {
         ? { title: "Dots 个人画像", content: content.join("\n"), sourceScenarioIds: ids } : undefined, now);
       this.projections.purgeStaleDotsViews();
       state.hasScenarios = scenarios.length > 0;
-    })();
+    };
+    if (conn.readonly || this.db.runtimeAuditReader?.supervised) {
+      runRefresh();
+    } else {
+      conn.transaction(runRefresh)();
+    }
     this.finishDotsRefresh(signature, nextDue);
   }
 

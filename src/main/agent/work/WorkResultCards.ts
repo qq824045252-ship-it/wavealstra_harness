@@ -12,6 +12,7 @@ import {
   type WorkUnverifiedScopeDto, type WorkUnverifiedReason,
 } from "../../../shared/bot-work-phase5";
 import type { WorkRepository } from "./WorkRepository";
+import { enqueueWorkOp, overlayFindAll, overlayMutate, overlayReadOne, overlaySet, requiresWorkRustWrites, workDomainRunTx } from "./WorkDomainRuntime";
 
 const cardRowSchema = z.object({
   card_key: z.string(), semantic_card_key: z.string(), work_id: z.string(), user_id: z.string(),
@@ -140,10 +141,13 @@ export class WorkResultCards {
     const outcomeHash = WorkResultCards.computeOutcomeHash(input.outcome);
     // Same substantive outcome for the same requirement is one card, even across
     // accepted→closed: only new substance may create a second card.
-    const existing = this.db.prepare(`SELECT * FROM work_result_cards
+    const dbMatching = this.db.prepare(`SELECT * FROM work_result_cards
       WHERE work_id=? AND intent_revision=? AND input_snapshot_id=? AND canonical_outcome_hash=?
-      ORDER BY created_at ASC LIMIT 1`)
-      .get(input.work.workId, input.work.intentRevision, input.work.inputSnapshotId, outcomeHash) as CardRow | undefined;
+      ORDER BY created_at ASC`).all(input.work.workId, input.work.intentRevision, input.work.inputSnapshotId, outcomeHash) as Array<Record<string, unknown>>;
+    const existing = overlayFindAll(this.db, "work_result_cards", dbMatching, r => String(r.card_key), r =>
+      r.work_id === input.work.workId && r.intent_revision === input.work.intentRevision
+      && r.input_snapshot_id === input.work.inputSnapshotId && r.canonical_outcome_hash === outcomeHash,
+    (a, b) => Number(a.created_at) - Number(b.created_at))[0];
     if (existing) return this.toDto(cardRowSchema.parse(existing), input.work);
 
     const semanticKey = WorkResultCards.computeSemanticKey({ workId: input.work.workId,
@@ -151,17 +155,46 @@ export class WorkResultCards {
       kind: input.kind, canonicalOutcomeHash: outcomeHash });
     const cardKey = `card:${semanticKey}`;
     const deliverableIds = input.outcome.deliverables.map(deliverable => deliverable.deliverableId);
+    const canonicalOutcomeJson = canonicalJson(input.outcome);
+    const deliverableIdsJson = listText(deliverableIds);
+    const evidenceIdsJson = listText(input.outcome.criteria.flatMap(criterion => criterion.evidenceRefs));
+    const sourceRefsJson = listText([...input.outcome.sourceRefs, ...input.provenanceRefs ?? []]);
+    const artifactRefsJson = listText(input.outcome.artifactRefs);
+    const unverifiedScopeJson = listText(input.unverifiedScope);
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_result_cards", cardKey, () =>
+        this.db.prepare("SELECT * FROM work_result_cards WHERE card_key=?").get(cardKey) as Record<string, unknown> | undefined,
+      cur => cur ?? {
+        card_key: cardKey, semantic_card_key: semanticKey, work_id: input.work.workId, user_id: input.work.userId,
+        kind: input.kind, intent_revision: input.work.intentRevision, input_snapshot_id: input.work.inputSnapshotId,
+        origin_owner_epoch: input.work.ownerEpoch, canonical_outcome_hash: outcomeHash,
+        canonical_outcome_json: canonicalOutcomeJson, title: input.title, summary: input.summary,
+        deliverable_ids_json: deliverableIdsJson, evidence_ids_json: evidenceIdsJson,
+        source_refs_json: sourceRefsJson, artifact_refs_json: artifactRefsJson,
+        unverified_scope_json: unverifiedScopeJson, created_at: input.now,
+        previous_card_key: input.previousCardKey ?? null, read_at: null, read_by_user_id: null, read_version: 0,
+      });
+      enqueueWorkOp(this.db, {
+        op: "workResultCardInsert", cardKey, semanticCardKey: semanticKey, workId: input.work.workId,
+        userId: input.work.userId, kind: input.kind, intentRevision: input.work.intentRevision,
+        inputSnapshotId: input.work.inputSnapshotId, originOwnerEpoch: input.work.ownerEpoch,
+        canonicalOutcomeHash: outcomeHash, canonicalOutcomeJson, title: input.title, summary: input.summary,
+        deliverableIdsJson, evidenceIdsJson, sourceRefsJson, artifactRefsJson, unverifiedScopeJson,
+        createdAt: input.now, previousCardKey: input.previousCardKey ?? null,
+      });
+      const row = overlayReadOne(this.db, "work_result_cards", cardKey, () =>
+        this.db.prepare("SELECT * FROM work_result_cards WHERE card_key=?").get(cardKey) as Record<string, unknown> | undefined);
+      return this.toDto(cardRowSchema.parse(row), input.work);
+    }
     this.db.prepare(`INSERT OR IGNORE INTO work_result_cards (
       card_key,semantic_card_key,work_id,user_id,kind,intent_revision,input_snapshot_id,origin_owner_epoch,
       canonical_outcome_hash,canonical_outcome_json,title,summary,deliverable_ids_json,evidence_ids_json,
       source_refs_json,artifact_refs_json,unverified_scope_json,created_at,previous_card_key,read_version
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(
       cardKey, semanticKey, input.work.workId, input.work.userId, input.kind, input.work.intentRevision,
-      input.work.inputSnapshotId, input.work.ownerEpoch, outcomeHash, canonicalJson(input.outcome),
-      input.title, input.summary, listText(deliverableIds),
-      listText(input.outcome.criteria.flatMap(criterion => criterion.evidenceRefs)),
-      listText([...input.outcome.sourceRefs, ...input.provenanceRefs ?? []]), listText(input.outcome.artifactRefs),
-      listText(input.unverifiedScope), input.now, input.previousCardKey ?? null,
+      input.work.inputSnapshotId, input.work.ownerEpoch, outcomeHash, canonicalOutcomeJson,
+      input.title, input.summary, deliverableIdsJson, evidenceIdsJson, sourceRefsJson, artifactRefsJson,
+      unverifiedScopeJson, input.now, input.previousCardKey ?? null,
     );
     const row = this.db.prepare("SELECT * FROM work_result_cards WHERE card_key=?").get(cardKey);
     return this.toDto(cardRowSchema.parse(row), input.work);
@@ -186,21 +219,38 @@ export class WorkResultCards {
     };
     const summaryDigest = digest(canonicalJson(substantive));
     const cardKey = current.at(-1)?.cardKey;
-    const existing = summaryRowSchema.optional().parse(
-      this.db.prepare("SELECT * FROM work_owner_summaries WHERE work_id=?").get(work.workId));
+    const existingRaw = overlayReadOne(this.db, "work_owner_summaries", work.workId, () =>
+      this.db.prepare("SELECT * FROM work_owner_summaries WHERE work_id=?").get(work.workId) as Record<string, unknown> | undefined);
+    const existing = summaryRowSchema.optional().parse(existingRaw);
     if (!existing || existing.digest !== summaryDigest) {
-      this.db.prepare(`INSERT INTO work_owner_summaries (work_id,intent_revision,input_snapshot_id,owner_epoch,digest,
-        card_key,pending_decision_codes_json,handled_watermark_json,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(work_id) DO UPDATE SET
-        intent_revision=excluded.intent_revision, input_snapshot_id=excluded.input_snapshot_id,
-        owner_epoch=excluded.owner_epoch, digest=excluded.digest, card_key=excluded.card_key,
-        pending_decision_codes_json=excluded.pending_decision_codes_json,
-        handled_watermark_json=excluded.handled_watermark_json, updated_at=excluded.updated_at`)
-        .run(work.workId, work.intentRevision, work.inputSnapshotId, work.ownerEpoch, summaryDigest,
-          cardKey ?? null, JSON.stringify([...new Set(pendingDecisionCodes)].sort()),
-          JSON.stringify({ ...(existing ? JSON.parse(existing.handled_watermark_json) as Record<string, unknown> : {}),
-            cardKeys: current.map(card => card.cardKey), acceptedCount: work.acceptedDeliverableIds.length }),
-          now);
+      const pendingDecisionCodesJson = JSON.stringify([...new Set(pendingDecisionCodes)].sort());
+      const handledWatermarkJson = JSON.stringify({
+        ...(existing ? JSON.parse(existing.handled_watermark_json) as Record<string, unknown> : {}),
+        cardKeys: current.map(card => card.cardKey), acceptedCount: work.acceptedDeliverableIds.length,
+      });
+      if (requiresWorkRustWrites(this.db)) {
+        overlaySet(this.db, "work_owner_summaries", work.workId, {
+          work_id: work.workId, intent_revision: work.intentRevision, input_snapshot_id: work.inputSnapshotId,
+          owner_epoch: work.ownerEpoch, digest: summaryDigest, card_key: cardKey ?? null,
+          pending_decision_codes_json: pendingDecisionCodesJson, handled_watermark_json: handledWatermarkJson,
+          updated_at: now,
+        });
+        enqueueWorkOp(this.db, {
+          op: "workOwnerSummaryUpsert", workId: work.workId, intentRevision: work.intentRevision,
+          inputSnapshotId: work.inputSnapshotId, ownerEpoch: work.ownerEpoch, digest: summaryDigest,
+          cardKey: cardKey ?? null, pendingDecisionCodesJson, handledWatermarkJson, updatedAt: now,
+        });
+      } else {
+        this.db.prepare(`INSERT INTO work_owner_summaries (work_id,intent_revision,input_snapshot_id,owner_epoch,digest,
+          card_key,pending_decision_codes_json,handled_watermark_json,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(work_id) DO UPDATE SET
+          intent_revision=excluded.intent_revision, input_snapshot_id=excluded.input_snapshot_id,
+          owner_epoch=excluded.owner_epoch, digest=excluded.digest, card_key=excluded.card_key,
+          pending_decision_codes_json=excluded.pending_decision_codes_json,
+          handled_watermark_json=excluded.handled_watermark_json, updated_at=excluded.updated_at`)
+          .run(work.workId, work.intentRevision, work.inputSnapshotId, work.ownerEpoch, summaryDigest,
+            cardKey ?? null, pendingDecisionCodesJson, handledWatermarkJson, now);
+      }
     }
     return { digest: summaryDigest, cardKey, pendingDecisionCodes };
   }
@@ -212,12 +262,32 @@ export class WorkResultCards {
     // The public facade already owns a transaction. Keep the helper atomic as well:
     // independent callers must commit authorization, the read fact, its Journal wake
     // and the returned read version together. Nesting uses a SQLite savepoint.
-    return this.db.transaction((): WorkCardReadResult => {
-      const row = cardRowSchema.optional().parse(this.db.prepare(
+    return workDomainRunTx(this.db, (): WorkCardReadResult => {
+      const dbMatching = this.db.prepare(
         "SELECT * FROM work_result_cards WHERE work_id=? AND (semantic_card_key=? OR card_key=?)")
-        .get(input.workId, input.semanticCardKey, input.semanticCardKey));
+        .all(input.workId, input.semanticCardKey, input.semanticCardKey) as Array<Record<string, unknown>>;
+      const raw = overlayFindAll(this.db, "work_result_cards", dbMatching, r => String(r.card_key),
+        r => r.work_id === input.workId && (r.semantic_card_key === input.semanticCardKey || r.card_key === input.semanticCardKey))[0];
+      const row = cardRowSchema.optional().parse(raw);
       if (!row) return { ok: false, message: "找不到结果卡片" };
       if (row.user_id !== input.userId) return { ok: false, message: "无权标记其他用户的结果卡片" };
+      if (requiresWorkRustWrites(this.db)) {
+        const shouldAdvance = row.read_at === null || row.read_at < input.readAt;
+        if (shouldAdvance) {
+          overlaySet(this.db, "work_result_cards", row.card_key, {
+            ...row, read_at: input.readAt, read_by_user_id: input.userId, read_version: row.read_version + 1,
+          });
+        }
+        enqueueWorkOp(this.db, {
+          op: "workResultCardMarkRead", cardKey: row.card_key, userId: input.userId, readAt: input.readAt,
+        });
+        return {
+          ok: true, cardKey: row.card_key, semanticCardKey: row.semantic_card_key,
+          readAt: shouldAdvance ? input.readAt : (row.read_at ?? input.readAt),
+          readVersion: shouldAdvance ? row.read_version + 1 : row.read_version,
+          replayed: !shouldAdvance,
+        };
+      }
       const advanced = this.db.prepare(`UPDATE work_result_cards
         SET read_at=?, read_by_user_id=?, read_version=read_version+1
         WHERE card_key=? AND (read_at IS NULL OR read_at < ?)`)
@@ -225,21 +295,27 @@ export class WorkResultCards {
       const current = cardRowSchema.parse(this.db.prepare("SELECT * FROM work_result_cards WHERE card_key=?").get(row.card_key));
       return { ok: true, cardKey: row.card_key, semanticCardKey: row.semantic_card_key,
         readAt: current.read_at ?? input.readAt, readVersion: current.read_version, replayed: advanced.changes === 0 };
-    }).immediate();
+    });
   }
 
   // ---------------------------------------------------------------- reading
 
   list(work: WorkDto): WorkResultCardDto[] {
-    const rows = this.db.prepare("SELECT * FROM work_result_cards WHERE work_id=? ORDER BY created_at ASC, card_key ASC")
-      .all(work.workId) as CardRow[];
-    return rows.map(row => this.toDto(cardRowSchema.parse(row), work));
+    const dbRows = this.db.prepare("SELECT * FROM work_result_cards WHERE work_id=? ORDER BY created_at ASC, card_key ASC")
+      .all(work.workId) as Array<Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_result_cards", dbRows, r => String(r.card_key),
+      r => r.work_id === work.workId,
+      (a, b) => Number(a.created_at) - Number(b.created_at) || String(a.card_key).localeCompare(String(b.card_key)))
+      .map(row => this.toDto(cardRowSchema.parse(row), work));
   }
 
   listByUser(userId: string, limit = 200): WorkResultCardDto[] {
-    const rows = this.db.prepare("SELECT * FROM work_result_cards WHERE user_id=? ORDER BY created_at DESC LIMIT ?")
-      .all(userId, Math.min(200, Math.max(1, limit))) as CardRow[];
-    return rows.map(row => this.toDto(cardRowSchema.parse(row), this.workOf(row.work_id)));
+    const dbRows = this.db.prepare("SELECT * FROM work_result_cards WHERE user_id=? ORDER BY created_at DESC LIMIT ?")
+      .all(userId, Math.min(200, Math.max(1, limit))) as Array<Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_result_cards", dbRows, r => String(r.card_key),
+      r => r.user_id === userId, (a, b) => Number(b.created_at) - Number(a.created_at))
+      .slice(0, Math.min(200, Math.max(1, limit)))
+      .map(row => this.toDto(cardRowSchema.parse(row), this.workOf(String(row.work_id))));
   }
 
   /** Current approval-based view of what is verified for the artifact in play. */
@@ -275,8 +351,9 @@ export class WorkResultCards {
   }
 
   private toDto(row: CardRow, work: WorkDto): WorkResultCardDto {
-    const notificationIds = (this.db.prepare("SELECT notification_id FROM work_notifications WHERE card_key=?").all(row.card_key) as Array<{ notification_id: string }>)
-      .map(item => item.notification_id);
+    const notificationIds = this.repo.listNotifications(work.workId)
+      .filter(item => item.cardKey === row.card_key)
+      .map(item => item.notificationId);
     return {
       cardKey: row.card_key, semanticCardKey: row.semantic_card_key, workId: row.work_id, userId: row.user_id,
       kind: row.kind, intentRevision: row.intent_revision, inputSnapshotId: row.input_snapshot_id,
@@ -297,15 +374,22 @@ export class WorkResultCards {
   private currencyOf(row: CardRow, work: WorkDto): WorkCardCurrency {
     if (row.intent_revision !== work.intentRevision || row.input_snapshot_id !== work.inputSnapshotId) return "historical";
     if (row.kind === "owner_summary") {
-      const latest = this.db.prepare(`SELECT json_extract(handled_watermark_json,'$.ownerNotification.publishedCardKey') AS card_key
-        FROM work_owner_summaries WHERE work_id=?`).get(work.workId) as { card_key: string | null } | undefined;
-      if (latest?.card_key && latest.card_key !== row.card_key) return "superseded";
+      const summaryRow = overlayReadOne<{ handled_watermark_json: string }>(this.db, "work_owner_summaries", work.workId, () =>
+        this.db.prepare("SELECT work_id, handled_watermark_json FROM work_owner_summaries WHERE work_id=?")
+          .get(work.workId) as { work_id: string; handled_watermark_json: string } | undefined);
+      const latestCardKey = summaryRow
+        ? (JSON.parse(summaryRow.handled_watermark_json) as { ownerNotification?: { publishedCardKey?: string } }).ownerNotification?.publishedCardKey
+        : undefined;
+      if (latestCardKey && latestCardKey !== row.card_key) return "superseded";
     }
     const outcome = JSON.parse(row.canonical_outcome_json) as WorkOutcomePayload;
     if (["closure_succeeded", "closure_failed", "closure_cancelled"].includes(row.kind)
       && this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_closure_review_corrections'").get()) {
-      const correction = z.object({ operation_id: z.string() }).optional().parse(this.db.prepare(
-        "SELECT operation_id FROM work_closure_review_corrections WHERE work_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1").get(work.workId));
+      const dbCorr = this.db.prepare(
+        "SELECT operation_id, work_id, created_at FROM work_closure_review_corrections WHERE work_id=? ORDER BY created_at DESC,rowid DESC")
+        .all(work.workId) as Array<{ operation_id: string; work_id: string; created_at: number }>;
+      const correction = overlayFindAll(this.db, "work_closure_review_corrections", dbCorr, r => String(r.operation_id),
+        r => r.work_id === work.workId, (a, b) => Number(b.created_at) - Number(a.created_at))[0];
       if (correction && !outcome.sourceRefs.includes(`closure-review-correction:${correction.operation_id}`)) return "superseded";
     }
     if (row.kind === "blocked_escalation") {

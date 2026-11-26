@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { WorkFeedbackDto } from "../../../shared/bot-work-feedback";
+import { enqueueWorkOp, overlayMutate, overlayReadOne, overlaySet, requiresWorkRustWrites, workDomainRunTx } from "./WorkDomainRuntime";
 
 /** Only the host's public report is forwarded; the execution log is never a
  * fallback. This function deliberately has no raw-text argument. */
@@ -70,9 +71,12 @@ export function delegatedReplyWorkIds(db: Pick<Database.Database, "prepare">, us
  */
 export function reconcileDelegatedFeedback(db: Database.Database, userId: string, conversationId: string,
   parseFeedback: (value: unknown) => WorkFeedbackDto, workId?: string): number {
-  return db.transaction(() => {
-    const source = db.prepare(`SELECT bot_id FROM bot_conversations
-      WHERE user_id=? AND conversation_id=? AND team_id IS NULL`).get(userId, conversationId) as { bot_id: string } | undefined;
+  const rust = requiresWorkRustWrites(db);
+  return workDomainRunTx(db, () => {
+    const convRow = overlayReadOne<{ bot_id: string; user_id: string; team_id: string | null }>(db, "bot_conversations", conversationId, () =>
+      db.prepare("SELECT bot_id,user_id,team_id FROM bot_conversations WHERE user_id=? AND conversation_id=? AND team_id IS NULL")
+        .get(userId, conversationId) as { bot_id: string; user_id: string; team_id: string | null } | undefined);
+    const source = convRow && convRow.user_id === userId && convRow.team_id === null ? { bot_id: convRow.bot_id } : undefined;
     if (!source) return 0;
     const rows = db.prepare(`SELECT DISTINCT m.message_id,m.created_at,m.updated_at,m.ordinal,f.metadata_json
       FROM bot_collaborations c
@@ -106,20 +110,72 @@ export function reconcileDelegatedFeedback(db: Database.Database, userId: string
       const messageId = `work-feedback-${createHash("sha256").update(JSON.stringify([conversationId, row.message_id])).digest("hex")}`;
       const text = delegatedFeedbackText(feedback);
       const metadata = JSON.stringify(feedback);
-      const inserted = db.prepare(`INSERT OR IGNORE INTO bot_messages
-        (message_id,conversation_id,bot_id,request_id,role,text,status,work_ids_json,created_at,updated_at)
-        VALUES (?,?,?,?,'assistant',?,'completed',?,?,?)`)
-        .run(messageId, conversationId, source.bot_id, `delegated-feedback:${row.message_id}`, text,
-          JSON.stringify([feedback.workId]), row.created_at, row.updated_at).changes;
-      const updated = db.prepare("UPDATE bot_messages SET text=?,updated_at=? WHERE message_id=? AND text<>?")
-        .run(text, row.updated_at, messageId, text).changes;
-      const annotated = db.prepare(`INSERT INTO bot_work_feedback(message_id,metadata_json) VALUES (?,?)
-        ON CONFLICT(message_id) DO UPDATE SET metadata_json=excluded.metadata_json
-        WHERE bot_work_feedback.metadata_json<>excluded.metadata_json`).run(messageId, metadata).changes;
-      if (inserted || updated || annotated) changed++;
+      const reqId = `delegated-feedback:${row.message_id}`;
+      const workIdsJson = JSON.stringify([feedback.workId]);
+      if (rust) {
+        let didInsert = false;
+        let didUpdate = false;
+        let didAnnotate = false;
+        overlayMutate(db, "bot_messages", messageId, () =>
+          db.prepare("SELECT * FROM bot_messages WHERE message_id=?").get(messageId) as Record<string, unknown> | undefined,
+        cur => {
+          if (!cur) {
+            didInsert = true;
+            return {
+              message_id: messageId, conversation_id: conversationId, bot_id: source.bot_id,
+              request_id: reqId, role: "assistant", text, status: "completed",
+              work_ids_json: workIdsJson, error: null, created_at: row.created_at, updated_at: row.updated_at,
+            };
+          }
+          if (cur.text !== text) {
+            didUpdate = true;
+            return { ...cur, text, updated_at: row.updated_at };
+          }
+          return cur;
+        });
+        overlayMutate(db, "bot_work_feedback", messageId, () =>
+          db.prepare("SELECT * FROM bot_work_feedback WHERE message_id=?").get(messageId) as Record<string, unknown> | undefined,
+        cur => {
+          if (!cur || cur.metadata_json !== metadata) {
+            didAnnotate = true;
+            return { message_id: messageId, metadata_json: metadata };
+          }
+          return cur;
+        });
+        enqueueWorkOp(db, {
+          op: "botMsgInsert", messageId, conversationId, botId: source.bot_id, requestId: reqId,
+          role: "assistant", text, status: "completed", workIdsJson, createdAt: row.created_at,
+          updatedAt: row.updated_at, orIgnore: true, attachmentsJson: null,
+        });
+        enqueueWorkOp(db, { op: "botMsgTextUpdate", messageId, text, updatedAt: row.updated_at });
+        enqueueWorkOp(db, { op: "botWorkFeedbackUpsert", messageId, metadataJson: metadata, overwrite: true });
+        if (didInsert || didUpdate || didAnnotate) changed++;
+      } else {
+        const inserted = db.prepare(`INSERT OR IGNORE INTO bot_messages
+          (message_id,conversation_id,bot_id,request_id,role,text,status,work_ids_json,created_at,updated_at)
+          VALUES (?,?,?,?,'assistant',?,'completed',?,?,?)`)
+          .run(messageId, conversationId, source.bot_id, reqId, text,
+            workIdsJson, row.created_at, row.updated_at).changes;
+        const updated = db.prepare("UPDATE bot_messages SET text=?,updated_at=? WHERE message_id=? AND text<>?")
+          .run(text, row.updated_at, messageId, text).changes;
+        const annotated = db.prepare(`INSERT INTO bot_work_feedback(message_id,metadata_json) VALUES (?,?)
+          ON CONFLICT(message_id) DO UPDATE SET metadata_json=excluded.metadata_json
+          WHERE bot_work_feedback.metadata_json<>excluded.metadata_json`).run(messageId, metadata).changes;
+        if (inserted || updated || annotated) changed++;
+      }
     }
-    if (changed) db.prepare("UPDATE bot_conversations SET revision=revision+1,updated_at=? WHERE conversation_id=? AND user_id=?")
-      .run(Date.now(), conversationId, userId);
+    if (changed) {
+      const now = Date.now();
+      if (rust) {
+        overlayMutate(db, "bot_conversations", conversationId, () =>
+          db.prepare("SELECT * FROM bot_conversations WHERE conversation_id=?").get(conversationId) as Record<string, unknown> | undefined,
+        cur => cur && cur.user_id === userId ? { ...cur, revision: Number(cur.revision ?? 0) + 1, updated_at: now } : cur);
+        enqueueWorkOp(db, { op: "botConvBumpRevision", conversationId, userId, now });
+      } else {
+        db.prepare("UPDATE bot_conversations SET revision=revision+1,updated_at=? WHERE conversation_id=? AND user_id=?")
+          .run(now, conversationId, userId);
+      }
+    }
     return changed;
-  })();
+  });
 }

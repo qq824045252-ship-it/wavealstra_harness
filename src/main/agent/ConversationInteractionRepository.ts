@@ -16,9 +16,61 @@ type Row = {
 };
 
 export class ConversationInteractionRepository {
-  constructor(private readonly db: Database.Database) {}
+  private writeTail: Promise<unknown> = Promise.resolve();
+
+  constructor(
+    private readonly db: Database.Database,
+    private readonly reader?: import("../platform/runtime-audit").RuntimeAuditReader,
+  ) {}
+
+  flush(): Promise<void> {
+    return this.writeTail.then(() => undefined, () => undefined);
+  }
+
+  private get rustRequired(): boolean {
+    return Boolean(this.db.readonly || this.reader?.supervised);
+  }
+
+  private enqueueRustWrite(request: Record<string, unknown>): void {
+    const reader = this.reader;
+    if (!reader) throw new Error("ConversationInteractionRepository 缺少 Rust 写入通道");
+    const next = this.writeTail.then(async () => {
+      const reply = await reader.batch1Write(request);
+      if (reply === undefined) throw new Error(`交互状态写入未获 Rust 确认: ${String(request.kind)}`);
+      return reply;
+    });
+    this.writeTail = next.catch(error => {
+      console.warn(`[ConversationInteractions] Rust write failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
 
   insert(value: ConversationInteractionDto): ConversationInteractionDto {
+    const optionsJson = JSON.stringify(value.options);
+    const answerJson = value.answer === undefined ? null : JSON.stringify(value.answer);
+    if (this.reader && this.rustRequired) {
+      this.enqueueRustWrite({
+        kind: "interactionInsert",
+        id: value.id,
+        taskId: value.taskId,
+        executionId: value.executionId,
+        assistantMessageId: value.assistantMessageId,
+        kindName: value.kind,
+        title: value.title,
+        description: value.description ?? null,
+        optionsJson,
+        minSelections: value.minSelections ?? null,
+        maxSelections: value.maxSelections ?? null,
+        allowCustom: value.allowCustom ? 1 : 0,
+        customPlaceholder: value.customPlaceholder ?? null,
+        status: value.status,
+        answerJson,
+        version: value.version,
+        createdAt: value.createdAt,
+        resolvedAt: value.resolvedAt ?? null,
+      });
+      return { ...value };
+    }
+    if (this.db.readonly) throw new Error("只读数据库模式下无法写入 conversation_interactions");
     this.db.prepare(`INSERT INTO conversation_interactions
       (id,task_id,execution_id,assistant_message_id,kind,title,description,options_json,min_selections,
        max_selections,allow_custom,custom_placeholder,status,answer_json,version,created_at,resolved_at)
@@ -26,12 +78,12 @@ export class ConversationInteractionRepository {
        @maxSelections,@allowCustom,@customPlaceholder,@status,@answerJson,@version,@createdAt,@resolvedAt)`).run({
       ...value,
       description: value.description ?? null,
-      optionsJson: JSON.stringify(value.options),
+      optionsJson,
       minSelections: value.minSelections ?? null,
       maxSelections: value.maxSelections ?? null,
       allowCustom: value.allowCustom ? 1 : 0,
       customPlaceholder: value.customPlaceholder ?? null,
-      answerJson: value.answer === undefined ? null : JSON.stringify(value.answer),
+      answerJson,
       resolvedAt: value.resolvedAt ?? null,
     });
     return this.get(value.id)!;
@@ -49,14 +101,30 @@ export class ConversationInteractionRepository {
   }
 
   deleteFrom(taskId: string, createdAt: number): number {
+    const count = (this.db.prepare("SELECT COUNT(*) AS n FROM conversation_interactions WHERE task_id=? AND created_at>=?")
+      .get(taskId, createdAt) as { n: number }).n;
+    if (this.reader && this.rustRequired) {
+      this.enqueueRustWrite({ kind: "interactionDeleteFrom", taskId, createdAt });
+      return count;
+    }
+    if (this.db.readonly) throw new Error("只读数据库模式下无法删除 conversation_interactions");
     return this.db.prepare("DELETE FROM conversation_interactions WHERE task_id=? AND created_at>=?")
       .run(taskId, createdAt).changes;
   }
 
   settle(id: string, status: Exclude<ConversationInteractionStatus, "pending">, answer?: ConversationInteractionAnswer): ConversationInteractionDto | undefined {
+    const now = Date.now();
+    const answerJson = answer === undefined ? null : JSON.stringify(answer);
+    if (this.reader && this.rustRequired) {
+      const current = this.get(id);
+      if (!current || current.status !== "pending") return undefined;
+      this.enqueueRustWrite({ kind: "interactionSettle", id, status, answerJson, resolvedAt: now });
+      return { ...current, status, answer, version: current.version + 1, resolvedAt: now };
+    }
+    if (this.db.readonly) throw new Error("只读数据库模式下无法更新 conversation_interactions");
     const result = this.db.prepare(`UPDATE conversation_interactions
       SET status=?, answer_json=?, version=version+1, resolved_at=? WHERE id=? AND status='pending'`)
-      .run(status, answer === undefined ? null : JSON.stringify(answer), Date.now(), id);
+      .run(status, answerJson, now, id);
     return result.changes > 0 ? this.get(id) : undefined;
   }
 
@@ -74,10 +142,15 @@ export class ConversationInteractionRepository {
 
   expireAllPending(): ConversationInteractionDto[] {
     const rows = this.db.prepare("SELECT * FROM conversation_interactions WHERE status='pending'").all() as Row[];
+    const now = Date.now();
+    if (this.reader && this.rustRequired) {
+      this.enqueueRustWrite({ kind: "interactionExpireAllPending", resolvedAt: now });
+      return rows.map((row) => ({ ...mapRow(row), status: "expired" as const, version: row.version + 1, resolvedAt: now }));
+    }
+    if (this.db.readonly) throw new Error("只读数据库模式下无法更新 conversation_interactions");
     const settle = this.db.prepare(
       "UPDATE conversation_interactions SET status='expired', version=version+1, resolved_at=? WHERE id=? AND status='pending'",
     );
-    const now = Date.now();
     this.db.transaction(() => rows.forEach((row) => settle.run(now, row.id)))();
     return rows.map((row) => this.get(row.id)!).filter(Boolean);
   }

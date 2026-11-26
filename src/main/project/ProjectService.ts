@@ -570,7 +570,10 @@ export class ProjectService {
   }
 
   private async commitProjectWrite<T>(fallback: () => T, prepare: () => PreparedProjectWrite<T>, domain: "project" | "todo" = "project"): Promise<T> {
-    if (!await this.repository.supportsNativeWrites(domain)) return fallback();
+    if (!await this.repository.supportsNativeWrites(domain)) {
+      if (this.repository.requiresRustWrites) throw new Error("项目数据库当前仅允许 Rust 核心写入");
+      return fallback();
+    }
     // Rebuild the patch against a fresh project and resources if another write wins first.
     for (let attempt = 0; attempt < 8; attempt++) {
       const prepared = this.repository.readWriteSnapshot(prepare);
@@ -881,6 +884,7 @@ export class ProjectService {
     if (!request.title.trim()) throw new Error("提升为计划项必须显式指定标题");
 
     const native = await this.repository.supportsNativeWrites("eventTodoPromotion");
+    if (!native && this.repository.requiresRustWrites) throw new Error("项目事件提升为计划项仅允许通过 Rust 核心写入");
     const todo = this.prepareTodoCreate({ ...request, projectId }, actor);
     const draft: ProjectEventPromotionDto = {
       id: `pepr_${randomUUID()}`, projectId, eventId: event.id, eventTitle: event.title,
@@ -1511,9 +1515,13 @@ export class ProjectService {
   async recordReviewAsync(projectId: string, note: string | undefined, createdBy: string, actor?: ProjectWriteActor): Promise<ProjectReviewDto> {
     if (actor && actor.projectId !== projectId) throw new Error("任务的项目归属已变化，请重新读取");
     const wireStrings = [projectId, createdBy, ...(note === undefined ? [] : [note]), ...(actor ? [actor.taskId] : [])];
+    const native = await this.repository.supportsNativeWrites("review");
     if (wireStrings.some(value => typeof value !== "string" || /[\uD800-\uDFFF]/u.test(value))
         || (note?.trim().length ?? 0) > PROJECT_REVIEW_NOTE_MAX_CHARS
-        || !await this.repository.supportsNativeWrites("review")) {
+        || !native) {
+      if (this.repository.requiresRustWrites) {
+        throw new Error("项目评审写入失败：受监督模式下仅允许合法 UTF-8 通过 Rust 核心保存");
+      }
       return this.recordReview(projectId, note, createdBy, actor);
     }
     const review = this.prepareReview(projectId, note, createdBy);

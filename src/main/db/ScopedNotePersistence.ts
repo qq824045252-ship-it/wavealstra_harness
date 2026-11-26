@@ -8,7 +8,12 @@ export class ScopedNotePersistence {
     private readonly scope: RuntimeNoteScope,
     private readonly maxChars: number,
     private readonly errors: NoteErrors,
+    private readonly readonlyConnection = false,
   ) {}
+
+  private get rustRequired(): boolean {
+    return Boolean(this.readonlyConnection || this.reader?.supervised);
+  }
 
   async read<T extends RuntimeScopedNote>(id: string, key: "projectId" | "workspaceId", readOnHost: () => T): Promise<T> {
     const result = await this.reader?.readScopedNote(this.scope, id);
@@ -31,13 +36,17 @@ export class ScopedNotePersistence {
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new Error("便签版本无效，请先读取最新版本");
     const updatedAt = Date.now();
     // JavaScript can carry unpaired surrogates that Rust JSON strings cannot represent.
-    if (!this.reader || /[\uD800-\uDFFF]/u.test(content) || /[\uD800-\uDFFF]/u.test(id)) return saveOnHost(updatedAt);
+    if (!this.reader || /[\uD800-\uDFFF]/u.test(content) || /[\uD800-\uDFFF]/u.test(id)) {
+      if (this.rustRequired) throw new Error("便签写入需要 Rust 核心通道或包含无效字符");
+      return saveOnHost(updatedAt);
+    }
     const result = await this.reader.saveScopedNote(this.scope, id, { content, expectedRevision, updatedAt });
     if (result?.status === "ok") return { [key]: id, ...result.note } as T;
     if (result) throw new Error(this.errors[result.status]);
     // The commit may have reached SQLite before the worker lost its reply.
     const current = readOnHost();
     if (current.revision === expectedRevision + 1 && current.updatedAt === updatedAt && current.content === content) return current;
+    if (this.rustRequired) throw new Error("便签保存未获 Rust 核心确认，请刷新后重试");
     return saveOnHost(updatedAt);
   }
 }

@@ -15,8 +15,10 @@ export type ExecutionFailureDismissReply =
   | { status: "needsHost" };
 
 interface ExecutionFailureNativeStore {
+  readonly supervised?: boolean;
   executionFailures(taskId: string): Promise<ExecutionFailureRow[] | undefined>;
   dismissExecutionFailure(taskId: string, id: string, at: number): Promise<ExecutionFailureDismissReply | undefined>;
+  writeExecutionFailures?<T = unknown>(request: Record<string, unknown>): Promise<T | undefined>;
 }
 
 /**
@@ -27,8 +29,10 @@ interface ExecutionFailureNativeStore {
 const initializedConnections = new WeakSet<Database.Database>();
 
 export class ExecutionFailureRepository {
+  private writeTail: Promise<unknown> = Promise.resolve();
+
   constructor(private readonly db: Database.Database, private readonly native?: ExecutionFailureNativeStore) {
-    if (initializedConnections.has(db)) return;
+    if (db.readonly || initializedConnections.has(db)) return;
     db.exec(`CREATE TABLE IF NOT EXISTS execution_failures (
       id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, cause_code TEXT NOT NULL,
       record_json TEXT NOT NULL, created_at INTEGER NOT NULL, resolved_at INTEGER
@@ -42,11 +46,40 @@ export class ExecutionFailureRepository {
     initializedConnections.add(db);
   }
 
+  flush(): Promise<void> {
+    return this.writeTail.then(() => undefined, () => undefined);
+  }
+
+  private get rustRequired(): boolean {
+    return Boolean(this.db.readonly || this.native?.supervised);
+  }
+
+  private enqueueRustWrite(request: Record<string, unknown>): void {
+    const store = this.native?.writeExecutionFailures?.bind(this.native);
+    if (!store) {
+      throw new Error("ExecutionFailureRepository 缺少 Rust 写入通道");
+    }
+    const next = this.writeTail.then(async () => {
+      const reply = await store(request);
+      if (reply === undefined) throw new Error(`执行失败记录写入未获 Rust 确认: ${String(request.kind)}`);
+      return reply;
+    });
+    this.writeTail = next.catch((error) => {
+      console.warn(`[ExecutionFailures] Rust write failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
   record(input: Omit<ExecutionFailureDto, "id" | "createdAt" | "resolvedAt" | "dismissedAt">): ExecutionFailureDto {
     const record = { ...input, message: input.message.slice(0, 8000), nextAction: input.nextAction.slice(0, 2000), id: randomUUID(), createdAt: Date.now() };
+    const recordJson = JSON.stringify(record);
+    if (this.native?.writeExecutionFailures && this.rustRequired) {
+      this.enqueueRustWrite({ kind: "record", id: record.id, taskId: record.taskId, causeCode: record.causeCode, recordJson, createdAt: record.createdAt });
+      return record;
+    }
+    if (this.db.readonly) throw new Error("只读数据库模式下无法写入 execution_failures");
     this.db.transaction(() => {
       this.db.prepare("INSERT INTO execution_failures(id,task_id,cause_code,record_json,created_at) VALUES (?,?,?,?,?)")
-        .run(record.id, record.taskId, record.causeCode, JSON.stringify(record), record.createdAt);
+        .run(record.id, record.taskId, record.causeCode, recordJson, record.createdAt);
       this.db.prepare("DELETE FROM execution_failures WHERE task_id = ? AND id NOT IN (SELECT id FROM execution_failures WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 100)").run(record.taskId, record.taskId);
     })();
     return record;
@@ -57,7 +90,23 @@ export class ExecutionFailureRepository {
     // create a fresh visible record instead of reviving or silently swallowing the old one.
     const existing = this.list(input.taskId).find((item) => !item.resolvedAt && item.causeCode === input.causeCode
       && item.target === input.target && item.recovery === input.recovery && item.phase === input.phase);
-    return existing ?? this.record(input);
+    if (existing) return existing;
+    if (this.native?.writeExecutionFailures && this.rustRequired) {
+      const record = { ...input, message: input.message.slice(0, 8000), nextAction: input.nextAction.slice(0, 2000), id: randomUUID(), createdAt: Date.now() };
+      this.enqueueRustWrite({
+        kind: "recordIfAbsent",
+        id: record.id,
+        taskId: record.taskId,
+        causeCode: record.causeCode,
+        target: record.target ?? null,
+        recovery: record.recovery,
+        phase: record.phase,
+        recordJson: JSON.stringify(record),
+        createdAt: record.createdAt,
+      });
+      return record;
+    }
+    return this.record(input);
   }
 
   list(taskId: string, { includeDismissed = false, limit = 100 } = {}): ExecutionFailureDto[] {
@@ -104,11 +153,18 @@ export class ExecutionFailureRepository {
   }
 
   resolveWorkspaceFailures(taskId: string): void {
-    this.db.prepare("UPDATE execution_failures SET resolved_at = ? WHERE task_id = ? AND resolved_at IS NULL AND cause_code IN ('workspace-path-missing','workspace-path-invalid','workspace-binding-missing','workspace-binding-cycle')").run(Date.now(), taskId);
+    const at = Date.now();
+    if (this.native?.writeExecutionFailures && this.rustRequired) {
+      this.enqueueRustWrite({ kind: "resolveWorkspaceFailures", taskId, at });
+      return;
+    }
+    if (this.db.readonly) throw new Error("只读数据库模式下无法修改 execution_failures");
+    this.db.prepare("UPDATE execution_failures SET resolved_at = ? WHERE task_id = ? AND resolved_at IS NULL AND cause_code IN ('workspace-path-missing','workspace-path-invalid','workspace-binding-missing','workspace-binding-cycle')").run(at, taskId);
   }
 
   /** Hide one recovery card without claiming the underlying failure is resolved. */
   dismiss(taskId: string, id: string): boolean {
+    if (this.db.readonly) throw new Error("只读数据库模式下请使用 dismissForDisplay");
     const change = this.db.prepare("UPDATE execution_failures SET dismissed_at = ? WHERE id = ? AND task_id = ? AND resolved_at IS NULL AND dismissed_at IS NULL").run(Date.now(), id, taskId);
     return change.changes > 0;
   }
@@ -117,7 +173,7 @@ export class ExecutionFailureRepository {
     if (!this.native) return this.dismiss(taskId, id);
     const result = await this.native.dismissExecutionFailure(taskId, id, Date.now());
     if (result?.status === "saved") return result.dismissed;
-    if (result?.status === "needsHost") return this.dismiss(taskId, id);
+    if (result?.status === "needsHost" && !this.rustRequired) return this.dismiss(taskId, id);
     if (result?.status === "rejected") throw new Error(result.message);
     throw new Error("无法确认恢复提示已隐藏");
   }
@@ -135,9 +191,21 @@ export class ExecutionFailureRepository {
       }
       return [row.id];
     });
-    if (!ids.length) return 0;
-    const update = this.db.prepare("UPDATE execution_failures SET resolved_at = ? WHERE id = ? AND task_id = ? AND resolved_at IS NULL");
     const now = Date.now();
+    if (this.native?.writeExecutionFailures && this.rustRequired) {
+      this.enqueueRustWrite({
+        kind: "resolveMatching",
+        taskId,
+        target: input.target ?? null,
+        causeCodes: input.causeCodes ? [...input.causeCodes] : null,
+        sideEffects: input.sideEffects ?? null,
+        at: now,
+      });
+      return ids.length;
+    }
+    if (!ids.length) return 0;
+    if (this.db.readonly) throw new Error("只读数据库模式下无法修改 execution_failures");
+    const update = this.db.prepare("UPDATE execution_failures SET resolved_at = ? WHERE id = ? AND task_id = ? AND resolved_at IS NULL");
     return this.db.transaction(() => ids.reduce((count, id) => count + update.run(now, id, taskId).changes, 0))();
   }
 }

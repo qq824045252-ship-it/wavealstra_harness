@@ -69,11 +69,78 @@ export function prepareMemoryTurn(input: CaptureMemoryTurnInput): PreparedTurn {
 }
 
 export class MemoryTurnRepository {
+  private writeTail: Promise<void> = Promise.resolve();
+
   constructor(private readonly db: AppDatabase) {}
   private get conn() { return this.db.connection; }
 
+  private get requiresRustWrites(): boolean {
+    return Boolean(this.db.readonly || this.db.runtimeAuditReader?.supervised);
+  }
+
+  async flush(): Promise<void> {
+    await this.writeTail;
+  }
+
+  private enqueueBatch3(context: string, request: Record<string, unknown>): void {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error(`${context}：Rust 写入核心未就绪`);
+    const next = this.writeTail.then(async () => {
+      const result = await reader.batch3Write(request);
+      if (result === undefined) throw new Error(`${context}：Rust 写入未收到确认`);
+    });
+    this.writeTail = next.then(() => undefined, () => undefined);
+  }
+
   capture(input: CaptureMemoryTurnInput): { turn: MemoryTurnDto; created: boolean } {
     const prepared = prepareMemoryTurn(input);
+    if (this.requiresRustWrites) {
+      const userText = prepared.userText.trim();
+      const assistantText = prepared.assistantText.trim();
+      const contentHash = hashTurn(userText, assistantText);
+      const existing = (prepared.assistantMessageId
+        ? this.conn.prepare("SELECT id FROM memory_turns WHERE assistant_message_id=?").get(prepared.assistantMessageId)
+        : this.conn.prepare("SELECT id FROM memory_turns WHERE task_id=? AND content_hash=? ORDER BY captured_at DESC LIMIT 1")
+          .get(prepared.taskId, contentHash)) as { id: string } | undefined;
+      if (existing) {
+        const turn = this.get(existing.id) ?? this.mapTurn(this.conn.prepare("SELECT * FROM memory_turns WHERE id=?").get(existing.id) as Record<string, unknown>);
+        return { turn, created: false };
+      }
+      this.enqueueBatch3("捕获记忆轮次", {
+        kind: "memoryTurnCapture",
+        turn: {
+          id: prepared.id,
+          taskId: prepared.taskId,
+          sessionId: prepared.sessionId ?? null,
+          userMessageId: prepared.userMessageId ?? null,
+          assistantMessageId: prepared.assistantMessageId ?? null,
+          userText,
+          assistantText,
+          contentHash,
+          capturedAt: prepared.capturedAt,
+          metadataJson: prepared.metadataJson,
+        },
+        noteCaptured: false,
+        now: Date.now(),
+      });
+      return {
+        turn: {
+          id: prepared.id,
+          taskId: prepared.taskId,
+          sessionId: prepared.sessionId,
+          userMessageId: prepared.userMessageId,
+          assistantMessageId: prepared.assistantMessageId,
+          userText,
+          assistantText,
+          contentHash,
+          capturedAt: prepared.capturedAt,
+          extractionState: "pending",
+          attemptCount: 0,
+          metadata: JSON.parse(prepared.metadataJson) as Record<string, unknown>,
+        },
+        created: true,
+      };
+    }
     return this.conn.transaction(() => {
       const { id, created } = this.insertTurn(prepared);
       const turn = created ? this.get(id) : this.mapTurn(this.conn.prepare("SELECT * FROM memory_turns WHERE id=?").get(id) as Record<string, unknown>);
@@ -82,6 +149,9 @@ export class MemoryTurnRepository {
   }
 
   captureCompletedOnHost(capture: RuntimeMemoryCapture): number {
+    if (this.requiresRustWrites) {
+      throw new Error("保存完成轮次记忆无法回退到宿主 SQLite");
+    }
     return this.conn.transaction(() => {
       const save = (turn: PreparedTurn): number => {
         const { id, created } = this.insertTurn(turn);
@@ -308,6 +378,18 @@ export class MemoryTurnRepository {
 
   /** Remove all captured originals, keeping the bounded evidence owned by durable memories. */
   deleteAll(): number {
+    if (this.requiresRustWrites) {
+      const total = this.countByState();
+      if (total > 0) {
+        this.enqueueBatch3("清空捕获轮次", {
+          kind: "memoryTurnDelete",
+          deleteAll: true,
+          ids: [],
+          now: Date.now(),
+        });
+      }
+      return total;
+    }
     return this.conn.transaction(() => {
       this.conn.prepare(`UPDATE memory_evidence
         SET excerpt = COALESCE(NULLIF(excerpt,''), (
@@ -325,6 +407,18 @@ export class MemoryTurnRepository {
   deleteMany(ids: readonly string[]): number {
     const unique = [...new Set(ids)].filter(Boolean);
     if (!unique.length) return 0;
+    if (this.requiresRustWrites) {
+      const existing = unique.filter((id) => Boolean(this.conn.prepare("SELECT 1 FROM memory_turns WHERE id=?").get(id)));
+      if (existing.length > 0) {
+        this.enqueueBatch3("批量删除捕获轮次", {
+          kind: "memoryTurnDelete",
+          deleteAll: false,
+          ids: existing,
+          now: Date.now(),
+        });
+      }
+      return existing.length;
+    }
     return this.conn.transaction(() => {
       const find = this.conn.prepare("SELECT task_id FROM memory_turns WHERE id=?");
       const preserveEvidence = this.conn.prepare(`UPDATE memory_evidence
@@ -363,15 +457,41 @@ export class MemoryTurnRepository {
 
   /** A partially deleted batch must be extracted again using only its surviving sources. */
   requeueProcessing(ids: readonly string[]): void {
+    const unique = [...new Set(ids)].filter(Boolean);
+    if (!unique.length) return;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("重排记忆轮次", {
+        kind: "memoryTurnUpdateState",
+        stateAction: "requeue",
+        ids: unique,
+        now: Date.now(),
+        error: null,
+        taskId: null,
+        remainingPending: null,
+      });
+      return;
+    }
     const reset = this.conn.prepare(`UPDATE memory_turns
       SET extraction_state='pending',attempt_count=MAX(0,attempt_count-1),last_error=NULL
       WHERE id=? AND extraction_state='processing'`);
-    this.conn.transaction(() => { for (const id of new Set(ids)) reset.run(id); })();
+    this.conn.transaction(() => { for (const id of unique) reset.run(id); })();
   }
 
   markProcessing(ids: readonly string[]): void {
     const unique = [...new Set(ids)].filter(Boolean);
     if (!unique.length) return;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("标记记忆提取中", {
+        kind: "memoryTurnUpdateState",
+        stateAction: "processing",
+        ids: unique,
+        now: Date.now(),
+        error: null,
+        taskId: null,
+        remainingPending: null,
+      });
+      return;
+    }
     const stmt = this.conn.prepare(
       "UPDATE memory_turns SET extraction_state='processing',attempt_count=attempt_count+1,last_error=NULL WHERE id=?",
     );
@@ -381,6 +501,18 @@ export class MemoryTurnRepository {
   markCompleted(ids: readonly string[], now = Date.now()): void {
     const unique = [...new Set(ids)].filter(Boolean);
     if (!unique.length) return;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("标记记忆提取完成", {
+        kind: "memoryTurnUpdateState",
+        stateAction: "completed",
+        ids: unique,
+        now,
+        error: null,
+        taskId: null,
+        remainingPending: null,
+      });
+      return;
+    }
     const stmt = this.conn.prepare(
       "UPDATE memory_turns SET extraction_state='completed',extracted_at=?,last_error=NULL WHERE id=?",
     );
@@ -391,10 +523,43 @@ export class MemoryTurnRepository {
     const unique = [...new Set(ids)].filter(Boolean);
     if (!unique.length) return;
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000);
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("标记记忆提取失败", {
+        kind: "memoryTurnUpdateState",
+        stateAction: "failed",
+        ids: unique,
+        now: Date.now(),
+        error: message,
+        taskId: null,
+        remainingPending: null,
+      });
+      return;
+    }
     const stmt = this.conn.prepare(
       "UPDATE memory_turns SET extraction_state='failed',last_error=? WHERE id=?",
     );
     this.conn.transaction(() => { for (const id of unique) stmt.run(message, id); })();
+  }
+
+  markSkillDistilled(ids: readonly string[]): void {
+    const unique = [...new Set(ids)].filter(Boolean);
+    if (!unique.length) return;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("标记技能提炼已检查", {
+        kind: "memoryTurnUpdateState",
+        stateAction: "skillDistilled",
+        ids: unique,
+        now: Date.now(),
+        error: null,
+        taskId: null,
+        remainingPending: null,
+      });
+      return;
+    }
+    const stmt = this.conn.prepare(
+      "UPDATE memory_turns SET metadata_json=json_set(metadata_json,'$.skillDistilled',1) WHERE id=?",
+    );
+    this.conn.transaction(() => { for (const id of unique) stmt.run(id); })();
   }
 
   /** Failed turns become pending again with a fresh attempt budget; caller may drive extraction via the returned task ids. */
@@ -404,6 +569,13 @@ export class MemoryTurnRepository {
     ).all() as Array<{ id: string; task_id: string }>;
     const eligible = rows.filter((row) => this.canExtractTask(row.task_id));
     if (eligible.length === 0) return { reset: 0, taskIds: [] };
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("重置失败轮次", {
+        kind: "memoryResetFailedTurns",
+        eligibleIds: eligible.map((row) => row.id),
+      });
+      return { reset: eligible.length, taskIds: [...new Set(eligible.map((row) => row.task_id))] };
+    }
     const stmt = this.conn.prepare(
       "UPDATE memory_turns SET extraction_state='pending',attempt_count=0,last_error=NULL WHERE id=? AND extraction_state='failed'",
     );
@@ -439,6 +611,24 @@ export class MemoryTurnRepository {
   }
 
   noteCaptured(taskId: string, now = Date.now()): MemoryPipelineStateDto {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("记录记忆捕获计数", {
+        kind: "memoryTurnUpdateState",
+        stateAction: "noteCaptured",
+        ids: [],
+        now,
+        error: null,
+        taskId,
+        remainingPending: null,
+      });
+      const current = this.getPipelineState(taskId);
+      return {
+        ...current,
+        capturedTurns: current.capturedTurns + 1,
+        turnsSinceL1: current.turnsSinceL1 + 1,
+        updatedAt: now,
+      };
+    }
     this.updateCaptureCount(taskId, now);
     return this.getPipelineState(taskId);
   }
@@ -456,13 +646,33 @@ export class MemoryTurnRepository {
   }
 
   noteL1Completed(taskId: string, remainingPending = 0, now = Date.now()): MemoryPipelineStateDto {
+    const remaining = Math.max(0, remainingPending);
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("更新记忆 L1 完成状态", {
+        kind: "memoryTurnUpdateState",
+        stateAction: "noteL1Completed",
+        ids: [],
+        now,
+        error: null,
+        taskId,
+        remainingPending: remaining,
+      });
+      const current = this.getPipelineState(taskId);
+      return {
+        ...current,
+        turnsSinceL1: remaining,
+        lastL1At: now,
+        l1RunCount: current.l1RunCount + 1,
+        updatedAt: now,
+      };
+    }
     this.conn.prepare(
       `INSERT INTO memory_pipeline_state (
         task_id,captured_turns,turns_since_l1,last_l1_at,last_l2_at,last_l3_at,l1_run_count,l2_run_count,l3_run_count,updated_at
       ) VALUES (?,0,?,?,NULL,NULL,1,0,0,?)
       ON CONFLICT(task_id) DO UPDATE SET
         turns_since_l1=excluded.turns_since_l1,last_l1_at=excluded.last_l1_at,l1_run_count=l1_run_count+1,updated_at=excluded.updated_at`,
-    ).run(taskId, Math.max(0, remainingPending), now, now);
+    ).run(taskId, remaining, now, now);
     return this.getPipelineState(taskId);
   }
 

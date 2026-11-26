@@ -31,6 +31,16 @@ pub enum Job {
         coverage: bool,
     },
     RepairCoverage,
+    SubagentBatch {
+        entries: Vec<ArchiveEntry>,
+        coverage: bool,
+    },
+    BranchWatermark {
+        session_file: String,
+        inherited_last_entry_id: String,
+        file_size: i64,
+        updated_at: i64,
+    },
 }
 
 #[derive(Default, Deserialize)]
@@ -506,7 +516,7 @@ fn reconcile(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ArchiveEntry {
+pub struct ArchiveEntry {
     subagent_id: String,
     role: Option<String>,
     scope: Option<String>,
@@ -688,6 +698,38 @@ pub fn run(connection: &mut Option<Connection>, path: &Path, job: Job) -> Result
             let count = usage_live::repair_coverage(&tx)?;
             tx.commit()?;
             count
+        }
+        Job::SubagentBatch { entries, coverage } => {
+            let tx = write_connection(connection, path)?
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let count = subagent_rows(&tx, entries, coverage)?;
+            tx.commit()?;
+            count
+        }
+        Job::BranchWatermark {
+            session_file,
+            inherited_last_entry_id,
+            file_size,
+            updated_at,
+        } => {
+            let tx = write_connection(connection, path)?
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let updated = tx.execute(
+                "UPDATE usage_backfill_state
+                 SET last_entry_id = ?1, file_size = ?2, file_mtime = 0, updated_at = ?3
+                 WHERE session_file = ?4",
+                params![inherited_last_entry_id, file_size, updated_at, session_file],
+            )?;
+            if updated == 0 {
+                tx.execute(
+                    "INSERT INTO usage_backfill_state
+                       (session_file, last_entry_id, file_size, file_mtime, user_messages, updated_at)
+                     VALUES (?1, ?2, ?3, 0, 0, ?4)",
+                    params![session_file, inherited_last_entry_id, file_size, updated_at],
+                )?;
+            }
+            tx.commit()?;
+            1
         }
     };
     Ok(json!(saved))

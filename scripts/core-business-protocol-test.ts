@@ -1,0 +1,498 @@
+/** Step 3 real-process acceptance suite (`RC-06`, `RC-07`, `RC-08`). */
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { CoreBusinessClient, type CoreDomainEvent } from "../src/main/platform/core-business-client";
+import { connectCoreWorker, shutdownCoreWorker } from "../src/main/platform/core-client";
+import { buildCoreAutostartSpec, launchCoreWatchdog, syncCoreAutostart } from "../src/main/platform/core-autostart";
+import { ExecutionHostBridge, createDurableBotExecutionRunner } from "../src/main/host/ExecutionHostBridge";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
+
+const executable = process.env.RUNTIME_AUDIT_BINARY ?? locateRuntimeAudit(process.cwd());
+assert(executable && existsSync(executable), "The real Rust worker binary is required");
+
+const testsRoot = join(process.cwd(), "out", "tests");
+mkdirSync(testsRoot, { recursive: true });
+const sandbox = mkdtempSync(join(testsRoot, "core-business-protocol-"));
+const trackedPids = new Set<number>();
+const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+async function within<T>(promise: Promise<T>, label: string, timeoutMs = 8_000): Promise<T> {
+  let timer: NodeJS.Timeout;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timeout (${timeoutMs}ms): ${label}`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
+async function waitUntil(predicate: () => boolean | Promise<boolean>, label: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await delay(25);
+  }
+  throw new Error(`waitUntil timed out: ${label}`);
+}
+
+function readJson<T>(path: string): T | undefined {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+async function verifyMultiRoleIsolationAndDomainCommands(): Promise<void> {
+  const dir = mkdtempSync(join(sandbox, "rc06-"));
+  const dataDir = join(dir, "data");
+  const dbPath = join(dir, "app.db");
+  const gadgetDir = join(dir, "gadget");
+  mkdirSync(dataDir);
+  mkdirSync(gadgetDir);
+  writeFileSync(dbPath, "");
+
+  let ui1: CoreBusinessClient | undefined;
+  let ui2: CoreBusinessClient | undefined;
+  let bg: CoreBusinessClient | undefined;
+  let execClient: CoreBusinessClient | undefined;
+
+  try {
+    ui1 = await within(CoreBusinessClient.connect(executable!, dbPath, { dataDirectory: dataDir, role: "ui", clientId: "ui-1" }), "ui-1 connect");
+    ui2 = await within(CoreBusinessClient.connect(executable!, dbPath, { dataDirectory: dataDir, role: "ui", clientId: "ui-2" }), "ui-2 connect");
+    bg = await within(CoreBusinessClient.connect(executable!, dbPath, { dataDirectory: dataDir, role: "background-service", clientId: "bg-1" }), "bg-1 connect");
+    execClient = await within(CoreBusinessClient.connect(executable!, dbPath, { dataDirectory: dataDir, role: "execution-host", clientId: "exec-1" }), "exec-1 connect");
+
+    assert.equal(ui1.workerPid, bg.workerPid);
+    assert.equal(execClient.workerPid, ui1.workerPid);
+    assert.notEqual(ui1.connectionEpoch, ui2.connectionEpoch);
+
+    // Duplicate exclusive role must be rejected without disturbing live clients.
+    await assert.rejects(
+      connectCoreWorker(executable!, dbPath, { dataDirectory: dataDir, role: "background-service", clientId: "bg-dup", timeoutMs: 700 }),
+      /role_busy|Core did not become available/,
+    );
+
+    // Named domain command: optimistic revision check and commandId deduplication.
+    const first = await ui1.upsertNote({
+      commandId: "cmd-note-1",
+      entityId: "note-a",
+      expectedRevision: 0,
+      title: "v1",
+      body: { text: "alpha" },
+    });
+    assert.equal(first.status, "committed");
+    assert.equal(first.revision, 1);
+
+    const dup = await ui2.upsertNote({
+      commandId: "cmd-note-1",
+      entityId: "note-a",
+      title: "should-dedup",
+    });
+    assert.equal(dup.deduplicated, true);
+    assert.equal(dup.revision, 1);
+
+    const conflict = await ui2.upsertNote({
+      commandId: "cmd-note-conflict",
+      entityId: "note-a",
+      expectedRevision: 0,
+      title: "stale",
+    });
+    assert.equal(conflict.code, "REVISION_CONFLICT");
+
+    // Cross-role isolation: UI cannot impersonate execution-host.
+    const spoofAck = await ui1.request<Record<string, unknown>>({
+      operation: "coreExecution",
+      action: "executorAck",
+      executionId: "missing",
+      attempt: 1,
+    });
+    assert.equal(spoofAck.code, "FORBIDDEN_ROLE");
+
+    // Open Gadget on background-service while UI disconnects; UI disconnect must not revoke bg generation.
+    const opened = await bg.request<Record<string, unknown>>({ operation: "gadgetState", request: { kind: "open", path: gadgetDir } });
+    assert.equal(opened.kind, "opened");
+    const bgGen = randomUUID();
+    const bgWrite = await bg.request<Record<string, unknown>>({
+      operation: "gadgetState",
+      request: {
+        kind: "access",
+        path: gadgetDir,
+        canonicalPath: opened.canonicalPath,
+        bucket: "storage",
+        action: { operation: "set", key: [98], valueJson: JSON.stringify("bg-alive"), writeId: randomUUID() },
+        authorization: { generation: bgGen, invocationId: "bg-inv-1", expiresAt: Date.now() + 30_000 },
+      },
+    });
+    assert.equal(bgWrite.kind, "value");
+
+    // Start an execution on execClient, then disconnect UI -> execution & bg-1 stay healthy.
+    const submitted = await ui1.submitExecution({
+      executionId: "exec-ui-disconnect",
+      idempotencyKey: "key-ui-disconnect",
+      taskId: "task-bg",
+      kind: "pi_turn",
+      payload: { prompt: "keep going" },
+    });
+    assert.equal(submitted.execution?.status, "dispatching");
+    const acked = await execClient.executorAck("exec-ui-disconnect", 1);
+    assert.equal((acked.execution as { status: string }).status, "running");
+
+    await ui1.close();
+    ui1 = undefined;
+    await delay(50);
+
+    // Background Gadget generation and in-flight execution must survive UI disconnect.
+    const bgWrite2 = await bg.request<Record<string, unknown>>({
+      operation: "gadgetState",
+      request: {
+        kind: "access",
+        path: gadgetDir,
+        canonicalPath: opened.canonicalPath,
+        bucket: "storage",
+        action: { operation: "set", key: [99], valueJson: JSON.stringify("after-ui-drop"), writeId: randomUUID() },
+        authorization: { generation: bgGen, invocationId: "bg-inv-2", expiresAt: Date.now() + 30_000 },
+      },
+    });
+    assert.equal(bgWrite2.kind, "value");
+
+    const settled = await execClient.executorSettled({
+      executionId: "exec-ui-disconnect",
+      attempt: 1,
+      status: "completed",
+      result: { text: "done-without-ui" },
+    });
+    assert.equal((settled.execution as { status: string }).status, "completed");
+
+    console.log("PASS RC-06 multi-role isolation, optimistic revision, command dedup, and UI disconnect independence");
+  } finally {
+    await ui1?.close().catch(() => undefined);
+    await ui2?.close().catch(() => undefined);
+    await bg?.close().catch(() => undefined);
+    await execClient?.close().catch(() => undefined);
+    await shutdownCoreWorker(dataDir, dbPath).catch(() => undefined);
+  }
+}
+
+async function verifyEventSnapshotCursorAndGapResync(): Promise<void> {
+  const dir = mkdtempSync(join(sandbox, "rc07-"));
+  const dataDir = join(dir, "data");
+  const dbPath = join(dir, "app.db");
+  mkdirSync(dataDir);
+  writeFileSync(dbPath, "");
+
+  let bg: CoreBusinessClient | undefined;
+  let ui: CoreBusinessClient | undefined;
+
+  try {
+    bg = await within(CoreBusinessClient.connect(executable!, dbPath, { dataDirectory: dataDir, role: "background-service", clientId: "bg" }), "rc07 bg");
+    ui = await within(CoreBusinessClient.connect(executable!, dbPath, { dataDirectory: dataDir, role: "ui", clientId: "ui-sub" }), "rc07 ui");
+
+    const received: CoreDomainEvent[] = [];
+    const resyncs: Array<{ headSeq: number; reason: string }> = [];
+    let sub = await ui.openEventSubscription({
+      domain: "domainNote",
+      onEvent: ev => received.push(ev),
+      onResync: (snap, reason) => resyncs.push({ headSeq: snap.headSeq, reason }),
+    });
+    const cursorBeforeDrop = sub.getCursor();
+    assert.equal(cursorBeforeDrop.lastSeq, 0);
+
+    await sub.close();
+    await ui.close();
+
+    // Commit 3 updates while UI subscriber is offline.
+    for (let i = 1; i <= 3; i++) {
+      await bg.upsertNote({
+        commandId: `offline-cmd-${i}`,
+        entityId: `note-${i}`,
+        title: `Offline ${i}`,
+      });
+    }
+
+    // Reconnect and incrementally catch up from the saved cursor.
+    ui = await within(CoreBusinessClient.connect(executable!, dbPath, { dataDirectory: dataDir, role: "ui", clientId: "ui-rejoin" }), "rc07 ui rejoin");
+    const replayEvents: CoreDomainEvent[] = [];
+    sub = await ui.openEventSubscription({
+      domain: "domainNote",
+      onEvent: ev => replayEvents.push(ev),
+      onResync: (snap, reason) => resyncs.push({ headSeq: snap.headSeq, reason }),
+    });
+    assert.equal(sub.initialSnapshot.headSeq, 3);
+    assert.equal(sub.initialSnapshot.notes.length, 3);
+
+    const directReplay = await ui.eventsReplay(cursorBeforeDrop.lastSeq, cursorBeforeDrop.coreGeneration);
+    assert.equal(directReplay.gap, false);
+    assert.deepEqual(directReplay.events.map(e => e.seq), [1, 2, 3]);
+
+    // Shrink retention window so earlier events are pruned and stale cursor triggers gap resync.
+    await bg.setEventRetention(2);
+    for (let i = 4; i <= 7; i++) {
+      await bg.upsertNote({
+        commandId: `prune-cmd-${i}`,
+        entityId: `note-${i}`,
+        title: `Pruned ${i}`,
+      });
+    }
+
+    // Replaying from expired seq=0 must return gap=true and trigger full resync in openEventSubscription.
+    const staleReplay = await ui.eventsReplay(0, cursorBeforeDrop.coreGeneration);
+    assert.equal(staleReplay.gap, true);
+    assert.equal(staleReplay.reason, "cursor_expired");
+
+    const gapResult = await sub.replayFrom(0, cursorBeforeDrop.coreGeneration);
+    assert.equal(gapResult.resynced, true);
+    assert.equal(resyncs.length, 1);
+    assert.equal(resyncs[0].reason, "cursor_expired");
+    assert.equal(sub.getCursor().lastSeq, 7);
+
+    // Generation mismatch triggers gap resync instead of silently mixing cursors.
+    const wrongGen = await ui.eventsReplay(1, "previous-core-generation");
+    assert.equal(wrongGen.gap, true);
+    assert.equal(wrongGen.reason, "generation_mismatch");
+
+    // Replaying or reading snapshots never re-executes domain commands (revisions stay strictly 1).
+    const snap = await ui.eventsSnapshot("domainNote");
+    assert.equal(snap.notes.every(n => n.revision === 1), true);
+
+    await sub.close();
+    console.log("PASS RC-07 atomic snapshot watermark, incremental cursor catch-up, dedup, and retention-gap full resync");
+  } finally {
+    await ui?.close().catch(() => undefined);
+    await bg?.close().catch(() => undefined);
+    await shutdownCoreWorker(dataDir, dbPath).catch(() => undefined);
+  }
+}
+
+async function verifyExecutionBridgeAndWatchdogRecovery(): Promise<void> {
+  const dir = mkdtempSync(join(sandbox, "rc08-"));
+  const dataDir = join(dir, "data");
+  const dbPath = join(dir, "app.db");
+  mkdirSync(dataDir);
+  writeFileSync(dbPath, "");
+
+  // 1) Offline executor must honestly wait (`waiting_executor`), never report running/completed.
+  let ui: CoreBusinessClient | undefined;
+  let bridge: ExecutionHostBridge | undefined;
+  try {
+    ui = await within(CoreBusinessClient.connect(executable!, dbPath, { dataDirectory: dataDir, role: "ui", clientId: "ui-exec" }), "rc08 ui");
+    const offline = await ui.submitExecution({
+      executionId: "exec-offline-1",
+      idempotencyKey: "idem-offline-1",
+      taskId: "task-offline",
+      kind: "pi_turn",
+      payload: { prompt: "wait for executor" },
+    });
+    assert.equal(offline.execution?.status, "waiting_executor");
+
+    // Now start ExecutionHostBridge with a controllable fixture runner; waiting_executor auto-dispatches!
+    let finishSlow!: () => void;
+    const slowGate = new Promise<void>(resolve => { finishSlow = resolve; });
+    let runCount = 0;
+    bridge = new ExecutionHostBridge(executable!, dbPath, dataDir, {
+      async start(dispatch, helpers) {
+        runCount += 1;
+        await helpers.reportProgress({ step: dispatch.execution.executionId });
+        if (dispatch.execution.executionId === "exec-disconnect") {
+          await slowGate;
+        }
+        return { status: "completed", result: { runCount, executionId: dispatch.execution.executionId } };
+      },
+    });
+    await within(bridge.connect(), "connect ExecutionHostBridge");
+
+    await waitUntil(async () => {
+      const s = await ui!.executionStatus("exec-offline-1");
+      return s.execution?.status === "completed";
+    }, "offline queued execution dispatched and completed once executor arrived");
+    assert.equal(runCount, 1);
+
+    // Mid-run executor disconnect transitions running execution honestly to `unknown` without auto-replaying.
+    await ui.submitExecution({
+      executionId: "exec-disconnect",
+      idempotencyKey: "idem-disconnect",
+      taskId: "task-disconnect",
+      kind: "pi_turn",
+      payload: { prompt: "drop mid-flight" },
+    });
+    await waitUntil(async () => (await ui!.executionStatus("exec-disconnect")).execution?.status === "running", "exec-disconnect running");
+    await bridge.close();
+    finishSlow();
+
+    await waitUntil(async () => (await ui!.executionStatus("exec-disconnect")).execution?.status === "unknown", "executor disconnect marked unknown");
+    const reconciled = await ui.reconcileExecution({
+      executionId: "exec-disconnect",
+      status: "completed",
+      attempt: 1,
+      result: { reconciledBy: "test" },
+    });
+    assert.equal(reconciled.execution?.status, "completed");
+
+    // Duplicate idempotencyKey reuses original execution and does NOT increment runCount.
+    const dup = await ui.submitExecution({
+      executionId: "exec-disconnect-dup",
+      idempotencyKey: "idem-disconnect",
+      taskId: "task-disconnect",
+      kind: "pi_turn",
+    });
+    assert.equal(dup.deduplicated, true);
+    assert.equal(dup.execution?.executionId, "exec-disconnect");
+
+    // Queue / slot cap (1) + pause -> resume -> cancel lifecycle transitions.
+    await ui.setExecutionSlotsLimit(1);
+    const pausedBeforeExec = await ui.submitExecution({
+      executionId: "exec-pause-resume",
+      idempotencyKey: "idem-pause-resume",
+      taskId: "task-pause",
+      kind: "pi_turn",
+      payload: { prompt: "pausable" },
+    });
+    assert.equal(pausedBeforeExec.execution?.status, "waiting_executor");
+    const paused = await ui.pauseExecution("exec-pause-resume", pausedBeforeExec.execution!.revision);
+    assert.equal(paused.execution?.status, "paused");
+    const resumed = await ui.resumeExecution("exec-pause-resume", paused.execution!.revision);
+    assert.equal(resumed.execution?.status, "waiting_executor");
+    const cancelled = await ui.cancelExecution("exec-pause-resume", resumed.execution!.revision);
+    assert.equal(cancelled.execution?.status, "cancelled");
+
+    // Verify transitional Main Pi adapter maps DurableExecutionTarget states cleanly.
+    const mockTarget = {
+      async submit(req: { taskId: string; userMessageId: string }) {
+        return { queued: true, receipt: { taskId: req.taskId, operationId: req.userMessageId, submissionId: 1, status: "queued" as const } };
+      },
+      async waitForSubmission(receipt: { taskId: string; operationId: string; submissionId: number }) {
+        return { queued: false, receipt: { ...receipt, status: "done" as const } };
+      },
+      abort() { return undefined; },
+      async findSubmission() { return undefined; },
+    };
+    const piRunner = createDurableBotExecutionRunner(mockTarget);
+    const runnerOut = await piRunner.start(
+      { targetRole: "execution-host", targetEpoch: 1, coreGeneration: "g", action: "start", execution: cancelled.execution! },
+      { reportProgress: async () => undefined },
+    );
+    assert.equal(runnerOut.status, "completed");
+
+    await ui.close();
+    ui = undefined;
+  } finally {
+    await bridge?.close().catch(() => undefined);
+    await ui?.close().catch(() => undefined);
+    await shutdownCoreWorker(dataDir, dbPath).catch(() => undefined);
+  }
+
+  // 2) Unattended watchdog: worker kill -> recover, supervisor kill -> recover, crash streak -> circuit_open,
+  // --recover -> clears breaker, explicit `stop` (`停止助理`) -> exits cleanly and stays down.
+  const wdDir = join(dir, "watchdog-data");
+  const wdDb = join(dir, "watchdog.db");
+  mkdirSync(wdDir);
+  writeFileSync(wdDb, "");
+  const endpointFile = join(wdDir, "core.json");
+  const statusFile = join(wdDir, "core-status.json");
+  const lifecycleFile = join(wdDir, "core-lifecycle.json");
+
+  const wdEnv = {
+    MYBUDDY_CORE_BACKOFF_MS: "40",
+    MYBUDDY_CORE_RESTART_WINDOW_MS: "20000",
+    MYBUDDY_CORE_MAX_RESTARTS: "3",
+  };
+  const wd = await launchCoreWatchdog(executable!, wdDir, wdDb, { env: wdEnv });
+  if (wd.pid) trackedPids.add(wd.pid);
+
+  await waitUntil(() => Boolean(readJson<{ workerPid?: number; pid?: number }>(endpointFile)?.workerPid), "watchdog initial supervisor ready");
+  const ep1 = readJson<{ pid: number; workerPid: number; generation: string }>(endpointFile)!;
+  trackedPids.add(ep1.pid); trackedPids.add(ep1.workerPid);
+
+  // Kill WORKER with zero UI connected -> watchdog + Core recover with new worker/generation.
+  process.kill(ep1.workerPid, "SIGKILL");
+  await waitUntil(() => {
+    const next = readJson<{ workerPid?: number; generation?: string }>(endpointFile);
+    return Boolean(next?.workerPid && next.workerPid !== ep1.workerPid && next.generation !== ep1.generation);
+  }, "unattended worker crash recovery");
+  const ep2 = readJson<{ pid: number; workerPid: number; generation: string }>(endpointFile)!;
+  trackedPids.add(ep2.pid); trackedPids.add(ep2.workerPid);
+
+  // Kill SUPERVISOR directly -> watchdog relaunches supervisor + worker without UI.
+  process.kill(ep2.pid, "SIGKILL");
+  await waitUntil(() => {
+    const next = readJson<{ pid?: number; workerPid?: number; generation?: string }>(endpointFile);
+    return Boolean(next?.pid && next.pid !== ep2.pid && next.generation !== ep2.generation);
+  }, "unattended supervisor crash recovery");
+
+  // Push crash streak past MYBUDDY_CORE_MAX_RESTARTS=3 -> circuit_open.
+  const ep3 = readJson<{ pid: number; workerPid: number }>(endpointFile)!;
+  process.kill(ep3.workerPid, "SIGKILL");
+  await waitUntil(() => readJson<{ circuitOpen?: boolean; state?: string }>(statusFile)?.circuitOpen === true, "circuit breaker open");
+  const openedStatus = readJson<{ circuitOpen: boolean; state: string; workerRestartCount: number }>(statusFile)!;
+  assert.equal(openedStatus.state, "circuit_open");
+  assert(openedStatus.workerRestartCount >= 2);
+
+  // Watchdog refuses to spin while circuit_open unless `--recover` is supplied.
+  const refusedCode = await new Promise<number | null>(resolve => {
+    const child = spawn(wd.executable, ["--watchdog", wdDir, wdDb], { windowsHide: true, env: { ...process.env, ...wdEnv } });
+    child.once("exit", code => resolve(code));
+  });
+  assert.notEqual(refusedCode, 0);
+
+  // Explicit recovery clears breaker and restores Core cleanly.
+  const recoveredWd = await launchCoreWatchdog(executable!, wdDir, wdDb, { recover: true, env: wdEnv });
+  if (recoveredWd.pid) trackedPids.add(recoveredWd.pid);
+  await waitUntil(() => Boolean(readJson<{ workerPid?: number }>(endpointFile)?.workerPid), "explicit --recover restart");
+
+  // Explicit stop (`停止助理`): sets `stopped_explicitly`, shuts down Core, and prevents watchdog re-spawn.
+  const ctrl = await within(CoreBusinessClient.connect(executable!, wdDb, { dataDirectory: wdDir, role: "background-service", clientId: "stop-ctrl" }), "connect stop-ctrl");
+  const stopReply = await ctrl.assistantLifecycle("stop", { reason: "explicit_user_stop" });
+  assert.equal(stopReply.state.mode, "stopped_explicitly");
+  await waitUntil(() => !existsSync(endpointFile), "explicit stop tears down endpoint");
+  await ctrl.close().catch(() => undefined);
+
+  assert.equal(readJson<{ mode: string }>(lifecycleFile)?.mode, "stopped_explicitly");
+  await delay(200);
+  assert.equal(existsSync(endpointFile), false, "watchdog must not restart after stopped_explicitly");
+
+  // Launching watchdog directly while stopped_explicitly must exit 0 immediately without starting Core.
+  const skippedExit = await new Promise<number | null>(resolve => {
+    const child = spawn(wd.executable, ["--watchdog", wdDir, wdDb], { windowsHide: true });
+    child.once("exit", code => resolve(code));
+  });
+  assert.equal(skippedExit, 0);
+  assert.equal(existsSync(endpointFile), false);
+
+  // Autostart OS registration helper respects stop fence on both Windows and Linux specs.
+  const invoked: Array<{ cmd: string; args: string[] }> = [];
+  const resOff = await syncCoreAutostart({
+    executable: executable!,
+    dataDirectory: wdDir,
+    dbPath: wdDb,
+    autostartEnabled: true,
+    platform: "windows",
+    runner: async (cmd, args) => { invoked.push({ cmd, args }); },
+  });
+  assert.equal(resOff.enabled, false, "autostart must stay disabled when core-lifecycle is stopped_explicitly");
+  assert.equal(invoked.some(i => i.args[0] === "delete"), true);
+
+  const linuxSpec = buildCoreAutostartSpec(executable!, dataDir, dbPath, "linux", dir);
+  assert.equal(linuxSpec.kind, "linux-systemd-xdg");
+  assert.match(linuxSpec.commandLine, /--watchdog/);
+
+  console.log("PASS RC-08 offline wait, execution bridge, unknown/reconcile, unattended watchdog/circuit-breaker, and explicit stop fence");
+}
+
+try {
+  await verifyMultiRoleIsolationAndDomainCommands();
+  await verifyEventSnapshotCursorAndGapResync();
+  await verifyExecutionBridgeAndWatchdogRecovery();
+} finally {
+  for (const pid of trackedPids) {
+    try { process.kill(pid, "SIGKILL"); } catch { /* exited */ }
+  }
+  await delay(150);
+  rmSync(sandbox, { recursive: true, force: true });
+}

@@ -14,6 +14,7 @@ export class ResidentLifecycle {
   constructor(private readonly runtime: {
     argv: string[]; packaged: boolean; executable: string; appPath: string;
     enabled: () => boolean; quit: () => void;
+    supervisedCore?: () => boolean;
     relaunch: (args: string[]) => void;
     closeInterface: () => void;
     diagnosticsPath?: string;
@@ -22,6 +23,13 @@ export class ResidentLifecycle {
   }) { this.resident = runtime.argv.includes(RESIDENT_HOST_ARGUMENT); }
 
   exitInterface(): void {
+    if (this.runtime.supervisedCore?.()) {
+      if (!this.runtime.enabled()) throw new Error("请先启用此机常驻助理");
+      this.requested = true;
+      this.runtime.closeInterface();
+      this.runtime.quit();
+      return;
+    }
     if (this.resident) { this.runtime.closeInterface(); return; }
     if (!this.runtime.enabled()) throw new Error("请先启用此机常驻助理");
     this.requested = true;
@@ -30,9 +38,17 @@ export class ResidentLifecycle {
 
   stop(): void { this.stopping = true; this.requested = false; this.runtime.quit(); }
 
+  isStopping(): boolean { return this.stopping; }
+
   /** Called only after every writer and the authority lease have been closed. */
   afterCleanup(): void {
     if (this.transferred || this.stopping || this.resident || !(this.requested || this.runtime.enabled())) return;
+    if (this.runtime.supervisedCore?.()) {
+      // Supervised Core + Pi Node Host already outlive the Electron UI process; never relaunch a legacy Node host.
+      this.transferred = true;
+      this.runtime.log("supervised-core-resident-retained", { previousPid: process.pid });
+      return;
+    }
     this.transferred = true;
     const args = this.runtime.argv.slice(1).filter(arg => arg !== RESIDENT_HOST_ARGUMENT);
     args.push(RESIDENT_HOST_ARGUMENT);

@@ -172,20 +172,38 @@ export class CodeReviewService {
     };
   }
 
+  private get requiresRustWrites(): boolean {
+    return Boolean(this.db.readonly || this.reader?.supervised);
+  }
+
+  private async writeBatch2(request: Record<string, unknown>): Promise<void> {
+    if (!this.reader) throw new Error("代码审查写入：Rust 写入核心未就绪");
+    const res = await this.reader.batch2Write(request);
+    if (res === undefined) throw new Error("代码审查写入：Rust 核心未响应");
+  }
+
   private async record(taskId: string, target: ReviewTarget, before: ReviewState, after: ReviewState): Promise<void> {
     const old = this.db.prepare("SELECT * FROM task_code_review WHERE task_id = ? AND target_key = ?")
       .get(taskId, target.key) as StoredReview | undefined;
     const continues = old?.status === "pending" && !old.restoring && old.root_entity === target.rootEntity &&
       sameReviewState(state(old, "after"), before);
     if (continues && sameReviewContent(before, after)) {
-      this.db.prepare("UPDATE task_code_review SET after_stamp = ? WHERE id = ?").run(after.stamp, old.id);
+      if (this.requiresRustWrites) {
+        await this.writeBatch2({ kind: "codeReviewUpdateAfterStamp", id: old.id, afterStamp: after.stamp });
+      } else {
+        this.db.prepare("UPDATE task_code_review SET after_stamp = ? WHERE id = ?").run(after.stamp, old.id);
+      }
       return;
     }
     if (sameReviewContent(before, after)) return;
     const original = continues ? state(old, "before") : before;
     if (sameReviewContent(original, after)) {
       if (old) {
-        this.db.prepare("DELETE FROM task_code_review WHERE id = ?").run(old.id);
+        if (this.requiresRustWrites) {
+          await this.writeBatch2({ kind: "codeReviewDelete", id: old.id });
+        } else {
+          this.db.prepare("DELETE FROM task_code_review WHERE id = ?").run(old.id);
+        }
         this.notifyChanged(taskId);
       }
       return;
@@ -193,21 +211,45 @@ export class CodeReviewService {
     const captureReason = before.reason ?? after.reason ?? (continues ? old.capture_reason : null);
     const { additions, deletions, available } = await countChanges(original, after);
     // The caller holds the mutation lease until this recorded snapshot is saved.
-    this.db.prepare(`INSERT OR REPLACE INTO task_code_review (
-      task_id, target_key, root_entity, path, relative_path, id, status,
-      before_present, before_stamp, before_bytes, before_mode,
-      after_present, after_stamp, after_bytes, after_mode, additions, deletions, stats_available, capture_reason
-    ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      taskId, target.key, target.rootEntity, target.path, target.relativePath, randomUUID(),
-      Number(original.present), original.stamp, original.bytes, original.mode,
-      Number(after.present), after.stamp, after.bytes, after.mode,
-      additions, deletions, Number(available), captureReason,
-    );
+    if (this.requiresRustWrites) {
+      await this.writeBatch2({
+        kind: "codeReviewUpsert",
+        taskId,
+        targetKey: target.key,
+        rootEntity: target.rootEntity,
+        path: target.path,
+        relativePath: target.relativePath,
+        id: randomUUID(),
+        beforePresent: Number(original.present),
+        beforeStamp: original.stamp,
+        beforeBytesBase64: original.bytes ? original.bytes.toString("base64") : null,
+        beforeMode: original.mode ?? null,
+        afterPresent: Number(after.present),
+        afterStamp: after.stamp,
+        afterBytesBase64: after.bytes ? after.bytes.toString("base64") : null,
+        afterMode: after.mode ?? null,
+        additions,
+        deletions,
+        statsAvailable: Number(available),
+        captureReason: captureReason ?? null,
+      });
+    } else {
+      this.db.prepare(`INSERT OR REPLACE INTO task_code_review (
+        task_id, target_key, root_entity, path, relative_path, id, status,
+        before_present, before_stamp, before_bytes, before_mode,
+        after_present, after_stamp, after_bytes, after_mode, additions, deletions, stats_available, capture_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        taskId, target.key, target.rootEntity, target.path, target.relativePath, randomUUID(),
+        Number(original.present), original.stamp, original.bytes, original.mode,
+        Number(after.present), after.stamp, after.bytes, after.mode,
+        additions, deletions, Number(available), captureReason,
+      );
+    }
     this.notifyChanged(taskId);
   }
 
   async decide(request: CodeReviewDecisionRequest, workspace: () => string | undefined,
-    withLease: <T>(path: string, operation: () => T) => Promise<T>,
+    withLease: <T>(path: string, operation: () => Promise<T> | T) => Promise<T>,
     onRestored?: (file: RestoredFile) => void): Promise<CodeReviewDecisionResult> {
     const results: Result[] = [];
     const lookupPath = this.db.prepare("SELECT path FROM task_code_review WHERE task_id = ? AND id = ?");
@@ -231,8 +273,8 @@ export class CodeReviewService {
     return this.db.prepare("SELECT * FROM task_code_review WHERE task_id = ? AND id = ?").get(taskId, id) as StoredReview | undefined;
   }
 
-  private decideOne(request: CodeReviewDecisionRequest, id: string, workspace: () => string | undefined,
-    onRestored?: (file: RestoredFile) => void): Result {
+  private async decideOne(request: CodeReviewDecisionRequest, id: string, workspace: () => string | undefined,
+    onRestored?: (file: RestoredFile) => void): Promise<Result> {
     const row = this.find(request.taskId, id);
     if (!row) return { id, status: "conflict", reason: "审查内容已有新版本，请刷新后重试" };
     const status = request.action === "accept" ? "accepted" : "rejected";
@@ -258,17 +300,29 @@ export class CodeReviewService {
           restored = { cwd: root, path };
         } else if (request.action === "reject") {
           if (!sameReviewState(current, after)) throw new Error("文件已被手工修改或被其他任务修改");
-          this.db.prepare("UPDATE task_code_review SET restoring = 1 WHERE id = ?").run(id);
+          if (this.requiresRustWrites) {
+            await this.writeBatch2({ kind: "codeReviewSetRestoring", id });
+          } else {
+            this.db.prepare("UPDATE task_code_review SET restoring = 1 WHERE id = ?").run(id);
+          }
           restoreReviewState(target, before, after);
           restored = { cwd: root, path };
         }
       } catch (error) {
         const reason = error instanceof Error ? error.message : "无法安全还原文件";
-        this.db.prepare("UPDATE task_code_review SET failure_reason = ? WHERE id = ?").run(reason, id);
+        if (this.requiresRustWrites) {
+          await this.writeBatch2({ kind: "codeReviewSetFailure", id, reason });
+        } else {
+          this.db.prepare("UPDATE task_code_review SET failure_reason = ? WHERE id = ?").run(reason, id);
+        }
         return { id, status: "conflict", reason };
       }
     }
-    this.db.prepare("UPDATE task_code_review SET status = ?, failure_reason = NULL, restoring = 0 WHERE id = ?").run(appliedStatus, id);
+    if (this.requiresRustWrites) {
+      await this.writeBatch2({ kind: "codeReviewFinish", id, status: appliedStatus });
+    } else {
+      this.db.prepare("UPDATE task_code_review SET status = ?, failure_reason = NULL, restoring = 0 WHERE id = ?").run(appliedStatus, id);
+    }
     if (restored) onRestored?.(restored);
     return { id, status: appliedStatus };
   }

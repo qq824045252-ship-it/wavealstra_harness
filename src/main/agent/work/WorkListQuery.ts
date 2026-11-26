@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { enqueueWorkOp, requiresWorkRustWrites, workDomainOverlayRevision } from "./WorkDomainRuntime";
 import { workFirstNextStepSql, workNextStepsSearchSql } from "./WorkListSearch";
 import type Database from "better-sqlite3";
 import type { WorkProjectionDto } from "../../../shared/bot-work";
@@ -149,9 +150,11 @@ export class WorkListQuery {
             const haystack = String(text ?? '').normalize('NFKC').toLocaleLowerCase();
             return terms.every(term => haystack.includes(term)) ? 1 : 0;
         });
-        db.exec(`CREATE INDEX IF NOT EXISTS idx_works_user_summary_page ON works(user_id,updated_at DESC,work_id);
-            CREATE INDEX IF NOT EXISTS idx_work_summary_subitems ON work_subitem_results(work_id,binding_id);
-            CREATE INDEX IF NOT EXISTS idx_work_summary_continuations ON work_continuation_plans(work_id,source_binding_id);`);
+        if (!db.readonly) {
+            db.exec(`CREATE INDEX IF NOT EXISTS idx_works_user_summary_page ON works(user_id,updated_at DESC,work_id);
+                CREATE INDEX IF NOT EXISTS idx_work_summary_subitems ON work_subitem_results(work_id,binding_id);
+                CREATE INDEX IF NOT EXISTS idx_work_summary_continuations ON work_continuation_plans(work_id,source_binding_id);`);
+        }
     }
     /** Bounded query plans; parameters are bound afresh. SQLite reparses on schema/function changes. */
     private prepare(sql: string): Database.Statement {
@@ -165,16 +168,20 @@ export class WorkListQuery {
     /** The supplied watermark is advisory: always replace with a current atomic page. */
     query(userId: string, input: unknown): WorkQueryResult {
         const request = workQueryRequestSchema.parse(input);
+        const rust = requiresWorkRustWrites(this.db);
         const cacheAllowed = !this.db.inTransaction;
-        return this.db.transaction(() => {
-            this.prepare("INSERT OR IGNORE INTO work_projection_streams(user_id) VALUES (?)").run(userId);
-            const stream = this.prepare('SELECT epoch,sequence FROM work_projection_streams WHERE user_id=?').get(userId) as { epoch: string; sequence: number };
+        const tx = this.db.transaction(() => {
+            if (!rust) this.prepare("INSERT OR IGNORE INTO work_projection_streams(user_id) VALUES (?)").run(userId);
+            const rawStream = this.prepare('SELECT epoch,sequence FROM work_projection_streams WHERE user_id=?').get(userId) as { epoch: string; sequence: number } | undefined;
+            if (rust && !rawStream) enqueueWorkOp(this.db, { op: "workProjectionStreamEnsure", userId });
+            const stream = rawStream ?? { epoch: "0", sequence: 0 };
             const online = this.hostOnline();
             // The journal alone is insufficient: template visibility and related facts can
             // change independently. SQLite counters cover local and other-connection writes.
             const localChanges = this.prepare('SELECT total_changes() AS n').get() as { n: number };
             const dataVersion = this.db.pragma('data_version', { simple: true });
-            const watermark = { ...stream, revision: `${this.databaseIdentity}:${localChanges.n}:${dataVersion}:${Number(online)}` };
+            const overlayRev = rust ? `:${workDomainOverlayRevision(this.db)}` : "";
+            const watermark = { ...stream, revision: `${this.databaseIdentity}:${localChanges.n}:${dataVersion}:${Number(online)}${overlayRev}` };
             const { watermark: _advisory, ...pageRequest } = request;
             const key = JSON.stringify([userId, pageRequest, watermark]);
             const cached = cacheAllowed ? this.pageCache.get(key) : undefined;
@@ -189,7 +196,8 @@ export class WorkListQuery {
                 if (this.pageCache.size > 16) this.pageCache.delete(this.pageCache.keys().next().value!);
             }
             return result;
-        }).immediate();
+        });
+        return rust ? tx.deferred() : tx.immediate();
     }
     /** Ownership is checked in SQL before any related facts are selected. */
     get(userId: string, workId: string): WorkProjectionDto | undefined {

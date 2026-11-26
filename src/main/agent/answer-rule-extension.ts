@@ -51,8 +51,8 @@ export function createAnswerRuleExtension(taskId: string, service: AnswerRouting
         changes: Type.Partial(Type.Object({ ...draft.properties, enabled: Type.Boolean(),
           evidenceFile: Type.String(), evidenceLibraryItemId: Type.Union([Type.String(), Type.Null()]),
           evidenceFailure: Type.Union([Type.Literal("mark-unverified"), Type.Literal("verify")]) })) }),
-      execute: async (_id, { testQuestion, ...input }) => result(() => {
-        const saved = describe(service.saveForTask(taskId, input));
+      execute: async (_id, { testQuestion, ...input }) => result(async () => {
+        const saved = describe(await service.saveForTaskAsync(taskId, input));
         return { saved, ...(testQuestion ? { question: testQuestion, matched: preview(testQuestion) } : {}) };
       }),
     });

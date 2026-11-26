@@ -4,6 +4,7 @@ import type { MemorySearchScope } from "./MemorySearchScope";
 
 /** SQLite owns invalidation across connections and transactions, including direct import and scope edits. */
 export function ensureMemorySearchEpoch(db: Database.Database): void {
+  if (db.readonly) return;
   db.exec("CREATE TABLE IF NOT EXISTS memory_search_epoch(id INTEGER PRIMARY KEY CHECK(id=1),text_version INTEGER NOT NULL,vector_version INTEGER NOT NULL); INSERT OR IGNORE INTO memory_search_epoch VALUES(1,0,0)");
   for (const [table, column, fields] of [
     ["memory_records","text_version","title,content,content_hash,kind,status,importance,updated_at,valid_from,valid_until"],

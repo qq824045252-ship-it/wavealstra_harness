@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
+import { enqueueWorkOp, overlayFindAll, overlaySet, requiresWorkRustWrites } from "./WorkDomainRuntime";
 import type { WorkService } from "./WorkService";
 
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 export function ensureWorkContinuationProgress(db: Database.Database): void {
+  if (db.readonly) return;
   db.exec(`CREATE TABLE IF NOT EXISTS work_continuation_progress (
     binding_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, intent_revision INTEGER NOT NULL,
     input_snapshot_id TEXT NOT NULL, fingerprint TEXT NOT NULL, recorded_at INTEGER NOT NULL)`);
@@ -29,9 +31,20 @@ export function continuationProgress(works: WorkService, work: WorkDto): string 
  * admitted. Missing history (an upgraded host) proves nothing either way. */
 export function lastContinuationProgress(db: Database.Database, work: WorkDto): { bindingId: string; fingerprint: string } | undefined {
   ensureWorkContinuationProgress(db);
-  const row = db.prepare(`SELECT binding_id,fingerprint FROM work_continuation_progress
-    WHERE work_id=? AND intent_revision=? AND input_snapshot_id=? ORDER BY recorded_at DESC,rowid DESC LIMIT 1`)
-    .get(work.workId, work.intentRevision, work.inputSnapshotId) as { binding_id: string; fingerprint: string } | undefined;
+  const dbRows = db.prepare(`SELECT binding_id,work_id,intent_revision,input_snapshot_id,fingerprint,recorded_at FROM work_continuation_progress
+    WHERE work_id=? AND intent_revision=? AND input_snapshot_id=? ORDER BY recorded_at DESC,rowid DESC`)
+    .all(work.workId, work.intentRevision, work.inputSnapshotId) as Array<{
+      binding_id: string; work_id: string; intent_revision: number; input_snapshot_id: string; fingerprint: string; recorded_at: number;
+    }>;
+  const rows = overlayFindAll(
+    db,
+    "work_continuation_progress",
+    dbRows,
+    r => r.binding_id,
+    r => r.work_id === work.workId && r.intent_revision === work.intentRevision && r.input_snapshot_id === work.inputSnapshotId,
+    (a, b) => b.recorded_at - a.recorded_at,
+  );
+  const row = rows[0];
   return row && { bindingId: row.binding_id, fingerprint: row.fingerprint };
 }
 
@@ -39,6 +52,17 @@ export function lastContinuationProgress(db: Database.Database, work: WorkDto): 
 export function recordContinuationProgress(db: Database.Database, binding: WorkExecutionBindingDto,
   work: WorkDto, fingerprint: string, now: number): void {
   ensureWorkContinuationProgress(db);
+  if (requiresWorkRustWrites(db)) {
+    overlaySet(db, "work_continuation_progress", binding.bindingId, {
+      binding_id: binding.bindingId, work_id: work.workId, intent_revision: work.intentRevision,
+      input_snapshot_id: work.inputSnapshotId, fingerprint, recorded_at: now,
+    });
+    enqueueWorkOp(db, {
+      op: "workContinuationProgressUpsert", bindingId: binding.bindingId, workId: work.workId,
+      intentRevision: work.intentRevision, inputSnapshotId: work.inputSnapshotId, fingerprint, recordedAt: now,
+    });
+    return;
+  }
   db.prepare(`INSERT INTO work_continuation_progress(binding_id,work_id,intent_revision,input_snapshot_id,fingerprint,recorded_at)
     VALUES (?,?,?,?,?,?) ON CONFLICT(binding_id) DO UPDATE SET fingerprint=excluded.fingerprint,recorded_at=excluded.recorded_at`)
     .run(binding.bindingId, work.workId, work.intentRevision, work.inputSnapshotId, fingerprint, now);

@@ -1,5 +1,12 @@
 mod answer_routing_data;
 mod archive_selection;
+mod batch1_writes;
+mod batch2_writes;
+mod batch3_writes;
+mod batch4a_writes;
+mod batch4b_bot;
+mod batch4b_work;
+mod batch4b_writes;
 mod artifact_cleanup;
 mod artifact_content;
 mod artifact_snapshots;
@@ -9,6 +16,7 @@ mod blueprint_instance;
 mod blueprint_storage;
 mod bot_history_data;
 mod branch_title;
+mod business_protocol;
 mod code_review_data;
 mod connector_import;
 mod connector_install;
@@ -17,10 +25,13 @@ mod core_lease;
 mod core_supervisor;
 mod cron_data;
 mod cron_plan;
+mod cron_scheduler;
 mod cron_write;
+mod db_schema;
 mod diagnostics;
 mod dots_file_revision;
 mod dots_file_watch;
+mod dots_scheduler;
 mod durable;
 mod durable_task_projection;
 mod durable_workspace_move_data;
@@ -30,10 +41,12 @@ mod expert_package;
 mod file_backup_list;
 mod file_backup_restore;
 mod gadget_files;
+mod gadget_http_host;
 mod gadget_materialize;
 mod gadget_source_save;
 mod gadget_state;
 mod gateway_message_data;
+mod gateway_scheduler;
 mod history_lane;
 mod library_backup;
 mod library_delete;
@@ -52,6 +65,7 @@ mod memory_record_write;
 mod memory_records_data;
 mod memory_turn_data;
 mod notification_data;
+mod pi_host_supervisor;
 mod plugin_catalog;
 mod plugin_config;
 mod project_delete;
@@ -63,6 +77,7 @@ mod project_metadata;
 mod project_pins_data;
 mod project_posts_data;
 mod project_write;
+mod remote_control;
 mod remote_image;
 mod request_control;
 mod scoped_notes;
@@ -89,6 +104,7 @@ mod work_graph_data;
 mod work_graph_integrity;
 mod work_host_lease;
 mod work_queue_data;
+mod work_scheduler;
 mod workbench_data;
 mod workbench_write;
 mod workspace_binding_data;
@@ -110,7 +126,7 @@ use std::{
     error::Error,
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
-    sync::{Arc, mpsc},
+    sync::{Arc, Mutex, mpsc},
     thread,
     time::Duration,
 };
@@ -367,6 +383,24 @@ enum Request {
         task_id: String,
         id: String,
         at: i64,
+    },
+    WriteExecutionFailures {
+        request: execution_failures::WriteRequest,
+    },
+    Batch1Write {
+        request: batch1_writes::Request,
+    },
+    Batch2Write {
+        request: batch2_writes::Request,
+    },
+    Batch3Write {
+        request: batch3_writes::Request,
+    },
+    Batch4aWrite {
+        request: batch4a_writes::Request,
+    },
+    Batch4bWrite {
+        request: batch4b_writes::Request,
     },
     BranchTitle {
         source_title: String,
@@ -698,6 +732,83 @@ enum Request {
     },
     DiscardEmbeddings {
         tokens: Vec<String>,
+    },
+    CoreCommand {
+        #[serde(flatten)]
+        command: business_protocol::CommandInput,
+        #[serde(rename = "__client")]
+        client: Option<business_protocol::ClientContext>,
+    },
+    CoreExecution {
+        #[serde(flatten)]
+        action: business_protocol::ExecutionRequest,
+        #[serde(rename = "__client")]
+        client: Option<business_protocol::ClientContext>,
+    },
+    CoreWorkScheduler {
+        #[serde(flatten)]
+        command: work_scheduler::Command,
+        #[serde(rename = "__client")]
+        client: Option<business_protocol::ClientContext>,
+    },
+    CoreCronScheduler {
+        #[serde(flatten)]
+        command: cron_scheduler::Command,
+        #[serde(rename = "__client")]
+        client: Option<business_protocol::ClientContext>,
+    },
+    CoreDotsScheduler {
+        #[serde(flatten)]
+        command: dots_scheduler::Command,
+        #[serde(rename = "__client")]
+        client: Option<business_protocol::ClientContext>,
+    },
+    CoreGatewayScheduler {
+        #[serde(flatten)]
+        command: gateway_scheduler::Command,
+        #[serde(rename = "__client")]
+        client: Option<business_protocol::ClientContext>,
+    },
+    CoreRemoteControl {
+        #[serde(flatten)]
+        command: remote_control::Command,
+        #[serde(rename = "__client")]
+        client: Option<business_protocol::ClientContext>,
+    },
+    CoreGadgetHost {
+        #[serde(flatten)]
+        command: gadget_http_host::Command,
+    },
+    CorePiHost {
+        #[serde(flatten)]
+        command: pi_host_supervisor::Command,
+        #[serde(rename = "__client")]
+        client: Option<business_protocol::ClientContext>,
+    },
+    CoreEventsSnapshot {
+        domain: Option<String>,
+    },
+    CoreEventsReplay {
+        after_seq: i64,
+        core_generation: String,
+        limit: Option<usize>,
+    },
+    CoreEventsRetention {
+        limit: i64,
+    },
+    AssistantLifecycle {
+        action: String,
+        resident_enabled: Option<bool>,
+        autostart_enabled: Option<bool>,
+        reason: Option<String>,
+        #[serde(rename = "__client")]
+        client: Option<business_protocol::ClientContext>,
+    },
+    CoreExecutorPresence {
+        online: bool,
+        epoch: u64,
+        client_id: String,
+        generation: String,
     },
 }
 
@@ -1303,8 +1414,204 @@ fn read(
     durable_sessions: &mut HashMap<String, Connection>,
     writer: &mut Option<Connection>,
     staged: &embedding_index::StagedVectors,
+    executor_tracker: &business_protocol::ExecutorTracker,
+    side_effects: &mut Option<business_protocol::WriteSideEffects>,
     request: Request,
 ) -> Result<Data> {
+    if let Request::CoreCommand { command, client } = request {
+        let ctx = client.unwrap_or_else(|| {
+            business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
+        });
+        let fx = business_protocol::execute_command(
+            write_connection(writer, db_path)?,
+            executor_tracker,
+            &ctx,
+            command,
+        )?;
+        let data = fx.data.clone();
+        *side_effects = Some(fx);
+        return Ok(Data::Json(data));
+    }
+    if let Request::CoreExecution { action, client } = request {
+        if let business_protocol::ExecutionRequest::Status { execution_id } = action {
+            return business_protocol::execute_execution_read(db, &execution_id).map(Data::Json);
+        }
+        let ctx = client.unwrap_or_else(|| {
+            business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
+        });
+        let fx = business_protocol::execute_execution(
+            write_connection(writer, db_path)?,
+            executor_tracker,
+            &ctx,
+            action,
+        )?;
+        let data = fx.data.clone();
+        *side_effects = Some(fx);
+        return Ok(Data::Json(data));
+    }
+    if let Request::CoreWorkScheduler { command, client } = request {
+        if command.is_read_only() {
+            return work_scheduler::execute_read(db, command).map(Data::Json);
+        }
+        let ctx = client.unwrap_or_else(|| {
+            business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
+        });
+        let fx = work_scheduler::execute_write(
+            write_connection(writer, db_path)?,
+            executor_tracker,
+            &ctx,
+            command,
+        )?;
+        let data = fx.data.clone();
+        *side_effects = Some(fx);
+        return Ok(Data::Json(data));
+    }
+    if let Request::CoreCronScheduler { command, client } = request {
+        if command.is_read_only() {
+            return cron_scheduler::execute_read(db, command).map(Data::Json);
+        }
+        let ctx = client.unwrap_or_else(|| {
+            business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
+        });
+        let fx = cron_scheduler::execute_write(
+            write_connection(writer, db_path)?,
+            executor_tracker,
+            &ctx,
+            command,
+        )?;
+        let data = fx.data.clone();
+        *side_effects = Some(fx);
+        return Ok(Data::Json(data));
+    }
+    if let Request::CoreDotsScheduler { command, client } = request {
+        if command.is_read_only() {
+            return dots_scheduler::execute_read(db, command).map(Data::Json);
+        }
+        let ctx = client.unwrap_or_else(|| {
+            business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
+        });
+        let fx = dots_scheduler::execute_write(
+            write_connection(writer, db_path)?,
+            executor_tracker,
+            &ctx,
+            command,
+        )?;
+        let data = fx.data.clone();
+        *side_effects = Some(fx);
+        return Ok(Data::Json(data));
+    }
+    if let Request::CoreGatewayScheduler { command, client } = request {
+        if command.is_read_only() {
+            return gateway_scheduler::execute_read(db, command).map(Data::Json);
+        }
+        let ctx = client.unwrap_or_else(|| {
+            business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
+        });
+        let fx = gateway_scheduler::execute_write(
+            write_connection(writer, db_path)?,
+            executor_tracker,
+            &ctx,
+            command,
+        )?;
+        let data = fx.data.clone();
+        *side_effects = Some(fx);
+        return Ok(Data::Json(data));
+    }
+    if let Request::CoreRemoteControl { command, client } = request {
+        if command.is_read_only() {
+            return remote_control::execute_read(db, command).map(Data::Json);
+        }
+        let ctx = client.unwrap_or_else(|| {
+            business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
+        });
+        let fx = remote_control::execute_write(
+            write_connection(writer, db_path)?,
+            &ctx,
+            command,
+        )?;
+        let data = fx.data.clone();
+        *side_effects = Some(fx);
+        return Ok(Data::Json(data));
+    }
+    if let Request::CorePiHost { command, client } = request {
+        if command.is_read_only() {
+            return pi_host_supervisor::execute_read(db, command).map(Data::Json);
+        }
+        let ctx = client.unwrap_or_else(|| {
+            business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
+        });
+        let fx = pi_host_supervisor::execute_write(
+            write_connection(writer, db_path)?,
+            &ctx,
+            command,
+        )?;
+        let data = fx.data.clone();
+        *side_effects = Some(fx);
+        return Ok(Data::Json(data));
+    }
+    if let Request::CoreEventsSnapshot { domain } = request {
+        return business_protocol::events_snapshot(db, domain.as_deref()).map(Data::Json);
+    }
+    if let Request::CoreEventsReplay {
+        after_seq,
+        core_generation,
+        limit,
+    } = request
+    {
+        return business_protocol::events_replay(db, after_seq, &core_generation, limit)
+            .map(Data::Json);
+    }
+    if let Request::CoreEventsRetention { limit } = request {
+        let fx = business_protocol::execute_command(
+            write_connection(writer, db_path)?,
+            executor_tracker,
+            &business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation()),
+            business_protocol::CommandInput::SetEventRetention { limit },
+        )?;
+        return Ok(Data::Json(fx.data));
+    }
+    if let Request::AssistantLifecycle {
+        action,
+        resident_enabled,
+        autostart_enabled,
+        reason,
+        client,
+    } = request
+    {
+        let ctx = client.unwrap_or_else(|| {
+            business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
+        });
+        let fx = business_protocol::handle_lifecycle(
+            write_connection(writer, db_path)?,
+            &ctx,
+            &action,
+            resident_enabled,
+            autostart_enabled,
+            reason,
+        )?;
+        let data = fx.data.clone();
+        *side_effects = Some(fx);
+        return Ok(Data::Json(data));
+    }
+    if let Request::CoreExecutorPresence {
+        online,
+        epoch,
+        client_id,
+        generation,
+    } = request
+    {
+        let fx = business_protocol::handle_executor_presence(
+            write_connection(writer, db_path)?,
+            executor_tracker,
+            online,
+            epoch,
+            client_id,
+            generation,
+        )?;
+        let data = fx.data.clone();
+        *side_effects = Some(fx);
+        return Ok(Data::Json(data));
+    }
     if let Request::WorkHostLease { request } = request {
         return Ok(Data::Json(serde_json::to_value(work_host_lease::run(
             write_connection(writer, db_path)?,
@@ -1665,6 +1972,25 @@ fn read(
             at,
         )));
     }
+    if let Request::WriteExecutionFailures { request } = request {
+        return execution_failures::write(write_connection(writer, db_path)?, request)
+            .map(Data::Json);
+    }
+    if let Request::Batch1Write { request } = request {
+        return batch1_writes::run(write_connection(writer, db_path)?, request).map(Data::Json);
+    }
+    if let Request::Batch2Write { request } = request {
+        return batch2_writes::run(write_connection(writer, db_path)?, request).map(Data::Json);
+    }
+    if let Request::Batch3Write { request } = request {
+        return batch3_writes::run(write_connection(writer, db_path)?, request).map(Data::Json);
+    }
+    if let Request::Batch4aWrite { request } = request {
+        return batch4a_writes::run(write_connection(writer, db_path)?, request).map(Data::Json);
+    }
+    if let Request::Batch4bWrite { request } = request {
+        return batch4b_writes::run(write_connection(writer, db_path)?, request).map(Data::Json);
+    }
     if let Request::WriteWorkspaceLabel { mutation } = request {
         return Ok(Data::WorkspaceLabel(workspace_labels::write(
             write_connection(writer, db_path)?,
@@ -2005,6 +2331,12 @@ fn read(
         | Request::ExecutionFailuresSupported
         | Request::ExecutionFailures { .. }
         | Request::DismissExecutionFailure { .. }
+        | Request::WriteExecutionFailures { .. }
+        | Request::Batch1Write { .. }
+        | Request::Batch2Write { .. }
+        | Request::Batch3Write { .. }
+        | Request::Batch4aWrite { .. }
+        | Request::Batch4bWrite { .. }
         | Request::BranchTitle { .. }
         | Request::ArchivedTaskCandidates { .. }
         | Request::TaskTrashSupported
@@ -2013,7 +2345,9 @@ fn read(
         | Request::AlignTrashRetention { .. }
         | Request::TaskTrashPurgeSupported
         | Request::PurgeTrashedTask { .. } => unreachable!(),
-        Request::GadgetState { .. } => unreachable!(),
+        Request::GadgetState { .. }
+        | Request::CoreGadgetHost { .. }
+        | Request::CorePiHost { .. } => unreachable!(),
         Request::WriteArtifact { .. }
         | Request::ManagedArtifactFilesSupported
         | Request::WriteManagedArtifact { .. }
@@ -2090,6 +2424,18 @@ fn read(
         Request::MemoryBaselines { queries } => {
             Data::MemoryBaselines(memory_baselines::read(&snapshot, queries)?)
         }
+        Request::CoreCommand { .. }
+        | Request::CoreExecution { .. }
+        | Request::CoreEventsSnapshot { .. }
+        | Request::CoreEventsReplay { .. }
+        | Request::CoreEventsRetention { .. }
+        | Request::AssistantLifecycle { .. }
+        | Request::CoreExecutorPresence { .. }
+        | Request::CoreWorkScheduler { .. }
+        | Request::CoreCronScheduler { .. }
+        | Request::CoreDotsScheduler { .. }
+        | Request::CoreGatewayScheduler { .. }
+        | Request::CoreRemoteControl { .. } => unreachable!(),
     };
     snapshot.commit()?;
     Ok(response)
@@ -2155,6 +2501,12 @@ fn read_connection(path: &Path) -> Result<Connection> {
 
 fn database_write(request: &Request) -> bool {
     match request {
+        Request::CoreExecution { action, .. } => !business_protocol::execution_is_read_only(action),
+        Request::CoreWorkScheduler { command, .. } => !command.is_read_only(),
+        Request::CoreCronScheduler { command, .. } => !command.is_read_only(),
+        Request::CoreDotsScheduler { command, .. } => !command.is_read_only(),
+        Request::CoreGatewayScheduler { command, .. } => !command.is_read_only(),
+        Request::CoreRemoteControl { command, .. } => !command.is_read_only(),
         Request::ProjectPins { request } => !request.is_read(),
         Request::ProjectPosts { request } => !request.is_read(),
         Request::ProjectEventData { request } => !request.is_read(),
@@ -2163,6 +2515,10 @@ fn database_write(request: &Request) -> bool {
         Request::SoulProfile { request } => !request.is_read(),
         Request::WorkHostLease { .. }
         | Request::PublishEmbeddings { .. }
+        | Request::CoreCommand { .. }
+        | Request::CoreEventsRetention { .. }
+        | Request::AssistantLifecycle { .. }
+        | Request::CoreExecutorPresence { .. }
         | Request::ReadGadgetSource { .. }
         | Request::ReadGadgetManifest { .. }
         | Request::CaptureBlueprintGadget { .. }
@@ -2190,6 +2546,12 @@ fn database_write(request: &Request) -> bool {
         | Request::UpsertTaskRecord { .. }
         | Request::WriteTaskContextUsage { .. }
         | Request::DismissExecutionFailure { .. }
+        | Request::WriteExecutionFailures { .. }
+        | Request::Batch1Write { .. }
+        | Request::Batch2Write { .. }
+        | Request::Batch3Write { .. }
+        | Request::Batch4aWrite { .. }
+        | Request::Batch4bWrite { .. }
         | Request::WriteWorkspaceLabel { .. }
         | Request::AlignTrashRetention { .. }
         | Request::PurgeTrashedTask { .. }
@@ -2283,6 +2645,21 @@ fn request_may_mutate(request: &Request) -> bool {
         )
 }
 
+fn emit_side_effects(effects: Option<business_protocol::WriteSideEffects>) {
+    let Some(fx) = effects else {
+        return;
+    };
+    for event in fx.events {
+        let _ = request_control::emit(&serde_json::json!({ "coreEvent": event }));
+    }
+    for dispatch in fx.dispatches {
+        let _ = request_control::emit(&dispatch);
+    }
+    if fx.shutdown_after_reply {
+        let _ = request_control::emit(&serde_json::json!({ "coreShutdownRequested": true }));
+    }
+}
+
 type DatabaseWriter = (
     mpsc::SyncSender<(RequestId, Request)>,
     thread::JoinHandle<()>,
@@ -2290,6 +2667,7 @@ type DatabaseWriter = (
 fn start_database_writer(
     db_path: PathBuf,
     staged: Arc<embedding_index::StagedVectors>,
+    executor_tracker: Arc<business_protocol::ExecutorTracker>,
 ) -> io::Result<DatabaseWriter> {
     let (send, jobs) = mpsc::sync_channel::<(RequestId, Request)>(32);
     let worker = thread::Builder::new()
@@ -2311,6 +2689,7 @@ fn start_database_writer(
                 if !request_control::begin(&id) {
                     continue;
                 }
+                let mut side_effects = None;
                 let result = (|| -> Result<Data> {
                     if reader.is_none() {
                         reader = Some(read_connection(&db_path)?);
@@ -2321,12 +2700,18 @@ fn start_database_writer(
                         &mut sessions,
                         &mut writer,
                         &staged,
+                        &executor_tracker,
+                        &mut side_effects,
                         request,
                     )
                 })();
                 drop(gate);
+                let ok = result.is_ok();
                 if write_reply(&id, result, false).is_err() {
                     break;
+                }
+                if ok {
+                    emit_side_effects(side_effects);
                 }
             }
         })?;
@@ -2348,6 +2733,16 @@ fn run() -> Result<()> {
     }
     if all
         .first()
+        .is_some_and(|argument| argument == "--watchdog")
+    {
+        let recover = all.get(3).is_some_and(|a| a == "--recover");
+        if all.len() < 3 || all.len() > 4 || (all.len() == 4 && !recover) {
+            return Err("expected --watchdog <data directory> <database path> [--recover]".into());
+        }
+        return core_supervisor::run_watchdog(Path::new(&all[1]), Path::new(&all[2]), recover);
+    }
+    if all
+        .first()
         .is_some_and(|argument| argument == "--guard-core-database")
     {
         let [_, directory] = all.as_slice() else {
@@ -2355,13 +2750,29 @@ fn run() -> Result<()> {
         };
         return core_lease::guard_database(Path::new(directory));
     }
+    if all
+        .first()
+        .is_some_and(|argument| argument == "--init-database")
+    {
+        let [_, data_dir, db_path, version] = all.as_slice() else {
+            return Err("expected --init-database <data directory> <database path> <schema version>".into());
+        };
+        let expected: u32 = version
+            .to_string_lossy()
+            .parse()
+            .map_err(|_| "invalid schema version")?;
+        let report =
+            db_schema::initialize_database(Path::new(data_dir), Path::new(db_path), expected)?;
+        println!("{}", serde_json::to_string(&report)?);
+        return Ok(());
+    }
     let mut args = all.into_iter();
     let argument = args.next().ok_or("missing database path")?;
     if args.next().is_some() {
         return Err("unexpected argument".into());
     }
     if argument == "--protocol-version" {
-        println!("88");
+        println!("89");
         return Ok(());
     }
     let db_path = PathBuf::from(argument);
@@ -2369,6 +2780,7 @@ fn run() -> Result<()> {
     let mut db = read_connection(&db_path)?;
     let control = request_control::Control::open(&db_path)?;
     request_control::install(control.clone());
+    let host_control = control.clone();
     let mut database_writer = None;
     let mut durable_sessions = HashMap::new();
     let mut writer = None;
@@ -2377,8 +2789,9 @@ fn run() -> Result<()> {
     let mut workspace_scans = None;
     let mut dots_file_watches = None;
     let staged = Arc::new(embedding_index::StagedVectors::default());
+    let executor_tracker = Arc::new(business_protocol::ExecutorTracker::new());
     let mut index_queues = embedding_index::IndexQueues::default();
-    let mut gadget_state = gadget_state::Store::default();
+    let gadget_state = Arc::new(Mutex::new(gadget_state::Store::default()));
     let mut artifact_reads = artifact_content::Reads::default();
     if std::env::var_os("MYBUDDY_HISTORY_HANDSHAKE").is_some() {
         let mut output = io::stdout().lock();
@@ -2388,13 +2801,91 @@ fn run() -> Result<()> {
     // The input thread owns stdin so history reads cannot queue behind the main loop. It
     // forwards the transport id with each request, which is what lets replies be correlated.
     let (requests, input) = history_lane::route_input(control)?;
+    struct SchedulerTickerGuard {
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+    impl Drop for SchedulerTickerGuard {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::Release);
+            if let Some(h) = self.handle.take() {
+                let _ = h.join();
+            }
+        }
+    }
+    let _scheduler_ticker = if std::env::var_os("MYBUDDY_CORE_SUPERVISED").is_some()
+        && std::env::var("MYBUDDY_WORK_AUTO_TICK_MS").ok().as_deref() != Some("0")
+    {
+        let interval_ms = std::env::var("MYBUDDY_WORK_AUTO_TICK_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(1_000)
+            .clamp(50, 30_000);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_flag = stop.clone();
+        let tick_db_path = db_path.clone();
+        let tick_tracker = executor_tracker.clone();
+        let handle = thread::Builder::new()
+            .name("work-scheduler-tick".into())
+            .spawn(move || {
+                let mut writer_conn: Option<rusqlite::Connection> = None;
+                while !stop_flag.load(std::sync::atomic::Ordering::Acquire) {
+                    if let Ok(gate) = write_gate::enter() {
+                        if let Ok(conn) = write_connection(&mut writer_conn, &tick_db_path) {
+                            if work_scheduler::claim_supervised_core_lease(conn).unwrap_or(false) {
+                                let core_gen = business_protocol::current_core_generation();
+                                let ctx = business_protocol::ClientContext::synthetic(&core_gen);
+                                if let Ok(fx) = work_scheduler::execute_write(
+                                    conn,
+                                    &tick_tracker,
+                                    &ctx,
+                                    work_scheduler::Command::Tick {
+                                        owner_id: Some(format!("core:{core_gen}")),
+                                        now_ms: None,
+                                        lease_ttl_ms: None,
+                                    },
+                                ) {
+                                    if !fx.events.is_empty() || !fx.dispatches.is_empty() {
+                                        emit_side_effects(Some(fx));
+                                    }
+                                }
+                                if let Ok(Some(cron_fx)) = cron_scheduler::run_supervised_tick(conn, &tick_tracker) {
+                                    emit_side_effects(Some(cron_fx));
+                                }
+                                if let Ok(Some(dots_fx)) = dots_scheduler::run_supervised_tick(conn, &tick_tracker) {
+                                    emit_side_effects(Some(dots_fx));
+                                }
+                                if let Ok(Some(gw_fx)) = gateway_scheduler::run_supervised_tick(conn, &tick_tracker) {
+                                    emit_side_effects(Some(gw_fx));
+                                }
+                            }
+                        }
+                        drop(gate);
+                    }
+                    let mut slept = 0u64;
+                    while slept < interval_ms && !stop_flag.load(std::sync::atomic::Ordering::Acquire) {
+                        let step = (interval_ms - slept).min(50);
+                        thread::sleep(Duration::from_millis(step));
+                        slept += step;
+                    }
+                }
+            })
+            .ok();
+        Some(SchedulerTickerGuard { stop, handle })
+    } else {
+        None
+    };
     if let Some(lease) = &worker_lease {
         lease.ready()?;
     }
     for (id, request) in requests {
         if request.as_ref().is_ok_and(database_write) {
             if database_writer.is_none() {
-                database_writer = Some(start_database_writer(db_path.clone(), staged.clone())?);
+                database_writer = Some(start_database_writer(
+                    db_path.clone(),
+                    staged.clone(),
+                    executor_tracker.clone(),
+                )?);
             }
             let request = request.expect("validated write request");
             match database_writer.as_ref().unwrap().0.try_send((id, request)) {
@@ -2611,13 +3102,16 @@ fn run() -> Result<()> {
             Ok(Request::StageEmbedding { request }) => InferenceJob::Stage(request),
             Ok(Request::SemanticModelProbe { probe }) => InferenceJob::Probe(probe),
             Ok(Request::GadgetState { request }) => {
-                write_reply(
-                    &id,
-                    Ok(Data::GadgetState(
-                        gadget_state.run_for(request, id.as_deref()),
-                    )),
-                    false,
-                )?;
+                let reply = gadget_state
+                    .lock()
+                    .map_err(|_| "gadget state lock")?
+                    .run_for(request, id.as_deref());
+                write_reply(&id, Ok(Data::GadgetState(reply)), false)?;
+                continue;
+            }
+            Ok(Request::CoreGadgetHost { command }) => {
+                let reply = gadget_http_host::handle(&gadget_state, &host_control, command);
+                write_reply(&id, reply.map(Data::Json), false)?;
                 continue;
             }
             Ok(Request::ReadManagedArtifact {
@@ -2851,18 +3345,22 @@ fn run() -> Result<()> {
                 continue;
             }
             Ok(request) => {
-                write_reply(
-                    &id,
-                    read(
-                        &mut db,
-                        &db_path,
-                        &mut durable_sessions,
-                        &mut writer,
-                        &staged,
-                        request,
-                    ),
-                    false,
-                )?;
+                let mut side_effects = None;
+                let res = read(
+                    &mut db,
+                    &db_path,
+                    &mut durable_sessions,
+                    &mut writer,
+                    &staged,
+                    &executor_tracker,
+                    &mut side_effects,
+                    request,
+                );
+                let ok = res.is_ok();
+                write_reply(&id, res, false)?;
+                if ok {
+                    emit_side_effects(side_effects);
+                }
                 continue;
             }
             Err(error) => {
@@ -2902,6 +3400,7 @@ fn run() -> Result<()> {
         drop(sender);
         worker.join().map_err(|_| "maintenance worker panicked")?;
     }
+    gadget_http_host::stop_all();
     Ok(())
 }
 

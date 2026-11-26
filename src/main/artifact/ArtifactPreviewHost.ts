@@ -17,6 +17,7 @@
 import { BrowserWindow, WebContentsView, type Rectangle } from "electron";
 import { ArtifactProtocol } from "./ArtifactProtocol";
 import { runtimeProbeService } from "../capabilities/RuntimeProbeService";
+import type { WebContentsReclaimManager } from "../host/WebContentsReclaimManager";
 
 /** loadURL 在导航被后一次 loadURL/关闭宿主打断时会以 ERR_ABORTED 拒绝。
  * 错误对象存在两种形态：code === "ERR_ABORTED"（多数情况），或
@@ -33,14 +34,61 @@ export class ArtifactPreviewHost {
     return this.win && this.view ? { window: this.win, view: this.view } : null;
   }
   private win: BrowserWindow | null = null;
+  private openSidebar?: (url: string) => void;
   private view: WebContentsView | null = null;
   /** 用于忽略被后续预览/关闭操作取代的旧导航结果。 */
   private navigationGeneration = 0;
   private lastBounds: Rectangle | null = null;
+  private currentUrl = "";
   private isVisible = false;
+  private reclaimManager: WebContentsReclaimManager | null = null;
+  private hasActiveTaskCheck: () => boolean = () => false;
+  private lastActiveAtMs = Date.now();
+
+  attachReclaimManager(manager: WebContentsReclaimManager, isBusy: () => boolean = () => false): void {
+    this.reclaimManager = manager;
+    this.hasActiveTaskCheck = isBusy;
+    manager.register({
+      surfaceId: "artifact-preview",
+      kind: "artifact-preview",
+      isVisible: () => this.isVisible,
+      isLiveViewPresent: () => Boolean(this.view && !this.view.webContents.isDestroyed()),
+      getUrl: () => (this.view && !this.view.webContents.isDestroyed() ? (this.view.webContents.getURL() || this.currentUrl) : this.currentUrl),
+      hasUnsavedInput: () => false,
+      hasActivePlatformTask: () => this.hasActiveTaskCheck(),
+      lastActiveAt: () => this.lastActiveAtMs,
+      destroyView: () => this.reclaimView(),
+      restoreView: async (snapshot) => {
+        if (!this.win || this.win.isDestroyed()) return;
+        this.attach(this.win, this.openSidebar);
+        const target = snapshot?.url || this.currentUrl;
+        if (target) await this.load(target);
+      },
+    });
+  }
+
+  private reclaimView(): void {
+    if (!this.view) return;
+    const wc = this.view.webContents;
+    if (!wc.isDestroyed()) {
+      const liveUrl = wc.getURL();
+      if (liveUrl) this.currentUrl = liveUrl;
+      runtimeProbeService.detach("artifact", wc);
+      wc.removeAllListeners();
+      wc.close();
+    }
+    if (this.win && !this.win.isDestroyed()) this.win.contentView.removeChildView(this.view);
+    this.view = null;
+    this.isVisible = false;
+  }
 
   /** 挂载到主窗口：创建独立 webContents（sandbox 隔离，不可信产物页面） */
-  attach(win: BrowserWindow, openSidebar?: (url: string) => void): void {
+  attach(win: BrowserWindow, openSidebar?: (url: string) => void, reclaimManager?: WebContentsReclaimManager): void {
+    this.openSidebar = openSidebar;
+    this.win = win;
+    if (reclaimManager && this.reclaimManager !== reclaimManager) {
+      this.attachReclaimManager(reclaimManager);
+    }
     if (this.view) return;
     const view = new WebContentsView({
       webPreferences: {
@@ -50,10 +98,10 @@ export class ArtifactPreviewHost {
         javascript: true,
       },
     });
-    this.win = win;
     this.view = view;
     view.setVisible(false);
     win.contentView.addChildView(view);
+    this.lastActiveAtMs = Date.now();
 
     const wc = view.webContents;
     runtimeProbeService.attach("artifact", wc);
@@ -79,7 +127,12 @@ export class ArtifactPreviewHost {
    * （ERR_ABORTED）或旧 generation 正常返回，不抛错。
    */
   async load(url: string): Promise<void> {
-    if (!this.view) return;
+    this.currentUrl = url;
+    this.lastActiveAtMs = Date.now();
+    if (!this.view) {
+      if (this.win && !this.win.isDestroyed()) this.attach(this.win, this.openSidebar);
+      if (!this.view) return;
+    }
     const generation = ++this.navigationGeneration;
     try {
       await this.view.webContents.loadURL(url);
@@ -131,6 +184,10 @@ export class ArtifactPreviewHost {
 
   /** 按最近一次 bounds 恢复显示（仅 Coordinator 调用） */
   show(): void {
+    this.lastActiveAtMs = Date.now();
+    if (!this.view && this.win && !this.win.isDestroyed() && this.currentUrl) {
+      void this.reclaimManager?.wakeSurface("artifact-preview");
+    }
     if (this.view && !this.isVisible && this.lastBounds) {
       this.view.setBounds(this.lastBounds);
       this.setVisible(true);
@@ -153,12 +210,15 @@ export class ArtifactPreviewHost {
   /** 关闭并隐藏（切换产物 / 卸载时调用，下次 load 重新加载） */
   close(): void {
     this.navigationGeneration++;
+    this.currentUrl = "";
     this.setVisible(false);
   }
 
   /** 销毁（应用退出） */
   dispose(): void {
     this.navigationGeneration++;
+    this.reclaimManager?.unregister("artifact-preview");
+    this.currentUrl = "";
     if (this.view) {
       runtimeProbeService.detach("artifact", this.view.webContents);
       this.view.webContents.removeAllListeners();

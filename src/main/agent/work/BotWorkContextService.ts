@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { BotChannelBindingDto, WorkDto } from "../../../shared/bot-work";
 import type { BotRegistry } from "./BotRegistry";
+import { enqueueWorkOp, overlayFindAll, overlaySet, requiresWorkRustWrites } from "./WorkDomainRuntime";
 import type { WorkService } from "./WorkService";
 
 /** User/channel identity is supplied by the authenticated host, never model arguments. */
@@ -14,8 +15,16 @@ export class BotWorkContextService {
   }
 
   resolveBot(userId: string, channel: BotChannelBindingDto["channelType"], identifier: string, fallbackBotId: string) {
-    const binding = this.db.prepare("SELECT bot_id FROM bot_channel_bindings WHERE channel_type=? AND channel_identifier=?")
-      .get(channel, this.key(userId, identifier)) as { bot_id: string } | undefined;
+    const channelIdentifier = this.key(userId, identifier);
+    const bindings = overlayFindAll(
+      this.db,
+      "bot_channel_bindings",
+      this.db.prepare("SELECT channel_type,channel_identifier,bot_id FROM bot_channel_bindings WHERE channel_type=? AND channel_identifier=?")
+        .all(channel, channelIdentifier) as Array<{ channel_type: string; channel_identifier: string; bot_id: string }>,
+      r => `${r.channel_type}\0${r.channel_identifier}`,
+      r => r.channel_type === channel && r.channel_identifier === channelIdentifier,
+    );
+    const binding = bindings[0];
     const bot = binding ? this.bots.getBot(binding.bot_id) : this.bots.getBot(fallbackBotId);
     if (!bot || bot.userId !== userId || bot.status !== "active") throw new Error("当前渠道的 Bot 不可用");
     return bot;
@@ -26,8 +35,15 @@ export class BotWorkContextService {
     let candidates = this.work.listWorksByConversation(conversationId).filter(work => work.userId === userId);
     if (reference.workId) candidates = candidates.filter(work => work.workId === reference.workId);
     if (reference.messageId) {
-      const refs = this.db.prepare("SELECT work_id FROM work_message_refs WHERE conversation_id=? AND message_id=?")
-        .all(conversationId, reference.messageId) as Array<{ work_id: string }>;
+      const dbRefs = this.db.prepare("SELECT work_id,conversation_id,message_id FROM work_message_refs WHERE conversation_id=? AND message_id=?")
+        .all(conversationId, reference.messageId) as Array<{ work_id: string; conversation_id: string; message_id: string }>;
+      const refs = overlayFindAll(
+        this.db,
+        "work_message_refs",
+        dbRefs,
+        r => `${r.work_id}\0${r.conversation_id}\0${r.message_id}`,
+        r => r.conversation_id === conversationId && r.message_id === reference.messageId,
+      );
       candidates = candidates.filter(work => refs.some(ref => ref.work_id === work.workId));
     }
     if (candidates.length > 1) throw new Error("当前对话涉及多个 Work，请明确事项卡片或消息引用");
@@ -38,6 +54,11 @@ export class BotWorkContextService {
   linkMessage(userId: string, workId: string, conversationId: string, messageId: string): void {
     if (!messageId.trim()) throw new Error("消息标识不能为空");
     this.resolveWork(userId, conversationId, { workId });
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "work_message_refs", `${workId}\0${conversationId}\0${messageId}`, { work_id: workId, conversation_id: conversationId, message_id: messageId });
+      enqueueWorkOp(this.db, { op: "workMessageRefInsert", workId, conversationId, messageId });
+      return;
+    }
     this.db.prepare("INSERT OR IGNORE INTO work_message_refs(work_id,conversation_id,message_id) VALUES (?,?,?)")
       .run(workId, conversationId, messageId);
   }

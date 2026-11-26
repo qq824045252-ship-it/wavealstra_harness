@@ -322,6 +322,7 @@ function SystemTab(): React.JSX.Element {
   const [proxyUrl, setProxyUrl] = useState("");
   const [closeToTray, setCloseToTray] = useState(true);
   const [residentHostEnabled, setResidentHostEnabled] = useState(false);
+  const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [hint, setHint] = useState("");
   const [fontHint, setFontHint] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
@@ -382,6 +383,7 @@ function SystemTab(): React.JSX.Element {
         setProxyUrl(settings.proxyUrl || "");
         setCloseToTray(settings.closeToTray !== false);
         setResidentHostEnabled(settings.residentHostEnabled === true);
+        setAutostartEnabled(settings.autostartEnabled === true);
         setTypography(applyFontSettings(resolveFontSettings(settings)));
         setCodeTheme(nextCodeTheme);
         document.documentElement.dataset.codeTheme = nextCodeTheme;
@@ -640,6 +642,15 @@ function SystemTab(): React.JSX.Element {
             setResidentHostEnabled(enabled);
             void window.api?.agent.updateAppSettings({ residentHostEnabled: enabled }).catch(error => {
               setResidentHostEnabled(!enabled);
+              setErrorMsg(error instanceof Error ? error.message : String(error));
+            });
+          }} />
+        </Row>
+        <Row label="开机自动启动后台 Core" desc="登录后由系统守护进程拉起 Core（显式停止助理后不会自动恢复）。">
+          <Toggle on={autostartEnabled} onChange={(enabled) => {
+            setAutostartEnabled(enabled);
+            void window.api?.agent.updateAppSettings({ autostartEnabled: enabled }).catch(error => {
+              setAutostartEnabled(!enabled);
               setErrorMsg(error instanceof Error ? error.message : String(error));
             });
           }} />

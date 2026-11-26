@@ -13,6 +13,25 @@ const host = process.arch === "x64"
   ? ({ win32: "win-x64", linux: "linux-x64" })[process.platform] : undefined;
 const [command, directory] = process.argv.slice(2);
 
+function ensureMediumIntegrity(targetPath, inherit = false) {
+  if (process.platform !== "win32") return;
+  // A Low-integrity workspace marks copied/built executables Low, so Windows launches
+  // the worker at Low IL and blocks writes to ~/.mybuddy and %LOCALAPPDATA%\Temp.
+  const icacls = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "icacls.exe");
+  execFileSync(icacls, [targetPath, "/setintegritylevel", inherit ? "(OI)(CI)M" : "M", "/L", "/Q"], {
+    windowsHide: true, timeout: 15_000,
+  });
+}
+
+function ensureExecutableTreeMedium(directory) {
+  if (process.platform !== "win32" || !fs.existsSync(directory)) return;
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const full = path.join(directory, entry.name);
+    if (entry.isDirectory()) ensureExecutableTreeMedium(full);
+    else if (entry.isFile() && entry.name.toLowerCase().endsWith(".exe")) ensureMediumIntegrity(full);
+  }
+}
+
 function verify(target, directory) {
   const executable = path.join(directory, platforms[target].executable);
   fs.accessSync(executable, host === target ? fs.constants.X_OK : fs.constants.F_OK);
@@ -20,7 +39,7 @@ function verify(target, directory) {
     const result = execFileSync(executable, ["--protocol-version"], {
       encoding: "utf8", windowsHide: true, timeout: 5_000,
     }).trim();
-    if (result !== "88") throw new Error("Runtime audit executable protocol mismatch");
+    if (result !== "89") throw new Error("Runtime audit executable protocol mismatch");
   }
 }
 
@@ -29,9 +48,18 @@ function verify(target, directory) {
 // writable temp dir and a C toolchain, which local dev shells do not always have.
 function verifyCrateTests(target, build) {
   if (!process.env.CI && process.env.RUNTIME_AUDIT_TESTS !== "1") return;
-  execFileSync("cargo", [
+  const args = [
     "test", "--locked", "--release", "--target", platforms[target].target, "--target-dir", build,
-  ], { cwd: crate, stdio: "inherit", windowsHide: true, timeout: 900_000 });
+  ];
+  if (target === "win-x64") {
+    execFileSync("cargo", [...args, "--no-run"], {
+      cwd: crate, stdio: "inherit", windowsHide: true, timeout: 900_000,
+    });
+    ensureExecutableTreeMedium(path.join(build, platforms[target].target, "release", "deps"));
+  }
+  execFileSync("cargo", args, {
+    cwd: crate, stdio: "inherit", windowsHide: true, timeout: 900_000,
+  });
 }
 
 function prepare(target) {
@@ -45,15 +73,23 @@ function prepare(target) {
   const fingerprint = createHash("sha256");
   for (const file of files) fingerprint.update(file).update("\0").update(fs.readFileSync(path.join(crate, file))).update("\0");
   const digest = fingerprint.digest("hex");
+  fs.mkdirSync(build, { recursive: true });
+  if (target === "win-x64") ensureMediumIntegrity(build, true);
   // Runs before the cache check: a cached binary still has to prove its tests pass.
   verifyCrateTests(target, build);
-  if (fs.existsSync(path.join(output, executable)) && fs.existsSync(receipt)
-      && fs.readFileSync(receipt, "utf8") === digest) return;
+  const packaged = path.join(output, executable);
+  if (fs.existsSync(packaged) && fs.existsSync(receipt)
+      && fs.readFileSync(receipt, "utf8") === digest) {
+    if (target === "win-x64") ensureMediumIntegrity(packaged);
+    return;
+  }
   execFileSync("cargo", [
     "build", "--locked", "--release", "--target", triple, "--target-dir", build,
   ], { cwd: crate, stdio: "inherit", windowsHide: true, timeout: 600_000 });
   fs.mkdirSync(output, { recursive: true });
-  fs.copyFileSync(path.join(build, triple, "release", executable), path.join(output, executable));
+  if (target === "win-x64") ensureMediumIntegrity(output, true);
+  fs.copyFileSync(path.join(build, triple, "release", executable), packaged);
+  if (target === "win-x64") ensureMediumIntegrity(packaged);
   verify(target, output);
   fs.writeFileSync(receipt, digest);
 }

@@ -176,7 +176,7 @@ export class RemoteAccessService {
 
   async bootstrap(device: RemoteDeviceSummary): Promise<RemoteBootstrap> {
     const settings = this.settings.read();
-    const dots = this.db.getTask(DOTS_TASK_ID) ?? this.db.openDots();
+    const dots = this.db.getTask(DOTS_TASK_ID) ?? await this.db.openDotsAsync();
     return {
       apiVersion: REMOTE_API_VERSION,
       server: this.serverInfo(),

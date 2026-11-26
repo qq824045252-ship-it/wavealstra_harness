@@ -228,6 +228,8 @@ export class ExternalAgentRuntime {
   private disposed = false;
   private descriptorsCache: ExternalAgentDescriptorDto[] | null = null;
   private send: ((event: ExternalAgentUiEvent) => void) | null = null;
+  private writeTail: Promise<void> = Promise.resolve();
+  private readonly toolsCache = new Map<string, StoredTool[]>();
 
   constructor(
     private readonly db: AppDatabase,
@@ -242,25 +244,49 @@ export class ExternalAgentRuntime {
     /** ACP 权限策略：agentId → ask | auto-allow | auto-deny（桌面 ACP 管理页保存）。 */
     private readonly readPermissionPolicies: () => Record<string, ExternalAgentPermissionPolicy> = () => ({}),
   ) {
-    this.ensureSchema();
-    // 上一次 MyBuddy 进程异常退出时，不允许把无主 ACP Run 永久显示为 running/blocked。
-    this.db.connection.prepare(`
-      UPDATE external_agent_runs
-         SET status='failed',
-             completed_at=COALESCE(completed_at, ?),
-             error=COALESCE(error, 'MyBuddy 已重启，上一轮外部子任务已中断。'),
-             recovery_state=CASE
-               WHEN session_id IS NOT NULL AND resume_supported=1 THEN 'resume-available'
-               ELSE 'new-run-required'
-             END,
-             cancel_supported=0,
-             recovery_message=CASE
-               WHEN session_id IS NOT NULL AND resume_supported=1 THEN '应用重启后原进程已不存在；可基于原 session 续聊，续聊前请先核对工作目录与已有产物。'
-               ELSE '应用重启后原进程已不存在，且没有可恢复 session；请核对已有输出/产物后新建执行。'
-             END
-       WHERE status IN ('starting','working','blocked')
-    `).run(Date.now());
-    this.db.connection.exec("UPDATE external_agent_runs SET cancellation_evidence='unconfirmed' WHERE cancellation_evidence='requested'");
+    if (!this.requiresRustWrites) {
+      this.ensureSchema();
+      // 上一次 MyBuddy 进程异常退出时，不允许把无主 ACP Run 永久显示为 running/blocked。
+      this.db.connection.prepare(`
+        UPDATE external_agent_runs
+           SET status='failed',
+               completed_at=COALESCE(completed_at, ?),
+               error=COALESCE(error, 'MyBuddy 已重启，上一轮外部子任务已中断。'),
+               recovery_state=CASE
+                 WHEN session_id IS NOT NULL AND resume_supported=1 THEN 'resume-available'
+                 ELSE 'new-run-required'
+               END,
+               cancel_supported=0,
+               recovery_message=CASE
+                 WHEN session_id IS NOT NULL AND resume_supported=1 THEN '应用重启后原进程已不存在；可基于原 session 续聊，续聊前请先核对工作目录与已有产物。'
+                 ELSE '应用重启后原进程已不存在，且没有可恢复 session；请核对已有输出/产物后新建执行。'
+               END
+         WHERE status IN ('starting','working','blocked')
+      `).run(Date.now());
+      this.db.connection.exec("UPDATE external_agent_runs SET cancellation_evidence='unconfirmed' WHERE cancellation_evidence='requested'");
+    } else if (this.db.runtimeAuditReader) {
+      this.enqueueBatch2("恢复中断的外部子任务", { kind: "externalAgentRecoverInterrupted", now: Date.now() });
+    }
+  }
+
+  private get requiresRustWrites(): boolean {
+    return Boolean(this.db.connection.readonly || this.db.runtimeAuditReader?.supervised);
+  }
+
+  async flush(): Promise<void> {
+    await this.writeTail;
+  }
+
+  private enqueueBatch2(context: string, request: Record<string, unknown>): void {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error(`${context}：Rust 写入核心未就绪`);
+    const op = this.writeTail.then(async () => {
+      const res = await reader.batch2Write(request);
+      if (res === undefined) throw new Error(`${context}：Rust 核心未响应`);
+    });
+    this.writeTail = op.catch((err) => {
+      console.warn(`[ExternalAgentRuntime] ${context} failed`, err);
+    });
   }
 
   setSend(send: (event: ExternalAgentUiEvent) => void): void {
@@ -481,28 +507,49 @@ export class ExternalAgentRuntime {
       continuedFromRunId: continuation?.sourceRunId,
       continuationMode: continuation ? undefined : "new",
     };
-    this.db.connection.prepare(`
-      INSERT INTO external_agent_runs (
-        id, task_id, agent_id, agent_name, protocol, status, cwd,
-        user_message_id, assistant_message_id, prompt, display_text, attachments_json, started_at,
-        continued_from_run_id, continuation_mode
-      ) VALUES (?, ?, ?, ?, 'acp', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      runId,
-      request.taskId,
-      request.agentId,
-      manifest.name,
-      dto.status,
-      cwd,
-      request.userMessageId,
-      request.assistantMessageId,
-      request.text,
-      request.displayText ?? request.text,
-      JSON.stringify(request.attachments ?? []),
-      startedAt,
-      continuation?.sourceRunId ?? null,
-      continuation ? null : "new",
-    );
+    const attachmentsJson = JSON.stringify(request.attachments ?? []);
+    if (this.requiresRustWrites) {
+      this.enqueueBatch2("创建外部子任务记录", {
+        kind: "externalAgentInsertRun",
+        id: runId,
+        taskId: request.taskId,
+        agentId: request.agentId,
+        agentName: manifest.name,
+        status: dto.status,
+        cwd,
+        userMessageId: request.userMessageId,
+        assistantMessageId: request.assistantMessageId,
+        prompt: request.text,
+        displayText: request.displayText ?? request.text,
+        attachmentsJson,
+        startedAt,
+        continuedFromRunId: continuation?.sourceRunId ?? null,
+        continuationMode: continuation ? null : "new",
+      });
+    } else {
+      this.db.connection.prepare(`
+        INSERT INTO external_agent_runs (
+          id, task_id, agent_id, agent_name, protocol, status, cwd,
+          user_message_id, assistant_message_id, prompt, display_text, attachments_json, started_at,
+          continued_from_run_id, continuation_mode
+        ) VALUES (?, ?, ?, ?, 'acp', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        runId,
+        request.taskId,
+        request.agentId,
+        manifest.name,
+        dto.status,
+        cwd,
+        request.userMessageId,
+        request.assistantMessageId,
+        request.text,
+        request.displayText ?? request.text,
+        attachmentsJson,
+        startedAt,
+        continuation?.sourceRunId ?? null,
+        continuation ? null : "new",
+      );
+    }
 
     const active: ActiveRun = { dto, continuation, cancelled: false };
     this.activeRuns.set(runId, active);
@@ -727,7 +774,15 @@ export class ExternalAgentRuntime {
     const current = run.dto.cancellationEvidence;
     if (current === "agent-confirmed" || (current === "process-terminated" && evidence !== "agent-confirmed")) return;
     run.dto.cancellationEvidence = evidence;
-    this.db.connection.prepare("UPDATE external_agent_runs SET cancellation_evidence=? WHERE id=?").run(evidence, run.dto.runId);
+    if (this.requiresRustWrites) {
+      this.enqueueBatch2("更新外部子任务取消状态", {
+        kind: "externalAgentSetCancellationEvidence",
+        id: run.dto.runId,
+        evidence,
+      });
+    } else {
+      this.db.connection.prepare("UPDATE external_agent_runs SET cancellation_evidence=? WHERE id=?").run(evidence, run.dto.runId);
+    }
     if (evidence !== "requested") this.observeRun(run, { cancellation: evidence });
   }
 
@@ -779,17 +834,39 @@ export class ExternalAgentRuntime {
 
   private setContinuationMode(run: ActiveRun, mode: ExternalAgentContinuationMode): void {
     run.dto.continuationMode = mode;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch2("设置外部子任务续聊模式", {
+        kind: "externalAgentSetContinuationMode", id: run.dto.runId, mode,
+      });
+      return;
+    }
     this.db.connection.prepare(`UPDATE external_agent_runs SET continuation_mode=? WHERE id=?`).run(mode, run.dto.runId);
   }
 
   private setCapabilities(run: ActiveRun, resumeSupported: boolean): void {
     run.dto.capabilities = { cancelSupported: !["completed", "failed", "cancelled"].includes(run.dto.status), resumeSupported };
+    const cancelSupported = run.dto.capabilities.cancelSupported ? 1 : 0;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch2("更新外部子任务能力", {
+        kind: "externalAgentSetCapabilities",
+        id: run.dto.runId,
+        resumeSupported: resumeSupported ? 1 : 0,
+        cancelSupported,
+      });
+      return;
+    }
     this.db.connection.prepare(`UPDATE external_agent_runs SET resume_supported=?, cancel_supported=? WHERE id=?`)
-      .run(resumeSupported ? 1 : 0, run.dto.capabilities.cancelSupported ? 1 : 0, run.dto.runId);
+      .run(resumeSupported ? 1 : 0, cancelSupported, run.dto.runId);
   }
 
   private setRecovery(run: ActiveRun, state: ExternalAgentRunDto["recovery"]["state"], message?: string): void {
     run.dto.recovery = { state, message };
+    if (this.requiresRustWrites) {
+      this.enqueueBatch2("更新外部子任务恢复状态", {
+        kind: "externalAgentSetRecovery", id: run.dto.runId, state, message: message ?? null,
+      });
+      return;
+    }
     this.db.connection.prepare(`UPDATE external_agent_runs SET recovery_state=?, recovery_message=? WHERE id=?`)
       .run(state, message ?? null, run.dto.runId);
   }
@@ -801,8 +878,15 @@ export class ExternalAgentRuntime {
       status: "workspace_observed",
       message: "MyBuddy 已在任务工作目录完成变更观察并登记可识别产物；这不等于业务结果已验证。",
     };
+    const artifactRefsJson = JSON.stringify(refs);
+    if (this.requiresRustWrites) {
+      this.enqueueBatch2("记录外部子任务产物观察", {
+        kind: "externalAgentSetWorkspaceObservation", id: run.dto.runId, artifactRefsJson,
+      });
+      return;
+    }
     this.db.connection.prepare(`UPDATE external_agent_runs SET artifact_refs_json=?, verification_status='workspace_observed' WHERE id=?`)
-      .run(JSON.stringify(refs), run.dto.runId);
+      .run(artifactRefsJson, run.dto.runId);
   }
 
   private updateRun(run: ActiveRun, status: ExternalAgentRunStatus, extra?: { sessionId?: string; error?: string; completedAt?: number }): void {
@@ -812,31 +896,73 @@ export class ExternalAgentRuntime {
     if (extra?.sessionId) { run.dto.sessionId = extra.sessionId; run.sessionId = extra.sessionId; }
     if (extra?.error !== undefined) run.dto.error = extra.error;
     if (extra?.completedAt !== undefined) run.dto.completedAt = extra.completedAt;
-    if (terminal(status)) run.dto.capabilities = { ...run.dto.capabilities, cancelSupported: false };
+    if (terminal(status)) {
+      run.dto.capabilities = { ...run.dto.capabilities, cancelSupported: false };
+      this.toolsCache.delete(run.dto.runId);
+    }
+    const cancelSupported = run.dto.capabilities.cancelSupported ? 1 : 0;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch2("更新外部子任务运行状态", {
+        kind: "externalAgentUpdateRun",
+        id: run.dto.runId,
+        status,
+        sessionId: extra?.sessionId ?? null,
+        completedAt: extra?.completedAt ?? null,
+        error: extra?.error ?? null,
+        cancelSupported,
+      });
+      return;
+    }
     this.db.connection.prepare(`
       UPDATE external_agent_runs SET status=?, session_id=COALESCE(?, session_id),
         completed_at=COALESCE(?, completed_at), error=?, cancel_supported=? WHERE id=?
-    `).run(status, extra?.sessionId ?? null, extra?.completedAt ?? null, extra?.error ?? null, run.dto.capabilities.cancelSupported ? 1 : 0, run.dto.runId);
+    `).run(status, extra?.sessionId ?? null, extra?.completedAt ?? null, extra?.error ?? null, cancelSupported, run.dto.runId);
   }
 
   private appendText(run: ActiveRun, column: "final_text" | "thinking_text", delta: string): void {
     if (!delta) return;
     run.dto.outputCursor += delta.length;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch2("追加外部子任务输出", {
+        kind: "externalAgentAppendText",
+        id: run.dto.runId,
+        column,
+        delta,
+        outputCursor: run.dto.outputCursor,
+      });
+      return;
+    }
     this.db.connection.prepare(`UPDATE external_agent_runs SET ${column} = ${column} || ?, output_cursor=? WHERE id = ?`)
       .run(delta, run.dto.outputCursor, run.dto.runId);
   }
 
   private readTools(runId: string): StoredTool[] {
+    const cached = this.toolsCache.get(runId);
+    if (cached) return cached;
     const row = this.db.connection.prepare(`SELECT tools_json FROM external_agent_runs WHERE id=?`).get(runId) as { tools_json: string } | undefined;
     if (!row) return [];
-    try { return JSON.parse(row.tools_json) as StoredTool[]; }
-    catch { return []; }
+    try {
+      const parsed = JSON.parse(row.tools_json) as StoredTool[];
+      this.toolsCache.set(runId, parsed);
+      return parsed;
+    } catch { return []; }
   }
 
   private writeTools(run: ActiveRun, tools: StoredTool[]): void {
+    this.toolsCache.set(run.dto.runId, tools);
     run.dto.outputCursor += 1;
+    const toolsJson = JSON.stringify(tools);
+    if (this.requiresRustWrites) {
+      this.enqueueBatch2("写入外部子任务工具状态", {
+        kind: "externalAgentWriteTools",
+        id: run.dto.runId,
+        toolsJson,
+        outputCursor: run.dto.outputCursor,
+      });
+      return;
+    }
     this.db.connection.prepare(`UPDATE external_agent_runs SET tools_json=?, output_cursor=? WHERE id=?`)
-      .run(JSON.stringify(tools), run.dto.outputCursor, run.dto.runId);
+      .run(toolsJson, run.dto.outputCursor, run.dto.runId);
   }
 
   private upsertTool(run: ActiveRun, tool: StoredTool): void {

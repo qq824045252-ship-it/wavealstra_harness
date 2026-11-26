@@ -205,7 +205,10 @@ export class WorkPhase5Facts {
     const { request } = prepared;
     if (!native || this.db.inTransaction || !Number.isSafeInteger(request.readAt)) return this.readOnHost(request);
     const response = await native.markWorkCardRead(request);
-    if (response?.status === "needsHost") return this.readOnHost(request);
+    if (response?.status === "needsHost") {
+      if (native.supervised || this.db.readonly) return { ok: false, message: "Native core host required for work card read" };
+      return this.readOnHost(request);
+    }
     if (response?.status === "rejected") return { ok: false, message: response.message };
     if (!response) return { ok: false, message: "未收到结果卡片已读确认" };
     if (response.result.ok) this.works.emitCurrentProjection(request.workId, { force: true });

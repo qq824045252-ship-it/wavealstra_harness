@@ -37,6 +37,7 @@ export function ensureTaskBoard(db: Database.Database): void {
     botSource +
     " AND c.source_kind='user' AND c.ingress_kind='desktop' AND NOT EXISTS (SELECT 1 FROM bot_peer_inputs p WHERE p.assistant_message_id=a.message_id)";
   const terminal = "('completed','failed')";
+  if (db.readonly) return;
   db.transaction(() => {
     const installed = db.prepare("SELECT 1 FROM sqlite_master WHERE name='task_board_days'").get();
     db.exec(`CREATE TABLE IF NOT EXISTS task_board_days(

@@ -118,17 +118,49 @@ function mapRow(row: RuntimeNotificationSqlRow): NotificationDto {
   return record;
 }
 
+type NotificationNativeClient = Pick<RuntimeAuditReader, "notificationData">
+  & Partial<Pick<RuntimeAuditReader, "batch4aWrite" | "supervised">>;
+
 export class NotificationRepository {
-  constructor(private readonly db: Database.Database, private readonly native?: Pick<RuntimeAuditReader, "notificationData">) {
+  private writeTail = Promise.resolve();
+
+  constructor(private readonly db: Database.Database, private readonly native?: NotificationNativeClient) {
     // Separate from bell visibility: desktop-only notifications must survive restart.
-    this.db.exec(`CREATE TABLE IF NOT EXISTS notification_activation_targets (
-      notification_id TEXT PRIMARY KEY, target_json TEXT NOT NULL, created_at INTEGER NOT NULL
-    )`);
+    if (!this.db.readonly) {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS notification_activation_targets (
+        notification_id TEXT PRIMARY KEY, target_json TEXT NOT NULL, created_at INTEGER NOT NULL
+      )`);
+    }
+  }
+
+  private get requiresRustWrites(): boolean {
+    return this.db.readonly || Boolean(this.native?.supervised);
+  }
+
+  flush(): Promise<void> {
+    return this.writeTail;
+  }
+
+  private enqueueBatch4a(request: Record<string, unknown>, label: string): void {
+    const batch4a = this.native?.batch4aWrite;
+    if (!batch4a) throw new Error(`只读模式下缺少通知 Rust 写入通道: ${label}`);
+    this.writeTail = this.writeTail.then(() => batch4a.call(this.native, request)).then(() => undefined, error => {
+      console.warn(`[NotificationRepository] ${label} failed`, error);
+    });
   }
 
   saveActivation(record: NotificationDto): void {
     const target = notificationTarget(record);
     if (!target) return;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch4a({
+        kind: "notificationSaveActivation",
+        id: record.id,
+        targetJson: JSON.stringify(target),
+        createdAt: record.createdAt,
+      }, "saveActivation");
+      return;
+    }
     this.db.prepare(`INSERT OR REPLACE INTO notification_activation_targets VALUES (?, ?, ?)`)
       .run(record.id, JSON.stringify(target), record.createdAt);
   }
@@ -319,6 +351,14 @@ export class NotificationRepository {
   }
 
   cleanup(now = Date.now(), maxAgeMs = 90 * 24 * 60 * 60 * 1000, maxRows = 1000): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch4a({
+        kind: "notificationCleanup",
+        cutoffAt: now - maxAgeMs,
+        maxRows,
+      }, "cleanup");
+      return;
+    }
     this.db.prepare(`DELETE FROM notification_activation_targets WHERE created_at < ?`).run(now - maxAgeMs);
     this.db.prepare(`DELETE FROM notification_activation_targets WHERE notification_id IN (
       SELECT notification_id FROM notification_activation_targets ORDER BY created_at DESC LIMIT -1 OFFSET ?

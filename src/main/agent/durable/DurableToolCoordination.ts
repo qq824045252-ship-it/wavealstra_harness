@@ -84,12 +84,12 @@ function acquire(inspect: () => Access[], signal?: AbortSignal): Promise<() => v
   });
 }
 
-export async function withCodeReviewLease<T>(path: string, operation: () => T): Promise<T> {
+export async function withCodeReviewLease<T>(path: string, operation: () => Promise<T> | T): Promise<T> {
   const release = await acquire(() => {
     try { return [{ kind: "file", mode: "write", ...fileResourceAddress(path) }]; }
     catch { return [{ kind: "file", mode: "write", path, entity: null }]; }
   });
-  try { return operation(); } finally { release(); }
+  try { return await operation(); } finally { release(); }
 }
 
 function inspectAccess(name: string, value: unknown, cwd: string): Access[] {

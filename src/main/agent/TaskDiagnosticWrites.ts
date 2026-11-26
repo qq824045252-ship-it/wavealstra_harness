@@ -18,7 +18,9 @@ interface PendingWrite {
 
 /** Serializes native writes and exposes pending usage receipts to synchronous accounting. */
 export class TaskDiagnosticWrites {
-  private readonly epoch: number;
+  private readonly epoch?: number;
+  private readonly epochPromise?: Promise<number | undefined>;
+  private readonly rustRequired: boolean;
   private sequence = 0;
   private active?: Batch;
   private queued: PendingWrite[] = [];
@@ -33,19 +35,26 @@ export class TaskDiagnosticWrites {
     private readonly reader: RuntimeAuditReader,
     private readonly applyOnHost: (write: RuntimeDiagnosticWrite) => void,
   ) {
-    db.exec(`CREATE TABLE IF NOT EXISTS runtime_diagnostic_writer (
-      id INTEGER PRIMARY KEY CHECK (id = 1), epoch INTEGER NOT NULL, sequence INTEGER NOT NULL
-    ); INSERT OR IGNORE INTO runtime_diagnostic_writer VALUES (1, 0, 0);`);
-    this.epoch = db.prepare("UPDATE runtime_diagnostic_writer SET epoch=epoch+1, sequence=0 RETURNING epoch").pluck().get() as number;
+    this.rustRequired = db.readonly || reader.supervised;
+    if (this.rustRequired) {
+      this.epochPromise = reader.batch1Write<{ epoch: number }>({ kind: "claimDiagnosticEpoch" })
+        .then(res => res?.epoch)
+        .catch(() => undefined);
+    } else {
+      db.exec(`CREATE TABLE IF NOT EXISTS runtime_diagnostic_writer (
+        id INTEGER PRIMARY KEY CHECK (id = 1), epoch INTEGER NOT NULL, sequence INTEGER NOT NULL
+      ); INSERT OR IGNORE INTO runtime_diagnostic_writer VALUES (1, 0, 0);`);
+      this.epoch = db.prepare("UPDATE runtime_diagnostic_writer SET epoch=epoch+1, sequence=0 RETURNING epoch").pluck().get() as number;
+    }
   }
 
-  private get native(): boolean { return Date.now() >= this.fallbackUntil; }
+  private get native(): boolean { return this.rustRequired || Date.now() >= this.fallbackUntil; }
 
   add(write: RuntimeDiagnosticWrite, receipt?: DiagnosticUsageReceipt): void {
     if (!this.native) { this.applyOnHost(write); return; }
     this.submitted++;
     this.queued.push({ write, receipt });
-    if (this.queued.length >= maxQueued) {
+    if (this.queued.length >= maxQueued && !this.rustRequired) {
       this.fallback();
       return;
     }
@@ -93,16 +102,30 @@ export class TaskDiagnosticWrites {
       }
       const batch = this.active = { sequence: ++this.sequence, items };
       try {
-        const committed = await this.reader.writeDiagnostics(this.epoch, batch.sequence, writes).catch(() => false);
+        const epoch = this.epoch ?? await this.epochPromise;
+        const committed = epoch !== undefined
+          ? await this.reader.writeDiagnostics(epoch, batch.sequence, writes).catch(() => false)
+          : false;
         if (this.active === batch) {
           if (committed) this.settle(through);
-          else this.fallback();
+          else if (this.rustRequired) {
+            console.warn("[RuntimeAudit] Supervised diagnostic batch could not be saved");
+            this.settle(through);
+          } else {
+            this.fallback();
+          }
         }
       } finally { this.active = undefined; }
     }
   }
 
   private fallback(): void {
+    if (this.rustRequired) {
+      this.active = undefined;
+      this.queued.length = 0;
+      this.settle(this.submitted);
+      return;
+    }
     this.fallbackUntil = Date.now() + retryNativeAfterMs;
     const active = this.active;
     this.active = undefined;
@@ -129,7 +152,7 @@ export class TaskDiagnosticWrites {
   }
 
   private commitOnHost(batch: Batch): void {
-    if (!batch.items.length) return;
+    if (!batch.items.length || this.epoch === undefined) return;
     const receipt = this.db.prepare("UPDATE runtime_diagnostic_writer SET sequence=? WHERE id=1 AND epoch=? AND sequence<?")
       .run(batch.sequence, this.epoch, batch.sequence);
     if (receipt.changes) for (const { write } of batch.items) this.applyOnHost(write);

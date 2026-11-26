@@ -126,14 +126,14 @@ export class FileBackupService {
 
   /** 将某份备份写回原始路径（覆盖）。备份文件缺失时抛错。 */
   async restoreWithRuntime(
-    rust: Pick<RuntimeAuditReader, "restoreFileBackup"> | undefined,
+    rust: (Pick<RuntimeAuditReader, "restoreFileBackup"> & { readonly supervised?: boolean }) | undefined,
     taskId: string,
     backupId: string,
   ): Promise<FileBackupInfoDto> {
     if (!rust) return this.restoreBackup(taskId, backupId);
     const reply = await rust.restoreFileBackup({ root: this.backupRoot(), taskId, backupId });
     if (reply?.status === "restored") return reply.backup;
-    if (reply?.status === "needsHost") return this.restoreBackup(taskId, backupId);
+    if (reply?.status === "needsHost" && !rust.supervised) return this.restoreBackup(taskId, backupId);
     if (reply?.status === "rejected") throw new Error(reply.message);
     throw new Error("备份还原结果未确认，请检查原文件");
   }

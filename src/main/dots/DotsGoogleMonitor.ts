@@ -78,6 +78,7 @@ function reminder(value: unknown): Reminder | undefined {
 
 export class DotsGoogleMonitor {
   private timer?: ReturnType<typeof setInterval>;
+  private started = false;
   private readonly active = new Map<string, { controller: AbortController; done: Promise<void> }>();
 
   constructor(
@@ -87,17 +88,22 @@ export class DotsGoogleMonitor {
     private readonly deliver: (notice: Notice) => void,
     private readonly run = runDotsGoogle,
     private readonly now = Date.now,
+    private readonly options: { coreControlled?: boolean } = {},
   ) {}
 
   start() {
-    if (this.timer) return;
-    this.timer = setInterval(() => this.refresh(), 15_000);
-    this.timer.unref();
+    if (this.started) return;
+    this.started = true;
+    if (!this.options.coreControlled && !this.timer) {
+      this.timer = setInterval(() => this.refresh(), 15_000);
+      this.timer.unref();
+    }
     this.refresh();
   }
 
   async close() {
-    clearInterval(this.timer);
+    this.started = false;
+    if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     const pending = [...this.active.values()];
     for (const { controller } of pending) controller.abort();
@@ -132,7 +138,7 @@ export class DotsGoogleMonitor {
   }
 
   refresh() {
-    if (!this.timer || this.paused()) return;
+    if (!this.started || this.paused()) return;
     const rules = this.rules();
     for (const source of dotsGoogleSources) {
       const rule = rules[source];
@@ -149,6 +155,11 @@ export class DotsGoogleMonitor {
         this.active.set(key, { controller, done });
       }
     }
+  }
+
+  async runCycle(): Promise<void> {
+    this.refresh();
+    await Promise.allSettled([...this.active.values()].map(item => item.done));
   }
 
   private async scan(account: DotsGoogleAccount, source: DotsGoogleSource, rule: DotsGoogleRule,

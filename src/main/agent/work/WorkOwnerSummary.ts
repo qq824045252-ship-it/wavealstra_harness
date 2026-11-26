@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ExpectedVersionGuard, WorkActor, WorkDto } from "../../../shared/bot-work";
 import { canonicalJson } from "../../../shared/bot-work-phase5";
 import { collectOwnerSummaryFacts, renderOwnerSummary, type WorkOwnerSummaryFacts } from "./WorkOwnerSummaryFacts";
+import { enqueueWorkOp, overlayFindAll, overlayHasTable, overlayReadOne, overlaySet, requiresWorkRustWrites, workDomainInTx } from "./WorkDomainRuntime";
 import type { WorkService } from "./WorkService";
 
 /** A persisted first-fact deadline, not a sliding debounce. Host scans also run on startup. */
@@ -115,17 +116,29 @@ export class WorkOwnerSummary {
       || current.intentRevision !== work.intentRevision || current.inputSnapshotId !== work.inputSnapshotId) return false;
     const state = this.watermark(this.row(work.workId));
     if (state?.publishedCardKey !== cardKey) return false;
-    const card = this.db.prepare(`SELECT kind,intent_revision,input_snapshot_id,canonical_outcome_hash
-      FROM work_result_cards WHERE card_key=? AND work_id=?`).get(cardKey, work.workId) as {
-        kind: string; intent_revision: number; input_snapshot_id: string; canonical_outcome_hash: string;
-      } | undefined;
-    return Boolean(card?.kind === "owner_summary" && card.intent_revision === work.intentRevision
+    const card = overlayReadOne<{ kind: string; intent_revision: number; input_snapshot_id: string; canonical_outcome_hash: string; work_id: string }>(
+      this.db, "work_result_cards", cardKey, () =>
+        this.db.prepare(`SELECT work_id,kind,intent_revision,input_snapshot_id,canonical_outcome_hash
+          FROM work_result_cards WHERE card_key=? AND work_id=?`).get(cardKey, work.workId) as {
+            work_id: string; kind: string; intent_revision: number; input_snapshot_id: string; canonical_outcome_hash: string;
+          } | undefined);
+    return Boolean(card && card.work_id === work.workId && card.kind === "owner_summary" && card.intent_revision === work.intentRevision
       && card.input_snapshot_id === work.inputSnapshotId
       && card.canonical_outcome_hash === collectOwnerSummaryFacts(this.works, current, this.now()).digest);
   }
 
   /** Exposes the next persisted deadline so a host may schedule sooner than its periodic scan. */
   nextDeadline(): number | undefined {
+    if (overlayHasTable(this.db, "work_owner_summaries")) {
+      const dbRows = this.db.prepare("SELECT work_id, handled_watermark_json FROM work_owner_summaries").all() as Array<Record<string, unknown>>;
+      const all = overlayFindAll(this.db, "work_owner_summaries", dbRows, r => String(r.work_id), () => true);
+      let min: number | undefined;
+      for (const r of all) {
+        const d = this.watermark(rowSchema.parse({ digest: "", card_key: null, handled_watermark_json: String(r.handled_watermark_json) }))?.deadlineAt;
+        if (typeof d === "number" && (min === undefined || d < min)) min = d;
+      }
+      return min;
+    }
     const row = this.db.prepare(`SELECT MIN(json_extract(handled_watermark_json,'$.ownerNotification.deadlineAt')) AS deadline
       FROM work_owner_summaries`).get() as { deadline: number | null };
     return row.deadline ?? undefined;
@@ -172,8 +185,11 @@ export class WorkOwnerSummary {
     if (!current || current.ownerBotId !== work.ownerBotId || current.ownerEpoch !== work.ownerEpoch
       || current.intentRevision !== work.intentRevision || current.inputSnapshotId !== work.inputSnapshotId)
       return { ok: false, code: "epoch_mismatch", message: "汇总提交前负责人或要求已变化" };
-    const name = (botId: string) => (this.db.prepare("SELECT display_name FROM bots WHERE bot_id=?").get(botId) as
-      { display_name: string } | undefined)?.display_name ?? "协作成员";
+    const name = (botId: string) => {
+      const bot = overlayReadOne<{ display_name?: string }>(this.db, "bots", botId, () =>
+        this.db.prepare("SELECT bot_id, display_name FROM bots WHERE bot_id=?").get(botId) as { bot_id: string; display_name: string } | undefined);
+      return bot?.display_name ?? "协作成员";
+    };
     const body = renderOwnerSummary(facts.payload, name);
     const card = this.works.cards.ensure({ work: current, kind: "owner_summary", outcome: facts.outcome,
       title: `${name(current.ownerBotId)}汇总：${current.title}`, summary: body,
@@ -196,20 +212,39 @@ export class WorkOwnerSummary {
   }
 
   private save(work: WorkDto, row: Row | undefined, state: Watermark, facts: WorkOwnerSummaryFacts, now: number): void {
-    if (!this.db.inTransaction) throw new Error("负责人汇总水位必须与 Work 事实同事务提交");
+    if (!workDomainInTx(this.db)) throw new Error("负责人汇总水位必须与 Work 事实同事务提交");
     this.assertAuthority();
     const handled = row ? z.record(z.string(), z.unknown()).parse(JSON.parse(row.handled_watermark_json)) : {};
+    const digest = row?.digest ?? facts.digest;
+    const cardKey = state.publishedCardKey ?? row?.card_key ?? null;
+    const pendingDecisionCodesJson = JSON.stringify(facts.payload.pendingDecisionKeys);
+    const handledWatermarkJson = JSON.stringify({ ...handled, ownerNotification: state });
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "work_owner_summaries", work.workId, {
+        work_id: work.workId, intent_revision: work.intentRevision, input_snapshot_id: work.inputSnapshotId,
+        owner_epoch: work.ownerEpoch, digest, card_key: cardKey,
+        pending_decision_codes_json: pendingDecisionCodesJson, handled_watermark_json: handledWatermarkJson,
+        updated_at: now,
+      });
+      enqueueWorkOp(this.db, {
+        op: "workOwnerSummaryUpsert", workId: work.workId, intentRevision: work.intentRevision,
+        inputSnapshotId: work.inputSnapshotId, ownerEpoch: work.ownerEpoch, digest, cardKey,
+        pendingDecisionCodesJson, handledWatermarkJson, updatedAt: now,
+      });
+      return;
+    }
     this.db.prepare(`INSERT INTO work_owner_summaries(work_id,intent_revision,input_snapshot_id,owner_epoch,digest,card_key,
       pending_decision_codes_json,handled_watermark_json,updated_at) VALUES (?,?,?,?,?,?,?,?,?)
       ON CONFLICT(work_id) DO UPDATE SET intent_revision=excluded.intent_revision,input_snapshot_id=excluded.input_snapshot_id,
       owner_epoch=excluded.owner_epoch,digest=excluded.digest,card_key=excluded.card_key,
       pending_decision_codes_json=excluded.pending_decision_codes_json,handled_watermark_json=excluded.handled_watermark_json,updated_at=excluded.updated_at`)
-      .run(work.workId, work.intentRevision, work.inputSnapshotId, work.ownerEpoch, row?.digest ?? facts.digest,
-        state.publishedCardKey ?? row?.card_key ?? null, JSON.stringify(facts.payload.pendingDecisionKeys),
-        JSON.stringify({ ...handled, ownerNotification: state }), now);
+      .run(work.workId, work.intentRevision, work.inputSnapshotId, work.ownerEpoch, digest,
+        cardKey, pendingDecisionCodesJson, handledWatermarkJson, now);
   }
   private row(workId: string): Row | undefined {
-    return rowSchema.optional().parse(this.db.prepare("SELECT * FROM work_owner_summaries WHERE work_id=?").get(workId));
+    const r = overlayReadOne(this.db, "work_owner_summaries", workId, () =>
+      this.db.prepare("SELECT * FROM work_owner_summaries WHERE work_id=?").get(workId) as Record<string, unknown> | undefined);
+    return rowSchema.optional().parse(r);
   }
   private watermark(row: Row | undefined): Watermark | undefined {
     return row ? watermarkSchema.optional().parse((JSON.parse(row.handled_watermark_json) as Record<string, unknown>).ownerNotification) : undefined;

@@ -30,11 +30,15 @@ export class DurableWorkspaceMoves {
 
   async write(request: RuntimeDurableWorkspaceMoveRequest): Promise<void> {
     const worker = this.db.runtimeAuditReader;
+    const rustRequired = Boolean(this.db.connection.readonly || worker?.supervised);
     if (worker) {
       const reply = await worker.writeDurableWorkspaceMove(request);
       if (reply?.status === "applied") return;
       if (reply?.status === "rejected") throw new Error(reply.message);
       if (reply?.status !== "needsHost") throw new Error("任务工作目录搬迁的写入结果未确认，请重新打开任务");
+      if (rustRequired) throw new Error("任务工作目录搬迁需要 Rust 核心确认，不会回退到 Node 写入");
+    } else if (rustRequired) {
+      throw new Error("只读模式下任务工作目录搬迁需要 Rust 核心确认");
     }
     this.db.connection.transaction(() => this.writeOnHost(request)).immediate();
   }

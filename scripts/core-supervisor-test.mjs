@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,8 +36,8 @@ async function within(promise, message, timeoutMs = 3_000) {
   })]); } finally { clearTimeout(timer); }
 }
 
-function startCore() {
-  const child = spawn(binary, ["--supervise", dataDir, dbPath], { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
+function startCore(dir = dataDir, db = dbPath) {
+  const child = spawn(binary, ["--supervise", dir, db], { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
   child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-16_384); });
   child.exited = new Promise((resolveExit, reject) => {
@@ -126,8 +126,11 @@ async function openHistory(client, session) {
 }
 
 try {
-  // A lease must be exclusive even before endpoint publication.
-  const contenders = [startCore(), startCore(), startCore()];
+  // A lease must be exclusive even before endpoint publication, including path aliases.
+  const aliasDataDir = join(sandbox, "data-alias");
+  symlinkSync(dataDir, aliasDataDir, process.platform === "win32" ? "junction" : "dir");
+  const aliasDbPath = process.platform === "win32" ? join(sandbox, "APP.DB") : dbPath;
+  const contenders = [startCore(dataDir, dbPath), startCore(aliasDataDir, aliasDbPath), startCore(dataDir, dbPath)];
   const a = await endpoint();
   const first = contenders.find(child => child.pid === a.pid); assert(first);
   for (const child of contenders.filter(child => child !== first)) {
@@ -181,10 +184,13 @@ try {
   await openHistory(client, "reused-session");
   console.log("PASS disconnect revokes background Gadget generations at the worker commit gate");
 
-  // Fill the socket's send buffer with a complete, valid response. The worker must
-  // remain drainable after this client stops consuming bytes.
+  // Fill the socket's send buffer / queue cap with complete, valid responses (Windows
+  // loopback autotuning can absorb >20MB in a single write). The worker must remain
+  // drainable after this client stops consuming bytes.
   client.socket.pause();
-  client.send({ operation: "historyRead", action: "select", session: "reused-session", sql: "SELECT hex(zeroblob(10000000)) AS payload", parameters: [], first: true });
+  for (let i = 0; i < 4; i++) {
+    client.send({ operation: "historyRead", action: "select", session: "reused-session", sql: "SELECT hex(zeroblob(10000000)) AS payload", parameters: [], first: true });
+  }
   const recovered = await connectEventually(a, 6_000);
   await ping(recovered);
   await openHistory(recovered, "reused-session");

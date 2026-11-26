@@ -40,17 +40,77 @@ function deliverySnapshot({ reply, deliveredAt }: CommittedDotsDelivery, termina
 export class DotsReplyOutbox {
   private handler?: { followup: DotsFollowup; append: AppendDotsReply; allowed: (taskId: string) => boolean;
     allowedReply: (kind: DotsAssistantReply["kind"]) => boolean };
+  private writeTail = Promise.resolve();
+  private pendingWriteCount = 0;
+  private readonly pendingEvents = new Map<string, Event>();
+  private readonly pendingRequests = new Map<string, string | null>();
+  private readonly pendingOrigins = new Map<string, { conversationId: number; entryId: number }>();
+
   constructor(private db: Database.Database, private changed?: (operationId: string) => void,
-    private readonly sampleIntervalMs = () => Number(dotsSummaryInterval.defaultSeconds) * 1_000) {
-    db.exec(`CREATE TABLE IF NOT EXISTS dots_reply_origins(source TEXT PRIMARY KEY, conversation INTEGER NOT NULL, entry INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS dots_followup_plans(operation_id TEXT PRIMARY KEY,plan TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS dots_followup_requests(operation_id TEXT PRIMARY KEY, request TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS dots_reply_events(event_key TEXT PRIMARY KEY, operation_id TEXT NOT NULL, task_id TEXT NOT NULL,
-        status TEXT NOT NULL, interaction_id TEXT, snapshot TEXT NOT NULL, reply TEXT, settled INTEGER NOT NULL DEFAULT 0);
-      CREATE INDEX IF NOT EXISTS dots_reply_pending ON dots_reply_events(task_id) WHERE settled=0;
-      CREATE INDEX IF NOT EXISTS dots_reply_operation ON dots_reply_events(operation_id);
-      INSERT OR IGNORE INTO dots_followup_requests SELECT operation_id,request_json FROM dots_delegations
-        WHERE request_json IS NOT NULL AND status IN ('pending','running','blocked')`);
+    private readonly sampleIntervalMs = () => Number(dotsSummaryInterval.defaultSeconds) * 1_000,
+    private readonly native?: Pick<import("../platform/runtime-audit").RuntimeAuditReader, "batch4aWrite" | "supervised">) {
+    if (!db.readonly) {
+      db.exec(`CREATE TABLE IF NOT EXISTS dots_reply_origins(source TEXT PRIMARY KEY, conversation INTEGER NOT NULL, entry INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS dots_followup_plans(operation_id TEXT PRIMARY KEY,plan TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS dots_followup_requests(operation_id TEXT PRIMARY KEY, request TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS dots_reply_events(event_key TEXT PRIMARY KEY, operation_id TEXT NOT NULL, task_id TEXT NOT NULL,
+          status TEXT NOT NULL, interaction_id TEXT, snapshot TEXT NOT NULL, reply TEXT, settled INTEGER NOT NULL DEFAULT 0);
+        CREATE INDEX IF NOT EXISTS dots_reply_pending ON dots_reply_events(task_id) WHERE settled=0;
+        CREATE INDEX IF NOT EXISTS dots_reply_operation ON dots_reply_events(operation_id);
+        INSERT OR IGNORE INTO dots_followup_requests SELECT operation_id,request_json FROM dots_delegations
+          WHERE request_json IS NOT NULL AND status IN ('pending','running','blocked')`);
+    } else if (this.native?.batch4aWrite) {
+      this.enqueueOutbox({ kind: "dotsReplyStartupSync" }, "startupSync");
+    }
+  }
+
+  private get requiresRustWrites(): boolean {
+    return this.db.readonly || Boolean(this.native?.supervised);
+  }
+
+  flushWrites(): Promise<void> {
+    return this.writeTail;
+  }
+
+  private enqueueOutbox(request: Record<string, unknown>, label: string): void {
+    const batch4a = this.native?.batch4aWrite;
+    if (!batch4a) throw new Error(`只读模式下缺少 Dots 回复队列 Rust 写入通道: ${label}`);
+    this.pendingWriteCount += 1;
+    this.writeTail = this.writeTail.then(() => batch4a.call(this.native, request)).then(() => undefined, error => {
+      console.warn(`[DotsReplyOutbox] ${label} failed`, error);
+    }).finally(() => {
+      this.pendingWriteCount -= 1;
+      if (this.pendingWriteCount === 0) {
+        this.pendingEvents.clear();
+        this.pendingRequests.clear();
+        this.pendingOrigins.clear();
+      }
+    });
+  }
+
+  private getEvent(eventKey: string): Event | undefined {
+    return this.pendingEvents.get(eventKey) ?? (this.db.prepare("SELECT * FROM dots_reply_events WHERE event_key=?").get(eventKey) as Event | undefined);
+  }
+
+  private listEventsByOperation(operationId: string): Event[] {
+    const rows = this.db.prepare("SELECT * FROM dots_reply_events WHERE operation_id=? ORDER BY rowid").all(operationId) as Event[];
+    const byKey = new Map(rows.map(r => [r.event_key, r]));
+    for (const [k, ev] of this.pendingEvents) {
+      if (ev.operation_id === operationId) byKey.set(k, ev);
+    }
+    return [...byKey.values()];
+  }
+
+  private listPendingEventsByTask(taskId: string): Event[] {
+    const rows = this.db.prepare("SELECT * FROM dots_reply_events WHERE task_id=? AND settled=0 ORDER BY rowid").all(taskId) as Event[];
+    const byKey = new Map(rows.map(r => [r.event_key, r]));
+    for (const [k, ev] of this.pendingEvents) {
+      if (ev.task_id === taskId) {
+        if (ev.settled === 0) byKey.set(k, ev);
+        else byKey.delete(k);
+      }
+    }
+    return [...byKey.values()];
   }
 
   connect(followup: DotsFollowup, append: AppendDotsReply, allowed = (_taskId: string) => true,
@@ -59,23 +119,82 @@ export class DotsReplyOutbox {
   }
 
   rememberOrigin(source: string, origin: DotsReplyOrigin) {
+    if (this.requiresRustWrites) {
+      const pending = this.pendingOrigins.get(source);
+      const existing = pending ?? (this.db.prepare("SELECT conversation AS conversationId, entry AS entryId FROM dots_reply_origins WHERE source=?")
+        .get(source) as { conversationId: number; entryId: number } | undefined);
+      if (existing) {
+        if (existing.conversationId !== origin.conversationId || existing.entryId !== origin.entryId) {
+          throw new Error("原始 Dots 消息归属冲突");
+        }
+        return;
+      }
+      this.pendingOrigins.set(source, { conversationId: origin.conversationId, entryId: origin.entryId });
+      this.enqueueOutbox({
+        kind: "dotsReplyRememberOrigin",
+        source,
+        conversationId: origin.conversationId,
+        entryId: origin.entryId,
+      }, "rememberOrigin");
+      return;
+    }
     this.db.prepare("INSERT OR IGNORE INTO dots_reply_origins VALUES(?,?,?)").run(source, origin.conversationId, origin.entryId);
     if (!this.db.prepare("SELECT 1 FROM dots_reply_origins WHERE source=? AND conversation=? AND entry=?").get(source, origin.conversationId, origin.entryId))
       throw new Error("原始 Dots 消息归属冲突");
   }
 
   track(operationId: string, request?: AgentPromptRequest) {
-    if (request) this.db.prepare("INSERT OR IGNORE INTO dots_followup_requests VALUES(?,?)").run(operationId, JSON.stringify(request));
+    if (!request) return;
+    const requestJson = JSON.stringify(request);
+    if (this.requiresRustWrites) {
+      if (!this.pendingRequests.has(operationId)) {
+        this.pendingRequests.set(operationId, requestJson);
+      }
+      this.enqueueOutbox({ kind: "dotsReplyTrack", operationId, requestJson }, "track");
+      return;
+    }
+    this.db.prepare("INSERT OR IGNORE INTO dots_followup_requests VALUES(?,?)").run(operationId, requestJson);
   }
 
   observe(job: DotsDelegation, citations?: ReplyCitation[], acceptedGoalReceiptId?: string, restoreSilentlySettled = false) {
     if (job.status === "pending" || job.status === "superseded" || (job.status === "running" && !job.text.trim())) return;
     const identity = [job.id, job.status, job.interactionId ?? "", job.status === "running" ? job.text : ""];
     const key = createHash("sha256").update(JSON.stringify(identity)).digest("hex");
+    const snapshot = JSON.stringify({ ...job, citations, acceptedGoalReceiptId });
+    if (this.requiresRustWrites) {
+      const existing = this.getEvent(key);
+      if (!existing) {
+        this.pendingEvents.set(key, {
+          event_key: key,
+          operation_id: job.id,
+          task_id: job.taskId,
+          status: job.status,
+          interaction_id: job.interactionId ?? null,
+          snapshot,
+          reply: null,
+          settled: 0,
+        });
+      } else if (restoreSilentlySettled && existing.settled === 1 && existing.reply === null && existing.snapshot === "") {
+        this.pendingEvents.set(key, { ...existing, settled: 0, snapshot });
+      }
+      this.enqueueOutbox({
+        kind: "dotsReplyObserve",
+        obs: {
+          eventKey: key,
+          operationId: job.id,
+          taskId: job.taskId,
+          status: job.status,
+          interactionId: job.interactionId ?? null,
+          snapshot,
+          restoreSilentlySettled,
+        },
+      }, "observe");
+      return;
+    }
     this.db.prepare(`INSERT INTO dots_reply_events(event_key,operation_id,task_id,status,interaction_id,snapshot) VALUES(?,?,?,?,?,?)
       ON CONFLICT(event_key) DO UPDATE SET settled=0,snapshot=excluded.snapshot
       WHERE ? AND dots_reply_events.settled=1 AND dots_reply_events.reply IS NULL AND dots_reply_events.snapshot=''`)
-      .run(key, job.id, job.taskId, job.status, job.interactionId ?? null, JSON.stringify({ ...job, citations, acceptedGoalReceiptId }),
+      .run(key, job.id, job.taskId, job.status, job.interactionId ?? null, snapshot,
         Number(restoreSilentlySettled));
   }
 
@@ -87,16 +206,73 @@ export class DotsReplyOutbox {
 
   observeActivity(job: DotsDelegation, window: number, text: string): boolean {
     // Keep at most one unsent observation. Its stable key survives native receipt recovery.
-    if (this.db.prepare("SELECT 1 FROM dots_reply_events WHERE operation_id=? AND status='activity' AND settled=0").get(job.id))
-      return false;
+    const hasPending = this.listEventsByOperation(job.id).some(ev => ev.status === "activity" && ev.settled === 0);
+    if (hasPending) return false;
     const key = createHash("sha256").update(JSON.stringify([job.id, "activity", window])).digest("hex");
+    const snapshot = JSON.stringify({ ...job, text });
+    if (this.requiresRustWrites) {
+      if (this.getEvent(key)) return false;
+      this.pendingEvents.set(key, {
+        event_key: key,
+        operation_id: job.id,
+        task_id: job.taskId,
+        status: "activity",
+        interaction_id: null,
+        snapshot,
+        reply: null,
+        settled: 0,
+      });
+      this.enqueueOutbox({
+        kind: "dotsReplyObserveActivity",
+        eventKey: key,
+        operationId: job.id,
+        taskId: job.taskId,
+        snapshot,
+      }, "observeActivity");
+      return true;
+    }
     return this.db.prepare(`INSERT OR IGNORE INTO dots_reply_events(event_key,operation_id,task_id,status,interaction_id,snapshot)
-      VALUES(?,?,?,'activity',NULL,?)`).run(key, job.id, job.taskId, JSON.stringify({ ...job, text })).changes > 0;
+      VALUES(?,?,?,'activity',NULL,?)`).run(key, job.id, job.taskId, snapshot).changes > 0;
   }
 
   observeSample(job: DotsDelegation, observation: { id: string; text: string }): boolean {
     const key = createHash("sha256").update(JSON.stringify([job.id, "sample", observation.id])).digest("hex");
     const sampleFingerprint = createHash("sha256").update(observation.text.replace(/\s+/gu, " ").trim()).digest("hex");
+    if (this.requiresRustWrites) {
+      const existing = this.listEventsByOperation(job.id);
+      if (existing.some(ev => ev.status === "sample" && (ev.event_key === key
+        || (() => { try { return JSON.parse(ev.snapshot || "{}").sampleFingerprint === sampleFingerprint; } catch { return false; } })()))) {
+        return false;
+      }
+      const queued = existing.find(ev => ev.status === "sample" && ev.settled === 0 && ev.reply === null);
+      const timing = queued ? JSON.parse(queued.snapshot) as SampleTiming : undefined;
+      if (queued) {
+        this.pendingEvents.set(queued.event_key, { ...queued, settled: 1, snapshot: "" });
+      }
+      const sampledAt = timing?.sampledAt ?? Date.now();
+      const snapshot = JSON.stringify({
+        ...job, text: observation.text, sampledAt, sampleFingerprint, reportAt: timing?.reportAt,
+      });
+      this.pendingEvents.set(key, {
+        event_key: key,
+        operation_id: job.id,
+        task_id: job.taskId,
+        status: "sample",
+        interaction_id: null,
+        snapshot,
+        reply: null,
+        settled: 0,
+      });
+      this.enqueueOutbox({
+        kind: "dotsReplyObserveSample",
+        previousEventKey: queued?.event_key ?? null,
+        eventKey: key,
+        operationId: job.id,
+        taskId: job.taskId,
+        snapshot,
+      }, "observeSample");
+      return true;
+    }
     return this.db.transaction(() => {
       if (this.db.prepare(`SELECT 1 FROM dots_reply_events WHERE operation_id=? AND status='sample' AND
         (event_key=? OR CASE WHEN json_valid(snapshot) THEN json_extract(snapshot,'$.sampleFingerprint') END=?)`)
@@ -125,8 +301,7 @@ export class DotsReplyOutbox {
   }
 
   nextSampleDelay(taskId: string): number | undefined {
-    const pending = this.db.prepare(`SELECT snapshot, operation_id FROM dots_reply_events
-      WHERE task_id=? AND status='sample' AND settled=0`).all(taskId) as Array<Pick<Event, "snapshot" | "operation_id">>;
+    const pending = this.listPendingEventsByTask(taskId).filter(event => event.status === "sample");
     const now = Date.now();
     const delays = pending.map(event => this.sampleReadyAt(event) - now).filter(delay => delay > 0);
     return delays.length ? Math.min(...delays) : undefined;
@@ -134,11 +309,18 @@ export class DotsReplyOutbox {
 
   targets(): string[] {
     if (!this.handler) return [];
-    return this.db.prepare("SELECT DISTINCT task_id FROM dots_reply_events WHERE settled=0").pluck().all() as string[];
+    const dbTargets = this.db.prepare("SELECT DISTINCT task_id FROM dots_reply_events WHERE settled=0").pluck().all() as string[];
+    if (!this.pendingEvents.size) return dbTargets;
+    const tasks = new Set(dbTargets);
+    for (const ev of this.pendingEvents.values()) {
+      if (ev.settled === 0) tasks.add(ev.task_id);
+      else if (!this.listPendingEventsByTask(ev.task_id).length) tasks.delete(ev.task_id);
+    }
+    return [...tasks];
   }
 
   hasPending(target: string): boolean {
-    return Boolean(this.handler && this.db.prepare("SELECT 1 FROM dots_reply_events WHERE task_id=? AND settled=0 LIMIT 1").get(target));
+    return Boolean(this.handler && this.listPendingEventsByTask(target).length);
   }
 
   private committedDeliveries(keys: string[]) {
@@ -240,7 +422,7 @@ export class DotsReplyOutbox {
   /** Return true when an original receipt or a transient write still needs another wake-up. */
   async flush(target: string, alive: () => boolean): Promise<boolean> {
     if (!this.handler) return false;
-    const events = this.db.prepare("SELECT * FROM dots_reply_events WHERE task_id=? AND settled=0 ORDER BY rowid").all(target) as Event[];
+    const events = this.listPendingEventsByTask(target);
     let retry = false;
     for (const event of events) {
       if (!alive()) break;
@@ -255,6 +437,35 @@ export class DotsReplyOutbox {
   }
 
   private settle(event: Event, receipt?: CommittedDotsDelivery) {
+    if (this.requiresRustWrites) {
+      const current = this.getEvent(event.event_key);
+      if (!current || current.settled !== event.settled || current.snapshot !== event.snapshot) return;
+      const sourceConclusion = receipt?.reply.kind === "conclusion"
+        ? (() => {
+            try { return current.reply ? (JSON.parse(current.reply) as { text?: string }).text : undefined; }
+            catch { return undefined; }
+          })()
+        : undefined;
+      const sampleFingerprint = receipt && event.status === "sample"
+        ? (JSON.parse(event.snapshot) as SampleTiming).sampleFingerprint ?? event.event_key : undefined;
+      const newSnapshot = receipt ? deliverySnapshot(receipt, event.status === "completed" || event.status === "failed",
+        sourceConclusion ?? undefined, sampleFingerprint) : "";
+      this.pendingEvents.set(event.event_key, { ...current, settled: 1, reply: null, snapshot: newSnapshot });
+      const deleteFollowupRequest = event.status === "completed" || event.status === "failed";
+      if (deleteFollowupRequest) this.pendingRequests.set(event.operation_id, null);
+      this.enqueueOutbox({
+        kind: "dotsReplySettle",
+        eventKey: event.event_key,
+        settled: event.settled,
+        expectedSnapshot: event.snapshot,
+        newSnapshot,
+        deliveredActivityAt: event.status === "activity" && receipt ? receipt.deliveredAt : null,
+        deleteFollowupRequest,
+        operationId: event.operation_id,
+      }, "settle");
+      if (event.status !== "running" && event.status !== "activity") this.changed?.(event.operation_id);
+      return;
+    }
     const changed = this.db.transaction(() => {
       const sourceConclusion = receipt?.reply.kind === "conclusion"
         ? this.db.prepare("SELECT json_extract(reply,'$.text') FROM dots_reply_events WHERE event_key=?").pluck()
@@ -295,7 +506,10 @@ export class DotsReplyOutbox {
     let reply: DotsAssistantReply;
     if (preparedReply) reply = preparedReply;
     else {
-      const request = this.db.prepare("SELECT request FROM dots_followup_requests WHERE operation_id=?").pluck().get(job.id) as string | undefined;
+      const pendingRequest = this.pendingRequests.get(job.id);
+      const request = pendingRequest !== undefined
+        ? (pendingRequest ?? undefined)
+        : (this.db.prepare("SELECT request FROM dots_followup_requests WHERE operation_id=?").pluck().get(job.id) as string | undefined);
       const step = event.status === "activity" || event.status === "sample" ? { kind: "progress" as const, text: job.text, artifacts: [] }
         : await handler.followup(job, request ? JSON.parse(request) : undefined);
       if (!alive() || (step.kind !== "continued" && this.disposition(event) === "hold")) return false;
@@ -329,7 +543,14 @@ export class DotsReplyOutbox {
     }
     const prepared = JSON.stringify(reply);
     if (prepared !== event.reply) {
-      this.db.prepare("UPDATE dots_reply_events SET reply=? WHERE event_key=?").run(prepared, event.event_key);
+      if (this.requiresRustWrites) {
+        const latest = this.getEvent(event.event_key) ?? event;
+        this.pendingEvents.set(event.event_key, { ...latest, reply: prepared });
+        event = { ...event, reply: prepared };
+        this.enqueueOutbox({ kind: "dotsReplySetReply", eventKey: event.event_key, replyJson: prepared }, "setReply");
+      } else {
+        this.db.prepare("UPDATE dots_reply_events SET reply=? WHERE event_key=?").run(prepared, event.event_key);
+      }
       if (reply.kind === "conclusion") this.changed?.(event.operation_id);
     }
     if (!handler.allowedReply(reply.kind)) { this.settle(event); return false; }

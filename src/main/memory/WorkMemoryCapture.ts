@@ -8,7 +8,27 @@ import { LOCAL_USER_ID } from "../../shared/bot-work";
 
 /** Facts-only bridge into the existing Kernel. Never consumes execution/outbox events. */
 export class WorkMemoryCapture {
+  private writeTail: Promise<void> = Promise.resolve();
+
   constructor(private readonly db: AppDatabase, private readonly memory: MemoryService, private readonly onChanged?: () => void) {}
+
+  private get requiresRustWrites(): boolean {
+    return Boolean(this.db.readonly || this.db.runtimeAuditReader?.supervised);
+  }
+
+  async flushWrites(): Promise<void> {
+    await this.writeTail;
+  }
+
+  private enqueueBatch3(context: string, request: Record<string, unknown>): void {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error(`${context}：Rust 写入核心未就绪`);
+    const next = this.writeTail.then(async () => {
+      const result = await reader.batch3Write(request);
+      if (result === undefined) throw new Error(`${context}：Rust 写入未收到确认`);
+    });
+    this.writeTail = next.then(() => undefined, () => undefined);
+  }
 
   /** Lightweight startup scan; yields between small batches so foreground remains responsive. */
   async catchUp(isActive: () => boolean): Promise<{ processed: number; failed: number }> {
@@ -32,7 +52,7 @@ export class WorkMemoryCapture {
 
   capture(workId: string): string | undefined {
     let changed = false;
-    const result = this.db.connection.transaction(() => {
+    const runCapture = (): string | undefined => {
       const key = `work-summary:${workId}`;
       const receipt = this.db.connection.prepare("SELECT * FROM memory_capture_receipts WHERE source_key=?").get(key) as
         { memory_id: string; content_hash: string; suppressed: number } | undefined;
@@ -48,7 +68,11 @@ export class WorkMemoryCapture {
         || (latestRevision && latestRevision.changed_by !== 'event')
         || createHash('sha256').update(existing.content).digest('hex') !== receipt.content_hash
         || !existing.scopes.some(scope => scope.scopeType === 'work' && scope.scopeId === workId))) {
-        this.db.connection.prepare("UPDATE memory_capture_receipts SET suppressed=1,updated_at=? WHERE source_key=?").run(Date.now(), key);
+        if (this.requiresRustWrites) {
+          this.enqueueBatch3("抑制工作记忆回执", { kind: "workMemorySuppressReceipt", sourceKey: key, updatedAt: Date.now() });
+        } else {
+          this.db.connection.prepare("UPDATE memory_capture_receipts SET suppressed=1,updated_at=? WHERE source_key=?").run(Date.now(), key);
+        }
         return undefined;
       }
       const work = this.db.connection.prepare(`SELECT title,progress_summary,lifecycle,mode,closure_conclusion,intent_revision,input_snapshot_id
@@ -89,12 +113,24 @@ export class WorkMemoryCapture {
       const record = receipt ? this.memory.update({ id: receipt.memory_id, content, changedBy: 'event', changeReason: 'Work facts refreshed' })
         : this.memory.create({ kind: 'progress', title: 'Work 事实与未决事项', content, scopeType: 'work', scopeId: workId,
           sourceType: 'event', confidence: 1, metadata: { captureSource: key, factualSnapshot: true } });
-      this.db.connection.prepare(`INSERT INTO memory_capture_receipts(source_key,memory_id,content_hash,updated_at) VALUES(?,?,?,?)
-        ON CONFLICT(source_key) DO UPDATE SET content_hash=excluded.content_hash,updated_at=excluded.updated_at`)
-        .run(key, record.id, createHash('sha256').update(record.content).digest('hex'), Date.now());
+      const contentHash = createHash('sha256').update(record.content).digest('hex');
+      if (this.requiresRustWrites) {
+        this.enqueueBatch3("保存工作记忆回执", {
+          kind: "workMemoryUpsertReceipt",
+          sourceKey: key,
+          memoryId: record.id,
+          contentHash,
+          updatedAt: Date.now(),
+        });
+      } else {
+        this.db.connection.prepare(`INSERT INTO memory_capture_receipts(source_key,memory_id,content_hash,updated_at) VALUES(?,?,?,?)
+          ON CONFLICT(source_key) DO UPDATE SET content_hash=excluded.content_hash,updated_at=excluded.updated_at`)
+          .run(key, record.id, contentHash, Date.now());
+      }
       changed = true;
       return record.id;
-    })();
+    };
+    const result = this.requiresRustWrites ? runCapture() : this.db.connection.transaction(runCapture)();
     if (changed) this.onChanged?.();
     return result;
   }

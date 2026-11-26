@@ -119,20 +119,56 @@ type DependencyOperation = {
 };
 const quiet: DotsFollowupDecision = { kind: "quiet" };
 export class DotsFollowup {
+  private writeTail = Promise.resolve();
+  private pendingWriteCount = 0;
+  private readonly pendingPlans = new Map<string, Plan>();
+
   constructor(
     private db: Database.Database,
-    private hooks: Hooks,
+    private hooks: Hooks & { native?: Pick<import("../platform/runtime-audit").RuntimeAuditReader, "batch4aWrite" | "supervised"> },
   ) {
-    db.exec("CREATE TABLE IF NOT EXISTS dots_followup_plans(operation_id TEXT PRIMARY KEY,plan TEXT NOT NULL)");
+    if (!db.readonly) db.exec("CREATE TABLE IF NOT EXISTS dots_followup_plans(operation_id TEXT PRIMARY KEY,plan TEXT NOT NULL)");
+  }
+  private get requiresRustWrites(): boolean {
+    return this.db.readonly || Boolean(this.hooks.native?.supervised);
+  }
+  flushWrites(): Promise<void> {
+    return this.writeTail;
+  }
+  private enqueuePlanWrite(request: Record<string, unknown>, label: string): void {
+    const native = this.hooks.native;
+    if (!native) throw new Error(`只读模式下缺少 Dots 跟进计划 Rust 写入通道: ${label}`);
+    this.pendingWriteCount += 1;
+    this.writeTail = this.writeTail.then(() => native.batch4aWrite(request)).then(() => undefined, error => {
+      console.warn(`[DotsFollowup] ${label} failed`, error);
+    }).finally(() => {
+      this.pendingWriteCount -= 1;
+      if (this.pendingWriteCount === 0) this.pendingPlans.clear();
+    });
   }
   private get(id: string) {
+    const pending = this.pendingPlans.get(id);
+    if (pending) return pending;
     const row = this.db.prepare("SELECT plan FROM dots_followup_plans WHERE operation_id=?").get(id) as Row | undefined;
     return row ? (JSON.parse(row.plan) as Plan) : undefined;
   }
   private put(request: AgentPromptRequest, plan: Plan) {
+    const json = JSON.stringify(plan);
+    if (this.requiresRustWrites) {
+      if (!this.get(request.userMessageId)) {
+        this.pendingPlans.set(request.userMessageId, plan);
+        this.enqueuePlanWrite({
+          kind: "dotsFollowupSavePlan",
+          operationId: request.userMessageId,
+          planJson: json,
+          overwrite: false,
+        }, "put");
+      }
+      return;
+    }
     this.db
       .prepare("INSERT OR IGNORE INTO dots_followup_plans VALUES(?,?)")
-      .run(request.userMessageId, JSON.stringify(plan));
+      .run(request.userMessageId, json);
   }
   remember(request: AgentPromptRequest, source: string, goal: string, steps: string[] = [],
     deliveryInstruction?: string, originalAssignment?: string, completionDeclarations?: DotsCompletionDeclaration[]) {
@@ -155,10 +191,11 @@ export class DotsFollowup {
       });
   }
   latestPlan(taskId: string) {
-    const row = this.db.prepare(`SELECT p.plan FROM dots_delegations d
+    const row = this.db.prepare(`SELECT d.operation_id, p.plan FROM dots_delegations d
       LEFT JOIN dots_followup_plans p ON p.operation_id=d.operation_id
-      WHERE d.task_id=? ORDER BY d.seq DESC LIMIT 1`).get(taskId) as { plan: string | null } | undefined;
-    return row?.plan ? JSON.parse(row.plan) as Plan : undefined;
+      WHERE d.task_id=? ORDER BY d.seq DESC LIMIT 1`).get(taskId) as { operation_id: string; plan: string | null } | undefined;
+    if (!row) return undefined;
+    return this.pendingPlans.get(row.operation_id) ?? (row.plan ? JSON.parse(row.plan) as Plan : undefined);
   }
 
   assignment(operationId: string) {
@@ -178,8 +215,20 @@ export class DotsFollowup {
     const declarations = existing.completionDeclarations?.filter(item => quote.includes(item.quote) || existing.deliveryInstruction?.includes(item.quote));
     const narrowed = narrowCompletionScope ? { completionSource: quote, completionDeclarations: declarations,
       completionRequirements: dotsCompletionRequirements(quote, existing.deliveryInstruction, declarations) } : {};
+    const nextPlan: Plan = { ...existing, ...narrowed, assignmentQuote: quote };
+    const planJson = JSON.stringify(nextPlan);
+    if (this.requiresRustWrites) {
+      this.pendingPlans.set(operationId, nextPlan);
+      this.enqueuePlanWrite({
+        kind: "dotsFollowupSavePlan",
+        operationId,
+        planJson,
+        overwrite: true,
+      }, "anchorAssignment");
+      return;
+    }
     this.db.prepare("UPDATE dots_followup_plans SET plan=? WHERE operation_id=?")
-      .run(JSON.stringify({ ...existing, ...narrowed, assignmentQuote: quote }), operationId);
+      .run(planJson, operationId);
   }
 
   private requirements(plan: Plan): DotsCompletionRequirements {
@@ -198,6 +247,19 @@ export class DotsFollowup {
     const plan = this.get(operationId);
     if (plan?.taskId !== taskId || plan.request.dotsGoalId || plan.commitBase !== undefined || !this.requirements(plan).requireCommit) return;
     const start = await readStart();
+    if (this.requiresRustWrites) {
+      const current = this.get(operationId);
+      if (current && current.commitBase === undefined) {
+        this.pendingPlans.set(operationId, { ...current, commitBase: start.head, commitStart: start });
+      }
+      this.enqueuePlanWrite({
+        kind: "dotsFollowupSetCommitBase",
+        operationId,
+        commitBase: start.head,
+        commitStartJson: JSON.stringify(start),
+      }, "captureCommitBase");
+      return;
+    }
     this.db.prepare("UPDATE dots_followup_plans SET plan=json_set(plan,'$.commitBase',?,'$.commitStart',json(?)) WHERE operation_id=? AND json_type(plan,'$.commitBase') IS NULL")
       .run(start.head, JSON.stringify(start), operationId);
   }
@@ -343,6 +405,22 @@ export class DotsFollowup {
     if (plan.request.dotsGoalIntentRevision !== origin.intentRevision) return;
     const bound = { ...request, spaceId: plan.request.spaceId, dotsGoalId: origin.workId,
       dotsGoalIntentRevision: origin.intentRevision, dotsGoalUserAcceptance: plan.request.dotsGoalUserAcceptance };
+    if (this.requiresRustWrites) {
+      const nextPlan = { ...plan, parent: prior.operation_id, request: bound };
+      this.pendingPlans.set(bound.userMessageId, nextPlan);
+      this.enqueuePlanWrite({
+        kind: "dotsFollowupGoalAccepted",
+        operationId: bound.userMessageId,
+        planJson: JSON.stringify(nextPlan),
+        taskId: bound.taskId,
+        sourceMessageId: prior.source_message_id,
+        now: Date.now(),
+        requestJson: JSON.stringify(bound),
+        goalId: bound.dotsGoalId ?? null,
+      }, "goalAccepted");
+      this.hooks.link(bound, prior.source_message_id);
+      return;
+    }
     this.db.transaction(() => {
       this.put(bound, { ...plan, parent: prior.operation_id, request: bound });
       this.hooks.link(bound, prior.source_message_id);

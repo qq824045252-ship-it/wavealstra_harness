@@ -349,6 +349,16 @@ export class LibraryIndexMaintenance {
 
   /** Unified lifecycle API — explicit, no scattered copies */
   private deleteEmbeddingsForItem(itemId: string): void {
+    if (this.repo.requiresRustWrites) {
+      this.repo.enqueueBatch3("清理资料向量索引", {
+        kind: "libraryChunkEmbeddings",
+        upsert: [],
+        deleteItemId: itemId,
+        deleteChunkIds: [],
+        pruneStaleItemId: null,
+      });
+      return;
+    }
     try { (this.db as any).deleteChunkEmbeddings?.(itemId); } catch (err) {
       console.warn(`[Library] deleteChunkEmbeddings 失败 ${itemId}：`, err);
     }
@@ -361,6 +371,16 @@ export class LibraryIndexMaintenance {
   }
   private deleteEmbeddingsForChunkIds(chunkIds: string[]): void {
     if (chunkIds.length === 0) return;
+    if (this.repo.requiresRustWrites) {
+      this.repo.enqueueBatch3("批量清理资料切片向量", {
+        kind: "libraryChunkEmbeddings",
+        upsert: [],
+        deleteItemId: null,
+        deleteChunkIds: chunkIds,
+        pruneStaleItemId: null,
+      });
+      return;
+    }
     const conn = ((this.db as any).connection ?? (this.db as any).db ?? (this.db as any));
     const ph = chunkIds.map(() => "?").join(",");
     conn.prepare(`DELETE FROM library_chunk_embeddings WHERE chunk_id IN (${ph})`).run(...chunkIds);
@@ -374,6 +394,16 @@ export class LibraryIndexMaintenance {
    * call it BEFORE upsertChunks to drop embeddings for still-joined chunks whose text changed.
    */
   private deleteStaleEmbeddingsForItem(itemId: string): void {
+    if (this.repo.requiresRustWrites) {
+      this.repo.enqueueBatch3("清理过期资料向量", {
+        kind: "libraryChunkEmbeddings",
+        upsert: [],
+        deleteItemId: null,
+        deleteChunkIds: [],
+        pruneStaleItemId: itemId,
+      });
+      return;
+    }
     const conn = ((this.db as any).connection ?? (this.db as any).db ?? (this.db as any));
     conn.prepare(`DELETE FROM library_chunk_embeddings WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id = ?) AND chunk_hash != (SELECT hash FROM library_chunks WHERE library_chunks.id = library_chunk_embeddings.chunk_id)`).run(itemId);
   }
@@ -626,15 +656,40 @@ export class LibraryIndexMaintenance {
         }
         if (opts?.signal?.aborted) return result;
         if (embeddings.length) {
-          const currentEligible = JSON.stringify(hybridLibrarySpaceIds(this.db));
-          conn.transaction(() => {
-            for (const { chunk, bytes } of embeddings) {
-              const { changes } = store.run(SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, SEMANTIC_DIMENSION,
-                bytes, Date.now(), chunk.id, chunk.hash, currentEligible);
-              if (changes) result.succeeded++;
-              else result.skipped++;
-            }
-          })();
+          const eligibleSpaceIds = hybridLibrarySpaceIds(this.db);
+          if (this.repo.requiresRustWrites) {
+            if (!reader) throw new Error("资料向量写入：Rust 核心未就绪");
+            const now = Date.now();
+            const res = await reader.batch3Write<{ succeeded: number }>({
+              kind: "libraryChunkEmbeddings",
+              upsert: embeddings.map(({ chunk, bytes }) => ({
+                chunkId: chunk.id,
+                modelId: SEMANTIC_MODEL_ID,
+                modelVersion: SEMANTIC_MODEL_VERSION,
+                chunkHash: chunk.hash,
+                dimension: SEMANTIC_DIMENSION,
+                embeddingBase64: bytes.toString("base64"),
+                createdAt: now,
+                eligibleSpaceIds,
+              })),
+              deleteItemId: null,
+              deleteChunkIds: [],
+              pruneStaleItemId: null,
+            });
+            if (!res) throw new Error("资料向量写入未收到 Rust 核心确认");
+            result.succeeded += res.succeeded;
+            result.skipped += embeddings.length - res.succeeded;
+          } else {
+            const currentEligible = JSON.stringify(eligibleSpaceIds);
+            conn.transaction(() => {
+              for (const { chunk, bytes } of embeddings) {
+                const { changes } = store.run(SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, SEMANTIC_DIMENSION,
+                  bytes, Date.now(), chunk.id, chunk.hash, currentEligible);
+                if (changes) result.succeeded++;
+                else result.skipped++;
+              }
+            })();
+          }
         }
         opts?.onProgress?.(result.processed, totalHint);
         await new Promise<void>(resolve => setTimeout(resolve, 0));

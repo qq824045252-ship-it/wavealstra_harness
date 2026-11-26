@@ -139,6 +139,9 @@ export interface MemorySkillRefreshResult {
  */
 export class MemorySkillLearningService {
   private readonly memories: MemoryRepository;
+  private writeTail: Promise<void> = Promise.resolve();
+  private pendingWriteCount = 0;
+  private readonly pendingCandidates = new Map<string, MemorySkillCandidateDto>();
 
   constructor(private readonly db: AppDatabase, memories?: MemoryRepository) {
     this.memories = memories ?? new MemoryRepository(db);
@@ -146,7 +149,33 @@ export class MemorySkillLearningService {
 
   private get conn() { return this.db.connection; }
 
+  private get requiresRustWrites(): boolean {
+    return Boolean(this.db.readonly || this.db.runtimeAuditReader?.supervised);
+  }
+
+  async flush(): Promise<void> {
+    await this.writeTail;
+  }
+
+  private enqueueBatch3(context: string, request: Record<string, unknown>): void {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error(`${context}：Rust 写入核心未就绪`);
+    this.pendingWriteCount += 1;
+    const next = this.writeTail.then(async () => {
+      try {
+        const result = await reader.batch3Write(request);
+        if (result === undefined) throw new Error(`${context}：Rust 写入未收到确认`);
+      } finally {
+        this.pendingWriteCount -= 1;
+        if (this.pendingWriteCount === 0) this.pendingCandidates.clear();
+      }
+    });
+    this.writeTail = next.then(() => undefined, () => undefined);
+  }
+
   get(id: string): MemorySkillCandidateDto | undefined {
+    const cached = this.pendingCandidates.get(id);
+    if (cached) return cached;
     const row = this.conn.prepare("SELECT * FROM memory_skill_candidates WHERE id=?").get(id) as CandidateRow | undefined;
     return row ? mapRow(row) : undefined;
   }
@@ -202,17 +231,31 @@ export class MemorySkillLearningService {
       if (result.candidate.status === "ready") ready += 1;
     }
 
-    let staled = 0;
     const active = this.conn.prepare(
       "SELECT * FROM memory_skill_candidates WHERE status IN ('draft','ready','materialized')",
     ).all() as CandidateRow[];
+    const ungroundedIds = active
+      .filter((row) => !this.isCandidateGrounded(mapRow(row)))
+      .map((row) => row.id);
+    if (this.requiresRustWrites) {
+      if (ungroundedIds.length > 0) {
+        this.enqueueBatch3("清理失效技能候选", {
+          kind: "memorySkillCandidateStatus",
+          candAction: "staleUngroundedIds",
+          id: null,
+          ids: ungroundedIds,
+          installedSkillId: null,
+          now,
+        });
+      }
+      return { evaluated: procedureIds.length, created, updated, staled: ungroundedIds.length, ready };
+    }
+    let staled = 0;
     this.conn.transaction(() => {
-      for (const row of active) {
-        const candidate = mapRow(row);
-        if (this.isCandidateGrounded(candidate)) continue;
+      for (const rowId of ungroundedIds) {
         const result = this.conn.prepare(
           "UPDATE memory_skill_candidates SET status='stale',updated_at=? WHERE id=? AND status IN ('draft','ready','materialized')",
-        ).run(now, row.id);
+        ).run(now, rowId);
         staled += result.changes;
       }
     })();
@@ -235,6 +278,55 @@ export class MemorySkillLearningService {
     const existing = this.get(id);
     const preserveTerminal = existing?.status === "rejected" || existing?.status === "materialized";
     const status = preserveTerminal ? existing!.status : proposedStatus;
+    const candidateDto: MemorySkillCandidateDto = {
+      id,
+      slug: makeSlug(memory),
+      title: memory.title.slice(0, 180),
+      description: buildDescription(memory),
+      instructions: buildInstructions(memory),
+      status,
+      scopeType: scope.scopeType,
+      scopeId: scope.scopeId,
+      sourceMemoryIds: [memory.id],
+      sourceSignature,
+      supportCount: support.completedTaskCount,
+      distinctTaskCount: support.distinctTaskCount,
+      completedTaskCount: support.completedTaskCount,
+      evidenceCount: support.evidenceCount,
+      confidence: memory.confidence,
+      score,
+      installedSkillId: existing?.installedSkillId,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      resolvedAt: existing?.resolvedAt,
+    };
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("保存技能候选", {
+        kind: "memorySkillCandidateUpsert",
+        id: candidateDto.id,
+        slug: candidateDto.slug,
+        title: candidateDto.title,
+        description: candidateDto.description,
+        instructions: candidateDto.instructions,
+        status: candidateDto.status,
+        scopeType: candidateDto.scopeType,
+        scopeId: candidateDto.scopeId ?? null,
+        sourceMemoryIdsJson: JSON.stringify(candidateDto.sourceMemoryIds),
+        sourceSignature: candidateDto.sourceSignature,
+        supportCount: candidateDto.supportCount,
+        distinctTaskCount: candidateDto.distinctTaskCount,
+        completedTaskCount: candidateDto.completedTaskCount,
+        evidenceCount: candidateDto.evidenceCount,
+        confidence: candidateDto.confidence,
+        score: candidateDto.score,
+        installedSkillId: candidateDto.installedSkillId ?? null,
+        createdAt: candidateDto.createdAt,
+        updatedAt: candidateDto.updatedAt,
+        resolvedAt: candidateDto.resolvedAt ?? null,
+      });
+      this.pendingCandidates.set(id, candidateDto);
+      return { candidate: candidateDto, created: !existing };
+    }
     this.conn.prepare(
       `INSERT INTO memory_skill_candidates (
         id,slug,title,description,instructions,status,scope_type,scope_id,
@@ -262,26 +354,26 @@ export class MemorySkillLearningService {
         score=excluded.score,
         updated_at=excluded.updated_at`,
     ).run(
-      id,
-      makeSlug(memory),
-      memory.title.slice(0, 180),
-      buildDescription(memory),
-      buildInstructions(memory),
-      status,
-      scope.scopeType,
-      scope.scopeId ?? null,
-      JSON.stringify([memory.id]),
-      sourceSignature,
-      support.completedTaskCount,
-      support.distinctTaskCount,
-      support.completedTaskCount,
-      support.evidenceCount,
-      memory.confidence,
-      score,
-      existing?.installedSkillId ?? null,
-      existing?.createdAt ?? now,
-      now,
-      existing?.resolvedAt ?? null,
+      candidateDto.id,
+      candidateDto.slug,
+      candidateDto.title,
+      candidateDto.description,
+      candidateDto.instructions,
+      candidateDto.status,
+      candidateDto.scopeType,
+      candidateDto.scopeId ?? null,
+      JSON.stringify(candidateDto.sourceMemoryIds),
+      candidateDto.sourceSignature,
+      candidateDto.supportCount,
+      candidateDto.distinctTaskCount,
+      candidateDto.completedTaskCount,
+      candidateDto.evidenceCount,
+      candidateDto.confidence,
+      candidateDto.score,
+      candidateDto.installedSkillId ?? null,
+      candidateDto.createdAt,
+      candidateDto.updatedAt,
+      candidateDto.resolvedAt ?? null,
     );
     return { candidate: this.get(id)!, created: !existing };
   }
@@ -292,15 +384,36 @@ export class MemorySkillLearningService {
        WHERE status IN ('draft','ready','materialized')
          AND EXISTS (SELECT 1 FROM json_each(source_memory_ids_json) j WHERE j.value=?)`,
     ).all(memoryId) as CandidateRow[];
+    const ungroundedIds: string[] = [];
+    for (const row of rows) {
+      if (row.id === keepId) continue;
+      const candidate = mapRow(row);
+      if (this.isCandidateGrounded(candidate)) continue;
+      ungroundedIds.push(row.id);
+    }
+    if (this.requiresRustWrites) {
+      if (ungroundedIds.length > 0) {
+        this.enqueueBatch3("失效陈旧技能候选", {
+          kind: "memorySkillCandidateStatus",
+          candAction: "staleUngroundedIds",
+          id: null,
+          ids: ungroundedIds,
+          installedSkillId: null,
+          now,
+        });
+        for (const rowId of ungroundedIds) {
+          const prev = this.get(rowId);
+          if (prev) this.pendingCandidates.set(rowId, { ...prev, status: "stale", updatedAt: now });
+        }
+      }
+      return ungroundedIds.length;
+    }
     let changed = 0;
     this.conn.transaction(() => {
-      for (const row of rows) {
-        if (row.id === keepId) continue;
-        const candidate = mapRow(row);
-        if (this.isCandidateGrounded(candidate)) continue;
+      for (const rowId of ungroundedIds) {
         changed += this.conn.prepare(
           "UPDATE memory_skill_candidates SET status='stale',updated_at=? WHERE id=? AND status IN ('draft','ready','materialized')",
-        ).run(now, row.id).changes;
+        ).run(now, rowId).changes;
       }
     })();
     return changed;
@@ -308,6 +421,26 @@ export class MemorySkillLearningService {
 
   invalidateByMemoryIds(memoryIds: readonly string[], now = Date.now()): number {
     const ids = [...new Set(memoryIds.filter(Boolean))];
+    if (ids.length === 0) return 0;
+    if (this.requiresRustWrites) {
+      let count = 0;
+      for (const memoryId of ids) {
+        count += Number((this.conn.prepare(
+          `SELECT COUNT(1) n FROM memory_skill_candidates
+           WHERE status IN ('draft','ready','materialized')
+             AND EXISTS (SELECT 1 FROM json_each(source_memory_ids_json) j WHERE j.value=?)`,
+        ).get(memoryId) as { n: number }).n);
+      }
+      this.enqueueBatch3("按记忆失效技能候选", {
+        kind: "memorySkillCandidateStatus",
+        candAction: "invalidateByMemoryIds",
+        id: null,
+        ids,
+        installedSkillId: null,
+        now,
+      });
+      return count;
+    }
     let changed = 0;
     for (const memoryId of ids) {
       const result = this.conn.prepare(
@@ -325,6 +458,9 @@ export class MemorySkillLearningService {
   findByInstalledSkillId(installedSkillId: string): MemorySkillCandidateDto | undefined {
     const normalized = installedSkillId.trim().toLowerCase();
     if (!normalized) return undefined;
+    for (const cached of this.pendingCandidates.values()) {
+      if (cached.installedSkillId?.toLowerCase() === normalized) return cached;
+    }
     const row = this.conn.prepare(
       `SELECT * FROM memory_skill_candidates
        WHERE lower(installed_skill_id)=?
@@ -349,6 +485,19 @@ export class MemorySkillLearningService {
       throw new Error(`Skill Candidate 当前状态不可拒绝：${candidate.status}`);
     }
     const now = Date.now();
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("拒绝技能候选", {
+        kind: "memorySkillCandidateStatus",
+        candAction: "reject",
+        id,
+        ids: [],
+        installedSkillId: null,
+        now,
+      });
+      const updated = { ...candidate, status: "rejected" as const, resolvedAt: now, updatedAt: now };
+      this.pendingCandidates.set(id, updated);
+      return updated;
+    }
     this.conn.prepare(
       "UPDATE memory_skill_candidates SET status='rejected',resolved_at=?,updated_at=? WHERE id=?",
     ).run(now, now, id);
@@ -361,11 +510,42 @@ export class MemorySkillLearningService {
     if (!["draft", "ready"].includes(candidate.status)) {
       throw new Error(`Skill Candidate 当前状态不可物化：${candidate.status}`);
     }
+    const now = Date.now();
     if (!this.isCandidateGrounded(candidate)) {
-      this.conn.prepare("UPDATE memory_skill_candidates SET status='stale',updated_at=? WHERE id=?").run(Date.now(), id);
+      if (this.requiresRustWrites) {
+        this.enqueueBatch3("过期技能候选", {
+          kind: "memorySkillCandidateStatus",
+          candAction: "staleOne",
+          id,
+          ids: [],
+          installedSkillId: null,
+          now,
+        });
+        this.pendingCandidates.set(id, { ...candidate, status: "stale", updatedAt: now });
+      } else {
+        this.conn.prepare("UPDATE memory_skill_candidates SET status='stale',updated_at=? WHERE id=?").run(now, id);
+      }
       throw new Error("Skill Candidate 来源 Procedure 已变化，请刷新候选后重新审批");
     }
-    const now = Date.now();
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("物化技能候选", {
+        kind: "memorySkillCandidateStatus",
+        candAction: "materialize",
+        id,
+        ids: [],
+        installedSkillId,
+        now,
+      });
+      const updated = {
+        ...candidate,
+        status: "materialized" as const,
+        installedSkillId,
+        resolvedAt: now,
+        updatedAt: now,
+      };
+      this.pendingCandidates.set(id, updated);
+      return updated;
+    }
     this.conn.prepare(
       `UPDATE memory_skill_candidates
        SET status='materialized',installed_skill_id=?,resolved_at=?,updated_at=? WHERE id=?`,

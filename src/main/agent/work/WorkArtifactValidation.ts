@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { WorkExecutionBindingDto } from "../../../shared/bot-work";
+import { enqueueWorkOp, overlayFindAll, overlayMutate, requiresWorkRustWrites, workDomainInTx } from "./WorkDomainRuntime";
 import type { WorkService } from "./WorkService";
 
 const fingerprintSchema = z.object({ path: z.string(), digest: z.string(), entity: z.string() }).strict();
@@ -11,6 +12,7 @@ export type ArtifactFingerprint = z.infer<typeof fingerprintSchema>;
 export interface ArtifactInspection { workId: string; inputSnapshotId: string; intentRevision: number; observed: ArtifactFingerprint[]; }
 const rowSchema = z.object({ binding_id: z.string(), path: z.string(), fingerprint_json: z.string(),invalidated_at:z.number().nullable() });
 export function ensureWorkArtifactTables(db: Database.Database): void {
+  if (db.readonly) return;
   db.exec(`CREATE TABLE IF NOT EXISTS work_artifact_dependencies (
     binding_id TEXT NOT NULL REFERENCES work_execution_bindings(binding_id), path TEXT NOT NULL,
     work_id TEXT NOT NULL REFERENCES works(work_id), fingerprint_json TEXT NOT NULL CHECK(json_valid(fingerprint_json)),
@@ -29,11 +31,12 @@ export class WorkArtifactValidation {
   constructor(private readonly db: Database.Database, private readonly works: WorkService) { ensureWorkArtifactTables(db); }
   register(binding: WorkExecutionBindingDto, refs: string[]): ArtifactFingerprint[] {
     if (!refs.length) return [];
-    if (this.db.inTransaction) throw new Error("产物内容读取不得占用 SQLite 写事务");
+    if (workDomainInTx(this.db)) throw new Error("产物内容读取不得占用 SQLite 写事务");
     return [...new Set(refs)].map(ref => fingerprint(resolve(binding.workspaceBinding, ref)));
   }
   record(binding: WorkExecutionBindingDto, observed: ArtifactFingerprint[]): void {
-    if (!this.db.inTransaction) throw new Error("产物依赖必须与接收事实同事务落盘");
+    if (!workDomainInTx(this.db)) throw new Error("产物依赖必须与接收事实同事务落盘");
+    const rust = requiresWorkRustWrites(this.db);
     const changedBindings=new Set<string>();
     let added=false;
     const before=this.currentDependencies(binding.workId);
@@ -43,19 +46,40 @@ export class WorkArtifactValidation {
         const old=fingerprintSchema.parse(JSON.parse(prior.fingerprint_json));
         if(old.digest!==item.digest || old.entity!==item.entity) {
           changedBindings.add(prior.binding_id);
-          this.db.prepare("UPDATE work_artifact_dependencies SET invalidated_at=? WHERE binding_id=? AND path=?").run(Date.now(),prior.binding_id,prior.path);
+          const now = Date.now();
+          if (rust) {
+            overlayMutate(this.db, "work_artifact_dependencies", `${prior.binding_id}\0${prior.path}`, () => ({ ...prior, work_id: binding.workId }),
+              cur => cur ? { ...cur, invalidated_at: now } : cur);
+            enqueueWorkOp(this.db, { op: "workArtifactDependencyWrite", mode: "invalidate", bindingId: prior.binding_id, path: prior.path, workId: null, fingerprintJson: null, now });
+          } else {
+            this.db.prepare("UPDATE work_artifact_dependencies SET invalidated_at=? WHERE binding_id=? AND path=?").run(now,prior.binding_id,prior.path);
+          }
         }
       }
-      const inserted=this.db.prepare(`INSERT OR IGNORE INTO work_artifact_dependencies(binding_id,path,work_id,fingerprint_json) VALUES (?,?,?,?)`)
-        .run(binding.bindingId,item.path,binding.workId,JSON.stringify(item));
-      added ||= inserted.changes>0 && !before.some(prior=>prior.path===item.path);
+      const fpJson = JSON.stringify(item);
+      if (rust) {
+        let wasInserted = false;
+        overlayMutate(this.db, "work_artifact_dependencies", `${binding.bindingId}\0${item.path}`, () =>
+          this.db.prepare("SELECT * FROM work_artifact_dependencies WHERE binding_id=? AND path=?").get(binding.bindingId, item.path) as Record<string, unknown> | undefined,
+        cur => {
+          if (cur) return cur;
+          wasInserted = true;
+          return { binding_id: binding.bindingId, path: item.path, work_id: binding.workId, fingerprint_json: fpJson, invalidated_at: null };
+        });
+        enqueueWorkOp(this.db, { op: "workArtifactDependencyWrite", mode: "insert", bindingId: binding.bindingId, path: item.path, workId: binding.workId, fingerprintJson: fpJson, now: null });
+        added ||= wasInserted && !before.some(prior=>prior.path===item.path);
+      } else {
+        const inserted=this.db.prepare(`INSERT OR IGNORE INTO work_artifact_dependencies(binding_id,path,work_id,fingerprint_json) VALUES (?,?,?,?)`)
+          .run(binding.bindingId,item.path,binding.workId,fpJson);
+        added ||= inserted.changes>0 && !before.some(prior=>prior.path===item.path);
+      }
     }
     if(changedBindings.size) this.invalidate(binding.workId,changedBindings,Date.now());
     else if(added && this.works.getWork(binding.workId)?.criteria.some(criterion=>criterion.status==="satisfied"))
       this.invalidate(binding.workId,changedBindings,Date.now());
   }
   capture(workId: string): ArtifactInspection {
-    if (this.db.inTransaction) throw new Error("验收前内容核对不得占用 SQLite 写事务");
+    if (workDomainInTx(this.db)) throw new Error("验收前内容核对不得占用 SQLite 写事务");
     const work = this.works.getWork(workId);
     const paths = [...new Set(this.currentDependencies(workId).map(row => row.path))];
     return { workId, inputSnapshotId: work?.inputSnapshotId ?? "", intentRevision: work?.intentRevision ?? 0, observed: paths.map(fingerprint) };
@@ -82,13 +106,18 @@ export class WorkArtifactValidation {
     }
     return createHash("sha256").update(JSON.stringify([...byPath.entries()].sort())).digest("hex");
   }
-  private currentDependencies(workId:string) {
-    const work=this.works.getWork(workId);
-    if(!work) return [];
-    return this.db.prepare(`SELECT dependency.* FROM work_artifact_dependencies dependency
-      JOIN work_execution_bindings binding ON binding.binding_id=dependency.binding_id
-      WHERE dependency.work_id=? AND binding.intent_revision=? AND binding.input_snapshot_id=?
-      ORDER BY binding.admitted_at,dependency.rowid`).all(workId,work.intentRevision,work.inputSnapshotId).map(row=>rowSchema.parse(row));
+  private currentDependencies(workId: string) {
+    const work = this.works.getWork(workId);
+    if (!work) return [];
+    const bindings = new Map(this.works.repo.listBindings(workId)
+      .filter(b => b.intentRevision === work.intentRevision && b.inputSnapshotId === work.inputSnapshotId)
+      .map(b => [b.bindingId, b.admittedAt]));
+    const dbRows = this.db.prepare("SELECT binding_id, path, work_id, fingerprint_json, invalidated_at FROM work_artifact_dependencies WHERE work_id=? ORDER BY rowid")
+      .all(workId) as Array<z.infer<typeof rowSchema> & { work_id: string }>;
+    return overlayFindAll(this.db, "work_artifact_dependencies", dbRows, row => `${row.binding_id}\0${row.path}`,
+      row => row.work_id === workId && bindings.has(row.binding_id),
+      (a, b) => (bindings.get(a.binding_id) ?? 0) - (bindings.get(b.binding_id) ?? 0))
+      .map(row => rowSchema.parse({ binding_id: row.binding_id, path: row.path, fingerprint_json: row.fingerprint_json, invalidated_at: row.invalidated_at }));
   }
   goalArtifacts(workId: string, executionIds: ReadonlySet<string>) {
     return this.currentDependencies(workId)
@@ -100,7 +129,8 @@ export class WorkArtifactValidation {
       });
   }
   validate(inspection: ArtifactInspection, now = Date.now(), bindingIds?: readonly string[]): boolean {
-    if (!this.db.inTransaction) throw new Error("产物版本复核必须与验收控制同事务提交");
+    if (!workDomainInTx(this.db)) throw new Error("产物版本复核必须与验收控制同事务提交");
+    const rust = requiresWorkRustWrites(this.db);
     const work = this.works.getWork(inspection.workId);
     if (!work || work.inputSnapshotId !== inspection.inputSnapshotId || work.intentRevision !== inspection.intentRevision) return false;
     const changedBindings = new Set<string>();
@@ -132,7 +162,13 @@ export class WorkArtifactValidation {
       if (!current || current.digest.startsWith("unverifiable:") || current.digest === "missing-or-unreadable" || current.digest !== expected.digest || current.entity !== expected.entity) {
         changedBindings.add(row.binding_id);
         invalid=true;
-        this.db.prepare("UPDATE work_artifact_dependencies SET invalidated_at=COALESCE(invalidated_at,?) WHERE binding_id=? AND path=?").run(now,row.binding_id,row.path);
+        if (rust) {
+          overlayMutate(this.db, "work_artifact_dependencies", `${row.binding_id}\0${row.path}`, () => ({ ...row, work_id: work.workId }),
+            cur => cur ? { ...cur, invalidated_at: cur.invalidated_at ?? now } : cur);
+          enqueueWorkOp(this.db, { op: "workArtifactDependencyWrite", mode: "invalidateIfNull", bindingId: row.binding_id, path: row.path, workId: null, fingerprintJson: null, now });
+        } else {
+          this.db.prepare("UPDATE work_artifact_dependencies SET invalidated_at=COALESCE(invalidated_at,?) WHERE binding_id=? AND path=?").run(now,row.binding_id,row.path);
+        }
       }
     }
     if (changedBindings.size) this.invalidate(work.workId,changedBindings,now);

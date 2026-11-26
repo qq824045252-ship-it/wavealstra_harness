@@ -195,17 +195,19 @@ export class DurableBotService {
   constructor(private readonly options: DurableBotServiceOptions) {
     this.workMetrics = new WorkExecutionMetricsStore(options.db.connection);
     this.workspaceMoves = new DurableWorkspaceMoves(options.db);
-    options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_bindings (
-      task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-      backend TEXT NOT NULL CHECK(backend = 'pi-durable'), directory TEXT NOT NULL UNIQUE, cwd TEXT NOT NULL)`);
-    options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_memory_projection (
-      task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE, entry_id INTEGER NOT NULL)`);
-    options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_workspace_moves (
-      task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-      from_cwd TEXT NOT NULL, to_cwd TEXT NOT NULL)`);
-    options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_message_workspaces (
-      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-      message_id TEXT NOT NULL, cwd TEXT NOT NULL, PRIMARY KEY(task_id, message_id))`);
+    if (!options.db.connection.readonly) {
+      options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_bindings (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        backend TEXT NOT NULL CHECK(backend = 'pi-durable'), directory TEXT NOT NULL UNIQUE, cwd TEXT NOT NULL)`);
+      options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_memory_projection (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE, entry_id INTEGER NOT NULL)`);
+      options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_workspace_moves (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        from_cwd TEXT NOT NULL, to_cwd TEXT NOT NULL)`);
+      options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_message_workspaces (
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL, cwd TEXT NOT NULL, PRIMARY KEY(task_id, message_id))`);
+    }
     organizeGatewayConversationStores(options.db, options.agentDir);
     this.config = new McpConfigService();
     this.credentials = new McpOAuthCredentialStore(
@@ -487,10 +489,8 @@ export class DurableBotService {
     // Pending native operations retain their root; idle moves are committed below.
     if (!move && task.cwd !== cwd) db.bindTaskExecutionWorkspaceCwd(taskId, cwd);
     task.cwd = cwd;
-    db.connection.prepare("INSERT OR IGNORE INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, directory, cwd);
-    if (pinnedDotsWorkspace && prior?.cwd !== cwd) {
-      db.connection.prepare("UPDATE durable_bot_bindings SET cwd=? WHERE task_id=?").run(cwd, taskId);
-    }
+    const taskProjection = new DurableTaskProjection(db.connection, db.runtimeAuditReader);
+    await taskProjection.bindBot(taskId, directory, cwd, Boolean(pinnedDotsWorkspace && prior?.cwd !== cwd));
     const config = this.mcpConfiguration(taskId);
     const mcp = await DurableMcp.open(config, this.credentials, models, cwd);
     let openedRuntime: DurableBotRuntime | undefined;
@@ -524,7 +524,6 @@ export class DurableBotService {
       let settledKey: string | undefined;
       // One task + binding read per synchronous permission phase. Approval/resource re-checks
       // land after a microtask, so the gate has already expired and they read fresh state.
-      const taskProjection = new DurableTaskProjection(db.connection, db.runtimeAuditReader);
       const readActivity = db.connection.prepare("SELECT updated_at FROM tasks WHERE id = ?").pluck();
       const pendingOrigins = new Map<string, string>();
       let pendingSnapshot: DurableBotSnapshot | undefined;
@@ -726,7 +725,7 @@ export class DurableBotService {
     const current = this.options.db.getTask(task.id) ?? task;
     if (current.modelId !== repair.to) {
       // updatedAt 保持不变：修复模型归属不应把任务顶到列表最前。
-      this.options.db.upsertTask({
+      await this.options.db.writeTaskRecord({
         id: current.id, title: current.title, updatedAt: current.updatedAt, modelId: repair.to,
       }, { preserveTitle: true });
       console.warn(`[Durable] 任务 ${task.id} 的模型 ${repair.from} 已不在模型目录中，改用 ${repair.to}（${resolution.reason}）`);
@@ -757,7 +756,7 @@ export class DurableBotService {
     const task = this.options.db.getTask(request.taskId);
     if (!task) throw new Error("任务不存在");
     // Product selections are durable task configuration, never global scene state.
-    this.options.db.upsertTask({ id: task.id, title: task.title,
+    await this.options.db.writeTaskRecord({ id: task.id, title: task.title,
       modelId: task.id === DOTS_TASK_ID ? task.modelId : request.modelId ?? task.modelId,
       permissionMode: request.permissionMode ?? task.permissionMode,
       welcomeMode: request.welcomeMode ?? task.welcomeMode,
@@ -940,13 +939,13 @@ export class DurableBotService {
   }
 
   async openDots() {
-    this.options.db.openDots();
+    await this.options.db.openDotsAsync();
     await this.open(DOTS_TASK_ID);
     return this.options.db.getTask(DOTS_TASK_ID)!;
   }
 
   async newDotsConversation(): Promise<void> {
-    this.options.db.openDots();
+    await this.options.db.openDotsAsync();
     return this.trackAdmission(DOTS_TASK_ID, async () => {
       const open = await this.open(DOTS_TASK_ID);
       if (!this.options.createDotsWorkspace) throw new Error("Dots 工作目录尚未初始化。");
@@ -1307,8 +1306,15 @@ export class DurableBotService {
   }
 
   commitBranch(taskId: string, cwd: string, branch: MaterializedDurableBranch): void {
-    this.options.db.connection.prepare("INSERT INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, branch.directory, cwd);
-    this.options.db.connection.prepare("INSERT INTO durable_bot_memory_projection(task_id, entry_id) VALUES (?, ?)").run(taskId, branch.inheritedLastEntryId);
+    const projection = new DurableTaskProjection(this.options.db.connection, this.options.db.runtimeAuditReader);
+    if (!this.options.db.connection.readonly) {
+      this.options.db.connection.prepare("INSERT INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, branch.directory, cwd);
+      this.options.db.connection.prepare("INSERT INTO durable_bot_memory_projection(task_id, entry_id) VALUES (?, ?)").run(taskId, branch.inheritedLastEntryId);
+      return;
+    }
+    void projection.commitBranch(taskId, branch.directory, cwd, branch.inheritedLastEntryId).catch(error => {
+      console.warn("[Durable] commitBranch projection failed", taskId, error);
+    });
   }
 
   async inheritedBranchMessages(taskId: string): Promise<Map<string, string>> {
@@ -1336,7 +1342,7 @@ export class DurableBotService {
   }
 
   async appendDotsProactive(key: string, text: string, isCurrent: () => boolean) {
-    this.options.db.openDots();
+    await this.options.db.openDotsAsync();
     return this.withRecovery(DOTS_TASK_ID, open => open.runtime.appendDotsProactive(key, text, isCurrent));
   }
 
@@ -1427,17 +1433,29 @@ export class DurableBotService {
     await Promise.allSettled([...new Set([...this.opened.keys(), ...this.opening.keys()])].map(id => this.release(id)));
   }
   async runGatewayTurn({ gatewayOrigin, modelId, ...request }: GatewayBotTurnRequest): Promise<string> {
-    this.options.db.connection.transaction(() => {
+    if (this.options.db.connection.readonly) {
       const task = this.options.db.getTask(request.taskId);
       if (task?.archived || this.options.db.getTaskExecutionWorkspaceState(request.taskId)?.state === "trashed") throw new Error("请先恢复已归档或回收的渠道任务");
       if (!task) {
-        this.options.db.upsertTask({ id: request.taskId,
+        await this.options.db.writeTaskRecord({ id: request.taskId,
           title: (request.displayText ?? request.text).trim().slice(0, 60) || "助理",
           welcomeMode: DEFAULT_WELCOME_MODE, modePresetId: defaultModePresetId(DEFAULT_WELCOME_MODE),
           modelId, updatedAt: Date.now() });
       }
       this.options.db.bindGatewayConversationSpace(request.taskId, gatewayOrigin.channelId);
-    })();
+    } else {
+      this.options.db.connection.transaction(() => {
+        const task = this.options.db.getTask(request.taskId);
+        if (task?.archived || this.options.db.getTaskExecutionWorkspaceState(request.taskId)?.state === "trashed") throw new Error("请先恢复已归档或回收的渠道任务");
+        if (!task) {
+          this.options.db.upsertTask({ id: request.taskId,
+            title: (request.displayText ?? request.text).trim().slice(0, 60) || "助理",
+            welcomeMode: DEFAULT_WELCOME_MODE, modePresetId: defaultModePresetId(DEFAULT_WELCOME_MODE),
+            modelId, updatedAt: Date.now() });
+        }
+        this.options.db.bindGatewayConversationSpace(request.taskId, gatewayOrigin.channelId);
+      })();
+    }
     const { workTarget: _workTarget, ...source } = gatewayOrigin;
     const { submission, open } = await this.admitTracked(request, { gatewayOrigin: source });
     try {

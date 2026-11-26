@@ -18,7 +18,13 @@ const fields = ["input", "output", "cacheRead", "cacheWrite"] as const;
 /** Goal ownership is frozen at native admission. Reads never infer it from clocks,
  * mutable task state, or matching text. Repeated native requests share one generation. */
 export class ConversationGoalActivity {
-  constructor(private readonly db: Database.Database) {
+  private writeTail: Promise<unknown> = Promise.resolve();
+
+  constructor(
+    private readonly db: Database.Database,
+    private readonly reader?: import("../platform/runtime-audit").RuntimeAuditReader,
+  ) {
+    if (db.readonly) return;
     db.exec(`CREATE TABLE IF NOT EXISTS conversation_goal_generations (
       task_id TEXT NOT NULL, conversation_id TEXT NOT NULL, generation_id INTEGER NOT NULL,
       work_id TEXT NOT NULL REFERENCES works(work_id) ON DELETE CASCADE,
@@ -39,6 +45,27 @@ export class ConversationGoalActivity {
     );`);
   }
 
+  flush(): Promise<void> {
+    return this.writeTail.then(() => undefined, () => undefined);
+  }
+
+  private get rustRequired(): boolean {
+    return Boolean(this.db.readonly || this.reader?.supervised);
+  }
+
+  private enqueueRustWrite(request: Record<string, unknown>): void {
+    const reader = this.reader;
+    if (!reader) throw new Error("ConversationGoalActivity 缺少 Rust 写入通道");
+    const next = this.writeTail.then(async () => {
+      const reply = await reader.batch1Write(request);
+      if (reply === undefined) throw new Error(`Goal 活动写入未获 Rust 确认: ${String(request.kind)}`);
+      return reply;
+    });
+    this.writeTail = next.catch(error => {
+      console.warn(`[ConversationGoalActivity] Rust write failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
   admit(taskId: string, admission: GoalActivityAdmission): void {
     const parent = admission.parent && this.generation({ taskId, ...admission.parent });
     const owner = admission.inputs?.[0]?.owner;
@@ -47,16 +74,29 @@ export class ConversationGoalActivity {
     const goalId = parent?.goalId ?? (direct ? owner?.goalId : undefined);
     const intentRevision = parent?.intentRevision ?? (direct ? owner?.intentRevision : undefined);
     if (!goalId || intentRevision === undefined) return;
-    if (!this.db.prepare("SELECT 1 FROM work_conversations WHERE work_id=? AND conversation_id=?").get(goalId, taskId)) return;
     const metadata = {
       intentRevision,
       parent: parent ? admission.parent : undefined,
       child: parent ? admission.child : undefined,
       assistantMessageIds: direct ? [...new Set(admission.inputs!.map(input => input.assistantMessageId))] : [],
     };
+    const metadataJson = JSON.stringify(metadata);
+    if (this.reader && this.rustRequired) {
+      this.enqueueRustWrite({
+        kind: "goalActivityAdmit",
+        taskId,
+        conversationId: admission.conversationId,
+        generationId: admission.generationTaskId,
+        workId: goalId,
+        metadataJson,
+      });
+      return;
+    }
+    if (this.db.readonly) throw new Error("只读数据库模式下无法写入 conversation_goal_generations");
+    if (!this.db.prepare("SELECT 1 FROM work_conversations WHERE work_id=? AND conversation_id=?").get(goalId, taskId)) return;
     this.db.prepare(`INSERT OR IGNORE INTO conversation_goal_generations
       (task_id, conversation_id, generation_id, work_id, metadata) VALUES(?,?,?,?,?)`)
-      .run(taskId, admission.conversationId, admission.generationTaskId, goalId, JSON.stringify(metadata));
+      .run(taskId, admission.conversationId, admission.generationTaskId, goalId, metadataJson);
   }
 
   generation(identity: Identity): OwnedRun | undefined {
@@ -74,6 +114,17 @@ export class ConversationGoalActivity {
   }
 
   recordAuxiliaryScope(scope: string, parent: Identity): void {
+    if (this.reader && this.rustRequired) {
+      this.enqueueRustWrite({
+        kind: "goalActivityRecordAuxiliaryScope",
+        scope,
+        taskId: parent.taskId,
+        conversationId: parent.conversationId,
+        generationId: parent.generationTaskId,
+      });
+      return;
+    }
+    if (this.db.readonly) throw new Error("只读数据库模式下无法写入 conversation_goal_auxiliary_scopes");
     this.db.prepare(`INSERT OR IGNORE INTO conversation_goal_auxiliary_scopes(execution_scope,task_id,conversation_id,generation_id)
       SELECT ?,task_id,conversation_id,generation_id FROM conversation_goal_generations
       WHERE task_id=? AND conversation_id=? AND generation_id=?`).run(scope, parent.taskId, parent.conversationId, parent.generationTaskId);
@@ -82,6 +133,18 @@ export class ConversationGoalActivity {
   settle(identity: Identity, outcome: Exclude<GoalActivityRun["status"], undefined>, messageId?: string): GoalActivityOwner | undefined {
     const run = this.generation(identity);
     if (!run) return undefined;
+    if (this.reader && this.rustRequired) {
+      this.enqueueRustWrite({
+        kind: "goalActivitySettle",
+        taskId: identity.taskId,
+        conversationId: identity.conversationId,
+        generationId: identity.generationTaskId,
+        outcome,
+        messageId: messageId ?? null,
+      });
+      return { goalId: run.goalId, intentRevision: run.intentRevision };
+    }
+    if (this.db.readonly) throw new Error("只读数据库模式下无法更新 conversation_goal_generations");
     if (messageId && !run.assistantMessageIds.includes(messageId)) run.assistantMessageIds.push(messageId);
     const { intentRevision, parent, child, assistantMessageIds, goalId, returned } = run;
     this.db.prepare(`UPDATE conversation_goal_generations SET outcome=COALESCE(outcome,?), metadata=?
@@ -100,31 +163,66 @@ export class ConversationGoalActivity {
   }
 
   recordTool(identity: Identity, tool: { name: string; callId: string; details: unknown }): void {
-    const run = this.generation(identity);
     const details = asObject(tool.details);
-    if (!run || !details) return;
+    if (!details) return;
     if (tool.name !== "subagent" && tool.name !== "pstack_delegate") return;
-    const results = tool.name === "subagent" ? details.results : details.participants;
-    if (!Array.isArray(results)) return;
-    for (const value of results) {
+    const rawResults = tool.name === "subagent" ? details.results : details.participants;
+    if (!Array.isArray(rawResults)) return;
+    const validResults = rawResults.flatMap(value => {
       const result = asObject(value);
       if (!result || !Number.isSafeInteger(result.nativeConversationId) || typeof result.subagentId !== "string"
-        || typeof result.status !== "string") continue;
-      const returned = { status: result.status, outcome: typeof result.outcome === "string" ? result.outcome : undefined, toolCallId: tool.callId };
+        || typeof result.status !== "string") return [];
+      return [{
+        nativeConversationId: result.nativeConversationId as number,
+        subagentId: result.subagentId,
+        status: result.status,
+        outcome: typeof result.outcome === "string" ? result.outcome : null,
+      }];
+    });
+    if (!validResults.length) return;
+    if (this.reader && this.rustRequired) {
+      this.enqueueRustWrite({
+        kind: "goalActivityRecordTool",
+        taskId: identity.taskId,
+        parentConversationId: identity.conversationId,
+        parentGenerationId: identity.generationTaskId,
+        toolCallId: tool.callId,
+        results: validResults,
+      });
+      return;
+    }
+    const run = this.generation(identity);
+    if (!run) return;
+    if (this.db.readonly) throw new Error("只读数据库模式下无法更新 conversation_goal_generations");
+    for (const item of validResults) {
+      const returned = { status: item.status, outcome: item.outcome ?? undefined, toolCallId: tool.callId };
       this.db.prepare(`UPDATE conversation_goal_generations SET metadata=json_set(metadata,'$.returned',json(?))
         WHERE task_id=? AND conversation_id=? AND work_id=?
         AND json_extract(metadata,'$.child.id')=?
         AND json_extract(metadata,'$.parent.conversationId')=?
         AND json_extract(metadata,'$.parent.generationTaskId')=?`)
-        .run(JSON.stringify(returned), identity.taskId, String(result.nativeConversationId), run.goalId,
-          result.subagentId, identity.conversationId, identity.generationTaskId);
+        .run(JSON.stringify(returned), identity.taskId, String(item.nativeConversationId), run.goalId,
+          item.subagentId, identity.conversationId, identity.generationTaskId);
     }
   }
 
   recordSkill(identity: Identity, key: string, evidence: GoalActivitySkill, pathKey?: string): void {
+    const evidenceJson = JSON.stringify({ ...evidence, pathKey });
+    if (this.reader && this.rustRequired) {
+      this.enqueueRustWrite({
+        kind: "goalActivityRecordSkill",
+        taskId: identity.taskId,
+        conversationId: identity.conversationId,
+        generationId: identity.generationTaskId,
+        key,
+        evidenceJson,
+      });
+      return;
+    }
     if (!this.generation(identity)) return;
+    if (this.db.readonly) throw new Error("只读数据库模式下无法写入 conversation_goal_learned_skills");
     this.db.prepare("INSERT OR IGNORE INTO conversation_goal_learned_skills VALUES (?,?,?,?,?)")
-      .run(identity.taskId, identity.conversationId, identity.generationTaskId, key, JSON.stringify({ ...evidence, pathKey }));
+      .run(identity.taskId, identity.conversationId, identity.generationTaskId, key, evidenceJson);
   }
 
   authoredSkillAtPath(pathKey: string): boolean {
@@ -133,6 +231,16 @@ export class ConversationGoalActivity {
   }
 
   recordAuthoredSkillRead(pathKey: string, fingerprint: string, at: number): void {
+    if (this.reader && this.rustRequired) {
+      this.enqueueRustWrite({
+        kind: "goalActivityRecordAuthoredSkillRead",
+        pathKey,
+        fingerprint,
+        at,
+      });
+      return;
+    }
+    if (this.db.readonly) throw new Error("只读数据库模式下无法更新 conversation_goal_learned_skills");
     this.db.prepare(`UPDATE conversation_goal_learned_skills SET evidence_json=json_set(evidence_json,'$.laterInvokedAt',?)
       WHERE json_extract(evidence_json,'$.pathKey')=? AND json_extract(evidence_json,'$.installedFingerprint')=?
       AND json_extract(evidence_json,'$.createdAt')<=? AND json_extract(evidence_json,'$.laterInvokedAt') IS NULL`)

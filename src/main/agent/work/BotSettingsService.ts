@@ -11,7 +11,7 @@ import { type BotSettingsDto } from "../../../shared/bot-settings";
 export class BotSettingsService {
   constructor(private readonly db: AppDatabase, private readonly bots: BotRegistry,
     private readonly userId: string, private readonly root: string) {
-    db.connection.exec(`CREATE TABLE IF NOT EXISTS bot_message_execution_settings (message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE, bot_id TEXT NOT NULL, settings_json TEXT NOT NULL, profile_json TEXT NOT NULL);
+    if (!db.connection.readonly) db.connection.exec(`CREATE TABLE IF NOT EXISTS bot_message_execution_settings (message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE, bot_id TEXT NOT NULL, settings_json TEXT NOT NULL, profile_json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS bot_execution_settings (
       bot_id TEXT PRIMARY KEY REFERENCES bots(bot_id) ON DELETE CASCADE, revision INTEGER NOT NULL, settings_json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS bot_work_settings (

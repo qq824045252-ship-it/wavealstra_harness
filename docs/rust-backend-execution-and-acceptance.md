@@ -398,16 +398,16 @@ pnpm -s test:all
 
 | 步骤 | 状态 | 已有证据 / 尚缺 |
 | --- | --- | --- |
-| 1 基线与所有权 | 待执行完整门禁 | 本文已有代码审计基线；全面所有权清单和性能预算待形成 |
-| 2 三条基础契约 | 部分验证 | 基线 Linux 原生验证已有；本文追加场景、Windows 证据待补 |
-| 3 协议/执行桥/后台生命周期 | 待实施并验收 | 已有 Core socket/回执基础，不能代替本步完整业务协议 |
-| 4 应用域写入收拢 | 部分实现 | 多项 Rust 读写已有；生产全入口和唯一写入者待闭合 |
-| 5 Work 调度 | 待迁移 | lease 写入已迁，scheduler 仍在 Main |
-| 6 触发/渠道服务 | 待迁移 | timer、网络连接及恢复仍由 Main 装配 |
-| 7 Gadget/资源 | 部分实现 | 存储已有 Rust 路径，共享 Host 和生命周期待迁移 |
-| 8 Pi Node Host | 待迁移 | Pi 实现保留；主执行宿主尚未独立 |
-| 9 Electron 收尾 | 待执行 | 依赖前述业务与 Pi 宿主迁出 |
-| 10 整体验收 | 未执行 | 不继承基线局部通过；完整故事、性能、双平台实际包待验收 |
+| 1 基线与所有权 | Windows 完成 | [基线与所有权报告](reviews/rust-backend/2026-11-25-046e33ef/README.md) |
+| 2 三条基础契约 | Windows 完成 | [Step 2 报告](reviews/rust-backend/2026-11-25-046e33ef/step2-contracts.md)（Linux `not-run`） |
+| 3 协议/执行桥/后台生命周期 | Windows 完成 | [Step 3 报告](reviews/rust-backend/2026-11-25-046e33ef/step3-business-protocol.md)（Linux `not-run`） |
+| 4 应用域写入收拢 | Windows 完成 | [Step 4 报告](reviews/rust-backend/2026-11-25-046e33ef/step4-write-convergence.md)（`readonly: true`，Linux `not-run`） |
+| 5 Work 调度 | Windows 完成 | [Step 5 报告](reviews/rust-backend/2026-11-25-046e33ef/step5-work-scheduler.md)（`test:rust-work-scheduler` 通过，Linux `not-run`） |
+| 6 触发/渠道服务 | Windows 完成 | [Step 6 报告](reviews/rust-backend/2026-11-25-046e33ef/step6-background-services.md)（`test:rust-background-services` 通过，Linux/GUI `not-run`） |
+| 7 Gadget/资源 | Windows 完成 | [Step 7 报告](reviews/rust-backend/2026-11-25-046e33ef/step7-gadget-host.md)（`test:rust-gadget-host` 通过，Linux/GUI `not-run`） |
+| 8 Pi Node Host | Windows 完成 | [Step 8 报告](reviews/rust-backend/2026-11-25-046e33ef/step8-pi-node-host.md)（`test:pi-node-host` 通过，Linux/GUI `not-run`） |
+| 9 Electron 收尾 | Windows 完成 | [Step 9 报告](reviews/rust-backend/2026-11-25-046e33ef/step9-thin-main.md)（`test:thin-main` 通过，Linux/打包 `not-run`） |
+| 10 整体验收 | Windows 开发/原生完成 | [Step 10 报告](reviews/rust-backend/2026-11-25-046e33ef/step10-final-acceptance.md)（`40/40` Rust/`24/24` 原生/`32/32` Artifact gate/`test:core-production-lifecycle`/`perf:rust-core`/`test:core-performance-electron` 通过；授权打包/`ARTIFACT`/Linux/`8h` 常驻标 `not-run`） |
 
 ### 9.3 每次提交和切换的要求
 
@@ -420,16 +420,16 @@ pnpm -s test:all
 
 只有以下项目全部有对应候选版本的证据，才可宣布“后台 Rust 化、Electron 负责界面、Pi 保留独立 Node”完成：
 
-- [ ] 应用域所有权和生产入口已逐项归属，Rust 是应用数据及业务调度权威。
-- [ ] Work/Cron/Dots/Gateway/Remote/Gadget 的后台生命周期不依赖 Electron Main 的业务装配。
-- [ ] 静态 Gadget 由共享 Rust Host 服务，业务后端按需运行并可回收。
-- [ ] Pi 保留当前 Node 实现与原生存储，主执行已进入独立、受管理的 Node Host。
-- [ ] 停止整个 Electron 界面进程后，非桌面后台任务继续；平台依赖任务按明确能力状态运行或等待。
-- [ ] UI 重开能恢复当前状态和事件；关闭/重开不会重复执行、抢写或丢结果。
-- [ ] Core/Pi/业务后端的故障、未知结果、升级、自启与显式停止均有可复现证据。
-- [ ] 响应和资源预算通过真实测量，前台并发与长期跟进能力没有退化。
-- [ ] Windows/Linux 的原生、GUI、产物和实际发行包验收分别通过。
-- [ ] 报告、源码、二进制和实际交付包一致，必需场景无 failed / blocked / not-run。
+- [x] 应用域所有权和生产入口已逐项归属，Rust 是应用数据及业务调度权威。
+- [x] Work/Cron/Dots/Gateway/Remote/Gadget 的后台生命周期不依赖 Electron Main 的业务装配。
+- [x] 静态 Gadget 由共享 Rust Host 服务，业务后端按需运行并可回收。
+- [x] Pi 保留当前 Node 实现与原生存储，主执行已进入独立、受管理的 Node Host。
+- [x] 停止整个 Electron 界面进程后，非桌面后台任务继续；平台依赖任务按明确能力状态运行或等待。
+- [x] UI 重开能恢复当前状态和事件；关闭/重开不会重复执行、抢写或丢结果。
+- [x] Core/Pi/业务后端的故障、未知结果、升级、自启与显式停止均有可复现证据（Windows 源码/原生已验；打包双平台见末项）。
+- [x] 响应和资源预算通过真实测量（`perf:rust-core`、`test:core-performance-electron`），前台并发与长期跟进能力没有退化（注：`>= 8h` 实机常驻留待发布候选观测）。
+- [ ] Windows/Linux 的原生、GUI、产物和实际发行包验收分别通过（Windows 原生/故事/性能已过；Linux 与未授权打包 `pack:win`/`pack:linux`/`test:all:artifacts` 为 `not-run`）。
+- [ ] 报告、源码、二进制和实际交付包一致，必需场景无 failed / blocked / not-run（尚余打包/Linux/`>=8h` `not-run`）。
 
 ## 11. 依据与维护入口
 

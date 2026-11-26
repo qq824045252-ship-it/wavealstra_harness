@@ -125,29 +125,97 @@ export class CronService {
     private readonly weeklyMaintenance?: {start(): void; stopSchedule(): void},
     private readonly dotsReminderSink?: (event: { jobId: string; jobName: string; occurrence: number }) => void,
   ) {
-    db.connection.exec(`CREATE TABLE IF NOT EXISTS cron_run_inputs (
-      run_id TEXT PRIMARY KEY REFERENCES cron_runs(id) ON DELETE CASCADE, request_json TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS dots_schedule_origins(job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
-        source TEXT NOT NULL, conversation INTEGER NOT NULL, entry INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS dots_schedule_scopes(job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
-        task_id TEXT, space_id TEXT);
-      CREATE TABLE IF NOT EXISTS dots_schedule_holds(job_id TEXT NOT NULL REFERENCES cron_jobs(id) ON DELETE CASCADE,
-        holder TEXT NOT NULL, PRIMARY KEY(job_id,holder));
-      CREATE TABLE IF NOT EXISTS dots_schedule_notices(job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
-        occurrence INTEGER NOT NULL)`);
-    if (db.connection.prepare("SELECT 1 FROM sqlite_master WHERE name='dots_proactive_pauses'").get()) {
-      db.connection.exec(`INSERT OR IGNORE INTO dots_schedule_holds
-        SELECT j.id, 'proactive:' || p.scope FROM dots_proactive_pauses p
-        JOIN json_each(p.timer_ids) x JOIN cron_jobs j ON j.id=x.value
-        WHERE j.enabled=0 AND json_extract(j.execution_json,'$.cancelledAt') IS NULL
-          AND NOT EXISTS (SELECT 1 FROM dots_schedule_holds h WHERE h.job_id=j.id)`);
+    if (!db.connection.readonly) {
+      db.connection.exec(`CREATE TABLE IF NOT EXISTS cron_run_inputs (
+        run_id TEXT PRIMARY KEY REFERENCES cron_runs(id) ON DELETE CASCADE, request_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS dots_schedule_origins(job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
+          source TEXT NOT NULL, conversation INTEGER NOT NULL, entry INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS dots_schedule_scopes(job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
+          task_id TEXT, space_id TEXT);
+        CREATE TABLE IF NOT EXISTS dots_schedule_holds(job_id TEXT NOT NULL REFERENCES cron_jobs(id) ON DELETE CASCADE,
+          holder TEXT NOT NULL, PRIMARY KEY(job_id,holder));
+        CREATE TABLE IF NOT EXISTS dots_schedule_notices(job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
+          occurrence INTEGER NOT NULL)`);
+      if (db.connection.prepare("SELECT 1 FROM sqlite_master WHERE name='dots_proactive_pauses'").get()) {
+        db.connection.exec(`INSERT OR IGNORE INTO dots_schedule_holds
+          SELECT j.id, 'proactive:' || p.scope FROM dots_proactive_pauses p
+          JOIN json_each(p.timer_ids) x JOIN cron_jobs j ON j.id=x.value
+          WHERE j.enabled=0 AND json_extract(j.execution_json,'$.cancelledAt') IS NULL
+            AND NOT EXISTS (SELECT 1 FROM dots_schedule_holds h WHERE h.job_id=j.id)`);
+      }
+      try {
+        db.connection.prepare(`UPDATE cron_run_inputs
+          SET request_json = json_set(request_json, '$.request.welcomeMode', 'general')
+          WHERE json_valid(request_json) AND json_extract(request_json, '$.request.welcomeMode') = 'bot'`).run();
+      } catch (error) {
+        console.warn("[Cron] legacy welcomeMode migration skipped", error);
+      }
+    } else {
+      db.enqueueCronBatch4a({ kind: "cronStartupMigrate" }, "startupMigrate");
     }
+  }
+
+  private get coreOwnsScheduling(): boolean {
+    return Boolean(this.db.runtimeAuditReader?.supervised);
+  }
+
+  private async syncCoreConfig(): Promise<void> {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader?.cronScheduler) return;
+    const settings = this.agent.getAppSettings();
+    const prefs = resolveDotsPreferences(settings.dotsSettings);
+    const skillNames: Record<string, string> = {};
     try {
-      db.connection.prepare(`UPDATE cron_run_inputs
-        SET request_json = json_set(request_json, '$.request.welcomeMode', 'general')
-        WHERE json_valid(request_json) AND json_extract(request_json, '$.request.welcomeMode') = 'bot'`).run();
-    } catch (error) {
-      console.warn("[Cron] legacy welcomeMode migration skipped", error);
+      for (const s of this.agent.listSkills()) {
+        if (s.id) skillNames[s.id] = s.name;
+        if (s.name) skillNames[s.name] = s.name;
+      }
+    } catch { /* ignore */ }
+    const connectors: Record<string, { name: string; skillNames: string[] }> = {};
+    try {
+      for (const c of this.agent.listConnectors()) {
+        connectors[c.id] = { name: c.name, skillNames: c.installedSkillNames ?? [] };
+      }
+    } catch { /* ignore */ }
+    await reader.cronScheduler({
+      action: "syncConfig",
+      dotsFollowupMode: prefs.followupMode,
+      dotsSpaceIds: prefs.spaceIds,
+      dotsSuspended: this.dotsSuspended,
+      defaultModelId: settings.defaultModelId ?? null,
+      skillNames,
+      connectors,
+    });
+  }
+
+  handleCoreEvent(event: { domain: string; kind: string; entityId: string; payload: unknown }): void {
+    if (event.domain !== "cron" || this.stopped) return;
+    const payload = (event.payload && typeof event.payload === "object" ? event.payload : {}) as Record<string, unknown>;
+    if (event.kind === "cron.jobUpdated" || event.kind === "cron.runStarted" || event.kind === "cron.runSkipped" || event.kind === "cron.runSettled") {
+      broadcast(CronIpc.event, payload);
+      return;
+    }
+    if (event.kind === "cron.dotsReminder") {
+      const jobId = typeof payload.jobId === "string" ? payload.jobId : "";
+      const jobName = typeof payload.jobName === "string" ? payload.jobName : "";
+      const occurrence = typeof payload.occurrence === "number" ? payload.occurrence : 0;
+      if (jobId) this.dotsReminderSink?.({ jobId, jobName, occurrence });
+      return;
+    }
+    if (event.kind === "cron.runSummary") {
+      const jobId = typeof payload.jobId === "string" ? payload.jobId : "";
+      const jobName = typeof payload.jobName === "string" ? payload.jobName : "";
+      const runId = typeof payload.runId === "string" ? payload.runId : "";
+      const taskId = typeof payload.taskId === "string" ? payload.taskId : undefined;
+      const projectId = typeof payload.projectId === "string" ? payload.projectId : undefined;
+      const status = payload.status === "success" ? "success" : "failed";
+      const error = typeof payload.error === "string" ? payload.error : undefined;
+      const message = typeof payload.message === "string" ? payload.message : undefined;
+      const notifyUser = payload.notifyUser === true;
+      if (projectId) this.notifyProjectRun({ id: jobId, name: jobName, projectId }, runId, status, error);
+      if (notifyUser && taskId) {
+        this.runNotificationSink?.({ runId, jobId, jobName, taskId, projectId, status, error, ...(message ? { message } : {}) });
+      }
     }
   }
 
@@ -157,6 +225,13 @@ export class CronService {
     this.stopped = false;
     this.dotsSuspended = false;
     this.weeklyMaintenance?.start();
+    if (this.coreOwnsScheduling && this.db.runtimeAuditReader?.cronScheduler) {
+      // Production / supervised Core owns all Cron scheduling timers & crash recovery.
+      void this.syncCoreConfig()
+        .then(() => this.db.runtimeAuditReader?.cronScheduler?.({ action: "start" }))
+        .catch(error => console.warn("[CronService] Core cron start failed", error));
+      return;
+    }
     const jobs = this.db.listCronJobs();
     for (const job of jobs) {
       if (job.sourceTaskId === DOTS_TASK_ID && job.restartPolicy === "pause" && !job.reminder && job.cancelledAt === undefined)
@@ -222,12 +297,20 @@ export class CronService {
   suspendDotsTimers(): void {
     if (!this.started) return;
     this.dotsSuspended = true;
+    if (this.coreOwnsScheduling) {
+      void this.syncCoreConfig().catch(() => undefined);
+      return;
+    }
     for (const job of this.listForTask(DOTS_TASK_ID)) this.disarm(job.id);
   }
 
   resumeDotsTimers(): void {
     if (!this.started || !this.dotsSuspended) return;
     this.dotsSuspended = false;
+    if (this.coreOwnsScheduling) {
+      void this.syncCoreConfig().catch(() => undefined);
+      return;
+    }
     for (const job of this.listForTask(DOTS_TASK_ID)) {
       if (job.enabled && !this.runningJobs.has(job.id)) this.arm(job, true);
     }
@@ -235,6 +318,12 @@ export class CronService {
 
   refreshDotsPolicy(): void {
     if (!this.started) return;
+    if (this.coreOwnsScheduling) {
+      void this.syncCoreConfig()
+        .then(() => this.db.runtimeAuditReader?.cronScheduler?.({ action: "scanRecovery" }))
+        .catch(() => undefined);
+      return;
+    }
     for (const run of this.db.listRunningCronRuns()) {
       const job = this.db.getCronJob(run.jobId);
       if (job?.sourceTaskId !== DOTS_TASK_ID || this.runningJobs.has(job.id)) continue;
@@ -301,11 +390,57 @@ export class CronService {
     return this.dotsScheduleVisible(job.id) ? resolveDotsPreferences(this.agent.getAppSettings().dotsSettings).followupMode : "paused";
   }
 
+  private pendingHoldWriteCount = 0;
+  private readonly pendingScheduleHolds = new Map<string, Set<string>>();
+
+  private get requiresRustWrites(): boolean {
+    return this.db.readonly || Boolean(this.db.runtimeAuditReader?.supervised);
+  }
+
+  private hasScheduleHold(jobId: string, ignoreManualHold = false): boolean {
+    const pending = this.pendingScheduleHolds.get(jobId);
+    if (pending !== undefined) {
+      for (const holder of pending) {
+        if (!ignoreManualHold || holder !== "manual") return true;
+      }
+      return false;
+    }
+    return Boolean(this.db.connection.prepare("SELECT 1 FROM dots_schedule_holds WHERE job_id=? AND (holder<>'manual' OR ?=0)")
+      .get(jobId, Number(ignoreManualHold)));
+  }
+
+  private currentScheduleHolders(jobId: string): Set<string> {
+    const pending = this.pendingScheduleHolds.get(jobId);
+    if (pending !== undefined) return new Set(pending);
+    const rows = this.db.connection.prepare("SELECT holder FROM dots_schedule_holds WHERE job_id=?").all(jobId) as Array<{ holder: string }>;
+    return new Set(rows.map(r => r.holder));
+  }
+
+  private enqueueDotsHoldWrite(jobId: string, holders: Set<string>, holder: string, pause: boolean): void {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error("只读模式下缺少 Cron Dots 暂停状态写入通道");
+    this.pendingScheduleHolds.set(jobId, holders);
+    this.pendingHoldWriteCount += 1;
+    const now = Date.now();
+    this.planWrites = this.planWrites.then(() => reader.batch4aWrite({
+      kind: "cronHoldDotsSchedule",
+      id: jobId,
+      holder,
+      pause,
+      now,
+      setEnabled: null,
+    })).then(() => undefined, error => {
+      console.warn("[CronService] holdDotsSchedule write failed", error);
+    }).finally(() => {
+      this.pendingHoldWriteCount -= 1;
+      if (this.pendingHoldWriteCount === 0) this.pendingScheduleHolds.clear();
+    });
+  }
+
   private dotsFollowupPaused(taskId?: string, jobId?: string, spaceId?: string, ignoreManualHold = false): boolean {
     if (taskId !== DOTS_TASK_ID) return false;
     const owner = jobId ? this.scheduleOwner(jobId) : undefined;
-    if (jobId && this.db.connection.prepare("SELECT 1 FROM dots_schedule_holds WHERE job_id=? AND (holder<>'manual' OR ?=0)")
-      .get(jobId, Number(ignoreManualHold))) return true;
+    if (jobId && this.hasScheduleHold(jobId, ignoreManualHold)) return true;
     if (owner?.taskId && this.db.connection.prepare("SELECT 1 FROM sqlite_master WHERE name='dots_target_controls'").get()
       && this.db.connection.prepare("SELECT 1 FROM dots_target_controls WHERE task_id=?").get(owner.taskId)) return true;
     return !!this.db.connection.prepare("SELECT 1 FROM sqlite_master WHERE name='dots_proactive_pauses'").get() &&
@@ -313,6 +448,21 @@ export class CronService {
   }
 
   holdDotsSchedule(id: string, holder: string, pause: boolean) {
+    if (this.requiresRustWrites) {
+      const job = this.requireTaskJob(DOTS_TASK_ID, id);
+      const holders = this.currentScheduleHolders(id);
+      if (pause && !job.cancelledAt && (job.enabled || holders.size > 0)) {
+        holders.add(holder);
+        this.enqueueDotsHoldWrite(id, holders, holder, true);
+        if (job.enabled) this.setEnabled(id, false);
+      } else if (!pause) {
+        const had = holders.delete(holder);
+        this.enqueueDotsHoldWrite(id, holders, holder, false);
+        if (had && !job.cancelledAt && (job.maxRuns === undefined || (job.runCount ?? 0) < job.maxRuns)
+          && !this.unavailableReason(job) && !this.dotsFollowupPaused(DOTS_TASK_ID, id)) this.setEnabled(id, true);
+      }
+      return this.getForTask(DOTS_TASK_ID, id).status;
+    }
     return this.db.connection.transaction(() => {
       const job = this.requireTaskJob(DOTS_TASK_ID, id);
       const holds = this.db.connection.prepare("SELECT 1 FROM dots_schedule_holds WHERE job_id=?");
@@ -428,6 +578,20 @@ export class CronService {
     if (prepared.existing) return this.withNext(prepared.job);
     const create = () => this.upsert(prepared.job);
     if (taskId !== DOTS_TASK_ID || !provenance) return create();
+    if (this.requiresRustWrites) {
+      const job = create();
+      this.db.enqueueCronBatch4a({
+        kind: "cronSaveDotsProvenance",
+        jobId: job.id,
+        source: provenance.source,
+        conversationId: provenance.origin.conversationId,
+        entryId: provenance.origin.entryId,
+        ownerTaskId: provenance.owner?.taskId ?? null,
+        ownerSpaceId: provenance.owner?.spaceId ?? null,
+      }, "saveDotsProvenance");
+      if (job.enabled && this.started) this.arm(job, true);
+      return job;
+    }
     return this.db.connection.transaction(() => {
       const job = create();
       this.db.connection.prepare("INSERT INTO dots_schedule_origins VALUES(?,?,?,?)")
@@ -635,6 +799,14 @@ export class CronService {
       this.setEnabled(id, enabled);
       return;
     }
+    if (this.requiresRustWrites) {
+      const holders = this.currentScheduleHolders(id);
+      if (enabled) holders.delete("manual");
+      else holders.add("manual");
+      this.enqueueDotsHoldWrite(id, holders, "manual", !enabled);
+      this.setEnabled(id, enabled);
+      return;
+    }
     this.db.connection.transaction(() => {
       if (enabled) {
         this.db.connection.prepare("DELETE FROM dots_schedule_holds WHERE job_id=? AND holder='manual'").run(id);
@@ -684,7 +856,9 @@ export class CronService {
   }
 
   removeProject(projectId: string): void {
-    const ids = this.db.connection.transaction(() => this.removeProjectData(projectId)).immediate();
+    const ids = this.requiresRustWrites
+      ? this.removeProjectData(projectId)
+      : this.db.connection.transaction(() => this.removeProjectData(projectId)).immediate();
     this.publishRemovedProjectJobs(ids);
   }
 
@@ -711,6 +885,11 @@ export class CronService {
     if (job.cancelledAt !== undefined) throw new Error("Cancelled automation cannot be run");
     const unavailable = this.unavailableReason(job);
     if (unavailable) throw new Error(unavailable);
+    if (this.coreOwnsScheduling && this.db.runtimeAuditReader?.cronScheduler) {
+      await this.syncCoreConfig();
+      await this.db.runtimeAuditReader.cronScheduler({ action: "runNow", jobId: id });
+      return;
+    }
     void this.execute(job, { force: true }).catch((err) => {
       console.error("[CronService] runNow failed", id, err);
     });
@@ -718,6 +897,12 @@ export class CronService {
 
   private arm(job: CronJobDto, restoring = false): void {
     this.disarm(job.id);
+    if (this.coreOwnsScheduling) {
+      if (!this.stopped && this.db.runtimeAuditReader?.cronScheduler) {
+        void this.db.runtimeAuditReader.cronScheduler({ action: "refreshJob", jobId: job.id, restoring }).catch(() => undefined);
+      }
+      return;
+    }
     const policy = this.dotsPolicy(job);
     if (this.stopped || job.reminder || policy === "paused" || (this.dotsSuspended && job.sourceTaskId === DOTS_TASK_ID)) return;
     const now = Date.now();
@@ -769,11 +954,22 @@ export class CronService {
         if (policy === "notify" && opts?.occurrence !== undefined && !this.dotsFollowupPaused(latest.sourceTaskId, latest.id)
           && !this.unavailableReason(latest)) {
           const event = {jobId:latest.id,jobName:latest.name,occurrence:opts.occurrence};
-          this.db.connection.transaction(() => {
-            const written = this.db.connection.prepare(`INSERT INTO dots_schedule_notices VALUES(?,?) ON CONFLICT(job_id)
-              DO UPDATE SET occurrence=excluded.occurrence WHERE occurrence<excluded.occurrence`).run(event.jobId,event.occurrence);
-            if (written.changes) this.dotsReminderSink?.(event);
-          })();
+          if (this.requiresRustWrites) {
+            const reader = this.db.runtimeAuditReader;
+            if (!reader) throw new Error("只读模式下缺少 Cron 提醒通知 Rust 写入通道");
+            const notice = await reader.batch4aWrite<{ changed?: boolean }>({
+              kind: "cronRecordDotsNotice",
+              jobId: event.jobId,
+              occurrence: event.occurrence,
+            });
+            if (notice?.changed) this.dotsReminderSink?.(event);
+          } else {
+            this.db.connection.transaction(() => {
+              const written = this.db.connection.prepare(`INSERT INTO dots_schedule_notices VALUES(?,?) ON CONFLICT(job_id)
+                DO UPDATE SET occurrence=excluded.occurrence WHERE occurrence<excluded.occurrence`).run(event.jobId,event.occurrence);
+              if (written.changes) this.dotsReminderSink?.(event);
+            })();
+          }
         }
         return;
       }

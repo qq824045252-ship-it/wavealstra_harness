@@ -1,6 +1,7 @@
 import { workExecutionObservationSchema } from "../../../shared/bot-work-phase3";
 import type Database from "better-sqlite3";
 import { isCriterionResolved, isRequiredCriterion, type WorkDto, type WorkExecutionBindingDto } from "../../../shared/bot-work";
+import { enqueueWorkOp, overlayDelete, overlayFindAll, overlayMutate, overlayReadOne, overlaySet, requiresWorkRustWrites } from "./WorkDomainRuntime";
 import type { WorkService } from "./WorkService";
 import { completionEvidence, completionFingerprint } from "./WorkCompletionEvidence";
 
@@ -10,21 +11,30 @@ export class WorkAutomaticCompletion {
   constructor(private readonly db: Database.Database, private readonly works: WorkService,
     private readonly finish: (work: WorkDto, conclusion: "succeeded" | "ended_unsuccessfully", summary: string, bindingId: string) => void,
     private readonly isAuthority: () => boolean) {
-    db.exec(`CREATE TABLE IF NOT EXISTS work_automatic_completion (
-      binding_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, consumed_at INTEGER, recovered INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS work_automatic_completion_deliveries (binding_id TEXT PRIMARY KEY, summary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'completed', goal_reviewed INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS work_completion_review_evidence (binding_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)`);
-    if (!(db.prepare("PRAGMA table_info(work_automatic_completion)").all() as Array<{name:string}>).some(row => row.name === "recovered"))
-      db.exec("ALTER TABLE work_automatic_completion ADD COLUMN recovered INTEGER NOT NULL DEFAULT 0");
-    if (!(db.prepare("PRAGMA table_info(work_automatic_completion_deliveries)").all() as Array<{name:string}>).some(row => row.name === "outcome"))
-      db.exec("ALTER TABLE work_automatic_completion_deliveries ADD COLUMN outcome TEXT NOT NULL DEFAULT 'unknown'");
-    if (!(db.prepare("PRAGMA table_info(work_automatic_completion_deliveries)").all() as Array<{name:string}>).some(row => row.name === "goal_reviewed"))
-      db.exec("ALTER TABLE work_automatic_completion_deliveries ADD COLUMN goal_reviewed INTEGER NOT NULL DEFAULT 0");
+    if (!db.readonly) {
+      db.exec(`CREATE TABLE IF NOT EXISTS work_automatic_completion (
+        binding_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, consumed_at INTEGER, recovered INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS work_automatic_completion_deliveries (binding_id TEXT PRIMARY KEY, summary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'completed', goal_reviewed INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS work_completion_review_evidence (binding_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)`);
+      if (!(db.prepare("PRAGMA table_info(work_automatic_completion)").all() as Array<{name:string}>).some(row => row.name === "recovered"))
+        db.exec("ALTER TABLE work_automatic_completion ADD COLUMN recovered INTEGER NOT NULL DEFAULT 0");
+      if (!(db.prepare("PRAGMA table_info(work_automatic_completion_deliveries)").all() as Array<{name:string}>).some(row => row.name === "outcome"))
+        db.exec("ALTER TABLE work_automatic_completion_deliveries ADD COLUMN outcome TEXT NOT NULL DEFAULT 'unknown'");
+      if (!(db.prepare("PRAGMA table_info(work_automatic_completion_deliveries)").all() as Array<{name:string}>).some(row => row.name === "goal_reviewed"))
+        db.exec("ALTER TABLE work_automatic_completion_deliveries ADD COLUMN goal_reviewed INTEGER NOT NULL DEFAULT 0");
+    }
   }
 
   observe(binding: WorkExecutionBindingDto, status: string): void {
     // Enrol new terminal receipts atomically; recoverUnreviewed handles older open work.
     if (!["completed", "failed", "stopped"].includes(status) || ["completed", "failed", "stopped", "invalidated"].includes(binding.status)) return;
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_automatic_completion", binding.bindingId, () =>
+        this.db.prepare("SELECT * FROM work_automatic_completion WHERE binding_id=?").get(binding.bindingId) as Record<string, unknown> | undefined,
+      cur => cur ?? { binding_id: binding.bindingId, work_id: binding.workId, consumed_at: null, recovered: 0 });
+      enqueueWorkOp(this.db, { op: "workAutoCompletionWrite", mode: "observe", bindingId: binding.bindingId, workId: binding.workId });
+      return;
+    }
     this.db.prepare("INSERT OR IGNORE INTO work_automatic_completion(binding_id,work_id) VALUES (?,?)")
       .run(binding.bindingId, binding.workId);
   }
@@ -33,6 +43,25 @@ export class WorkAutomaticCompletion {
    * Enrolment requests a model review; it neither reruns effects nor declares success. */
   recoverUnreviewed(): void {
     if (!this.isAuthority()) return;
+    if (requiresWorkRustWrites(this.db)) {
+      const candidates = this.db.prepare(`SELECT b.binding_id,w.work_id FROM works w JOIN work_execution_bindings b ON b.work_id=w.work_id
+        WHERE w.lifecycle='active' AND w.mode='once' AND w.cancel_requested_at IS NULL
+          AND b.bot_id=w.owner_bot_id AND b.owner_epoch=w.owner_epoch
+          AND b.intent_revision=w.intent_revision AND b.input_snapshot_id=w.input_snapshot_id
+          AND b.invalidated_at IS NULL AND b.status='completed'
+          AND EXISTS (SELECT 1 FROM work_native_inbox n WHERE n.binding_id=b.binding_id AND n.consumed_at IS NOT NULL)
+          AND NOT EXISTS (SELECT 1 FROM work_execution_bindings newer WHERE newer.work_id=w.work_id
+            AND newer.bot_id=w.owner_bot_id AND newer.intent_revision=w.intent_revision
+            AND newer.input_snapshot_id=w.input_snapshot_id AND newer.invalidated_at IS NULL
+            AND newer.admitted_at>b.admitted_at)`).all() as Array<{ binding_id: string; work_id: string }>;
+      for (const c of candidates) {
+        overlayMutate(this.db, "work_automatic_completion", c.binding_id, () =>
+          this.db.prepare("SELECT * FROM work_automatic_completion WHERE binding_id=?").get(c.binding_id) as Record<string, unknown> | undefined,
+        cur => cur ?? { binding_id: c.binding_id, work_id: c.work_id, consumed_at: null, recovered: 1 });
+      }
+      enqueueWorkOp(this.db, { op: "workAutoCompletionWrite", mode: "recoverUnreviewed" });
+      return;
+    }
     this.db.prepare(`INSERT OR IGNORE INTO work_automatic_completion(binding_id,work_id,recovered)
       SELECT b.binding_id,w.work_id,1 FROM works w JOIN work_execution_bindings b ON b.work_id=w.work_id
       WHERE w.lifecycle='active' AND w.mode='once' AND w.cancel_requested_at IS NULL
@@ -47,12 +76,38 @@ export class WorkAutomaticCompletion {
   }
 
   tracked(bindingId: string): boolean {
-    return !!this.db.prepare("SELECT 1 FROM work_automatic_completion WHERE binding_id=?").get(bindingId);
+    return !!overlayReadOne(this.db, "work_automatic_completion", bindingId, () =>
+      this.db.prepare("SELECT * FROM work_automatic_completion WHERE binding_id=?").get(bindingId) as Record<string, unknown> | undefined);
   }
   pending(): string[] {
-    return (this.db.prepare("SELECT binding_id FROM work_automatic_completion WHERE consumed_at IS NULL").all() as Array<{ binding_id: string }>).map(row => row.binding_id);
+    const dbRows = this.db.prepare("SELECT * FROM work_automatic_completion WHERE consumed_at IS NULL").all() as Array<{ binding_id: string; consumed_at: number | null }>;
+    return overlayFindAll(this.db, "work_automatic_completion", dbRows, r => r.binding_id, r => (r.consumed_at ?? null) === null)
+      .map(row => row.binding_id);
   }
   recordDelivery(bindingId: string, summary: string, outcome: "completed" | "partial" | "unknown" = "completed", goalReviewed = false): void {
+    if (requiresWorkRustWrites(this.db)) {
+      let inserted = false;
+      overlayMutate(this.db, "work_automatic_completion_deliveries", bindingId, () =>
+        this.db.prepare("SELECT * FROM work_automatic_completion_deliveries WHERE binding_id=?").get(bindingId) as Record<string, unknown> | undefined,
+      cur => {
+        if (cur) return cur;
+        inserted = true;
+        return { binding_id: bindingId, summary, outcome, goal_reviewed: Number(goalReviewed) };
+      });
+      let fingerprint: string | undefined;
+      if (goalReviewed && inserted) {
+        const binding = this.works.repo.getBinding(bindingId), facts = this.outcome(bindingId);
+        if (binding && facts) {
+          fingerprint = completionFingerprint(completionEvidence(this.db, this.works, binding, facts));
+          overlaySet(this.db, "work_completion_review_evidence", bindingId, { binding_id: bindingId, fingerprint });
+        }
+      }
+      enqueueWorkOp(this.db, {
+        op: "workAutoCompletionWrite", mode: "recordDelivery", bindingId, summary, outcome,
+        goalReviewed: Number(goalReviewed), fingerprint: fingerprint ?? null,
+      });
+      return;
+    }
     const inserted = this.db.prepare("INSERT OR IGNORE INTO work_automatic_completion_deliveries(binding_id,summary,outcome,goal_reviewed) VALUES (?,?,?,?)").run(bindingId, summary, outcome, Number(goalReviewed));
     if (goalReviewed && inserted.changes) {
       const binding = this.works.repo.getBinding(bindingId), facts = this.outcome(bindingId);
@@ -61,9 +116,11 @@ export class WorkAutomaticCompletion {
     }
   }
   drain(): void {
+    const rust = requiresWorkRustWrites(this.db);
     for (const bindingId of this.pending()) {
       const row = { binding_id: bindingId };
-      const delivered = this.db.prepare("SELECT summary,outcome,goal_reviewed FROM work_automatic_completion_deliveries WHERE binding_id=?").get(bindingId) as { summary: string; outcome: string; goal_reviewed: number } | undefined;
+      const delivered = overlayReadOne<{ summary: string; outcome: string; goal_reviewed: number }>(this.db, "work_automatic_completion_deliveries", bindingId, () =>
+        this.db.prepare("SELECT binding_id,summary,outcome,goal_reviewed FROM work_automatic_completion_deliveries WHERE binding_id=?").get(bindingId) as { binding_id: string; summary: string; outcome: string; goal_reviewed: number } | undefined);
       if (!delivered) continue;
       if (!this.isAuthority()) return;
       this.works.transaction(() => {
@@ -72,12 +129,19 @@ export class WorkAutomaticCompletion {
         if (!outcome) return;
         if (delivered.goal_reviewed) {
           const binding = this.works.repo.getBinding(bindingId)!;
-          const reviewed = this.db.prepare("SELECT fingerprint FROM work_completion_review_evidence WHERE binding_id=?")
-            .get(bindingId) as { fingerprint: string } | undefined;
+          const reviewed = overlayReadOne<{ fingerprint: string }>(this.db, "work_completion_review_evidence", bindingId, () =>
+            this.db.prepare("SELECT binding_id,fingerprint FROM work_completion_review_evidence WHERE binding_id=?")
+              .get(bindingId) as { binding_id: string; fingerprint: string } | undefined);
           if (reviewed?.fingerprint !== completionFingerprint(completionEvidence(this.db, this.works, binding, outcome))) {
-            this.db.prepare("DELETE FROM work_automatic_completion_deliveries WHERE binding_id=?").run(bindingId);
-            this.db.prepare("DELETE FROM work_completion_review_evidence WHERE binding_id=?").run(bindingId);
-            this.db.prepare("UPDATE work_completion_turns SET state='queued',decision_json=NULL,retry_at=0,error='evidence changed after delivery' WHERE binding_id=?").run(bindingId);
+            if (rust) {
+              overlayDelete(this.db, "work_automatic_completion_deliveries", bindingId);
+              overlayDelete(this.db, "work_completion_review_evidence", bindingId);
+              enqueueWorkOp(this.db, { op: "workAutoCompletionWrite", mode: "resetEvidenceMismatch", bindingId });
+            } else {
+              this.db.prepare("DELETE FROM work_automatic_completion_deliveries WHERE binding_id=?").run(bindingId);
+              this.db.prepare("DELETE FROM work_completion_review_evidence WHERE binding_id=?").run(bindingId);
+              this.db.prepare("UPDATE work_completion_turns SET state='queued',decision_json=NULL,retry_at=0,error='evidence changed after delivery' WHERE binding_id=?").run(bindingId);
+            }
             return;
           }
         }
@@ -97,7 +161,9 @@ export class WorkAutomaticCompletion {
   }
 
   outcome(bindingId: string): { work: WorkDto; conclusion: "succeeded" | "ended_unsuccessfully"; summary: string; executionDelivered: boolean } | undefined {
-    if (!this.db.prepare("SELECT 1 FROM work_automatic_completion WHERE binding_id=? AND consumed_at IS NULL").get(bindingId)) return;
+    const compRow = overlayReadOne<{ consumed_at: number | null }>(this.db, "work_automatic_completion", bindingId, () =>
+      this.db.prepare("SELECT * FROM work_automatic_completion WHERE binding_id=? AND consumed_at IS NULL").get(bindingId) as { consumed_at: number | null } | undefined);
+    if (!compRow || compRow.consumed_at !== null) return;
     const binding = this.works.repo.getBinding(bindingId);
     const work = binding && this.works.getWork(binding.workId);
     if (!binding || !work) return;
@@ -168,6 +234,14 @@ export class WorkAutomaticCompletion {
   }
 
   consume(bindingId: string): void {
-    this.db.prepare("UPDATE work_automatic_completion SET consumed_at=? WHERE binding_id=?").run(Date.now(), bindingId);
+    const now = Date.now();
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_automatic_completion", bindingId, () =>
+        this.db.prepare("SELECT * FROM work_automatic_completion WHERE binding_id=?").get(bindingId) as Record<string, unknown> | undefined,
+      cur => cur ? { ...cur, consumed_at: now } : cur);
+      enqueueWorkOp(this.db, { op: "workAutoCompletionWrite", mode: "consume", bindingId, now });
+      return;
+    }
+    this.db.prepare("UPDATE work_automatic_completion SET consumed_at=? WHERE binding_id=?").run(now, bindingId);
   }
 }

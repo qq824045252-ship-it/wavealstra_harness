@@ -122,9 +122,29 @@ function buildProposedInstructions(base: string, notes: string[]): string {
  * This service never writes Skill files or Memory records.
  */
 export class MemorySkillRevisionService {
+  private writeTail: Promise<void> = Promise.resolve();
+
   constructor(private readonly db: AppDatabase) {}
 
   private get conn() { return this.db.connection; }
+
+  private get requiresRustWrites(): boolean {
+    return Boolean(this.db.readonly || this.db.runtimeAuditReader?.supervised);
+  }
+
+  async flush(): Promise<void> {
+    await this.writeTail;
+  }
+
+  private enqueueBatch3(context: string, request: Record<string, unknown>): void {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error(`${context}：Rust 写入核心未就绪`);
+    const next = this.writeTail.then(async () => {
+      const result = await reader.batch3Write(request);
+      if (result === undefined) throw new Error(`${context}：Rust 写入未收到确认`);
+    });
+    this.writeTail = next.then(() => undefined, () => undefined);
+  }
 
   get(id: string): MemorySkillRevisionCandidateDto | undefined {
     const row = this.conn.prepare("SELECT * FROM memory_skill_revision_candidates WHERE id=?").get(id) as RevisionRow | undefined;
@@ -179,6 +199,68 @@ export class MemorySkillRevisionService {
     const status = preserveTerminal ? existing!.status : proposedStatus;
     const issueSummary = buildIssueSummary({ needsRevisionCount, incorrectCount, failedInvocationCount, notes });
     const proposedInstructions = buildProposedInstructions(source.instructions, notes);
+    const negativeFeedbackIds = [...feedbackIds];
+    const sourceMemoryIds = [...new Set(source.sourceMemoryIds)];
+    const titleText = source.title.slice(0, 180);
+
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("保存技能修订候选", {
+        kind: "memorySkillRevisionUpsert",
+        id,
+        skillId: source.skillId,
+        baseCandidateId: source.candidateId ?? null,
+        baseVersion: source.version,
+        baseContentHash: source.contentHash,
+        title: titleText,
+        status,
+        issueSummary,
+        baseDescription: source.description,
+        baseInstructions: source.instructions,
+        proposedDescription: source.description,
+        proposedInstructions,
+        negativeFeedbackIdsJson: JSON.stringify(negativeFeedbackIds),
+        sourceMemoryIdsJson: JSON.stringify(sourceMemoryIds),
+        feedbackSignature,
+        needsRevisionCount,
+        incorrectCount,
+        failedInvocationCount,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        resolvedAt: existing?.resolvedAt ?? null,
+        materializedCandidateId: existing?.materializedCandidateId ?? null,
+        materializedVersion: existing?.materializedVersion ?? null,
+      });
+      const staled = Number((this.conn.prepare(
+        `SELECT COUNT(1) n FROM memory_skill_revision_candidates
+         WHERE skill_id=? AND COALESCE(base_candidate_id,'')=COALESCE(?, '') AND id<>? AND status IN ('draft','ready')`,
+      ).get(source.skillId, source.candidateId ?? null, id) as { n: number }).n);
+      const candidate: MemorySkillRevisionCandidateDto = {
+        id,
+        skillId: source.skillId,
+        baseCandidateId: source.candidateId,
+        baseVersion: source.version,
+        baseContentHash: source.contentHash,
+        title: titleText,
+        status,
+        issueSummary,
+        baseDescription: source.description,
+        baseInstructions: source.instructions,
+        proposedDescription: source.description,
+        proposedInstructions,
+        negativeFeedbackIds,
+        sourceMemoryIds,
+        feedbackSignature,
+        needsRevisionCount,
+        incorrectCount,
+        failedInvocationCount,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        resolvedAt: existing?.resolvedAt,
+        materializedCandidateId: existing?.materializedCandidateId,
+        materializedVersion: existing?.materializedVersion,
+      };
+      return { candidate, created: !existing, staled };
+    }
 
     this.conn.prepare(
       `INSERT INTO memory_skill_revision_candidates (
@@ -207,15 +289,15 @@ export class MemorySkillRevisionService {
       source.candidateId ?? null,
       source.version,
       source.contentHash,
-      source.title.slice(0, 180),
+      titleText,
       status,
       issueSummary,
       source.description,
       source.instructions,
       source.description,
       proposedInstructions,
-      JSON.stringify(feedbackIds),
-      JSON.stringify([...new Set(source.sourceMemoryIds)]),
+      JSON.stringify(negativeFeedbackIds),
+      JSON.stringify(sourceMemoryIds),
       feedbackSignature,
       needsRevisionCount,
       incorrectCount,
@@ -236,6 +318,20 @@ export class MemorySkillRevisionService {
     if (!candidate) throw new Error(`Skill Revision Candidate 不存在：${id}`);
     if (!["draft", "ready"].includes(candidate.status)) throw new Error(`Skill Revision Candidate 当前状态不可拒绝：${candidate.status}`);
     const now = Date.now();
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("拒绝技能修订候选", {
+        kind: "memorySkillRevisionStatus",
+        revAction: "reject",
+        id,
+        ids: [],
+        materializedCandidateId: null,
+        materializedVersion: null,
+        skillId: null,
+        baseCandidateId: null,
+        now,
+      });
+      return { ...candidate, status: "rejected", resolvedAt: now, updatedAt: now };
+    }
     this.conn.prepare("UPDATE memory_skill_revision_candidates SET status='rejected',resolved_at=?,updated_at=? WHERE id=?").run(now, now, id);
     return this.get(id)!;
   }
@@ -244,7 +340,22 @@ export class MemorySkillRevisionService {
     const candidate = this.get(id);
     if (!candidate) throw new Error(`Skill Revision Candidate 不存在：${id}`);
     if (candidate.status === "materialized" || candidate.status === "rejected") return candidate;
-    this.conn.prepare("UPDATE memory_skill_revision_candidates SET status='stale',updated_at=? WHERE id=?").run(Date.now(), id);
+    const now = Date.now();
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("过期技能修订候选", {
+        kind: "memorySkillRevisionStatus",
+        revAction: "staleOne",
+        id,
+        ids: [],
+        materializedCandidateId: null,
+        materializedVersion: null,
+        skillId: null,
+        baseCandidateId: null,
+        now,
+      });
+      return { ...candidate, status: "stale", updatedAt: now };
+    }
+    this.conn.prepare("UPDATE memory_skill_revision_candidates SET status='stale',updated_at=? WHERE id=?").run(now, id);
     return this.get(id)!;
   }
 
@@ -253,6 +364,27 @@ export class MemorySkillRevisionService {
     if (!candidate) throw new Error(`Skill Revision Candidate 不存在：${id}`);
     if (candidate.status !== "ready") throw new Error(`Skill Revision Candidate 当前状态不可物化：${candidate.status}`);
     const now = Date.now();
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("物化技能修订候选", {
+        kind: "memorySkillRevisionStatus",
+        revAction: "materialize",
+        id,
+        ids: [],
+        materializedCandidateId,
+        materializedVersion: version,
+        skillId: null,
+        baseCandidateId: null,
+        now,
+      });
+      return {
+        ...candidate,
+        status: "materialized",
+        materializedCandidateId,
+        materializedVersion: version,
+        resolvedAt: now,
+        updatedAt: now,
+      };
+    }
     this.conn.prepare(
       `UPDATE memory_skill_revision_candidates
        SET status='materialized',materialized_candidate_id=?,materialized_version=?,resolved_at=?,updated_at=? WHERE id=?`,
@@ -261,6 +393,26 @@ export class MemorySkillRevisionService {
   }
 
   private staleOtherOpen(skillId: string, candidateId: string | undefined, keepId: string, now: number): number {
+    if (this.requiresRustWrites) {
+      const count = Number((this.conn.prepare(
+        `SELECT COUNT(1) n FROM memory_skill_revision_candidates
+         WHERE skill_id=? AND COALESCE(base_candidate_id,'')=COALESCE(?, '') AND id<>? AND status IN ('draft','ready')`,
+      ).get(skillId, candidateId ?? null, keepId) as { n: number }).n);
+      if (count > 0) {
+        this.enqueueBatch3("清理旧修订候选", {
+          kind: "memorySkillRevisionStatus",
+          revAction: "staleForBase",
+          id: keepId,
+          ids: [],
+          materializedCandidateId: null,
+          materializedVersion: null,
+          skillId,
+          baseCandidateId: candidateId ?? null,
+          now,
+        });
+      }
+      return count;
+    }
     return this.conn.prepare(
       `UPDATE memory_skill_revision_candidates SET status='stale',updated_at=?
        WHERE skill_id=? AND COALESCE(base_candidate_id,'')=COALESCE(?, '') AND id<>? AND status IN ('draft','ready')`,
@@ -271,19 +423,54 @@ export class MemorySkillRevisionService {
     const rows = this.conn.prepare(
       "SELECT id,skill_id FROM memory_skill_revision_candidates WHERE status IN ('draft','ready')",
     ).all() as Array<{ id: string; skill_id: string }>;
+    const missingIds = rows.filter((row) => !activeSkillIds.has(row.skill_id)).map((row) => row.id);
+    if (missingIds.length === 0) return 0;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("失效缺失技能的修订候选", {
+        kind: "memorySkillRevisionStatus",
+        revAction: "staleIds",
+        id: null,
+        ids: missingIds,
+        materializedCandidateId: null,
+        materializedVersion: null,
+        skillId: null,
+        baseCandidateId: null,
+        now,
+      });
+      return missingIds.length;
+    }
     let changed = 0;
     this.conn.transaction(() => {
-      for (const row of rows) {
-        if (activeSkillIds.has(row.skill_id)) continue;
+      for (const id of missingIds) {
         changed += this.conn.prepare(
           "UPDATE memory_skill_revision_candidates SET status='stale',updated_at=? WHERE id=? AND status IN ('draft','ready')",
-        ).run(now, row.id).changes;
+        ).run(now, id).changes;
       }
     })();
     return changed;
   }
 
   private staleOpenForBase(skillId: string, candidateId: string | undefined, _contentHash: string, now: number): number {
+    if (this.requiresRustWrites) {
+      const count = Number((this.conn.prepare(
+        `SELECT COUNT(1) n FROM memory_skill_revision_candidates
+         WHERE skill_id=? AND COALESCE(base_candidate_id,'')=COALESCE(?, '') AND status IN ('draft','ready')`,
+      ).get(skillId, candidateId ?? null) as { n: number }).n);
+      if (count > 0) {
+        this.enqueueBatch3("失效同基线开放修订候选", {
+          kind: "memorySkillRevisionStatus",
+          revAction: "staleForBase",
+          id: null,
+          ids: [],
+          materializedCandidateId: null,
+          materializedVersion: null,
+          skillId,
+          baseCandidateId: candidateId ?? null,
+          now,
+        });
+      }
+      return count;
+    }
     return this.conn.prepare(
       `UPDATE memory_skill_revision_candidates SET status='stale',updated_at=?
        WHERE skill_id=? AND COALESCE(base_candidate_id,'')=COALESCE(?, '') AND status IN ('draft','ready')`,

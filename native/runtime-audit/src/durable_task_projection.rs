@@ -20,6 +20,29 @@ pub enum Request {
         task_id: String,
         workspaces: Vec<MessageWorkspace>,
     },
+    BindBot {
+        task_id: String,
+        directory: String,
+        cwd: String,
+        #[serde(default)]
+        update_cwd_if_exists: bool,
+    },
+    CommitBranch {
+        task_id: String,
+        directory: String,
+        cwd: String,
+        inherited_last_entry_id: i64,
+    },
+    RebindGatewayDirectory {
+        task_id: String,
+        previous_directory: String,
+        next_directory: String,
+    },
+    QueueWorkspaceMove {
+        task_id: String,
+        from_cwd: String,
+        to_cwd: String,
+    },
 }
 
 #[derive(Deserialize, Serialize)]
@@ -121,6 +144,60 @@ fn apply(
             workspaces,
         } => {
             remember_workspaces(&tx, task_id, workspaces)?;
+            (None, Vec::new())
+        }
+        Request::BindBot {
+            task_id,
+            directory,
+            cwd,
+            update_cwd_if_exists,
+        } => {
+            tx.prepare_cached(
+                "INSERT INTO durable_bot_bindings(task_id, backend, directory, cwd)
+                 VALUES (?1, 'pi-durable', ?2, ?3)
+                 ON CONFLICT(task_id) DO UPDATE SET
+                   cwd = CASE WHEN ?4 THEN excluded.cwd ELSE durable_bot_bindings.cwd END",
+            )?
+            .execute(params![task_id, directory, cwd, i64::from(*update_cwd_if_exists)])?;
+            (None, Vec::new())
+        }
+        Request::CommitBranch {
+            task_id,
+            directory,
+            cwd,
+            inherited_last_entry_id,
+        } => {
+            tx.prepare_cached(
+                "INSERT INTO durable_bot_bindings(task_id, backend, directory, cwd)
+                 VALUES (?1, 'pi-durable', ?2, ?3)",
+            )?
+            .execute(params![task_id, directory, cwd])?;
+            tx.prepare_cached(
+                "INSERT INTO durable_bot_memory_projection(task_id, entry_id) VALUES (?1, ?2)",
+            )?
+            .execute(params![task_id, inherited_last_entry_id])?;
+            (None, Vec::new())
+        }
+        Request::RebindGatewayDirectory {
+            task_id,
+            previous_directory,
+            next_directory,
+        } => {
+            tx.prepare_cached(
+                "UPDATE durable_bot_bindings SET directory = ?1 WHERE task_id = ?2 AND directory = ?3",
+            )?
+            .execute(params![next_directory, task_id, previous_directory])?;
+            (None, Vec::new())
+        }
+        Request::QueueWorkspaceMove {
+            task_id,
+            from_cwd,
+            to_cwd,
+        } => {
+            tx.prepare_cached(
+                "INSERT OR REPLACE INTO durable_bot_workspace_moves(task_id, from_cwd, to_cwd) VALUES (?1, ?2, ?3)",
+            )?
+            .execute(params![task_id, from_cwd, to_cwd])?;
             (None, Vec::new())
         }
     };

@@ -36,7 +36,10 @@ export class MemorySkillDistillation {
     this.progress = progress;
     const controller = this.controller = new AbortController();
     const run = async () => {
-      const mark = this.db.connection.prepare("UPDATE memory_turns SET metadata_json=json_set(metadata_json,'$.skillDistilled',1) WHERE id=?");
+      const requiresRust = Boolean(this.db.readonly || this.db.runtimeAuditReader?.supervised);
+      const mark = requiresRust
+        ? null
+        : this.db.connection.prepare("UPDATE memory_turns SET metadata_json=json_set(metadata_json,'$.skillDistilled',1) WHERE id=?");
       for (let i = 0; i < rows.length;) {
         if (controller.signal.aborted || !options.enabled()) break;
         const taskId = rows[i].task_id;
@@ -55,7 +58,11 @@ export class MemorySkillDistillation {
         let completed = false;
         const complete = (created: number) => {
           if (!enabled()) throw new Error("来源对话或归属已改变，请继续提炼。");
-          for (const id of ids) mark.run(id);
+          if (mark) {
+            for (const id of ids) mark.run(id);
+          } else {
+            this.turns.markSkillDistilled(ids);
+          }
           progress.checked += ids.length;
           progress.created += created;
           completed = true;
@@ -63,10 +70,14 @@ export class MemorySkillDistillation {
         await options.extract(turns, enabled, { signal: controller.signal, complete });
         if (controller.signal.aborted || !options.enabled()) break;
         // Fully filtered source batches perform no model call and have no candidates to save.
-        if (!completed && enabled()) this.db.connection.transaction(() => complete(0))();
+        if (!completed && enabled()) {
+          if (requiresRust) complete(0);
+          else this.db.connection.transaction(() => complete(0))();
+        }
         else if (!completed) progress.skipped += ids.length;
         this.changed();
       }
+      await this.turns.flush();
       progress.state = controller.signal.aborted || !options.enabled() ? "paused" : "completed";
     };
     void run().catch(error => {

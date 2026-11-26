@@ -19,6 +19,7 @@ import { ProjectFolderRelocation } from "../src/main/project/ProjectFolderReloca
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-folder-relocation-"));
 const db = new AppDatabase(join(root, "test.db"));
+async function main() {
 try {
   const oldPath = join(root, "old"); const newPath = join(root, "new");
   mkdirSync(oldPath); writeFileSync(join(oldPath, "spec.txt"), "specification".repeat(6000));
@@ -85,15 +86,15 @@ try {
   assert.equal(preview.tasks.length, 1);
   assert.equal(db.getSpace("folder")?.path, oldPath, "Preview cannot mutate binding");
   busy = true;
-  assert.throws(() => service.commit(preview.token), /执行/);
+  await assert.rejects(() => service.commit(preview.token), /执行/);
   busy = false;
   const stale = service.preview(project.id, newPath);
   writeFileSync(join(newPath, "spec.txt"), "changed");
-  assert.throws(() => service.commit(stale.token), /发生变化/);
+  await assert.rejects(() => service.commit(stale.token), /发生变化/);
   assert.equal(db.getSpace("folder")?.path, oldPath);
   const rollback = service.preview(project.id, newPath);
   db.connection.exec("CREATE TRIGGER reject_resource_update BEFORE UPDATE ON project_resources BEGIN SELECT RAISE(ABORT, 'injected rollback'); END");
-  assert.throws(() => service.commit(rollback.token), /injected rollback/);
+  await assert.rejects(() => service.commit(rollback.token), /injected rollback/);
   assert.equal(db.getSpace("folder")?.path, oldPath, "Space update rolled back when resource update fails");
   assert.equal(repository.get(project.id)?.resources.find((item) => item.id === resource.id)?.value, join(oldPath, "spec.txt"));
   assert.equal(artifacts.get("result")?.version, 1, "Rolled-back metadata never enters registry");
@@ -104,7 +105,7 @@ try {
   db.connection.exec("DROP TRIGGER reject_resource_update");
   const artifactStale = service.preview(project.id, newPath);
   writeFileSync(join(newPath, "style.css"), "h1{color:blue}");
-  assert.throws(() => service.commit(artifactStale.token), /发生变化/);
+  await assert.rejects(() => service.commit(artifactStale.token), /发生变化/);
   renameSync(join(newPath, "style.css"), join(newPath, "missing.css"));
   assert.throws(() => service.preview(project.id, newPath), /缺少产物/);
   renameSync(join(newPath, "missing.css"), join(newPath, "style.css"));
@@ -141,18 +142,18 @@ try {
   assert(changedScope.tasks.some((task) => task.id === "independent"));
   assert(!changedScope.tasks.some((task) => task.id === "unmoved-task"));
   db.upsertTask({ id: "late", title: "Added after preview", updatedAt: 1, spaceId: "virtual" });
-  assert.throws(() => service.commit(changedScope.token), /发生变化/);
+  await assert.rejects(() => service.commit(changedScope.token), /发生变化/);
   const onlyInheritedBusy = new ProjectFolderRelocation(db, (id) => id === "inherited", () => artifacts);
   assert.throws(() => onlyInheritedBusy.preview(project.id, newPath), /执行/);
   const sharedRollback = service.preview(project.id, newPath);
   db.connection.exec(`CREATE TRIGGER reject_shared_resource BEFORE UPDATE ON project_resources WHEN OLD.id = '${sharedRef.id}' BEGIN SELECT RAISE(ABORT, 'shared rollback'); END`);
-  assert.throws(() => service.commit(sharedRollback.token), /shared rollback/);
+  await assert.rejects(() => service.commit(sharedRollback.token), /shared rollback/);
   assert.equal(db.getSpace("nested")?.path, join(oldPath, "nested"));
   assert.equal(db.getSpace("folder")?.path, oldPath);
   assert.equal(events.length, 0);
   db.connection.exec("DROP TRIGGER reject_shared_resource");
   const approved = service.preview(project.id, newPath);
-  service.commit(approved.token);
+  await service.commit(approved.token);
   assert.equal(db.getSpace("folder")?.path, newPath);
   assert.equal(db.getSpace("nested")?.path, join(newPath, "nested"));
   assert.equal(db.getSpace("nested")?.parentId, "folder");
@@ -167,7 +168,7 @@ try {
   assert.equal(db.getTask("task")?.spaceId, "folder");
   assert.equal(db.getTask("task")?.projectId, project.id);
   assert.equal(readFileSync(join(newPath, "spec.txt"), "utf8"), "changed");
-  assert.throws(() => service.commit(approved.token), /失效/);
+  await assert.rejects(() => service.commit(approved.token), /失效/);
   assert.equal(artifacts.get("result")?.source.rootDir, newPath);
   assert.equal(artifacts.entryPathOf("result"), join(newPath, "result.html"));
   assert.equal(artifacts.get("result")?.version, 2);
@@ -181,3 +182,5 @@ try {
   try { assert.equal(new ArtifactRepository(reopened.connection).get("result")?.source.rootDir, newPath); } finally { reopened.close(); }
   console.log("project folder relocation: PASS (preview, moved folder, busy, stale content, shared binding, transactional rollback, artifact cache/events/dependencies, managed storage, junction escape, restart, commit)");
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
+}
+main().catch((err) => { console.error(err); process.exitCode = 1; });

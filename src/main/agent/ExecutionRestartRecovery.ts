@@ -7,9 +7,7 @@ export function recoveryTargetForAttempt(attempt: ExecutionAttempt): string {
   return attempt.target;
 }
 
-/** Convert unfinished side-effect attempts left by a crashed/restarted app into explicit recovery records. */
-export function recoverInterruptedExecutions(attempts: ExecutionAttemptRepository, failures: ExecutionFailureRepository): ExecutionAttempt[] {
-  const interrupted = attempts.recoverInterrupted();
+function recordInterruptedFailures(failures: ExecutionFailureRepository, interrupted: ExecutionAttempt[]): void {
   for (const attempt of interrupted) {
     // Retained historical Pi attempts are closed for audit only. Native Pi
     // execution does not revive the retired host recovery/verification flow.
@@ -28,5 +26,18 @@ export function recoverInterruptedExecutions(attempts: ExecutionAttemptRepositor
       nextAction: "Inspect the affected file or external system before continuing; a verified success on the same target will clear this recovery item.",
     });
   }
+}
+
+/** Convert unfinished side-effect attempts left by a crashed/restarted app into explicit recovery records. */
+export function recoverInterruptedExecutions(attempts: ExecutionAttemptRepository, failures: ExecutionFailureRepository): ExecutionAttempt[] {
+  const interrupted = attempts.recoverInterrupted();
+  recordInterruptedFailures(failures, interrupted);
+  return interrupted;
+}
+
+export async function recoverInterruptedExecutionsAsync(attempts: ExecutionAttemptRepository, failures: ExecutionFailureRepository): Promise<ExecutionAttempt[]> {
+  const interrupted = await attempts.recoverInterruptedAsync();
+  recordInterruptedFailures(failures, interrupted);
+  await failures.flush();
   return interrupted;
 }

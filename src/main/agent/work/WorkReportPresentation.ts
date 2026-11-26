@@ -2,6 +2,7 @@ import { z } from "zod";
 import type Database from "better-sqlite3";
 import type { WorkDeliverableDto, WorkExecutionBindingDto, WorkProjectionDto } from "../../../shared/bot-work";
 import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
+import { enqueueWorkOp, overlayMutate, overlayReadOne, requiresWorkRustWrites } from "./WorkDomainRuntime";
 
 type Report = NonNullable<WorkFeedbackDto["report"]>;
 const text = z.string().min(1).max(8000);
@@ -26,19 +27,43 @@ export function captureTeamReportContext(db: Database.Database, binding: WorkExe
   try {
     const parsed = contextSchema.safeParse(JSON.parse(input));
     if (!parsed.success) return;
+    const contextJson = JSON.stringify(parsed.data);
+    if (requiresWorkRustWrites(db)) {
+      overlayMutate(db, "work_report_contexts", binding.bindingId, () =>
+        db.prepare("SELECT * FROM work_report_contexts WHERE binding_id=?").get(binding.bindingId) as Record<string, unknown> | undefined,
+      cur => cur ?? {
+        binding_id: binding.bindingId, work_id: binding.workId, task_id: binding.taskId,
+        intent_revision: binding.intentRevision, owner_epoch: binding.ownerEpoch,
+        input_snapshot_id: binding.inputSnapshotId, context_json: contextJson,
+      });
+      enqueueWorkOp(db, {
+        op: "workReportContextInsert", bindingId: binding.bindingId, workId: binding.workId,
+        taskId: binding.taskId, intentRevision: binding.intentRevision, ownerEpoch: binding.ownerEpoch,
+        inputSnapshotId: binding.inputSnapshotId, contextJson,
+      });
+      return;
+    }
     db.exec(`CREATE TABLE IF NOT EXISTS work_report_contexts (
       binding_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, task_id TEXT NOT NULL,
       intent_revision INTEGER NOT NULL, owner_epoch INTEGER NOT NULL, input_snapshot_id TEXT NOT NULL, context_json TEXT NOT NULL)`);
     db.prepare("INSERT OR IGNORE INTO work_report_contexts (binding_id,work_id,task_id,intent_revision,owner_epoch,input_snapshot_id,context_json) VALUES (?,?,?,?,?,?,?)").run(binding.bindingId, binding.workId, binding.taskId,
-      binding.intentRevision, binding.ownerEpoch, binding.inputSnapshotId, JSON.stringify(parsed.data));
+      binding.intentRevision, binding.ownerEpoch, binding.inputSnapshotId, contextJson);
   } catch { /* The unchanged native input still executes; reporting falls back. */ }
 }
 export function capturedTeamReportContext(db: Database.Database, binding: WorkExecutionBindingDto): unknown {
   try {
-    const row = db.prepare(`SELECT context_json FROM work_report_contexts WHERE binding_id=? AND work_id=? AND task_id=?
-      AND intent_revision=? AND owner_epoch=? AND input_snapshot_id=?`).get(binding.bindingId, binding.workId, binding.taskId,
-      binding.intentRevision, binding.ownerEpoch, binding.inputSnapshotId) as { context_json: string } | undefined;
-    return row ? JSON.parse(row.context_json) : undefined;
+    const row = overlayReadOne<{
+      binding_id: string; work_id: string; task_id: string; intent_revision: number; owner_epoch: number; input_snapshot_id: string; context_json: string;
+    }>(db, "work_report_contexts", binding.bindingId, () =>
+      db.prepare(`SELECT binding_id,work_id,task_id,intent_revision,owner_epoch,input_snapshot_id,context_json FROM work_report_contexts WHERE binding_id=? AND work_id=? AND task_id=?
+        AND intent_revision=? AND owner_epoch=? AND input_snapshot_id=?`).get(binding.bindingId, binding.workId, binding.taskId,
+        binding.intentRevision, binding.ownerEpoch, binding.inputSnapshotId) as {
+          binding_id: string; work_id: string; task_id: string; intent_revision: number; owner_epoch: number; input_snapshot_id: string; context_json: string;
+        } | undefined);
+    if (!row || row.work_id !== binding.workId || row.task_id !== binding.taskId
+      || row.intent_revision !== binding.intentRevision || row.owner_epoch !== binding.ownerEpoch
+      || row.input_snapshot_id !== binding.inputSnapshotId) return undefined;
+    return JSON.parse(row.context_json);
   } catch { return undefined; }
 }
 

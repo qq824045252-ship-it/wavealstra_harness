@@ -16,11 +16,87 @@ use std::{
 
 const LEASE_FILE: &str = "core.lease";
 const ENDPOINT_FILE: &str = "core.json";
+const LIFECYCLE_FILE: &str = "core-lifecycle.json";
+const STATUS_FILE: &str = "core-status.json";
 const OWNER_LOCK: &str = "core.lock";
 const WORKER_LOCK: &str = "core-worker.lock";
 pub const DATA_DIRECTORY_ENV: &str = "MYBUDDY_CORE_DATA_DIRECTORY";
 pub const GENERATION_ENV: &str = "MYBUDDY_CORE_GENERATION";
-pub const PROTOCOL: u32 = 88;
+pub const PROTOCOL: u32 = 89;
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreLifecycleState {
+    pub mode: String, // "active" | "stopped_explicitly"
+    pub resident_enabled: bool,
+    pub autostart_enabled: bool,
+    pub reason: String,
+    pub updated_at: u64,
+}
+
+impl Default for CoreLifecycleState {
+    fn default() -> Self {
+        Self {
+            mode: "active".to_owned(),
+            resident_enabled: false,
+            autostart_enabled: false,
+            reason: "default".to_owned(),
+            updated_at: now_ms(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreStatus {
+    pub pid: u32,
+    pub worker_pid: u32,
+    pub generation: String,
+    pub state: String, // "starting" | "running" | "restarting" | "stopped" | "circuit_open"
+    pub worker_restart_count: u32,
+    pub consecutive_failures: u32,
+    pub circuit_open: bool,
+    pub circuit_reason: Option<String>,
+    pub last_worker_exit: Option<String>,
+    pub updated_at: u64,
+}
+
+pub fn read_lifecycle_state(directory: &Path) -> CoreLifecycleState {
+    let path = directory.join(LIFECYCLE_FILE);
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<CoreLifecycleState>(&raw).ok())
+        .unwrap_or_default()
+}
+
+pub fn write_lifecycle_state(directory: &Path, state: &CoreLifecycleState) -> Result<(), String> {
+    fs::create_dir_all(directory).map_err(|e| format!("create {}: {e}", directory.display()))?;
+    let path = directory.join(LIFECYCLE_FILE);
+    let staging = path.with_extension("json.tmp");
+    write_private(
+        &staging,
+        &serde_json::to_string(state).map_err(|e| e.to_string())?,
+    )?;
+    fs::rename(&staging, &path).map_err(|e| format!("write lifecycle: {e}"))
+}
+
+pub fn read_core_status(directory: &Path) -> Option<CoreStatus> {
+    let path = directory.join(STATUS_FILE);
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<CoreStatus>(&raw).ok())
+}
+
+pub fn write_core_status(directory: &Path, status: &CoreStatus) -> Result<(), String> {
+    fs::create_dir_all(directory).map_err(|e| format!("create {}: {e}", directory.display()))?;
+    let path = directory.join(STATUS_FILE);
+    let staging = path.with_extension("json.tmp");
+    write_private(
+        &staging,
+        &serde_json::to_string(status).map_err(|e| e.to_string())?,
+    )?;
+    fs::rename(&staging, &path).map_err(|e| format!("write status: {e}"))
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,7 +205,7 @@ pub fn guard_database(directory: &Path) -> crate::Result<()> {
     Ok(())
 }
 
-fn initialization_guards(directory: &Path) -> crate::Result<(File, File)> {
+pub fn initialization_guards(directory: &Path) -> crate::Result<(File, File)> {
     fs::create_dir_all(directory)?;
     let owner = lock_guard(
         &directory.join(OWNER_LOCK),

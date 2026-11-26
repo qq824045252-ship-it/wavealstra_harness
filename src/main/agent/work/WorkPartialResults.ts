@@ -5,10 +5,12 @@ import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { WorkControlResult, WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import { workSubitemSchema, type ContinuationWorkParams, type WorkContinuationDto, type WorkSubitemDto, type WorkSubitemResult } from "../../../shared/bot-work-phase3";
+import { enqueueWorkOp, overlayFindAll, overlayMutate, overlayReadOne, overlaySet, requiresWorkRustWrites, workDomainInTx } from "./WorkDomainRuntime";
 import type { WorkService } from "./WorkService";
 import type {WorkExecutionObservation} from "./WorkExecutionObservation";
 
 export function ensureWorkPartialTables(db: Database.Database): void {
+  if (db.readonly) return;
   db.exec(`CREATE TABLE IF NOT EXISTS work_subitem_results (
     fact_id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES works(work_id), binding_id TEXT NOT NULL REFERENCES work_execution_bindings(binding_id),
     item_id TEXT NOT NULL, result_json TEXT NOT NULL CHECK(json_valid(result_json)), deliverable_id TEXT REFERENCES work_deliverables(deliverable_id),
@@ -45,11 +47,20 @@ export class WorkPartialResults {
     ensureWorkPartialTables(db); this.coverage = new WorkGapCoverage(db, works); this.recovery = new WorkAutomaticRecovery(db, works);
   }
 
+  private findDispatchRequestByTask(taskId: string) {
+    const dbRows = this.db.prepare("SELECT * FROM work_dispatch_requests WHERE task_id=?")
+      .all(taskId) as Array<Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_dispatch_requests", dbRows, r => String(r.operation_id), r => r.task_id === taskId)[0];
+  }
+
   list(workId: string): WorkSubitemDto[] {
     return this.readItems(workId, new Map());
   }
   private readItems(workId: string, bindings: Map<string, WorkExecutionBindingDto | undefined>): WorkSubitemDto[] {
-    return this.db.prepare("SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid").all(workId).map(raw => {
+    const dbRows = this.db.prepare("SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid")
+      .all(workId) as Array<Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_subitem_results", dbRows, r => String(r.fact_id),
+      r => r.work_id === workId, (a, b) => Number(a.created_at) - Number(b.created_at)).map(raw => {
       const row = itemRow.parse(raw);
       if (!bindings.has(row.binding_id)) bindings.set(row.binding_id, this.works.repo.getBinding(row.binding_id));
       const binding = bindings.get(row.binding_id);
@@ -59,7 +70,10 @@ export class WorkPartialResults {
     });
   }
   plans(workId: string): WorkContinuationDto[] {
-    return this.db.prepare("SELECT * FROM work_continuation_plans WHERE work_id=? ORDER BY created_at,rowid").all(workId).map(raw => {
+    const dbRows = this.db.prepare("SELECT * FROM work_continuation_plans WHERE work_id=? ORDER BY created_at,rowid")
+      .all(workId) as Array<Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_continuation_plans", dbRows, r => String(r.plan_id),
+      r => r.work_id === workId, (a, b) => Number(a.created_at) - Number(b.created_at)).map(raw => {
       const row = planRow.parse(raw);
       return { planId: row.plan_id, workId, sourceBindingId: row.source_binding_id, gapItemIds: z.array(z.string()).parse(JSON.parse(row.gap_items_json)),
         intentRevision: row.intent_revision, inputSnapshotId: row.input_snapshot_id, ownerEpoch: row.owner_epoch, ownerBotId: row.owner_bot_id,
@@ -68,9 +82,11 @@ export class WorkPartialResults {
   }
   /** Exact persisted continuation ancestry, never guessed from file paths or task names. */
   deliverySource(binding: WorkExecutionBindingDto): WorkExecutionBindingDto | undefined {
-    const request = z.object({ continuation_plan_id: z.string().nullable(), state: z.string() }).optional().parse(
-      this.db.prepare("SELECT continuation_plan_id,state FROM work_dispatch_requests WHERE task_id=? AND work_id=? AND bot_id=? AND intent_revision=? AND input_snapshot_id=?")
-        .get(binding.taskId, binding.workId, binding.botId, binding.intentRevision, binding.inputSnapshotId));
+    const req = this.findDispatchRequestByTask(binding.taskId);
+    const request = req && req.work_id === binding.workId && req.bot_id === binding.botId
+      && req.intent_revision === binding.intentRevision && req.input_snapshot_id === binding.inputSnapshotId
+      ? z.object({ continuation_plan_id: z.string().nullable(), state: z.string() }).parse(req)
+      : undefined;
     if (!request?.continuation_plan_id || request.state === "cancelled") return undefined;
     const plan = this.plans(binding.workId).find(item => item.planId === request.continuation_plan_id);
     if (!plan || plan.state === "cancelled" || plan.intentRevision !== binding.intentRevision
@@ -96,8 +112,11 @@ export class WorkPartialResults {
     const planBindings = new Map<string, WorkExecutionBindingDto | undefined>();
     const read: PartialGapRead = { items, plans: () => plans ??= this.plans(workId), bindingForPlan: planId => {
       if (!planBindings.has(planId)) {
-        const request = z.object({ task_id: z.string() }).optional().parse(this.db.prepare("SELECT task_id FROM work_dispatch_requests WHERE continuation_plan_id=? AND state='dispatched'").get(planId));
-        planBindings.set(planId, request ? this.works.repo.bindingForTask(request.task_id) : undefined);
+        const dbReqs = this.db.prepare("SELECT * FROM work_dispatch_requests WHERE continuation_plan_id=? AND state='dispatched'")
+          .all(planId) as Array<Record<string, unknown>>;
+        const req = overlayFindAll(this.db, "work_dispatch_requests", dbReqs, r => String(r.operation_id),
+          r => r.continuation_plan_id === planId && r.state === "dispatched")[0];
+        planBindings.set(planId, req ? this.works.repo.bindingForTask(String(req.task_id)) : undefined);
       }
       return planBindings.get(planId);
     } };
@@ -110,15 +129,41 @@ export class WorkPartialResults {
     return all.filter(item => item.required && item.outcome !== "completed" && !item.coverage && !this.resolvedByContinuation(item, read));
   }
   settle(binding:WorkExecutionBindingDto):void {
-    if(!this.db.inTransaction) throw Error("补跑结算必须与原生 Inbox 同事务提交");
+    if(!workDomainInTx(this.db)) throw Error("补跑结算必须与原生 Inbox 同事务提交");
+    if (requiresWorkRustWrites(this.db)) {
+      const req = this.findDispatchRequestByTask(binding.taskId);
+      const planId = req?.continuation_plan_id ? String(req.continuation_plan_id) : undefined;
+      if (planId) {
+        overlayMutate(this.db, "work_continuation_plans", planId, () =>
+          this.db.prepare("SELECT * FROM work_continuation_plans WHERE plan_id=?").get(planId) as Record<string, unknown> | undefined,
+        cur => cur && cur.state === "dispatched" ? { ...cur, state: "settled" } : cur);
+      }
+      enqueueWorkOp(this.db, {
+        op: "workContinuationPlanWrite", mode: "settleForTask", planId: null, workId: null,
+        sourceBindingId: null, operationId: null, intentRevision: null, inputSnapshotId: null,
+        ownerEpoch: null, ownerBotId: null, gapItemsJson: null, reason: null, createdAt: null, taskId: binding.taskId,
+      });
+      return;
+    }
     this.db.prepare(`UPDATE work_continuation_plans SET state='settled' WHERE plan_id=(SELECT continuation_plan_id FROM work_dispatch_requests WHERE task_id=?) AND state='dispatched'`).run(binding.taskId);
   }
   artifactGap(binding:WorkExecutionBindingDto,path:string,criterionIds:string[],now:number):void {
-    if(!this.db.inTransaction)throw Error("产物核验缺口必须与失效事实同事务提交");
+    if(!workDomainInTx(this.db))throw Error("产物核验缺口必须与失效事实同事务提交");
     const itemId=`artifact-check:${hash(path)}`,factId=`artifact-gap:${hash([binding.bindingId,path])}`;
     const result:WorkSubitemResult={itemId,task:`仅重新读取并核验当前产物 ${path}。保留已有业务效果，不重复原写入、发送或发布。`,required:true,dependencies:[],criterionIds,
       nativeStatus:"host_artifact_observation",outcome:"blocked",artifactRefs:[path],writeConflicts:[],summary:"产物版本变化，需要独立只读核验与当前版本反馈",origin:"artifact_revalidation"};
-    this.db.prepare("INSERT OR IGNORE INTO work_subitem_results(fact_id,work_id,binding_id,item_id,result_json,created_at) VALUES (?,?,?,?,?,?)").run(factId,binding.workId,binding.bindingId,itemId,JSON.stringify(result),now);
+    const resultJson = JSON.stringify(result);
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_subitem_results", factId, () =>
+        this.db.prepare("SELECT * FROM work_subitem_results WHERE fact_id=?").get(factId) as Record<string, unknown> | undefined,
+      cur => cur ?? { fact_id: factId, work_id: binding.workId, binding_id: binding.bindingId, item_id: itemId, result_json: resultJson, deliverable_id: null, created_at: now });
+      enqueueWorkOp(this.db, {
+        op: "workSubitemResultWrite", factId, workId: binding.workId, bindingId: binding.bindingId,
+        itemId, resultJson, deliverableId: null, createdAt: now, overwrite: false,
+      });
+      return;
+    }
+    this.db.prepare("INSERT OR IGNORE INTO work_subitem_results(fact_id,work_id,binding_id,item_id,result_json,created_at) VALUES (?,?,?,?,?,?)").run(factId,binding.workId,binding.bindingId,itemId,resultJson,now);
   }
   isReadOnlyPlan(plan:WorkContinuationDto):boolean {
     const source = this.works.repo.getBinding(plan.sourceBindingId);
@@ -136,8 +181,8 @@ export class WorkPartialResults {
   }
   observe(binding:WorkExecutionBindingDto,observation:WorkExecutionObservation):WorkExecutionObservation {
     if(observation.status==="running")return observation;
-    const request=z.object({continuation_plan_id:z.string().nullable()}).optional().parse(this.db.prepare("SELECT continuation_plan_id FROM work_dispatch_requests WHERE task_id=?").get(binding.taskId));
-    const plan=request?.continuation_plan_id && this.plans(binding.workId).find(plan=>plan.planId===request.continuation_plan_id);
+    const request=this.findDispatchRequestByTask(binding.taskId);
+    const plan=typeof request?.continuation_plan_id==="string"?this.plans(binding.workId).find(item=>item.planId===request.continuation_plan_id):undefined;
     if (!plan) return observation;
     if (this.recovery.record(plan.planId)) {
       const source = this.works.repo.getBinding(plan.sourceBindingId);
@@ -174,12 +219,15 @@ export class WorkPartialResults {
       .some(plan => this.continuationCompletes(item, plan.planId, nextSeen, read));
   }
   record(binding: WorkExecutionBindingDto, items: WorkSubitemResult[], now = Date.now()): void {
-    if (!this.db.inTransaction) throw new Error("逐项结果必须与原生 Inbox 消费同事务提交");
+    if (!workDomainInTx(this.db)) throw new Error("逐项结果必须与原生 Inbox 消费同事务提交");
+    const rust = requiresWorkRustWrites(this.db);
     let changed = false;
     for (const input of items) {
       const item = workSubitemSchema.parse(input);
       const factId = `item:${hash([binding.taskId,binding.durableStoreKey,binding.conversationId,binding.workspaceBinding,binding.operationId,item.itemId])}`;
-      const prior = itemRow.optional().parse(this.db.prepare("SELECT * FROM work_subitem_results WHERE fact_id=?").get(factId));
+      const priorRaw = overlayReadOne(this.db, "work_subitem_results", factId, () =>
+        this.db.prepare("SELECT * FROM work_subitem_results WHERE fact_id=?").get(factId) as Record<string, unknown> | undefined);
+      const prior = itemRow.optional().parse(priorRaw);
       const priorResult = prior && workSubitemSchema.parse(JSON.parse(prior.result_json));
       // Terminal item evidence is immutable. A delayed running/unknown projection cannot erase it.
       if (priorResult && !["unknown", "not_started"].includes(priorResult.outcome)) continue;
@@ -193,9 +241,21 @@ export class WorkPartialResults {
         });
         if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
       }
-      this.db.prepare(`INSERT INTO work_subitem_results(fact_id,work_id,binding_id,item_id,result_json,deliverable_id,created_at) VALUES (?,?,?,?,?,?,?)
-        ON CONFLICT(fact_id) DO UPDATE SET result_json=excluded.result_json,deliverable_id=excluded.deliverable_id`)
-        .run(factId,binding.workId,binding.bindingId,item.itemId,JSON.stringify(item),deliverableId ?? null,now);
+      const resultJson = JSON.stringify(item);
+      if (rust) {
+        overlaySet(this.db, "work_subitem_results", factId, {
+          fact_id: factId, work_id: binding.workId, binding_id: binding.bindingId, item_id: item.itemId,
+          result_json: resultJson, deliverable_id: deliverableId ?? null, created_at: prior?.created_at ?? now,
+        });
+        enqueueWorkOp(this.db, {
+          op: "workSubitemResultWrite", factId, workId: binding.workId, bindingId: binding.bindingId,
+          itemId: item.itemId, resultJson, deliverableId: deliverableId ?? null, createdAt: now, overwrite: true,
+        });
+      } else {
+        this.db.prepare(`INSERT INTO work_subitem_results(fact_id,work_id,binding_id,item_id,result_json,deliverable_id,created_at) VALUES (?,?,?,?,?,?,?)
+          ON CONFLICT(fact_id) DO UPDATE SET result_json=excluded.result_json,deliverable_id=excluded.deliverable_id`)
+          .run(factId,binding.workId,binding.bindingId,item.itemId,resultJson,deliverableId ?? null,now);
+      }
       changed = true;
     }
     const current = this.works.getWork(binding.workId);
@@ -203,7 +263,8 @@ export class WorkPartialResults {
   }
   /** Called by WorkService's owner-only, full-CAS control wrapper, never by model data directly. */
   continue(work: WorkDto, params: ContinuationWorkParams, now: number): { ok: true; outboxEventId?:string } | Extract<WorkControlResult, { ok: false }> {
-    if (!this.db.inTransaction) throw new Error("缺口计划必须通过 Work 控制事务");
+    if (!workDomainInTx(this.db)) throw new Error("缺口计划必须通过 Work 控制事务");
+    const rust = requiresWorkRustWrites(this.db);
     const source = this.works.repo.getBinding(params.sourceBindingId);
     if (!source || !this.works.collaboration.isDelegationAdopted(source, work))
       return { ok: false, code: "version_conflict", message: "缺口执行不属于当前输入要求" };
@@ -220,22 +281,68 @@ export class WorkPartialResults {
     const existing = this.plans(work.workId).find(plan => plan.planId === planId);
     if (existing) {
       if(existing.ownerBotId!==work.ownerBotId || existing.ownerEpoch!==work.ownerEpoch) {
-        const submitted=this.db.prepare(`SELECT 1 FROM work_dispatch_requests request JOIN work_execution_bindings binding ON binding.task_id=request.task_id WHERE request.continuation_plan_id=?`).get(planId);
-        if(submitted) return {ok:true};
-        if(this.db.prepare("SELECT 1 FROM work_dispatch_requests WHERE work_id=? AND intent_revision=? AND input_snapshot_id=? AND state='pending' AND COALESCE(continuation_plan_id,'')!=?").get(work.workId,work.intentRevision,work.inputSnapshotId,planId))
+        const dbPlanReqs = this.db.prepare("SELECT * FROM work_dispatch_requests WHERE continuation_plan_id=?")
+          .all(planId) as Array<Record<string, unknown>>;
+        const planReqs = overlayFindAll(this.db, "work_dispatch_requests", dbPlanReqs, r => String(r.operation_id),
+          r => r.continuation_plan_id === planId);
+        const bindingsByTask = new Set(this.works.repo.listBindings(work.workId).map(b => b.taskId));
+        if (planReqs.some(r => bindingsByTask.has(String(r.task_id)))) return { ok: true };
+        const dbWorkReqs = this.db.prepare("SELECT * FROM work_dispatch_requests WHERE work_id=? AND intent_revision=? AND input_snapshot_id=? AND state='pending'")
+          .all(work.workId, work.intentRevision, work.inputSnapshotId) as Array<Record<string, unknown>>;
+        const conflictingPending = overlayFindAll(this.db, "work_dispatch_requests", dbWorkReqs, r => String(r.operation_id),
+          r => r.work_id === work.workId && r.intent_revision === work.intentRevision
+            && r.input_snapshot_id === work.inputSnapshotId && r.state === "pending"
+            && (r.continuation_plan_id ?? "") !== planId);
+        if (conflictingPending.length)
           return {ok:false,code:"version_conflict",message:"当前输入已有待派发计划，先核对该计划再采纳旧缺口"};
-        this.db.prepare("UPDATE work_continuation_plans SET owner_bot_id=?,owner_epoch=?,state='pending',reason=? WHERE plan_id=?")
-          .run(work.ownerBotId,work.ownerEpoch,params.reason,planId);
-        this.db.prepare("UPDATE work_dispatch_requests SET bot_id=?,state='pending',attempts=0,error=NULL WHERE continuation_plan_id=? AND state!='dispatched'").run(work.ownerBotId,planId);
+        if (rust) {
+          overlayMutate(this.db, "work_continuation_plans", planId, () =>
+            this.db.prepare("SELECT * FROM work_continuation_plans WHERE plan_id=?").get(planId) as Record<string, unknown> | undefined,
+          cur => cur ? { ...cur, owner_bot_id: work.ownerBotId, owner_epoch: work.ownerEpoch, state: "pending", reason: params.reason } : cur);
+          for (const r of planReqs) {
+            if (r.state !== "dispatched") {
+              overlaySet(this.db, "work_dispatch_requests", String(r.operation_id), { ...r, bot_id: work.ownerBotId, state: "pending", attempts: 0, error: null });
+            }
+          }
+          enqueueWorkOp(this.db, {
+            op: "workContinuationPlanWrite", mode: "reassign", planId, workId: null, sourceBindingId: null,
+            operationId: null, intentRevision: null, inputSnapshotId: null, ownerEpoch: work.ownerEpoch,
+            ownerBotId: work.ownerBotId, gapItemsJson: null, reason: params.reason, createdAt: null, taskId: null,
+          });
+          enqueueWorkOp(this.db, { op: "workDispatchRequestUpdate", mode: "reassignPlan", planId, botId: work.ownerBotId, workId: null });
+        } else {
+          this.db.prepare("UPDATE work_continuation_plans SET owner_bot_id=?,owner_epoch=?,state='pending',reason=? WHERE plan_id=?")
+            .run(work.ownerBotId,work.ownerEpoch,params.reason,planId);
+          this.db.prepare("UPDATE work_dispatch_requests SET bot_id=?,state='pending',attempts=0,error=NULL WHERE continuation_plan_id=? AND state!='dispatched'").run(work.ownerBotId,planId);
+        }
         return this.approved(work,params,planId,now);
       }
       return { ok: true };
     }
-    if (keys.some(key => this.db.prepare("SELECT 1 FROM work_continuation_gaps WHERE gap_key=?").get(key)))
+    if (keys.some(key => overlayReadOne(this.db, "work_continuation_gaps", key, () =>
+      this.db.prepare("SELECT * FROM work_continuation_gaps WHERE gap_key=?").get(key) as Record<string, unknown> | undefined)))
       return { ok: false, code: "version_conflict", message: "缺口已由另一已受理计划占用，请核对原计划" };
-    this.db.prepare(`INSERT INTO work_continuation_plans(plan_id,work_id,source_binding_id,operation_id,intent_revision,input_snapshot_id,owner_epoch,owner_bot_id,gap_items_json,reason,state,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,'pending',?)`).run(planId,work.workId,source.bindingId,params.operationId,work.intentRevision,work.inputSnapshotId,work.ownerEpoch,work.ownerBotId,JSON.stringify(ids),params.reason,now);
-    for (const key of keys) this.db.prepare("INSERT INTO work_continuation_gaps(gap_key,plan_id) VALUES (?,?)").run(key,planId);
+    const gapItemsJson = JSON.stringify(ids);
+    if (rust) {
+      overlaySet(this.db, "work_continuation_plans", planId, {
+        plan_id: planId, work_id: work.workId, source_binding_id: source.bindingId, operation_id: params.operationId,
+        intent_revision: work.intentRevision, input_snapshot_id: work.inputSnapshotId, owner_epoch: work.ownerEpoch,
+        owner_bot_id: work.ownerBotId, gap_items_json: gapItemsJson, reason: params.reason, state: "pending", created_at: now,
+      });
+      enqueueWorkOp(this.db, {
+        op: "workContinuationPlanWrite", mode: "insert", planId, workId: work.workId, sourceBindingId: source.bindingId,
+        operationId: params.operationId, intentRevision: work.intentRevision, inputSnapshotId: work.inputSnapshotId,
+        ownerEpoch: work.ownerEpoch, ownerBotId: work.ownerBotId, gapItemsJson, reason: params.reason, createdAt: now, taskId: null,
+      });
+      for (const key of keys) {
+        overlaySet(this.db, "work_continuation_gaps", key, { gap_key: key, plan_id: planId });
+        enqueueWorkOp(this.db, { op: "workContinuationGapInsert", gapKey: key, planId });
+      }
+    } else {
+      this.db.prepare(`INSERT INTO work_continuation_plans(plan_id,work_id,source_binding_id,operation_id,intent_revision,input_snapshot_id,owner_epoch,owner_bot_id,gap_items_json,reason,state,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,'pending',?)`).run(planId,work.workId,source.bindingId,params.operationId,work.intentRevision,work.inputSnapshotId,work.ownerEpoch,work.ownerBotId,gapItemsJson,params.reason,now);
+      for (const key of keys) this.db.prepare("INSERT INTO work_continuation_gaps(gap_key,plan_id) VALUES (?,?)").run(key,planId);
+    }
     return this.approved(work,params,planId,now);
   }
   private approved(work:WorkDto,params:ContinuationWorkParams,planId:string,now:number):{ok:true;outboxEventId:string} {
@@ -247,8 +354,9 @@ export class WorkPartialResults {
     return {ok:true,outboxEventId:eventId};
   }
   executionInput(binding: WorkExecutionBindingDto): string | undefined {
-    const row = z.object({ continuation_plan_id: z.string().nullable() }).optional().parse(this.db.prepare("SELECT continuation_plan_id FROM work_dispatch_requests WHERE task_id=?").get(binding.taskId));
-    const plan = row?.continuation_plan_id && this.plans(binding.workId).find(item => item.planId === row.continuation_plan_id);
+    const row = this.findDispatchRequestByTask(binding.taskId);
+    const planId = row?.continuation_plan_id ? String(row.continuation_plan_id) : undefined;
+    const plan = planId && this.plans(binding.workId).find(item => item.planId === planId);
     if (!plan) return undefined;
     const recovery = this.recovery.input(binding, plan.planId); if (recovery) return recovery;
     const items = this.list(binding.workId).filter(item => item.bindingId === plan.sourceBindingId && plan.gapItemIds.includes(item.itemId));

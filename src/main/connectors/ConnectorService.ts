@@ -445,7 +445,10 @@ export class ConnectorService {
     if (!native) return;
     const result = await native.importConnectorMarket(importedConnectorMarketRoot(), request);
     if (result?.status === "imported") return result.id;
-    if (result?.status === "needsHost") return;
+    if (result?.status === "needsHost") {
+      if (native.supervised) throw new Error("导入连接器需要 Rust 核心确认，不会静默回退到 Node 宿主");
+      return;
+    }
     if (result?.status === "failed") throw new Error(`导入连接器失败：${result.message}`);
     throw new Error("未收到连接器导入确认，请刷新查看市场状态");
   }
@@ -454,7 +457,10 @@ export class ConnectorService {
     if (!native) return unhideConnectorId(id);
     const result = await native.mutateConnectorMarket({ kind: "unhide", id, pluginRoot: getPluginsDir() });
     if (result?.status === "updated") return;
-    if (result?.status === "needsHost") return unhideConnectorId(id);
+    if (result?.status === "needsHost") {
+      if (native.supervised) throw new Error("恢复市场连接器需要 Rust 核心确认");
+      return unhideConnectorId(id);
+    }
     if (result?.status === "failed") throw new Error(`恢复市场连接器失败：${result.message}`);
     throw new Error("未收到恢复市场连接器的确认");
   }
@@ -524,7 +530,7 @@ export class ConnectorService {
       id: connector.id, directory: connector.id.toLowerCase(), name: connector.name, installedAt: Date.now(),
     });
     if (result?.status === "installed") return result.names;
-    if (result?.status === "needsHost") return this.installOnHost(connector);
+    if (result?.status === "needsHost" && !native.supervised) return this.installOnHost(connector);
     if (result?.status === "failed") throw new Error(`安装连接器失败：${result.message}`);
     throw new Error("未收到连接器安装确认，请刷新查看安装状态");
   }
@@ -698,7 +704,10 @@ export class ConnectorService {
       if (result.warning) console.warn("[ConnectorService] 卸载后文件待清理", result.warning);
       return;
     }
-    if (result?.status === "needsHost") return this.uninstall(id);
+    if (result?.status === "needsHost") {
+      if (native.supervised) throw new Error("卸载连接器需要 Rust 核心确认");
+      return this.uninstall(id);
+    }
     if (result?.status === "missing") throw new Error(`连接器未安装: ${id}`);
     if (result?.status === "failed") throw new Error(`卸载连接器失败：${result.message}`);
     throw new Error("未收到连接器卸载确认，请刷新查看安装状态");
@@ -807,7 +816,10 @@ export class ConnectorService {
       for (const warning of result.warnings) console.warn("[ConnectorService] 启动安装维护", warning);
       return { migrated: result.migrated, removed: result.removed, skipped: result.skipped };
     }
-    if (result?.status === "needsHost") return this.migrateLegacyGlobalSkills();
+    if (result?.status === "needsHost") {
+      if (native.supervised) throw new Error("旧版连接器技能整理需要 Rust 核心确认");
+      return this.migrateLegacyGlobalSkills();
+    }
     if (result?.status === "failed") throw new Error(result.message);
     throw new Error("未收到旧版连接器技能整理确认");
   }
@@ -889,7 +901,10 @@ export class ConnectorService {
       for (const warning of result.warnings) console.warn("[ConnectorService] 删除后文件待清理", warning);
       return;
     }
-    if (result?.status === "needsHost") return this.deleteFromMarket(id);
+    if (result?.status === "needsHost") {
+      if (native.supervised) throw new Error("删除连接器需要 Rust 核心确认");
+      return this.deleteFromMarket(id);
+    }
     if (result?.status === "failed") throw new Error(`删除连接器失败：${result.message}`);
     throw new Error("未收到连接器删除确认，请刷新查看市场状态");
   }

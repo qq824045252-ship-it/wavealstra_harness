@@ -74,9 +74,29 @@ function mapRow(row: EffectivenessRow, taskTitle?: string): MemorySkillEffective
  * It never changes Memory, Skill files, enablement, or Candidate status.
  */
 export class MemorySkillEffectivenessService {
+  private writeTail: Promise<void> = Promise.resolve();
+
   constructor(private readonly db: AppDatabase) {}
 
   private get conn() { return this.db.connection; }
+
+  private get requiresRustWrites(): boolean {
+    return Boolean(this.db.readonly || this.db.runtimeAuditReader?.supervised);
+  }
+
+  async flush(): Promise<void> {
+    await this.writeTail;
+  }
+
+  private enqueueBatch3(context: string, request: Record<string, unknown>): void {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error(`${context}：Rust 写入核心未就绪`);
+    const next = this.writeTail.then(async () => {
+      const result = await reader.batch3Write(request);
+      if (result === undefined) throw new Error(`${context}：Rust 写入未收到确认`);
+    });
+    this.writeTail = next.then(() => undefined, () => undefined);
+  }
 
   recordExposure(input: {
     taskId: string;
@@ -91,6 +111,32 @@ export class MemorySkillEffectivenessService {
       const id = skill.skillId.trim();
       if (!id) continue;
       unique.set(id, { ...skill, skillId: id, sourceMemoryIds: [...new Set(skill.sourceMemoryIds.filter(Boolean))] });
+    }
+    if (this.requiresRustWrites) {
+      const exposures = [...unique.values()].map((skill) => ({
+        id: idFor(input.taskId, input.assistantMessageId, skill.skillId),
+        skillId: skill.skillId,
+        candidateId: skill.candidateId ?? null,
+        sourceMemoryIdsJson: JSON.stringify(skill.sourceMemoryIds),
+      }));
+      if (exposures.length > 0) {
+        this.enqueueBatch3("记录技能曝光", {
+          kind: "memorySkillEffectivenessOp",
+          effAction: "recordExposure",
+          taskId: input.taskId,
+          assistantMessageId: input.assistantMessageId,
+          exposures,
+          skillId: null,
+          invKind: null,
+          toolCallId: null,
+          outcome: null,
+          id: null,
+          feedbackKind: null,
+          feedbackNote: null,
+          at,
+        });
+      }
+      return exposures.length;
     }
     let changes = 0;
     this.conn.transaction(() => {
@@ -132,6 +178,49 @@ export class MemorySkillEffectivenessService {
     at?: number;
   }): MemorySkillEffectivenessDto {
     const at = input.at ?? Date.now();
+    if (this.requiresRustWrites) {
+      const existing = this.getByTurnSkill(input.taskId, input.assistantMessageId, input.skill.skillId);
+      const cleanSources = [...new Set(input.skill.sourceMemoryIds.filter(Boolean))];
+      this.enqueueBatch3("记录技能调用", {
+        kind: "memorySkillEffectivenessOp",
+        effAction: "markInvoked",
+        taskId: input.taskId,
+        assistantMessageId: input.assistantMessageId,
+        exposures: [{
+          id: idFor(input.taskId, input.assistantMessageId, input.skill.skillId.trim()),
+          skillId: input.skill.skillId.trim(),
+          candidateId: input.skill.candidateId ?? null,
+          sourceMemoryIdsJson: JSON.stringify(cleanSources),
+        }],
+        skillId: input.skill.skillId.trim(),
+        invKind: input.kind,
+        toolCallId: input.toolCallId ?? null,
+        outcome: null,
+        id: null,
+        feedbackKind: null,
+        feedbackNote: null,
+        at,
+      });
+      return {
+        id: existing?.id ?? idFor(input.taskId, input.assistantMessageId, input.skill.skillId),
+        taskId: input.taskId,
+        taskTitle: existing?.taskTitle ?? this.db.getTask(input.taskId)?.title,
+        assistantMessageId: input.assistantMessageId,
+        skillId: input.skill.skillId.trim(),
+        candidateId: existing?.candidateId ?? input.skill.candidateId,
+        sourceMemoryIds: existing && existing.sourceMemoryIds.length > 0 ? existing.sourceMemoryIds : cleanSources,
+        exposedAt: existing?.exposedAt ?? at,
+        invokedAt: existing?.invokedAt ?? at,
+        invocationKind: existing?.invocationKind ?? input.kind,
+        toolCallId: existing?.toolCallId ?? input.toolCallId,
+        outcome: existing?.outcome ?? "pending",
+        outcomeAt: existing?.outcomeAt,
+        feedbackKind: existing?.feedbackKind,
+        feedbackNote: existing?.feedbackNote,
+        feedbackAt: existing?.feedbackAt,
+        updatedAt: at,
+      };
+    }
     this.recordExposure({
       taskId: input.taskId,
       assistantMessageId: input.assistantMessageId,
@@ -160,6 +249,27 @@ export class MemorySkillEffectivenessService {
   }
 
   markTurnOutcome(taskId: string, assistantMessageId: string, outcome: Exclude<MemorySkillOutcome, "pending">, at = Date.now()): number {
+    if (this.requiresRustWrites) {
+      const pendingCount = Number((this.conn.prepare(
+        "SELECT COUNT(1) n FROM memory_skill_effectiveness WHERE task_id=? AND assistant_message_id=? AND outcome='pending'",
+      ).get(taskId, assistantMessageId) as { n: number }).n);
+      this.enqueueBatch3("记录技能轮次结果", {
+        kind: "memorySkillEffectivenessOp",
+        effAction: "markTurnOutcome",
+        taskId,
+        assistantMessageId,
+        exposures: [],
+        skillId: null,
+        invKind: null,
+        toolCallId: null,
+        outcome,
+        id: null,
+        feedbackKind: null,
+        feedbackNote: null,
+        at,
+      });
+      return pendingCount;
+    }
     const result = this.conn.prepare(
       `UPDATE memory_skill_effectiveness
        SET outcome=?,outcome_at=?,updated_at=?
@@ -169,6 +279,27 @@ export class MemorySkillEffectivenessService {
   }
 
   abortPendingForTask(taskId: string, at = Date.now()): number {
+    if (this.requiresRustWrites) {
+      const pendingCount = Number((this.conn.prepare(
+        "SELECT COUNT(1) n FROM memory_skill_effectiveness WHERE task_id=? AND outcome='pending'",
+      ).get(taskId) as { n: number }).n);
+      this.enqueueBatch3("中止任务挂起技能统计", {
+        kind: "memorySkillEffectivenessOp",
+        effAction: "abortPendingForTask",
+        taskId,
+        assistantMessageId: null,
+        exposures: [],
+        skillId: null,
+        invKind: null,
+        toolCallId: null,
+        outcome: null,
+        id: null,
+        feedbackKind: null,
+        feedbackNote: null,
+        at,
+      });
+      return pendingCount;
+    }
     const result = this.conn.prepare(
       `UPDATE memory_skill_effectiveness
        SET outcome='aborted',outcome_at=?,updated_at=?
@@ -183,6 +314,30 @@ export class MemorySkillEffectivenessService {
     if (!existing.invokedAt) throw new Error("只有实际调用过的 Skill 才能记录效果反馈");
     const at = Date.now();
     const cleanNote = typeof note === "string" ? note.trim().slice(0, 1000) : "";
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("记录技能效果反馈", {
+        kind: "memorySkillEffectivenessOp",
+        effAction: "setFeedback",
+        taskId: null,
+        assistantMessageId: null,
+        exposures: [],
+        skillId: null,
+        invKind: null,
+        toolCallId: null,
+        outcome: null,
+        id,
+        feedbackKind: kind,
+        feedbackNote: kind ? (cleanNote || null) : null,
+        at,
+      });
+      return {
+        ...existing,
+        feedbackKind: kind ?? undefined,
+        feedbackNote: kind ? (cleanNote || undefined) : undefined,
+        feedbackAt: kind ? at : undefined,
+        updatedAt: at,
+      };
+    }
     this.conn.prepare(
       `UPDATE memory_skill_effectiveness
        SET feedback_kind=?,feedback_note=?,feedback_at=?,updated_at=? WHERE id=?`,

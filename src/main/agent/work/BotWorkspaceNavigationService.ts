@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { AppDatabase } from '../../db/AppDatabase';
 import type { BotWorkspaceNavigationDto, BotWorkspaceRequestDto } from '../../../shared/bot-workspace-navigation';
+import { enqueueWorkOp, overlayReadOne, overlaySet, requiresWorkRustWrites, workDomainRunTx } from './WorkDomainRuntime';
 
 const digest = (id: string) => createHash('sha256').update(id).digest('hex').slice(0, 24);
 export const botWorkspaceSpaceId = (id: string) => `bot-space-${digest(id)}`;
@@ -9,7 +10,9 @@ export const teamWorkspaceSpaceId = (id: string) => `bot-team-space-${digest(id)
 export class BotWorkspaceNavigationService {
   constructor(private readonly db: AppDatabase, private readonly userId: string) {}
   private ensureRegistry(): void {
-    this.db.connection.exec(`CREATE TABLE IF NOT EXISTS bot_workspace_navigation_spaces (space_id TEXT PRIMARY KEY, auto_name TEXT NOT NULL)`);
+    if (!this.db.connection.readonly) {
+      this.db.connection.exec(`CREATE TABLE IF NOT EXISTS bot_workspace_navigation_spaces (space_id TEXT PRIMARY KEY, auto_name TEXT NOT NULL)`);
+    }
   }
   private group(kind: 'bot' | 'team'): string {
     const id = `bot-workspace-group-${kind}-${digest(this.userId)}`;
@@ -18,22 +21,45 @@ export class BotWorkspaceNavigationService {
   }
   private ensure(id: string, name: string, parentId: string | null): void {
     this.ensureRegistry();
-    const old = this.db.getSpace(id);
-    const managed = this.db.connection.prepare('SELECT auto_name FROM bot_workspace_navigation_spaces WHERE space_id=?').get(id) as {auto_name:string}|undefined;
-    const peer = this.db.connection.prepare('SELECT id FROM spaces WHERE parent_id IS ? AND name=? COLLATE NOCASE AND id<>?').get(parentId, name, id);
+    const conn = this.db.connection;
+    const rust = requiresWorkRustWrites(conn);
+    const old = overlayReadOne<{ id: string; name: string; parentId: string | null }>(conn, 'spaces', id, () => {
+      const s = this.db.getSpace(id);
+      return s ? { id: s.id, name: s.name, parentId: s.parentId ?? null } : undefined;
+    });
+    const managed = overlayReadOne<{ space_id: string; auto_name: string }>(conn, 'bot_workspace_navigation_spaces', id, () =>
+      conn.prepare('SELECT space_id,auto_name FROM bot_workspace_navigation_spaces WHERE space_id=?').get(id) as { space_id: string; auto_name: string } | undefined);
+    const peer = conn.prepare('SELECT id FROM spaces WHERE parent_id IS ? AND name=? COLLATE NOCASE AND id<>?').get(parentId, name, id);
     const desiredName = peer ? `${name} · ${digest(id).slice(0, 8)}` : name;
-    if (!old) this.db.upsertSpace({ id, name: desiredName, parentId });
-    else if (!managed) {
+    const now = Date.now();
+    if (!old) {
+      if (rust) {
+        overlaySet(conn, 'spaces', id, { id, name: desiredName, parentId });
+        enqueueWorkOp(conn, { op: 'botSpaceCreate', id, name: desiredName, parentId, updatedAt: now });
+      } else this.db.upsertSpace({ id, name: desiredName, parentId });
+    } else if (!managed) {
       // One-time navigation migration only; user-selected paths and archive state survive.
-      const collision = this.db.connection.prepare('SELECT id FROM spaces WHERE parent_id IS ? AND name=? COLLATE NOCASE AND id<>?').get(parentId,old.name,id);
-      this.db.connection.prepare('UPDATE spaces SET parent_id=?,name=?,updated_at=? WHERE id=?')
-        .run(parentId,collision ? `${old.name} · ${digest(id).slice(0,8)}` : old.name,Date.now(),id);
+      const collision = conn.prepare('SELECT id FROM spaces WHERE parent_id IS ? AND name=? COLLATE NOCASE AND id<>?').get(parentId,old.name,id);
+      const nextName = collision ? `${old.name} · ${digest(id).slice(0,8)}` : old.name;
+      if (rust) {
+        overlaySet(conn, 'spaces', id, { id, name: nextName, parentId });
+        enqueueWorkOp(conn, { op: 'botSpaceUpdate', id, name: nextName, parentId, updateParent: true, updatedAt: now });
+      } else conn.prepare('UPDATE spaces SET parent_id=?,name=?,updated_at=? WHERE id=?').run(parentId, nextName, now, id);
     } else if (old.name === managed.auto_name && old.name !== desiredName) {
       // Follow identity rename, but never undo a manually renamed/moved space.
-      const collision = this.db.connection.prepare('SELECT id FROM spaces WHERE parent_id IS ? AND name=? COLLATE NOCASE AND id<>?').get(old.parentId ?? null,desiredName,id);
-      this.db.connection.prepare('UPDATE spaces SET name=?,updated_at=? WHERE id=?').run(collision ? `${name} · ${digest(id).slice(0,8)}` : desiredName,Date.now(),id);
+      const collision = conn.prepare('SELECT id FROM spaces WHERE parent_id IS ? AND name=? COLLATE NOCASE AND id<>?').get(old.parentId ?? null,desiredName,id);
+      const nextName = collision ? `${name} · ${digest(id).slice(0,8)}` : desiredName;
+      if (rust) {
+        overlaySet(conn, 'spaces', id, { id, name: nextName, parentId: old.parentId ?? null });
+        enqueueWorkOp(conn, { op: 'botSpaceUpdate', id, name: nextName, parentId: null, updateParent: false, updatedAt: now });
+      } else conn.prepare('UPDATE spaces SET name=?,updated_at=? WHERE id=?').run(nextName, now, id);
     }
-    if (!managed || managed.auto_name !== desiredName) this.db.connection.prepare('INSERT INTO bot_workspace_navigation_spaces VALUES(?,?) ON CONFLICT(space_id) DO UPDATE SET auto_name=excluded.auto_name').run(id,desiredName);
+    if (!managed || managed.auto_name !== desiredName) {
+      if (rust) {
+        overlaySet(conn, 'bot_workspace_navigation_spaces', id, { space_id: id, auto_name: desiredName });
+        enqueueWorkOp(conn, { op: 'botNavSpaceUpsert', spaceId: id, autoName: desiredName });
+      } else conn.prepare('INSERT INTO bot_workspace_navigation_spaces VALUES(?,?) ON CONFLICT(space_id) DO UPDATE SET auto_name=excluded.auto_name').run(id,desiredName);
+    }
   }
   ensureBot(botId: string): string {
     const bot = this.db.connection.prepare('SELECT display_name FROM bots WHERE bot_id=? AND user_id=?').get(botId, this.userId) as {display_name:string} | undefined;
@@ -95,23 +121,30 @@ export class BotWorkspaceNavigationService {
   }
 
   snapshot({ repair = true }: {repair?: boolean} = {}): BotWorkspaceNavigationDto {
-    return this.db.transaction(() => {
+    const conn = this.db.connection;
+    const rust = requiresWorkRustWrites(conn);
+    const run = () => {
       const lookupSpace = (botId: string, teamId: string | null) => repair
         ? teamId ? this.ensureTeam(teamId,'历史团队') : this.ensureBot(botId)
         : teamId ? teamWorkspaceSpaceId(teamId) : botWorkspaceSpaceId(botId);
       let taskSpaces: BotWorkspaceNavigationDto['taskSpaces'] = [];
       if (repair) {
-        const bots = this.db.connection.prepare('SELECT bot_id FROM bots WHERE user_id=?').all(this.userId) as {bot_id:string}[];
+        const bots = conn.prepare('SELECT bot_id FROM bots WHERE user_id=?').all(this.userId) as {bot_id:string}[];
         bots.forEach(bot => this.ensureBot(bot.bot_id));
-        const teams = this.db.connection.prepare('SELECT template_id,name FROM work_team_templates WHERE user_id=? AND deleted_at IS NULL').all(this.userId) as {template_id:string;name:string}[];
+        const teams = conn.prepare('SELECT template_id,name FROM work_team_templates WHERE user_id=? AND deleted_at IS NULL').all(this.userId) as {template_id:string;name:string}[];
         teams.forEach(team => this.ensureTeam(team.template_id,team.name));
         // Repair the display owner only. In-flight and historical native cwd remain untouched.
-        const tasks = this.db.connection.prepare(`SELECT d.task_id,w.work_id,w.owner_bot_id FROM work_dispatch_requests d JOIN works w ON w.work_id=d.work_id WHERE w.user_id=?
+        const tasks = conn.prepare(`SELECT d.task_id,w.work_id,w.owner_bot_id FROM work_dispatch_requests d JOIN works w ON w.work_id=d.work_id WHERE w.user_id=?
           UNION SELECT e.task_id,w.work_id,w.owner_bot_id FROM work_team_executions e JOIN works w ON w.work_id=e.work_id WHERE w.user_id=?`).all(this.userId,this.userId) as {task_id:string;work_id:string;owner_bot_id:string}[];
-        const assign = this.db.connection.prepare('UPDATE tasks SET space_id=? WHERE id=? AND space_id IS NOT ?');
-        taskSpaces = tasks.map(task => { const spaceId=this.spaceForWork(task.work_id,task.owner_bot_id); assign.run(spaceId,task.task_id,spaceId); return {taskId:task.task_id,spaceId}; });
+        const assign = rust ? undefined : conn.prepare('UPDATE tasks SET space_id=? WHERE id=? AND space_id IS NOT ?');
+        taskSpaces = tasks.map(task => {
+          const spaceId = this.spaceForWork(task.work_id, task.owner_bot_id);
+          if (rust) enqueueWorkOp(conn, { op: 'botTaskAssignSpace', taskId: task.task_id, spaceId });
+          else assign!.run(spaceId, task.task_id, spaceId);
+          return { taskId: task.task_id, spaceId };
+        });
       }
-      const rows = this.db.connection.prepare(`SELECT r.bot_id,r.request_id,r.conversation_id,r.assistant_message_id AS message_id,c.team_id,c.archived_at,
+      const rows = conn.prepare(`SELECT r.bot_id,r.request_id,r.conversation_id,r.assistant_message_id AS message_id,c.team_id,c.archived_at,
         u.text AS title,a.status,u.created_at,a.updated_at FROM bot_send_receipts r
         JOIN bot_conversations c ON c.conversation_id=r.conversation_id JOIN bot_messages u ON u.message_id=r.user_message_id
         JOIN bot_messages a ON a.message_id=r.assistant_message_id WHERE r.user_id=? AND c.user_id=? ORDER BY u.created_at DESC,r.request_id`).all(this.userId,this.userId) as Array<{bot_id:string;request_id:string;conversation_id:string;message_id:string;team_id:string|null;archived_at:number|null;title:string;status:BotWorkspaceRequestDto['status'];created_at:number;updated_at:number}>;
@@ -120,7 +153,7 @@ export class BotWorkspaceNavigationService {
         title:row.title.trim().replace(/\s+/g,' ').slice(0,120) || '附件对话',status:row.status,createdAt:row.created_at,updatedAt:row.updated_at,archived:row.archived_at !== null}));
       // Conversation nodes are navigation projections, not extra mutable spaces.
       // Empty persisted chats remain visible; internal result inboxes are not chats.
-      const conversationRows = this.db.connection.prepare(`SELECT c.conversation_id,c.bot_id,c.team_id,c.created_at,c.updated_at,c.archived_at,
+      const conversationRows = conn.prepare(`SELECT c.conversation_id,c.bot_id,c.team_id,c.created_at,c.updated_at,c.archived_at,
         (SELECT m.text FROM bot_messages m WHERE m.conversation_id=c.conversation_id AND m.role='user' ORDER BY m.ordinal LIMIT 1) AS title
         FROM bot_conversations c WHERE c.user_id=? AND c.conversation_id NOT LIKE 'bot-inbox-%'
         ORDER BY c.created_at DESC,c.conversation_id`).all(this.userId) as Array<{conversation_id:string;bot_id:string;team_id:string|null;created_at:number;updated_at:number;archived_at:number|null;title:string|null}>;
@@ -132,6 +165,7 @@ export class BotWorkspaceNavigationService {
       const existing = new Set(spaces.map(space => space.id));
       return {spaces,taskSpaces,foregroundRequests:foregroundRequests.filter(row => existing.has(row.spaceId)),
         conversations:conversations.filter(row => existing.has(row.spaceId))};
-    });
+    };
+    return rust ? workDomainRunTx(conn, run) : this.db.transaction(run);
   }
 }

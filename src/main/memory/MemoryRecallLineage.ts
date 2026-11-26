@@ -14,7 +14,10 @@ const strings = (value: unknown): string[] => Array.isArray(value) ? value.filte
 /** Host-observed dependency identities, not another copy of memory content.
  * Runs own in-flight dependencies; L0 retains them after completion/restart. */
 export class MemoryRecallLineage {
-  constructor(private readonly db: Database.Database) {}
+  constructor(
+    private readonly db: Database.Database,
+    private readonly runtimeAuditReader?: import("../platform/runtime-audit").RuntimeAuditReader,
+  ) {}
 
   snapshot(assistantId: string): Lineage | undefined {
     const run = this.db.prepare("SELECT context_json FROM bot_request_runs WHERE message_id=?").get(assistantId) as { context_json: string } | undefined;
@@ -56,6 +59,15 @@ export class MemoryRecallLineage {
     }
     const value: Lineage = { version: 1, records: [...byIdentity.values()], sourceMessageIds: [...new Set([...old.sourceMessageIds, ...sourceMessageIds])].filter(id => id !== assistantId), sourceHashes: hashes, incomplete: old.incomplete };
     const json = JSON.stringify(value);
+    if (this.db.readonly || this.runtimeAuditReader?.supervised) {
+      if (!this.runtimeAuditReader) throw new Error("记忆召回依赖持久化：Rust 核心未就绪");
+      void this.runtimeAuditReader.batch3Write({
+        kind: "memoryRecallLineageRecord",
+        assistantId,
+        lineageJson: json,
+      }).catch((err) => console.warn("[MemoryRecallLineage] Rust 写入失败", err));
+      return;
+    }
     this.db.prepare("UPDATE bot_request_runs SET context_json=json_set(context_json,'$.memoryRecallDependencies',json(?)) WHERE message_id=?").run(json, assistantId);
     this.db.prepare("UPDATE memory_turns SET metadata_json=json_set(metadata_json,'$.memoryRecallDependencies',json(?)) WHERE assistant_message_id=?").run(json, assistantId);
   }

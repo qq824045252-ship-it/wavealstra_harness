@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import { workListRequestSchema, type WorkListUpdate } from "../../../shared/bot-conversation";
+import { enqueueWorkOp, requiresWorkRustWrites } from "./WorkDomainRuntime";
 import type { WorkListQuery } from "./WorkListQuery";
 import type { WorkService } from "./WorkService";
 
@@ -13,9 +14,12 @@ export class WorkProjectionJournal {
 
   sync(userId: string, input: unknown): WorkListUpdate {
     const request = workListRequestSchema.parse(input);
-    return this.db.transaction((): WorkListUpdate => {
-      this.db.prepare("INSERT OR IGNORE INTO work_projection_streams(user_id) VALUES (?)").run(userId);
-      const stream = streamSchema.parse(this.db.prepare("SELECT epoch,sequence FROM work_projection_streams WHERE user_id=?").get(userId));
+    const rust = requiresWorkRustWrites(this.db);
+    const run = (): WorkListUpdate => {
+      if (!rust) this.db.prepare("INSERT OR IGNORE INTO work_projection_streams(user_id) VALUES (?)").run(userId);
+      const rawStream = this.db.prepare("SELECT epoch,sequence FROM work_projection_streams WHERE user_id=?").get(userId);
+      if (rust && !rawStream) enqueueWorkOp(this.db, { op: "workProjectionStreamEnsure", userId });
+      const stream = rawStream ? streamSchema.parse(rawStream) : { epoch: "0", sequence: 0 };
       const scope = request.includeClosed ? "all" as const : "open" as const;
       const cursor = { ...stream, scope };
       const summaries = this.works.listQuery;
@@ -50,6 +54,8 @@ export class WorkProjectionJournal {
       });
       const sequence = rows.at(-1)?.sequence ?? request.cursor.sequence;
       return { kind: "delta", cursor: { ...cursor, sequence }, from: request.cursor.sequence, events, hasMore: sequence < stream.sequence };
-    }).immediate();
+    };
+    const tx = this.db.transaction(run);
+    return rust ? tx.deferred() : tx.immediate();
   }
 }

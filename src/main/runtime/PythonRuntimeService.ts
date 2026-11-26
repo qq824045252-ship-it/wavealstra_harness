@@ -407,7 +407,7 @@ export class PythonRuntimeService extends EventEmitter {
       manifestPath: manifestName ? join(resolvedDir, manifestName) : null,
       boundAt: Date.now(),
     };
-    this.bindingStore.save(binding);
+    await this.bindingStore.saveAsync(binding);
     return {
       ok: true,
       binding: { ...binding, bindingId: pythonProjectBindingId(binding.dirKey), available: true },
@@ -415,9 +415,9 @@ export class PythonRuntimeService extends EventEmitter {
   }
 
   /** 取消手动覆盖：该项目恢复自动识别；若没有项目虚拟环境，再回到受管环境。 */
-  unbindProject(projectDir: string): { ok: boolean; detail: string } {
+  async unbindProject(projectDir: string): Promise<{ ok: boolean; detail: string }> {
     if (!this.bindingStore) return { ok: false, detail: "项目绑定存储未装配（数据库尚未就绪）" };
-    const removed = this.bindingStore.remove(projectDir ?? "");
+    const removed = await this.bindingStore.removeAsync(projectDir ?? "");
     return removed
       ? { ok: true, detail: "已取消手动覆盖，该项目恢复自动识别" }
       : { ok: false, detail: "该目录没有手动覆盖" };

@@ -29,6 +29,9 @@ export function gatewayConversationDirectory(db: AppDatabase, taskId: string, ch
     return target;
   }
   if (resolve(previousDirectory) !== resolve(originalDirectory)) throw new Error("渠道会话存储不属于原会话");
+  if (db.connection.readonly) {
+    throw new Error("渠道会话目录绑定需要通过主写入核心同步");
+  }
   db.connection.transaction(() => {
     const destination = lstatSync(target, { throwIfNoEntry: false });
     if (destination && !destination.isDirectory()) throw new Error("渠道会话目录无效");

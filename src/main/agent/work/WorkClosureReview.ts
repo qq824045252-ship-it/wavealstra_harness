@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { WorkClosureReviewRequest } from "../../../shared/work-closure-review";
 import { isRequiredCriterion, type WorkDto } from "../../../shared/bot-work";
+import { enqueueWorkOp, overlayFindAll, overlaySet, requiresWorkRustWrites } from "./WorkDomainRuntime";
 import type { WorkService } from "./WorkService";
 import { completionArtifactEvidence } from "./WorkCompletionArtifactEvidence";
 import { completionReviewInput } from "./WorkCompletionReviewTarget";
@@ -69,12 +70,29 @@ export function recordClosureCorrection(db: Database.Database, works: WorkServic
     || decision.artifactRefs.some(ref => !evidence.context.availableFiles.some(file => file.ref === ref)))
     throw Error("只读复核没有证明原业务完成或没有确认宿主回传职责误判，原结论保留");
   const operationId = `closure-review:${request.requestId}`;
-  db.exec(`CREATE TABLE IF NOT EXISTS work_closure_review_corrections (
-    operation_id TEXT PRIMARY KEY,work_id TEXT NOT NULL,binding_id TEXT NOT NULL,
-    original_close_operation_id TEXT NOT NULL,original_conclusion TEXT NOT NULL,original_summary TEXT,
-    original_closed_at INTEGER NOT NULL,evidence_json TEXT NOT NULL,decision_json TEXT NOT NULL,created_at INTEGER NOT NULL)`);
-  db.prepare(`INSERT INTO work_closure_review_corrections VALUES(?,?,?,?,?,?,?,?,?,?)`).run(operationId,work.workId,evidence.binding.bindingId,
-    work.closeOperationId,work.closureConclusion,work.closureSummary ?? null,work.closedAt,JSON.stringify(evidence.context),JSON.stringify(decision),now);
+  const evidenceJson = JSON.stringify(evidence.context);
+  const decisionJson = JSON.stringify(decision);
+  if (requiresWorkRustWrites(db)) {
+    overlaySet(db, "work_closure_review_corrections", operationId, {
+      operation_id: operationId, work_id: work.workId, binding_id: evidence.binding.bindingId,
+      original_close_operation_id: work.closeOperationId, original_conclusion: work.closureConclusion,
+      original_summary: work.closureSummary ?? null, original_closed_at: work.closedAt,
+      evidence_json: evidenceJson, decision_json: decisionJson, created_at: now,
+    });
+    enqueueWorkOp(db, {
+      op: "workClosureReviewCorrectionInsert", operationId, workId: work.workId,
+      bindingId: evidence.binding.bindingId, originalCloseOperationId: work.closeOperationId,
+      originalConclusion: work.closureConclusion, originalSummary: work.closureSummary ?? null,
+      originalClosedAt: work.closedAt, evidenceJson, decisionJson, createdAt: now,
+    });
+  } else {
+    db.exec(`CREATE TABLE IF NOT EXISTS work_closure_review_corrections (
+      operation_id TEXT PRIMARY KEY,work_id TEXT NOT NULL,binding_id TEXT NOT NULL,
+      original_close_operation_id TEXT NOT NULL,original_conclusion TEXT NOT NULL,original_summary TEXT,
+      original_closed_at INTEGER NOT NULL,evidence_json TEXT NOT NULL,decision_json TEXT NOT NULL,created_at INTEGER NOT NULL)`);
+    db.prepare(`INSERT INTO work_closure_review_corrections VALUES(?,?,?,?,?,?,?,?,?,?)`).run(operationId,work.workId,evidence.binding.bindingId,
+      work.closeOperationId,work.closureConclusion,work.closureSummary ?? null,work.closedAt,evidenceJson,decisionJson,now);
+  }
   const states: Record<string,string> = { not_requested:"未请求",pending:"待投递",sent:"已有发送回执",unknown:"待核对",failed:"失败",unsupported:"不支持" };
   const channels: Record<string,string> = {qq:"QQ",discord:"Discord",dingtalk:"钉钉"};
   const delivery = evidence.context.hostDeliveryContext as import("./WorkDeliveryContext").WorkDeliveryContext;
@@ -84,7 +102,18 @@ export function recordClosureCorrection(db: Database.Database, works: WorkServic
     stateVersion:work.stateVersion+1,updatedAt:now };
   works.repo.updateWork(next);
   // Retire send authority only. Old deliveries/attempts/receipts remain unchanged.
-  db.prepare(`UPDATE work_notification_identity SET semantic_validity='superseded' WHERE notification_id IN
-    (SELECT notification_id FROM work_notifications WHERE work_id=?)`).run(work.workId);
+  if (requiresWorkRustWrites(db)) {
+    const dbNotifs = db.prepare("SELECT notification_id FROM work_notifications WHERE work_id=?").all(work.workId) as Array<{ notification_id: string }>;
+    const notifs = overlayFindAll(db, "work_notifications", dbNotifs.map(n => ({ ...n, work_id: work.workId })), r => String(r.notification_id), r => r.work_id === work.workId);
+    for (const n of notifs) {
+      const nid = String(n.notification_id);
+      const idRow = db.prepare("SELECT * FROM work_notification_identity WHERE notification_id=?").get(nid) as Record<string, unknown> | undefined;
+      if (idRow) overlaySet(db, "work_notification_identity", nid, { ...idRow, semantic_validity: "superseded" });
+    }
+    enqueueWorkOp(db, { op: "workNotificationIdentityUpdate", mode: "supersedeAllByWork", workId: work.workId });
+  } else {
+    db.prepare(`UPDATE work_notification_identity SET semantic_validity='superseded' WHERE notification_id IN
+      (SELECT notification_id FROM work_notifications WHERE work_id=?)`).run(work.workId);
+  }
   return next;
 }

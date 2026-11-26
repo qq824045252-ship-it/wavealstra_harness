@@ -34,6 +34,9 @@ const TESTS = [
   "test:runtime-audit-lifecycle",       // 真实锁争用、队列过载、超时无写入、崩溃回执
   "test:core-supervisor",               // 3.6 第一片：租约互斥/断开仍活/崩溃接管
   "test:core-client",                   // 生产连接路径：握手、重连、断开与进程回收
+  "test:core-business-protocol",        // Step 3 业务协议：多角色隔离、事件游标/补读/缺口重同步、执行桥与看门狗恢复
+  "test:rust-writer-boundary",          // Step 4 RC-09：应用库 readonly/唯一 Rust 写入者与 Pi 伴生库边界
+  "test:rust-domain-equivalence",       // Step 4 RC-10：Host 与监督 Rust 只读态等价性与事务回滚一致
   "test:work-host-authority",           // Rust 租约写入、真实锁争用与主循环响应
   "test:durable-task-projection",       // Durable 任务投影写入 + query_only 守卫
   "test:project-domain",
@@ -45,6 +48,12 @@ const TESTS = [
   "test:gadget-backend-domain",
   "test:library-domain",
   "test:library-lifecycle-transaction",
+  "test:rust-work-scheduler",
+  "test:rust-background-services",
+  "test:rust-gadget-host",
+  "test:pi-node-host",
+  "test:thin-main",
+  "test:core-production-lifecycle",
 ];
 
 function run(command, args, options = {}) {

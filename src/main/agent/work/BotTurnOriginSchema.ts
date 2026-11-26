@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 
 /** Source provenance is independent of the current Work input revision. */
 export function ensureBotTurnOriginSchema(db: Database.Database): void {
+  if (db.readonly) return;
   const columns = db.pragma("table_info(bot_conversations)") as Array<{ name: string }>;
   if (!columns.some(column => column.name === "ingress_kind"))
     db.exec("ALTER TABLE bot_conversations ADD COLUMN ingress_kind TEXT NOT NULL DEFAULT 'desktop' CHECK(ingress_kind IN ('desktop','gateway'))");

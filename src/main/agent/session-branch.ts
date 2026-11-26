@@ -366,6 +366,29 @@ export function resolveConversationBranchSourceRoots(sessionFile: string | undef
  * 物化后立即写入 usage_backfill_state 水位，使后续 backfillSession(childFile)
  * 只统计 child 创建后新增 entry。返回 true 表示水位已就位。
  */
+export async function writeConversationBranchUsageWatermarkAsync(
+  dbConnection: Pick<BetterSqlite3.Database, "prepare"> & { readonly?: boolean },
+  sessionFile: string,
+  inheritedLastEntryId: string,
+  reader?: import("../platform/runtime-audit").RuntimeAuditReader,
+): Promise<boolean> {
+  if (!sessionFile || !inheritedLastEntryId) return false;
+  if (!reader) {
+    if (dbConnection.readonly) throw new Error("只读数据库模式下无法写入分支用量水位");
+    return writeConversationBranchUsageWatermark(dbConnection, sessionFile, inheritedLastEntryId);
+  }
+  let size = 0;
+  try { size = statSync(sessionFile).size; } catch { size = 0; }
+  const result = await reader.usageHistory({
+    kind: "branchWatermark",
+    sessionFile,
+    inheritedLastEntryId,
+    fileSize: size,
+    updatedAt: Date.now(),
+  });
+  return result !== undefined;
+}
+
 export function writeConversationBranchUsageWatermark(
   dbConnection: Pick<BetterSqlite3.Database, "prepare">,
   sessionFile: string,

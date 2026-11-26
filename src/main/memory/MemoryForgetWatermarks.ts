@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { MemoryCandidateDto, MemoryRecordDto, MemoryRevisionDto, MemoryScopeType, MemoryTurnDto } from "../../shared/memory-kernel";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 import { createHash } from "node:crypto";
 import { memoryClauses, memoryRememberClause, MemoryInstructionDocument, type MemoryForgetSource, type MemoryRemovalIntent } from "./MemoryIntent";
 
@@ -100,12 +101,49 @@ export function memoryWithdrawalTargets(records: readonly MemoryWithdrawalSource
 /** Source invalidation, not a second memory store: no forgotten content or history
  * deletion. Write invalidation in the same transaction as the corresponding removal. */
 export class MemoryForgetWatermarks {
-  constructor(private readonly db: Database.Database) {}
+  private writeTail: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly db: Database.Database,
+    private readonly runtimeAuditReader?: RuntimeAuditReader,
+  ) {}
+
+  private get requiresRustWrites(): boolean {
+    return Boolean(this.db.readonly || this.runtimeAuditReader?.supervised);
+  }
+
+  async flush(): Promise<void> {
+    await this.writeTail;
+  }
+
+  private enqueueBatch3(context: string, request: Record<string, unknown>): void {
+    const reader = this.runtimeAuditReader;
+    if (!reader) throw new Error(`${context}：Rust 写入核心未就绪`);
+    const next = this.writeTail.then(async () => {
+      const result = await reader.batch3Write(request);
+      if (result === undefined) throw new Error(`${context}：Rust 写入未收到确认`);
+    });
+    this.writeTail = next.then(() => undefined, () => undefined);
+  }
 
   withdrawRecord(record: MemoryRecordDto, revisions: readonly MemoryRevisionDto[], scopes: readonly Scope[],
     source?: MemoryForgetSource): void {
     this.persist(scopes, recordWithdrawals(record, revisions), source?.createdAt, source?.messageId);
     if (source) {
+      if (this.requiresRustWrites) {
+        for (const scope of scopes) {
+          for (const clause of source.requestClauses ?? []) {
+            this.enqueueBatch3("记录遗忘回执", {
+              kind: "memoryInsertForgetReceipt",
+              scopeType: scope.scopeType,
+              scopeId: scope.scopeId ?? "",
+              sourceMessageId: source.messageId,
+              requestFingerprint: fingerprint(clause),
+            });
+          }
+        }
+        return;
+      }
       const put = this.db.prepare(`INSERT OR IGNORE INTO memory_forget_receipts(scope_type,scope_id,source_message_id,request_fingerprint) VALUES (?,?,?,?)`);
       for (const scope of scopes) for (const clause of source.requestClauses ?? []) put.run(scope.scopeType, scope.scopeId ?? "", source.messageId, fingerprint(clause));
     }
@@ -127,6 +165,27 @@ export class MemoryForgetWatermarks {
 
   private persist(scopes: readonly Scope[], proofs: readonly Withdrawal[], cutoffAt = Date.now(), allowedMessageId?: string): void {
     if (!Number.isFinite(cutoffAt) || cutoffAt < 0) throw new Error("遗忘来源时间无效");
+    if (this.requiresRustWrites) {
+      for (const proof of proofs) {
+        const target = withdrawalTarget(proof);
+        if (!target) continue;
+        for (const scope of scopes) {
+          this.enqueueBatch3("写入遗忘目标水位", {
+            kind: "memoryUpsertForgetTarget",
+            scopeType: scope.scopeType,
+            scopeId: scope.scopeId ?? "",
+            fingerprint: target.fingerprint,
+            textLength: target.textLength,
+            cutoffAt,
+            allowedMessageId: allowedMessageId ?? null,
+            valueFingerprint: target.valueFingerprint,
+            guardFingerprint: target.guardFingerprint,
+            guardLength: target.guardLength,
+          });
+        }
+      }
+      return;
+    }
     const put = this.db.prepare(`INSERT INTO memory_forget_targets(scope_type,scope_id,fingerprint,text_length,cutoff_at,allowed_message_id,value_fingerprint,guard_fingerprint,guard_length)
       VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(scope_type,scope_id,fingerprint) DO UPDATE SET
       cutoff_at=excluded.cutoff_at,allowed_message_id=excluded.allowed_message_id ${ADVANCE_IF_NEWER}`);
@@ -256,6 +315,18 @@ export class MemoryForgetWatermarks {
 
   advance(scopes: Array<{ scopeType: MemoryScopeType; scopeId?: string }>, cutoffAt = Date.now(), allowedMessageId?: string): void {
     if (!Number.isFinite(cutoffAt) || cutoffAt < 0) throw new Error("遗忘来源时间无效");
+    if (this.requiresRustWrites) {
+      for (const scope of scopes) {
+        this.enqueueBatch3("推进遗忘水位", {
+          kind: "memoryUpsertWatermark",
+          scopeType: scope.scopeType,
+          scopeId: scope.scopeId ?? "",
+          cutoffAt,
+          allowedMessageId: allowedMessageId ?? null,
+        });
+      }
+      return;
+    }
     const put = this.db.prepare(`INSERT INTO memory_forget_watermarks(scope_type,scope_id,cutoff_at,allowed_message_id) VALUES (?,?,?,?)
       ON CONFLICT(scope_type,scope_id) DO UPDATE SET cutoff_at=excluded.cutoff_at,allowed_message_id=excluded.allowed_message_id
       ${ADVANCE_IF_NEWER}`);

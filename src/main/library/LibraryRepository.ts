@@ -161,14 +161,38 @@ export interface LibraryCatalogRows {
 }
 
 export class LibraryRepository {
-  constructor(private readonly db: Database) {
+  private writeTail: Promise<void> = Promise.resolve();
+  constructor(
+    private readonly db: Database,
+    private readonly runtimeAuditReader?: import("../platform/runtime-audit").RuntimeAuditReader,
+  ) {
     // Additive search-index metadata. No database schema-version bump: this table only
     // checkpoints derived-index format upgrades and can be rebuilt independently.
-    this.db.exec(`CREATE TABLE IF NOT EXISTS library_index_state (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
-    )`);
+    if (!this.db.readonly) {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS library_index_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`);
+    }
+  }
+
+  get requiresRustWrites(): boolean {
+    return Boolean(this.db.readonly || this.runtimeAuditReader?.supervised);
+  }
+
+  async flush(): Promise<void> {
+    await this.writeTail;
+  }
+
+  enqueueBatch3(context: string, request: Record<string, unknown>): void {
+    const reader = this.runtimeAuditReader;
+    if (!reader) throw new Error(`${context}：Rust 写入核心未就绪`);
+    const op = this.writeTail.then(async () => {
+      const res = await reader.batch3Write(request);
+      if (res === undefined) throw new Error(`${context}：Rust 核心未响应`);
+    });
+    this.writeTail = op.then(() => undefined, () => undefined);
   }
 
   getIndexState(key: string): string | null {
@@ -177,8 +201,13 @@ export class LibraryRepository {
   }
 
   setIndexState(key: string, value: string): void {
+    const updatedAt = Date.now();
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("保存资料索引状态", { kind: "librarySetIndexState", key, value, updatedAt });
+      return;
+    }
     this.db.prepare(`INSERT INTO library_index_state(key, value, updated_at) VALUES (?, ?, ?)
-      ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`).run(key, value, Date.now());
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`).run(key, value, updatedAt);
   }
 
   /** Text items that lost their derived FTS row after an interrupted/partial maintenance operation. */
@@ -236,6 +265,19 @@ export class LibraryRepository {
 
   insertSpace(space: LibrarySpaceDto): void {
     if (space.projectId && space.workspaceId) throw new Error("资料空间只能归属于一个项目或工作空间");
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("创建资料空间", {
+        kind: "libraryInsertSpace",
+        id: space.id,
+        name: space.name,
+        spaceKind: space.kind,
+        projectId: space.projectId ?? null,
+        workspaceId: space.workspaceId ?? null,
+        createdAt: space.createdAt,
+        updatedAt: space.updatedAt,
+      });
+      return;
+    }
     this.db
       .prepare(
         `INSERT INTO library_spaces (id, name, kind, project_id, workspace_id, created_at, updated_at)
@@ -253,10 +295,18 @@ export class LibraryRepository {
   }
 
   updateSpace(id: string, name: string, updatedAt: number): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("重命名资料空间", { kind: "libraryUpdateSpace", id, name, updatedAt });
+      return;
+    }
     this.db.prepare(`UPDATE library_spaces SET name = ?, updated_at = ? WHERE id = ?`).run(name, updatedAt, id);
   }
 
   deleteSpace(id: string): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("删除资料空间", { kind: "libraryDeleteSpace", id });
+      return;
+    }
     this.db.prepare(`DELETE FROM library_spaces WHERE id = ?`).run(id);
   }
 
@@ -313,6 +363,19 @@ export class LibraryRepository {
   }
 
   insertCollection(collection: LibraryCollectionDto): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("创建资料文件夹", {
+        kind: "libraryInsertCollection",
+        id: collection.id,
+        spaceId: collection.spaceId,
+        parentId: collection.parentId ?? null,
+        name: collection.name,
+        owner: collection.owner ?? "",
+        createdAt: collection.createdAt,
+        updatedAt: collection.updatedAt,
+      });
+      return;
+    }
     this.db
       .prepare(
         `INSERT INTO library_collections (id, space_id, parent_id, name, owner, created_at, updated_at)
@@ -322,6 +385,17 @@ export class LibraryRepository {
   }
 
   updateCollection(collection: LibraryCollectionDto): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("更新资料文件夹", {
+        kind: "libraryUpdateCollection",
+        id: collection.id,
+        parentId: collection.parentId ?? null,
+        name: collection.name,
+        owner: collection.owner ?? "",
+        updatedAt: collection.updatedAt,
+      });
+      return;
+    }
     this.db
       .prepare(
         `UPDATE library_collections SET parent_id = @parentId, name = @name, owner = @owner,
@@ -331,6 +405,10 @@ export class LibraryRepository {
   }
 
   deleteCollection(id: string): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("删除资料文件夹", { kind: "libraryDeleteCollection", id });
+      return;
+    }
     this.db.prepare(`DELETE FROM library_collections WHERE id = ?`).run(id);
   }
 
@@ -423,6 +501,35 @@ export class LibraryRepository {
   }
 
   insertItem(item: LibraryItemDto): void {
+    const p = this.toParams(item);
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("创建资料条目", {
+        kind: "libraryInsertItem",
+        id: p.id,
+        spaceId: p.spaceId,
+        collectionId: p.collectionId,
+        itemKind: p.kind,
+        title: p.title,
+        filename: p.filename,
+        mimeType: p.mimeType,
+        sizeBytes: p.sizeBytes,
+        owner: p.owner,
+        favorite: p.favorite,
+        url: p.url,
+        sourceType: p.sourceType,
+        sourceTaskId: p.sourceTaskId,
+        sourceArtifactId: p.sourceArtifactId,
+        originalPath: p.originalPath,
+        contentHash: p.contentHash,
+        extractStatus: p.extractStatus,
+        createdAt: p.createdAt,
+        updatedAt: p.updatedAt,
+        lastVisitedAt: p.lastVisitedAt,
+        trashedAt: p.trashedAt,
+        noteMetadata: p.noteMetadata,
+      });
+      return;
+    }
     this.db
       .prepare(
         `INSERT INTO library_items (
@@ -435,11 +542,45 @@ export class LibraryRepository {
            @contentHash, @extractStatus, @createdAt, @updatedAt, @lastVisitedAt, @trashedAt, @noteMetadata
          )`,
       )
-      .run(this.toParams(item));
+      .run(p);
   }
 
   updateItem(item: LibraryItemDto, previous: LibraryItemDto): void {
     const before = this.toParams(previous);
+    const cur = this.toParams(item);
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("更新资料条目", {
+        kind: "libraryUpdateItem",
+        id: cur.id,
+        collectionId: cur.collectionId,
+        title: cur.title,
+        filename: cur.filename,
+        mimeType: cur.mimeType,
+        sizeBytes: cur.sizeBytes,
+        owner: cur.owner,
+        favorite: cur.favorite,
+        url: cur.url,
+        sourceType: cur.sourceType,
+        sourceTaskId: cur.sourceTaskId,
+        sourceArtifactId: cur.sourceArtifactId,
+        originalPath: cur.originalPath,
+        contentHash: cur.contentHash,
+        extractStatus: cur.extractStatus,
+        updatedAt: cur.updatedAt,
+        lastVisitedAt: cur.lastVisitedAt,
+        trashedAt: cur.trashedAt,
+        noteMetadata: cur.noteMetadata,
+        prevCollection: before.collectionId,
+        prevTitle: before.title,
+        prevFilename: before.filename,
+        prevSize: before.sizeBytes,
+        prevHash: before.contentHash,
+        prevTrash: before.trashedAt,
+        prevMetadata: before.noteMetadata,
+        prevUpdatedAt: before.updatedAt,
+      });
+      return;
+    }
     // Keep note changes committed by the Rust worker while this operation was preparing its update.
     this.db
       .prepare(
@@ -460,7 +601,7 @@ export class LibraryRepository {
          WHERE id = @id`,
       )
       .run({
-        ...this.toParams(item),
+        ...cur,
         previousCollection: before.collectionId,
         previousTitle: before.title,
         previousFilename: before.filename,
@@ -473,6 +614,10 @@ export class LibraryRepository {
   }
 
   deleteItem(id: string): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("删除资料条目", { kind: "libraryDeleteItem", id });
+      return;
+    }
     // FTS + chunk 检索行随条目删除一并清理（service 层删除与级联删除共用此收口点，显式防 orphan）
     this.deleteFts(id);
     this.deleteChunks(id);
@@ -505,6 +650,17 @@ export class LibraryRepository {
 
   prepareLargeOfficeExtractionUpgrade(previousOutputChars: number): void {
     const versionKey = "large-office-extraction-version";
+    if (this.requiresRustWrites) {
+      if (this.getIndexState(versionKey) === "1") return;
+      this.enqueueBatch3("升级大文档抽取状态", {
+        kind: "librarySetExtractStatus",
+        id: null,
+        status: "pending",
+        onlyIfMissing: true,
+      });
+      this.setIndexState(versionKey, "1");
+      return;
+    }
     this.db.transaction(() => {
       if (this.getIndexState(versionKey) === "1") return;
       this.db.prepare(`UPDATE library_items SET extract_status = 'pending'
@@ -522,6 +678,12 @@ export class LibraryRepository {
   }
 
   updateExtractStatus(id: string, status: string): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("更新资料抽取状态", {
+        kind: "librarySetExtractStatus", id, status, onlyIfMissing: false,
+      });
+      return;
+    }
     this.db
       .prepare(`UPDATE library_items SET extract_status = ? WHERE id = ?`)
       .run(status, id);
@@ -594,6 +756,12 @@ export class LibraryRepository {
 
   upsertFts(itemId: string, title: string, filename: string, body: string): void {
     if (!this.ftsAvailable()) return;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("更新资料全文索引", {
+        kind: "libraryUpsertFts", itemId, title, filename, body, clearOnly: false,
+      });
+      return;
+    }
     // FTS5 无 UNIQUE 约束：必须先 DELETE 再 INSERT（INSERT OR REPLACE 只增不改，会累积旧内容行）
     this.db.transaction(() => {
       this.db.prepare(`DELETE FROM library_fts WHERE item_id = ?`).run(itemId);
@@ -605,6 +773,12 @@ export class LibraryRepository {
 
   deleteFts(itemId: string): void {
     if (!this.ftsAvailable()) return;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("清理资料全文索引", {
+        kind: "libraryUpsertFts", itemId, title: null, filename: null, body: null, clearOnly: true,
+      });
+      return;
+    }
     this.db.prepare(`DELETE FROM library_fts WHERE item_id = ?`).run(itemId);
   }
 
@@ -749,6 +923,11 @@ export class LibraryRepository {
   }
 
   replaceLargeTextIndex(item: LibraryItemDto, chunks: Iterable<LibraryChunk>): void {
+    if (this.requiresRustWrites) {
+      this.upsertFts(item.id, item.title, item.filename, "");
+      this.replaceChunks(item.id, chunks, true);
+      return;
+    }
     this.db.transaction(() => {
       this.upsertFts(item.id, item.title, item.filename, "");
       this.replaceChunks(item.id, chunks, true);
@@ -756,6 +935,13 @@ export class LibraryRepository {
   }
 
   replaceExtractedIndex(item: LibraryItemDto, text: string | null, status: string, chunks: Iterable<LibraryChunk>): void {
+    if (this.requiresRustWrites) {
+      this.updateExtractStatus(item.id, status);
+      if (text === null) this.deleteFts(item.id);
+      else this.upsertFts(item.id, item.title, item.filename, text);
+      this.replaceChunks(item.id, chunks, true);
+      return;
+    }
     this.db.transaction(() => {
       this.updateExtractStatus(item.id, status);
       if (text === null) this.deleteFts(item.id);
@@ -765,6 +951,19 @@ export class LibraryRepository {
   }
 
   replaceLargeTextIndexFromStage(item: LibraryItemDto, file: string, chunkCount: number, updatedAt: number): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("合并大文本切片索引", {
+        kind: "libraryMergeChunkStage",
+        file,
+        itemId: item.id,
+        title: item.title,
+        filename: item.filename,
+        chunkCount,
+        updatedAt,
+        ftsAvailable: this.ftsAvailable(),
+      });
+      return;
+    }
     this.db.prepare("ATTACH DATABASE ? AS library_index_stage").run(file);
     try {
       this.db.transaction(() => {
@@ -805,6 +1004,24 @@ export class LibraryRepository {
     reuseEmbeddings: boolean,
   ): void {
     if (!this.tableExists("library_chunks")) return;
+    if (this.requiresRustWrites) {
+      const list = Array.from(chunks, (c) => ({
+        id: c.id,
+        chunkIndex: c.chunkIndex,
+        content: c.content,
+        charOffset: c.charOffset,
+        hash: c.hash,
+        updatedAt: c.updatedAt,
+      }));
+      this.enqueueBatch3("更新资料切片索引", {
+        kind: "libraryReplaceChunks",
+        itemId,
+        reuseEmbeddings,
+        ftsAvailable: this.tableExists("library_chunks_fts"),
+        chunks: list,
+      });
+      return;
+    }
     this.db.transaction(() => {
       if (!reuseEmbeddings) this.db.prepare(`DELETE FROM library_chunks WHERE item_id = ?`).run(itemId);
       const hasFts = this.tableExists("library_chunks_fts");
@@ -844,6 +1061,14 @@ export class LibraryRepository {
 
   deleteChunks(itemId: string): void {
     if (!this.tableExists("library_chunks")) return;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("清理资料切片索引", {
+        kind: "libraryClearChunks",
+        itemId,
+        ftsAvailable: this.tableExists("library_chunks_fts"),
+      });
+      return;
+    }
     this.db.prepare(`DELETE FROM library_chunks WHERE item_id = ?`).run(itemId);
     if (this.tableExists("library_chunks_fts")) {
       try {
@@ -1014,6 +1239,21 @@ export class LibraryRepository {
   /* ---------------- LibraryVersion ---------------- */
 
   insertVersion(version: LibraryVersionDto, snapshot?: Buffer): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("保存资料历史版本", {
+        kind: "libraryInsertVersion",
+        id: version.id,
+        itemId: version.itemId,
+        version: version.version,
+        contentHash: version.contentHash,
+        path: version.path,
+        createdBy: version.createdBy ?? "",
+        sourceTaskId: version.sourceTaskId ?? null,
+        createdAt: version.createdAt,
+        snapshotBase64: snapshot ? snapshot.toString("base64") : null,
+      });
+      return;
+    }
     this.db
       .prepare(
         `INSERT INTO library_versions (id, item_id, version, content_hash, path, created_by, source_task_id, created_at, snapshot)
@@ -1028,6 +1268,10 @@ export class LibraryRepository {
   }
 
   deleteVersion(id: string): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("删除资料历史版本", { kind: "libraryDeleteVersion", id });
+      return;
+    }
     this.db.prepare(`DELETE FROM library_versions WHERE id = ?`).run(id);
   }
   listVersions(itemId: string, limit = -1): LibraryVersionDto[] {
@@ -1051,6 +1295,18 @@ export class LibraryRepository {
   /* ---------------- TaskLibraryReference ---------------- */
 
   insertReference(ref: LibraryTaskReferenceDto): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("关联任务资料", {
+        kind: "libraryTaskReference",
+        action: "add",
+        taskId: ref.taskId,
+        itemId: ref.itemId,
+        projectId: ref.projectId ?? null,
+        addedAt: ref.addedAt,
+        addedBy: ref.addedBy ?? "",
+      });
+      return;
+    }
     this.db
       .prepare(
         `INSERT OR IGNORE INTO task_library_references (task_id, item_id, project_id, added_at, added_by)
@@ -1060,12 +1316,36 @@ export class LibraryRepository {
   }
 
   deleteReference(taskId: string, itemId: string): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("解除任务资料关联", {
+        kind: "libraryTaskReference",
+        action: "remove",
+        taskId,
+        itemId,
+        projectId: null,
+        addedAt: null,
+        addedBy: null,
+      });
+      return;
+    }
     this.db
       .prepare(`DELETE FROM task_library_references WHERE task_id = ? AND item_id = ?`)
       .run(taskId, itemId);
   }
 
   deleteReferencesByTask(taskId: string): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("清空任务资料关联", {
+        kind: "libraryTaskReference",
+        action: "clearTask",
+        taskId,
+        itemId: null,
+        projectId: null,
+        addedAt: null,
+        addedBy: null,
+      });
+      return;
+    }
     this.db.prepare(`DELETE FROM task_library_references WHERE task_id = ?`).run(taskId);
   }
 

@@ -2,6 +2,7 @@ import { ensureBotTurnOriginSchema } from "../agent/work/BotTurnOriginSchema";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 import { gatewayWorkTargetSchema, type GatewayWorkTarget } from "./work-outbound";
 
 const rowSchema = z.object({ target_key: z.string(), user_id: z.string(), conversation_id: z.string(),
@@ -12,9 +13,24 @@ export interface GatewayWorkRoute {
   target: GatewayWorkTarget; createdAt: number;
 }
 
+type GatewayTargetNative = Pick<RuntimeAuditReader, "batch4aWrite" | "supervised">;
+
 /** Authenticated input provenance only; the Work tables remain the sole send ledger. */
 export class GatewayWorkTargets {
-  constructor(private readonly db: Database.Database) { ensureBotTurnOriginSchema(db); }
+  private writeTail = Promise.resolve();
+  private readonly pendingByRouteKey = new Map<string, GatewayWorkRoute>();
+
+  constructor(private readonly db: Database.Database, private readonly native?: GatewayTargetNative) {
+    if (!db.readonly) ensureBotTurnOriginSchema(db);
+  }
+
+  private get requiresRustWrites(): boolean {
+    return this.db.readonly || Boolean(this.native?.supervised);
+  }
+
+  flush(): Promise<void> {
+    return this.writeTail;
+  }
 
   record(input: Omit<GatewayWorkRoute, "targetKey">): GatewayWorkRoute {
     if (!input.userId.trim() || !input.conversationId.trim() || !input.sourceMessageId.trim()) {
@@ -22,6 +38,43 @@ export class GatewayWorkTargets {
     }
     const target = gatewayWorkTargetSchema.parse(input.target);
     const targetKey = gatewayWorkRouteKey({ ...input, target });
+    if (this.requiresRustWrites) {
+      const batch4a = this.native?.batch4aWrite;
+      if (!batch4a) throw new Error("只读模式下缺少 Gateway 目标 Rust 写入通道");
+      const compositeKey = JSON.stringify([input.userId, input.conversationId, input.sourceMessageId]);
+      const cached = this.pendingByRouteKey.get(compositeKey);
+      if (cached) {
+        if (cached.targetKey !== targetKey) throw new Error("Gateway 原始输入的通知目标已固定，不能更换账号或接收人");
+        return cached;
+      }
+      const existing = this.db.prepare(`SELECT * FROM gateway_work_targets WHERE user_id=? AND conversation_id=? AND source_message_id=?`)
+        .get(input.userId, input.conversationId, input.sourceMessageId);
+      if (existing) {
+        const stored = parseGatewayWorkRoute(existing);
+        if (stored.targetKey !== targetKey) throw new Error("Gateway 原始输入的通知目标已固定，不能更换账号或接收人");
+        return stored;
+      }
+      const created: GatewayWorkRoute = { targetKey, userId: input.userId, conversationId: input.conversationId, sourceMessageId: input.sourceMessageId, target, createdAt: input.createdAt };
+      this.pendingByRouteKey.set(compositeKey, created);
+      const targetJson = JSON.stringify(target);
+      this.writeTail = this.writeTail.then(() => batch4a.call(this.native, {
+        kind: "gatewayRecordWorkTarget",
+        targetKey,
+        userId: input.userId,
+        conversationId: input.conversationId,
+        sourceMessageId: input.sourceMessageId,
+        channelId: target.channelId,
+        channelType: target.channelType,
+        connectionKey: target.connectionKey,
+        chatId: target.chatId,
+        senderId: target.senderId,
+        targetJson,
+        createdAt: input.createdAt,
+      })).then(() => undefined, error => {
+        console.warn("[GatewayWorkTargets] record failed", error);
+      });
+      return created;
+    }
     return this.db.transaction(() => {
       this.db.prepare(`INSERT OR IGNORE INTO gateway_work_targets
         (target_key,user_id,conversation_id,source_message_id,channel_id,channel_type,connection_key,chat_id,sender_id,target_json,created_at)
@@ -36,6 +89,9 @@ export class GatewayWorkTargets {
   }
 
   get(targetKey: string): GatewayWorkRoute | undefined {
+    for (const pending of this.pendingByRouteKey.values()) {
+      if (pending.targetKey === targetKey) return pending;
+    }
     const row = this.db.prepare("SELECT * FROM gateway_work_targets WHERE target_key=?").get(targetKey);
     return row ? parseGatewayWorkRoute(row) : undefined;
   }

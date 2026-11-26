@@ -93,11 +93,20 @@ type SqlRow = {
 
 export class TaskBoardRepository {
   private waiting = new Set<string>();
+  private waits = new Map<string, { id: string; token: string; message: string | null; detail: string; at: number }>();
   private activities = new Map<string, NonNullable<TaskBoardRow["activity"]>>();
   private actionTail: Promise<void> = Promise.resolve();
 
   constructor(private db: Database.Database, private readonly runtimeAuditReader?: RuntimeAuditReader) {
     ensureTaskBoard(db);
+  }
+
+  private get requiresRustWrites(): boolean {
+    return Boolean(this.db.readonly || this.runtimeAuditReader?.supervised);
+  }
+
+  async flush(): Promise<void> {
+    await this.actionTail;
   }
 
   // The agent has already accepted this input. A projection error must not turn it into a rejected send.
@@ -110,6 +119,19 @@ export class TaskBoardRepository {
   }
 
   note(id: string, kind: "follow" | "visit" | "read" | "result", detail = "", at = Date.now()): void {
+    if (this.requiresRustWrites) {
+      const reader = this.runtimeAuditReader;
+      if (!reader) throw new Error("任务看板记录：Rust 写入核心未就绪");
+      const trimmed = detail.trim().slice(0, 120);
+      const op = this.actionTail.then(async () => {
+        const res = await reader.batch2Write({ kind: "taskBoardNote", id, kindName: kind, detail: trimmed, at });
+        if (res === undefined) throw new Error("任务看板记录：Rust 写入未收到确认");
+      });
+      this.actionTail = op.catch((error) => {
+        console.warn("[TaskBoard] 看板记录未保存", error);
+      });
+      return;
+    }
     this.db
       .prepare(
         `INSERT INTO task_board_days(id,kind,day,at,detail)
@@ -124,6 +146,7 @@ export class TaskBoardRepository {
     const laterUntil = action === "later" ? localOffset(now, 1) : null;
     const operation = this.actionTail.then(async () => {
       if (await this.runtimeAuditReader?.writeTaskBoardAction({ id, action, now, laterUntil, visibilitySql: actionVisibility })) return;
+      if (this.requiresRustWrites) throw new Error("任务看板操作写入仅允许通过 Rust 核心完成");
       // Keep visibility and the fallback write in the same SQLite transaction.
       this.db.transaction(() => {
         if (this.db.prepare(actionVisibility).get({ id })) this.writeAction(id, action, now, laterUntil);
@@ -154,22 +177,25 @@ export class TaskBoardRepository {
 
   patch(patch: AgentUiPatch): void {
     if (patch.type === "tool_start" && patch.status === "pending_approval") {
-      this.db
-        .prepare("INSERT OR REPLACE INTO board_waits VALUES(?,?,?,?,?)")
-        .run(patch.taskId, patch.toolCallId, patch.messageId, patch.summary, Date.now());
+      this.waits.set(`${patch.taskId}\0${patch.toolCallId}`, {
+        id: patch.taskId, token: patch.toolCallId, message: patch.messageId, detail: patch.summary, at: Date.now(),
+      });
     } else if (patch.type === "tool_update" && patch.status && patch.status !== "pending_approval") {
-      this.db.prepare("DELETE FROM board_waits WHERE id=? AND token=?").run(patch.taskId, patch.toolCallId);
+      this.waits.delete(`${patch.taskId}\0${patch.toolCallId}`);
     } else if (patch.type === "assistant_end") {
-      this.db.prepare("DELETE FROM board_waits WHERE id=? AND message=?").run(patch.taskId, patch.messageId);
+      for (const [key, entry] of this.waits) {
+        if (entry.id === patch.taskId && entry.message === patch.messageId) this.waits.delete(key);
+      }
       if (!patch.cancelled) this.note(patch.taskId, "result");
     } else if (patch.type === "durable_snapshot" || patch.type === "durable_delta") {
       const state = patch.type === "durable_snapshot" ? patch.snapshot : patch.delta.state;
+      const inputKey = `${patch.taskId}\0`;
       if (state.status === "waiting_input" && !this.waiting.has(patch.taskId)) {
-        this.db
-          .prepare("INSERT OR IGNORE INTO board_waits VALUES(?,'',NULL,'等待你回答',?)")
-          .run(patch.taskId, Date.now());
+        if (!this.waits.has(inputKey)) {
+          this.waits.set(inputKey, { id: patch.taskId, token: "", message: null, detail: "等待你回答", at: Date.now() });
+        }
       } else if (state.status !== "waiting_input" && this.waiting.has(patch.taskId)) {
-        this.db.prepare("DELETE FROM board_waits WHERE id=? AND token=''").run(patch.taskId);
+        this.waits.delete(inputKey);
       }
       if (state.status === "waiting_input") this.waiting.add(patch.taskId);
       else this.waiting.delete(patch.taskId);
@@ -317,9 +343,7 @@ export class TaskBoardRepository {
       rank: q.cursor?.rank ?? 0,
       at: q.cursor?.at ?? 0,
       id: q.cursor?.id ?? "",
-      waits: this.db.prepare(
-        "SELECT json_group_array(json_array(id,token,message,detail,at) ORDER BY rowid) FROM temp.board_waits",
-      ).pluck().get() as string,
+      waits: JSON.stringify([...this.waits.values()].map(w => [w.id, w.token, w.message, w.detail, w.at])),
     };
     // 焦点预览也要给出总数：栏目标题旁的计数和「还有 N 个被折叠」都依赖它。
     const includeTotal = q.lane || (q.preview && (q.view === "attention" || q.view === "review" || q.view === "running"));

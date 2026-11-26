@@ -5,7 +5,11 @@ import type { GoalActivityDto } from "../../shared/conversation-goal-activity";
 import type { GoalSavedArtifactDto } from "../../shared/conversation-goal";
 
 export class ConversationGoalSavedArtifacts {
-  constructor(private readonly db: Database.Database) {
+  constructor(
+    private readonly db: Database.Database,
+    private readonly reader?: import("../platform/runtime-audit").RuntimeAuditReader,
+  ) {
+    if (db.readonly) return;
     db.exec(`CREATE TABLE IF NOT EXISTS conversation_goal_saved_artifact_verification (
       work_id TEXT NOT NULL REFERENCES works(work_id) ON DELETE CASCADE,
       artifact_id TEXT NOT NULL,
@@ -40,11 +44,27 @@ export class ConversationGoalSavedArtifacts {
   }
 
   confirm(workId: string, artifact: GoalSavedArtifactDto): GoalSavedArtifactDto {
+    if (this.db.readonly) throw new Error("只读数据库模式下请使用 confirmAsync");
     const verifiedAt = Date.now();
     this.db.prepare("INSERT OR IGNORE INTO conversation_goal_saved_artifact_verification VALUES (?,?,?)")
       .run(workId, artifact.id, verifiedAt);
     const row = this.db.prepare("SELECT verified_at FROM conversation_goal_saved_artifact_verification WHERE work_id=? AND artifact_id=?")
       .get(workId, artifact.id) as { verified_at: number };
     return { ...artifact, verification: { kind: "user", verifiedAt: row.verified_at } };
+  }
+
+  async confirmAsync(workId: string, artifact: GoalSavedArtifactDto): Promise<GoalSavedArtifactDto> {
+    if (!this.reader) return this.confirm(workId, artifact);
+    const res = await this.reader.batch1Write<{ verifiedAt?: number }>({
+      kind: "goalSavedArtifactConfirm",
+      workId,
+      artifactId: artifact.id,
+      verifiedAt: Date.now(),
+    });
+    if (res && typeof res.verifiedAt === "number") {
+      return { ...artifact, verification: { kind: "user", verifiedAt: res.verifiedAt } };
+    }
+    if (!this.db.readonly && !this.reader.supervised) return this.confirm(workId, artifact);
+    throw new Error("成果核验状态写入未获 Rust 核心确认");
   }
 }

@@ -79,7 +79,7 @@ import { installModelInvocationAdmission, withModelInvocationSettings } from "./
 
 import { ProjectNotesService } from "../project/ProjectNotesService";
 import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
-import { recoverInterruptedExecutions } from "./ExecutionRestartRecovery";
+import { recoverInterruptedExecutions, recoverInterruptedExecutionsAsync } from "./ExecutionRestartRecovery";
 import { ensurePresetRuntimeReadyWithRecovery } from "./RuntimeRequirementRecovery";
 
 import { prepareTaskWorkspace } from "../task/prepareTaskWorkspace";
@@ -97,6 +97,16 @@ import { CredentialSynchronizationError, ModelRuntime, SettingsManager, resolveM
 import { AgentIpc, SubagentIpc, BtwIpc, DbIpc, type AgentApproveToolRequest, type AgentPromptRequest, type AgentPromptResult, type AgentSubmissionReceipt, type AgentRegenerateRequest, type AgentRegenerateResult, type AgentDeleteUserMessageRequest, type AgentRestoreBackupRequest, type AgentSetPermissionModeRequest, type AgentSwitchExpertRequest, type AgentUiPatch, type BtwStartRequest, type BtwPromptRequest, type BtwUiPatch, type EnhancePromptRequest, type EnhancePromptResult, type CapabilityPolicyNoticeDto, type AppSettingsDto, type AuthEventDto, type AuthLoginRequest, type AuthLoginResult, type AuthLogoutResult, type AuthPromptDto, type AuthPromptRequestDto, type AuthTypeDto, type ContextUsageDto, type CredentialInfoDto, type ExpertDto, type ExpertAuthoringCreateRequest, type ExpertAuthoringCreateResult, type ExpertAuthoringDraft, type ExpertAuthoringGenerateRequest, type LocalConnectorDto, type PrivateSkillDto, type LoginProviderDto, type MarketExpertDto, type MarketSkillDto, type MemoryChangedDto, type ModelInfoDto, type ModelReloadResultDto, type ModelsFileConfigDto, type PermissionMode, type RuntimeContextInspectionDto, type RuntimeContextSnapshotDto, type SkillAuthoringCreateRequest, type SkillAuthoringCreateResult, type SkillAuthoringDraft, type SkillAuthoringGenerateRequest, type SkillEvalRunRequest, type SkillEvalRunResultDto, type SkillImprovementApplyRequest, type SkillImprovementDraftResult, type SkillDetailDto, type SkillImprovementGenerateRequest, type SkillPackageValidationDto, type SkillDto, type SoulDto, type TaskHistoryDto, type TaskHistoryTarget, type TaskUserQuestionsDto, type TaskUserQuestionsQuery, type TaskDto, type WelcomeMode, type FileBackupInfoDto, type ModeBlockId, type ModePolicyDto, type ModeProfileDto, type ModeProfileSummaryDto, type AssembleModePreviewRequest, type AssemblyTraceDto, type DiskSpaceDto, type BuiltinCapabilitiesConfigDto, type BuiltinCapabilitiesSnapshotDto, type BuiltinCapabilityId, type SaveBuiltinCredentialRequest, type SaveBuiltinCapabilitySettingsRequest, type CapabilityVideoJobDto, type TestBuiltinCapabilityResultDto, type SubagentConfigDto, type SubagentConfigPatch, type UserFontDto, type WebSearchConfigDto, type ApiKeyPoolStateDto, type SearchProviderKeyUsageDto } from "../../shared/agent-ipc";
 import { estimateTextTokens } from "../../shared/token-format";
 import { readSoulProfile, writeSoulProfile } from "./SoulProfileData";
+import {
+  PASSIVE_READONLY_MODELS,
+  readDurableConversationHead,
+  readDurableReadOnlyHistory,
+  readDurableUserQuestions,
+} from "./durable/DurableReadOnlyHistory";
+import { durableStorageExists } from "./durable/DurableStorage";
+import type { CoreBusinessClient, CoreDomainEvent } from "../platform/core-business-client";
+
+export type AgentExecutionMode = "in-process" | "host" | "isolated-client";
 
 
 
@@ -161,7 +171,7 @@ import { observeSubagentSettings, replaceSubagentSettings } from "./SubagentSett
 import { registerMyBuddyProviders } from "./providers";
 import { commandCodeModelFacts } from "./providers/command-code";
 import { MAGPIE_PROVIDER_ID, magpieCatalogSnapshot, magpieScopeReferencesToDrop, reconcileMagpieModels, type MagpieGatewayConfig } from "./providers/magpie";
-import { migratePiAzureProvider } from "./PiAzureProviderMigration";
+import { migratePiAzureProviderAsync } from "./PiAzureProviderMigration";
 import {
   type ModelMetadataDto,
   type ModelReasoningPreferenceDto,
@@ -535,6 +545,10 @@ export class AgentService {
   private modelConfigFingerprint: string | undefined;
   private modelConfigReload: Promise<void> | undefined;
   private modelDiscovery: Promise<void> | undefined;
+  private readonly executionMode: AgentExecutionMode;
+  private coreClientProvider?: () => CoreBusinessClient | undefined;
+  private readonly activeRemoteTasks = new Map<string, string>();
+  private readonly remoteExecutionListeners = new Map<string, Set<(ev: CoreDomainEvent) => void>>();
   private readonly patchListeners = new Set<(patch: AgentUiPatch) => void>();
   /** 会话文件历史解析缓存：key = sessionFile + cwd，value = 文件指纹 + 解析结果 */
   private readonly historyCache = new Map<string, { stamp: string; history: TaskHistoryDto }>();
@@ -560,6 +574,7 @@ export class AgentService {
   private readonly contextUsageWrites: TaskContextUsageWrites;
   private readonly conversationGoalActivity: ConversationGoalActivity;
   private readonly conversationGoalSavedArtifacts: ConversationGoalSavedArtifacts;
+  private readonly conversationInteractionRepo: ConversationInteractionRepository;
   private readonly stopDiagnosticObservation: () => void;
   private readonly conversationInteractions: ConversationInteractionService;
   private readonly conversationGoals: ConversationGoalService;
@@ -816,8 +831,14 @@ export class AgentService {
   constructor(
     private readonly db: AppDatabase,
     taskWorkspace?: TaskExecutionWorkspace,
-    dependencies: { models?: ModelRuntime } = {},
+    dependencies: {
+      models?: ModelRuntime;
+      executionMode?: AgentExecutionMode;
+      coreClient?: () => CoreBusinessClient | undefined;
+    } = {},
   ) {
+    this.executionMode = dependencies.executionMode ?? "in-process";
+    this.coreClientProvider = dependencies.coreClient;
     this.contextUsageWrites = new TaskContextUsageWrites(snapshots => db.writeTaskContextUsageBatch(snapshots));
     this.modelRuntime = dependencies.models ?? null;
     this.runtimeAuditReader = db.runtimeAuditReader;
@@ -900,11 +921,12 @@ export class AgentService {
     this.runtimeSnapshots = new RuntimeContextSnapshotRepository(db.connection, this.runtimeAuditReader);
     this.codeReview = new CodeReviewService(db.connection, event => broadcast(CodeReviewIpc.changed, event), db.runtimeAuditReader);
     this.taskDiagnostics = new TaskDiagnosticsRepository(db.connection, this.runtimeAuditReader);
-    this.conversationGoalActivity = new ConversationGoalActivity(db.connection);
-    this.conversationGoalSavedArtifacts = new ConversationGoalSavedArtifacts(db.connection);
+    this.conversationGoalActivity = new ConversationGoalActivity(db.connection, this.runtimeAuditReader);
+    this.conversationGoalSavedArtifacts = new ConversationGoalSavedArtifacts(db.connection, this.runtimeAuditReader);
     this.stopDiagnosticObservation = observeCacheRequestTraces((event, model) => this.taskDiagnostics.observeTrace(event, model));
+    this.conversationInteractionRepo = new ConversationInteractionRepository(db.connection, this.runtimeAuditReader);
     this.conversationInteractions = new ConversationInteractionService(
-      new ConversationInteractionRepository(db.connection),
+      this.conversationInteractionRepo,
       patch => {
         this.emitPatch(patch);
         if (patch.type === "conversation_interaction_snapshot") void this.durableBots?.refresh(patch.taskId).catch(error => console.warn("[Durable] Interaction projection failed", error));
@@ -914,7 +936,14 @@ export class AgentService {
     this.botRegistry.ensureDefaultBot(LOCAL_USER_ID);
     this.botExpertBindings = new BotExpertBindingService(this.expertBindings);
     this.botSettings = new BotSettingsService(this.db, this.botRegistry, LOCAL_USER_ID, join(getMyBuddyDir(), "bot-workspaces"));
-    this.workHostAuthority = new WorkHostAuthority(db.connection, `authority-${randomUUID()}`, 60_000, () => Date.now(), this.runtimeAuditReader);
+    this.workHostAuthority = new WorkHostAuthority(
+      db.connection,
+      `authority-${randomUUID()}`,
+      60_000,
+      () => Date.now(),
+      this.runtimeAuditReader,
+      Boolean(this.runtimeAuditReader?.supervised),
+    );
     this.workHostAuthority.start();
     this.workService = new WorkService(db.connection, {
       bots: this.botRegistry,
@@ -993,9 +1022,11 @@ export class AgentService {
         return typeof configured === "number" && Number.isFinite(configured) && configured > 0 ? configured : null;
       },
     });
-    this.executionFailures = new ExecutionFailureRepository(db.connection);
-    this.executionAttempts = new ExecutionAttemptRepository(db.connection);
-    recoverInterruptedExecutions(this.executionAttempts, this.executionFailures);
+    this.executionFailures = new ExecutionFailureRepository(db.connection, this.runtimeAuditReader);
+    this.executionAttempts = new ExecutionAttemptRepository(db.connection, this.runtimeAuditReader);
+    if (!db.connection.readonly && !this.runtimeAuditReader?.supervised) {
+      recoverInterruptedExecutions(this.executionAttempts, this.executionFailures);
+    }
     this.loadoutObservations = new AgentLoadoutObservationService(db);
     this.durableSkills = new DurableSkillProjection(this.loadoutObservations, this.skillEffectiveness);
     this.mcpRuntime = new McpRuntimeService();
@@ -1328,7 +1359,7 @@ export class AgentService {
     if (!artifact) return undefined;
     await verifySnapshot(artifact.request);
     if (!this.db.getTask(taskId) || !this.workService.repo.getWorkByTaskForUser(goalId, taskId, LOCAL_USER_ID)) return undefined;
-    return this.conversationGoalSavedArtifacts.confirm(goalId, artifact);
+    return this.conversationGoalSavedArtifacts.confirmAsync(goalId, artifact);
   }
 
   /** Remote/UI reconnect snapshot. Approval resolvers intentionally stay private in SessionRegistry. */
@@ -1617,9 +1648,158 @@ export class AgentService {
     };
   }
 
+  setCoreClient(provider: () => CoreBusinessClient | undefined): void {
+    this.coreClientProvider = provider;
+  }
+
+  handleCoreExecutionEvent(ev: CoreDomainEvent): void {
+    if (ev.domain !== "execution") return;
+    const executionId = ev.entityId;
+    const payload = (ev.payload ?? {}) as Record<string, unknown>;
+    const taskId = typeof payload.taskId === "string"
+      ? payload.taskId
+      : (typeof payload.progress === "object" && payload.progress && "patch" in (payload.progress as Record<string, unknown>)
+        ? ((payload.progress as { patch?: { taskId?: string } }).patch?.taskId)
+        : undefined);
+    if (ev.kind === "execution.running" && taskId) {
+      this.activeRemoteTasks.set(taskId, executionId);
+    } else if (ev.kind === "execution.completed" || ev.kind === "execution.failed" || ev.kind === "execution.cancelled" || ev.kind === "execution.paused" || ev.kind === "execution.unknown") {
+      for (const [tid, eid] of this.activeRemoteTasks) {
+        if (eid === executionId) this.activeRemoteTasks.delete(tid);
+      }
+    }
+    if (ev.kind === "execution.progress" && payload.progress && typeof payload.progress === "object") {
+      const progress = payload.progress as { kind?: string; patch?: AgentUiPatch; event?: AgentTaskLifecycleEvent };
+      if (progress.kind === "ui_patch" && progress.patch) {
+        if (progress.patch.type === "assistant_start" && "taskId" in progress.patch) {
+          this.activeRemoteTasks.set(progress.patch.taskId, executionId);
+        } else if (progress.patch.type === "assistant_end" && "taskId" in progress.patch) {
+          if (this.activeRemoteTasks.get(progress.patch.taskId) === executionId) {
+            this.activeRemoteTasks.delete(progress.patch.taskId);
+          }
+        }
+        this.emitPatch(progress.patch);
+      } else if (progress.kind === "task_lifecycle" && progress.event) {
+        this.emitTaskLifecycle(progress.event);
+      }
+    }
+    const listeners = this.remoteExecutionListeners.get(executionId);
+    if (listeners) {
+      for (const fn of listeners) {
+        try { fn(ev); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  private durableBindingForTask(taskId: string): { directory: string; cwd: string } | undefined {
+    try {
+      return this.db.connection
+        .prepare("SELECT directory, cwd FROM durable_bot_bindings WHERE task_id = ?")
+        .get(taskId) as { directory: string; cwd: string } | undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async submitCorePiExecution<T>(input: {
+    executionId: string;
+    idempotencyKey: string;
+    taskId: string;
+    kind: "pi_turn" | "pi_compact" | "pi_control";
+    payload: Record<string, unknown>;
+    resolveOnProgress?: (progress: Record<string, unknown>) => T | undefined;
+  }): Promise<T> {
+    const client = this.coreClientProvider?.();
+    if (!client || client.isClosed) {
+      throw new Error("Core 业务客户端尚未连接，无法转发 Pi 执行请求");
+    }
+    return await new Promise<T>((resolvePromise, rejectPromise) => {
+      let settled = false;
+      const listeners = this.remoteExecutionListeners.get(input.executionId) ?? new Set<(ev: CoreDomainEvent) => void>();
+      this.remoteExecutionListeners.set(input.executionId, listeners);
+      const cleanup = () => {
+        clearTimeout(timer);
+        listeners.delete(onEvent);
+        if (listeners.size === 0) this.remoteExecutionListeners.delete(input.executionId);
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        rejectPromise(new Error(`Core Pi execution timed out (${input.executionId})`));
+      }, 120_000);
+      timer.unref?.();
+      const finish = (value: T) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolvePromise(value);
+      };
+      const fail = (err: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        rejectPromise(err instanceof Error ? err : new Error(String(err)));
+      };
+      const onEvent = (ev: CoreDomainEvent) => {
+        const p = (ev.payload ?? {}) as Record<string, unknown>;
+        if (ev.kind === "execution.progress" && p.progress && typeof p.progress === "object" && input.resolveOnProgress) {
+          const hit = input.resolveOnProgress(p.progress as Record<string, unknown>);
+          if (hit !== undefined) {
+            finish(hit);
+            return;
+          }
+        }
+        if (ev.kind === "execution.completed") {
+          finish(p.result as T);
+        } else if (ev.kind === "execution.failed") {
+          fail(new Error(typeof p.errorMessage === "string" ? p.errorMessage : "Pi Node Host execution failed"));
+        } else if (ev.kind === "execution.cancelled") {
+          finish(({ cancelled: true } as unknown) as T);
+        } else if (ev.kind === "execution.unknown") {
+          finish((p.result ?? { queued: false }) as T);
+        }
+      };
+      listeners.add(onEvent);
+
+      void client.submitExecution({
+        executionId: input.executionId,
+        idempotencyKey: input.idempotencyKey,
+        taskId: input.taskId,
+        kind: input.kind,
+        payload: input.payload,
+      }).then(submitted => {
+        if (settled) return;
+        const exec = submitted.execution;
+        if (submitted.status === "rejected") {
+          fail(new Error(`Core execution rejected: ${submitted.code ?? "rejected"}`));
+          return;
+        }
+        if (exec?.status === "completed") {
+          finish(exec.result as T);
+        } else if (exec?.status === "failed") {
+          fail(new Error(exec.errorMessage || "Pi Node Host execution failed"));
+        } else if (exec?.status === "cancelled") {
+          finish(({ cancelled: true } as unknown) as T);
+        } else if (exec?.status === "unknown" && exec.result !== undefined) {
+          finish(exec.result as T);
+        }
+      }).catch(fail);
+    });
+  }
+
   async init(): Promise<void> {
+    if (this.db.connection.readonly || this.runtimeAuditReader?.supervised) {
+      await recoverInterruptedExecutionsAsync(this.executionAttempts, this.executionFailures);
+      void this.runtimeAuditReader?.workScheduler?.({ action: "scanRecovery" }).catch(() => undefined);
+    }
     this.settingsStore.migrateShellPreferences();
-    const azureMigration = migratePiAzureProvider(getMyBuddyDir(), this.db.connection);
+    if (this.executionMode === "isolated-client") {
+      // Main runs in thin isolated-client mode: ModelRuntime, DurableBotService, and
+      // Pi writer leases belong solely to the standalone Pi Node Host process.
+      return;
+    }
+    const azureMigration = await migratePiAzureProviderAsync(getMyBuddyDir(), this.db.connection, this.runtimeAuditReader);
     if (azureMigration.files || azureMigration.selections) console.log("[AgentService] Pi Azure provider migrated", azureMigration);
     const suppliedModels = Boolean(this.modelRuntime);
     this.modelRuntime ??= await ModelRuntime.create({
@@ -1911,6 +2091,10 @@ export class AgentService {
 
   /** Resume Ordinary task sessions only. Standalone Bot orchestration is retired. */
   async resumePersistedTasks(): Promise<void> {
+    if (this.executionMode === "isolated-client") {
+      // Isolated Pi Node Host handles Durable session resumption under its own single writer lease.
+      return;
+    }
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     await this.durableBots.resumePersisted();
     if (this.settingsStore.read().memoryEnabled) {
@@ -1952,11 +2136,30 @@ export class AgentService {
   }
 
   async newDotsConversation(): Promise<void> {
+    if (this.executionMode === "isolated-client") {
+      await this.submitCorePiExecution({
+        executionId: `pi-ctrl-new-dots:${randomUUID()}`,
+        idempotencyKey: `newDots:${randomUUID()}`,
+        taskId: DOTS_TASK_ID,
+        kind: "pi_control",
+        payload: { controlAction: "newDotsConversation" },
+      });
+      return;
+    }
     if (!this.durableBots) throw new Error("Dots 会话服务不可用");
     await this.durableBots.newDotsConversation();
   }
 
   async openDots() {
+    if (this.executionMode === "isolated-client") {
+      return await this.submitCorePiExecution<Awaited<ReturnType<DurableBotService["openDots"]>>>({
+        executionId: `pi-ctrl-open-dots:${randomUUID()}`,
+        idempotencyKey: `openDots:${randomUUID()}`,
+        taskId: DOTS_TASK_ID,
+        kind: "pi_control",
+        payload: { controlAction: "openDots" },
+      });
+    }
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     return this.durableBots.openDots();
   }
@@ -2621,6 +2824,15 @@ export class AgentService {
   }
 
   async listModels(): Promise<ModelInfoDto[]> {
+    if (this.executionMode === "isolated-client" && !this.modelRuntime && this.coreClientProvider?.()) {
+      return await this.submitCorePiExecution<ModelInfoDto[]>({
+        executionId: `pi-ctrl-models:${randomUUID()}`,
+        idempotencyKey: `models:${randomUUID()}`,
+        taskId: "__models__",
+        kind: "pi_control",
+        payload: { controlAction: "listModels" },
+      });
+    }
     if (!this.modelRuntime) return [];
     await this.refreshExternalModelConfig();
 
@@ -4281,6 +4493,10 @@ export class AgentService {
     const afterPolicy = resolveDotsPreferences(nextApp.dotsSettings);
     if (beforePolicy.followupMode !== afterPolicy.followupMode || JSON.stringify(beforePolicy.spaceIds) !== JSON.stringify(afterPolicy.spaceIds)) {
       this.localWorkflow?.cron.refreshDotsPolicy();
+      void this.runtimeAuditReader?.dotsScheduler?.({
+        action: "syncState",
+        paused: afterPolicy.followupMode === "paused",
+      }).catch(() => undefined);
       this.dotsActions?.preferencesChanged();
       this.goalContinuations.refreshPolicy();
     }
@@ -5140,6 +5356,16 @@ export class AgentService {
   }
 
   async compactTask(taskId: string): Promise<TaskCompactionResultDto> {
+    if (this.executionMode === "isolated-client") {
+      if (!this.db.getTask(taskId)) return { ok: false, code: "NO_SESSION", state: { taskId, status: "skipped", message: "当前任务没有可压缩的会话" } };
+      return await this.submitCorePiExecution<TaskCompactionResultDto>({
+        executionId: `pi-compact:${taskId}:${randomUUID()}`,
+        idempotencyKey: `compact:${taskId}:${randomUUID()}`,
+        taskId,
+        kind: "pi_compact",
+        payload: { taskId },
+      });
+    }
     if (!this.durableBots || !this.db.getTask(taskId)) return { ok: false, code: "NO_SESSION", state: { taskId, status: "skipped", message: "当前任务没有可压缩的会话" } };
     if (this.manualCompactions.has(taskId) || this.durableBots.busy(taskId)) return { ok: false, code: "TASK_BUSY", state: { taskId, status: "skipped", message: "任务正在执行" } };
     const operationId = randomUUID();
@@ -5220,6 +5446,7 @@ export class AgentService {
    */
   isTaskBusy(taskId: string): boolean {
     if (this.durableBots?.owns(taskId)) return this.durableBots.busy(taskId);
+    if (this.executionMode === "isolated-client" && this.activeRemoteTasks.has(taskId)) return true;
     if (this.manualCompactions.has(taskId) || this.promptExecution.isBusy(taskId)) return true;
     const entry = this.registry.get(taskId);
     if (!entry) return false;
@@ -5233,6 +5460,20 @@ export class AgentService {
 
   async loadTaskHistory(taskId: string, beforeEntryId?: TaskHistoryTarget, source: "stored" | "current" = "stored"): Promise<TaskHistoryDto> {
     if (this.durableBots?.owns(taskId)) return this.durableBots.history(taskId, beforeEntryId, source);
+    if (!this.durableBots) {
+      const binding = this.durableBindingForTask(taskId);
+      if (binding && durableStorageExists(binding.directory)) {
+        const history = await readDurableReadOnlyHistory({
+          directory: binding.directory,
+          cwd: binding.cwd,
+          models: PASSIVE_READONLY_MODELS,
+          reader: this.runtimeAuditReader,
+          beforeEntryId,
+        });
+        const modelId = this.db.getTask(taskId)?.modelId;
+        return { ...history, ...(modelId ? { modelId } : {}) };
+      }
+    }
     const row = this.db.listTasks().find((t) => t.id === taskId);
     if (!row?.sessionFile) return { messages: [] };
     try {
@@ -5269,6 +5510,18 @@ export class AgentService {
    */
   async listTaskUserQuestions(taskId: string, query?: TaskUserQuestionsQuery): Promise<TaskUserQuestionsDto> {
     if (this.durableBots?.owns(taskId)) return this.durableBots.userQuestions(taskId, query);
+    if (!this.durableBots) {
+      const binding = this.durableBindingForTask(taskId);
+      if (binding && durableStorageExists(binding.directory)) {
+        return await readDurableUserQuestions({
+          directory: binding.directory,
+          cwd: binding.cwd,
+          models: PASSIVE_READONLY_MODELS,
+          reader: this.runtimeAuditReader,
+          query,
+        });
+      }
+    }
     const history = await this.loadTaskHistory(taskId);
     return { questions: history.messages
       .filter(message => message.role === "user" && message.text.trim())
@@ -5280,6 +5533,15 @@ export class AgentService {
    * 不自动写回；调用方拿到建议后由用户确认/编辑。
    */
   async generateTaskTitle(taskId: string, maxTokens = 1024): Promise<{ title: string }> {
+    if (this.executionMode === "isolated-client" && !this.modelRuntime) {
+      return await this.submitCorePiExecution<{ title: string }>({
+        executionId: `pi-ctrl-title:${taskId}:${randomUUID()}`,
+        idempotencyKey: `title:${taskId}:${randomUUID()}`,
+        taskId,
+        kind: "pi_control",
+        payload: { controlAction: "generateTaskTitle", taskId, maxTokens },
+      });
+    }
     const task = this.db.getTask(taskId);
     if (!task) throw new Error("任务不存在");
     const head = await this.conversationHeadForTitle(taskId, maxTokens);
@@ -5313,6 +5575,22 @@ export class AgentService {
         if (head.trim()) return head;
       } catch (error) {
         console.warn("[AgentService] durable conversation head failed", taskId, error);
+      }
+    } else if (!this.durableBots) {
+      const binding = this.durableBindingForTask(taskId);
+      if (binding && durableStorageExists(binding.directory)) {
+        try {
+          const head = await readDurableConversationHead({
+            directory: binding.directory,
+            cwd: binding.cwd,
+            models: PASSIVE_READONLY_MODELS,
+            reader: this.runtimeAuditReader,
+            maxTokens,
+          });
+          if (head.trim()) return head;
+        } catch (error) {
+          console.warn("[AgentService] passive durable conversation head failed", taskId, error);
+        }
       }
     }
     try {
@@ -5357,6 +5635,29 @@ export class AgentService {
   }
 
   async prompt(req: AgentPromptRequest, options?: { durableAdmissionOnly?: boolean }): Promise<AgentPromptResult> {
+    if (this.executionMode === "isolated-client") {
+      const opId = req.userMessageId?.trim() || randomUUID();
+      const executionId = `pi:${req.taskId}:${opId}`;
+      const waitForSettled = options?.durableAdmissionOnly === false;
+      this.activeRemoteTasks.set(req.taskId, executionId);
+      try {
+        return await this.submitCorePiExecution<AgentPromptResult>({
+          executionId,
+          idempotencyKey: opId,
+          taskId: req.taskId,
+          kind: "pi_turn",
+          payload: { ...req, userMessageId: opId, durableAdmissionOnly: options?.durableAdmissionOnly ?? true, waitForSettled: true },
+          resolveOnProgress: waitForSettled ? undefined : progress => (
+            progress.kind === "submission_receipt" ? progress.result as AgentPromptResult : undefined
+          ),
+        });
+      } catch (err) {
+        if (this.activeRemoteTasks.get(req.taskId) === executionId) {
+          this.activeRemoteTasks.delete(req.taskId);
+        }
+        throw err;
+      }
+    }
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     // A real user input always wins over a pending automatic continuation.
     this.goalContinuations.noteUserInput(req.taskId);
@@ -5367,16 +5668,44 @@ export class AgentService {
   }
 
   async findSubmission(taskId: string, operationId: string): Promise<AgentPromptResult | undefined> {
+    if (this.executionMode === "isolated-client") {
+      const res = await this.submitCorePiExecution<AgentPromptResult | null>({
+        executionId: `pi-ctrl-find:${taskId}:${randomUUID()}`,
+        idempotencyKey: `find:${taskId}:${operationId}:${randomUUID()}`,
+        taskId,
+        kind: "pi_control",
+        payload: { controlAction: "findSubmission", taskId, operationId },
+      });
+      return res ?? undefined;
+    }
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     return this.durableBots.findSubmission(taskId, operationId);
   }
 
   async submissionStatus(receipt: AgentSubmissionReceipt): Promise<AgentPromptResult> {
+    if (this.executionMode === "isolated-client") {
+      return await this.submitCorePiExecution<AgentPromptResult>({
+        executionId: `pi-ctrl-status:${receipt.taskId}:${randomUUID()}`,
+        idempotencyKey: `status:${receipt.taskId}:${receipt.submissionId}:${randomUUID()}`,
+        taskId: receipt.taskId,
+        kind: "pi_control",
+        payload: { controlAction: "submissionStatus", receipt, wait: false },
+      });
+    }
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     return this.durableBots.submissionStatus(receipt);
   }
 
   async waitForSubmission(receipt: AgentSubmissionReceipt): Promise<AgentPromptResult> {
+    if (this.executionMode === "isolated-client") {
+      return await this.submitCorePiExecution<AgentPromptResult>({
+        executionId: `pi-ctrl-wait:${receipt.taskId}:${randomUUID()}`,
+        idempotencyKey: `wait:${receipt.taskId}:${receipt.submissionId}:${randomUUID()}`,
+        taskId: receipt.taskId,
+        kind: "pi_control",
+        payload: { controlAction: "submissionStatus", receipt, wait: true },
+      });
+    }
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     return this.durableBots.submissionStatus(receipt, true);
   }
@@ -5420,6 +5749,16 @@ export class AgentService {
    * 因而被删消息及其后的 assistant/tool 内容不会再次进入模型上下文。
    */
   async deleteUserMessage(req: AgentDeleteUserMessageRequest): Promise<void> {
+    if (this.executionMode === "isolated-client") {
+      await this.submitCorePiExecution({
+        executionId: `pi-ctrl-del:${req.taskId}:${randomUUID()}`,
+        idempotencyKey: `del:${req.taskId}:${randomUUID()}`,
+        taskId: req.taskId,
+        kind: "pi_control",
+        payload: { controlAction: "deleteUserMessage", request: req },
+      });
+      return;
+    }
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     await this.memoryWriteQueue;
     const deletedFrom = await this.durableBots.deleteUserMessage(req);
@@ -5427,6 +5766,15 @@ export class AgentService {
   }
 
   async regenerate(req: AgentRegenerateRequest): Promise<AgentRegenerateResult> {
+    if (this.executionMode === "isolated-client") {
+      return await this.submitCorePiExecution<AgentRegenerateResult>({
+        executionId: `pi-ctrl-regen:${req.taskId}:${randomUUID()}`,
+        idempotencyKey: `regen:${req.taskId}:${req.requestId ?? randomUUID()}`,
+        taskId: req.taskId,
+        kind: "pi_control",
+        payload: { controlAction: "regenerate", request: req },
+      });
+    }
     if (!this.durableBots) return { ok: false, requestId: req.requestId, code: "SESSION_NOT_FOUND", message: "执行服务尚未初始化" };
     await this.memoryWriteQueue;
     return this.durableBots.regenerate(req);
@@ -5650,6 +5998,20 @@ export class AgentService {
    * 避免「当前正在生成回复」永久挡 regenerate/发消息。
    */
   async abort(taskId: string): Promise<import("../../shared/agent-ipc").AgentAbortResult> {
+    if (this.executionMode === "isolated-client") {
+      const executionId = this.activeRemoteTasks.get(taskId);
+      const client = this.coreClientProvider?.();
+      if (executionId && client && !client.isClosed) {
+        await client.cancelExecution(executionId).catch(() => undefined);
+      }
+      return await this.submitCorePiExecution<import("../../shared/agent-ipc").AgentAbortResult>({
+        executionId: `pi-ctrl-abort:${taskId}:${randomUUID()}`,
+        idempotencyKey: `abort:${taskId}:${randomUUID()}`,
+        taskId,
+        kind: "pi_control",
+        payload: { controlAction: "abort", taskId },
+      });
+    }
     this.localWorkflow?.terminal.closeTask(taskId);
     if (this.durableBots?.owns(taskId)) return this.durableBots.abort(taskId);
     if (this.manualCompactions.has(taskId)) { this.abortCompaction(taskId); return; }
@@ -5785,6 +6147,13 @@ export class AgentService {
     return true;
   }
 
+  async revokeTaskWriteGrantAsync(taskId: string, path: string): Promise<boolean> {
+    const removed = await this.db.deleteTaskWriteGrantAsync(taskId, path);
+    if (!removed) return false;
+    this.sessionApprovals.removeWriteGrant(taskId, path);
+    return true;
+  }
+
   /** 列出文件修改前自动备份（taskId 缺省时返回全部任务） */
   listBackups(taskId?: string): Promise<FileBackupInfoDto[]> {
     return this.backups.readBackups(this.db.runtimeAuditReader, taskId);
@@ -5846,7 +6215,7 @@ export class AgentService {
 
   setPermissionMode(req: AgentSetPermissionModeRequest): boolean {
     const task = this.db.getTask(req.taskId);
-    if (task) this.db.upsertTask({
+    if (task) void this.db.writeTaskRecord({
       id: task.id, title: task.title, updatedAt: task.updatedAt, permissionMode: "auto",
     }, { preserveTitle: true });
     const entry = this.registry.get(req.taskId);
@@ -5886,6 +6255,14 @@ export class AgentService {
       this.taskDiagnostics.closeWrites(), this.runtimeSnapshots.closeWrites(), this.usageStats.closeWrites(),
       this.memoryPipeline.closeCaptureWrites(), this.contextUsageWrites.close(),
       this.workHostAuthority.flush(),
+      this.executionFailures.flush(), this.executionAttempts.flush(),
+      this.loadoutObservations.flush(), this.conversationGoalActivity.flush(),
+      this.conversationInteractionRepo.flush(), this.answerRouting.flush(),
+      this.expertBindings.flush(),
+      this.memoryService.flushWrites(),
+      this.workMemoryCapture.flushWrites(),
+      this.memoryOrganization.flush(),
+      ...(this.externalAgentRuntime ? [this.externalAgentRuntime.flush()] : []),
     ]);
   }
 
@@ -6142,7 +6519,7 @@ export class AgentService {
     if (!resolved) return stored;
     if (resolved.repairedFrom && resolved.modelId !== stored) {
       console.warn(`[AgentService] 任务 ${task!.id} 的模型 ${stored} 已不在模型目录中，改用 ${resolved.modelId}`);
-      this.db.upsertTask({
+      await this.db.writeTaskRecord({
         id: task!.id, title: task!.title, updatedAt: task!.updatedAt, modelId: resolved.modelId,
       }, { preserveTitle: true });
     }

@@ -6,6 +6,9 @@ import type { WorkSourceAdapterCapability, WorkVersionMode } from "../../../shar
 import { newId } from "./WorkRepository";
 import { matchesFilter } from "./WorkControlNormalization";
 import type { WorkService } from "./WorkService";
+import {
+  enqueueWorkOp, overlayFindAll, overlayMutate, overlayReadOne, overlaySet, requiresWorkRustWrites,
+} from "./WorkDomainRuntime";
 
 export type IngressRouteOutcome = "pending" | "accepted" | "merged" | "skipped" | "blocked" | "duplicate" | "rejected";
 
@@ -91,6 +94,9 @@ const BUILTIN_ADAPTERS: WorkSourceAdapterCapability[] = [
     canQueryHistory: false, supportsRetry: true, maxPayloadBytes: 1024 * 1024 },
 ];
 
+const routePk = (source: string, sourceEventId: string, subscriptionId: string) => `${source}\0${sourceEventId}\0${subscriptionId}`;
+const cursorPk = (subscriptionId: string, source: string, targetKey: string) => `${subscriptionId}\0${source}\0${targetKey}`;
+
 /**
  * One durable ingress for every event source.
  *
@@ -133,6 +139,45 @@ export class WorkWatchIngress {
   freezeDueBatches(now = this.now(), workId?: string): number {
     return this.works.transaction(() => {
       if (!this.authority()) return 0;
+      const rust = requiresWorkRustWrites(this.db);
+      if (rust) {
+        const dbRows = this.db.prepare(`SELECT *
+          FROM work_events_inbox WHERE status='merged' AND frozen_at IS NULL AND merge_deadline_at IS NOT NULL
+          AND merge_deadline_at<=? ${workId ? "AND work_id=?" : ""} ORDER BY received_at ASC`)
+          .all(...[now, ...(workId ? [workId] : [])]) as Array<Record<string, unknown>>;
+        const rows = overlayFindAll(
+          this.db, "work_events_inbox", dbRows, r => String(r.event_id),
+          r => r.status === "merged" && (r.frozen_at === null || r.frozen_at === undefined)
+            && r.merge_deadline_at !== null && r.merge_deadline_at !== undefined
+            && Number(r.merge_deadline_at) <= now && (!workId || r.work_id === workId),
+          (a, b) => Number(a.received_at) - Number(b.received_at),
+        );
+        let frozen = 0;
+        for (const row of rows) {
+          const eventId = String(row.event_id);
+          overlaySet(this.db, "work_events_inbox", eventId, {
+            ...row,
+            frozen_at: now,
+            frozen_payload_json: row.payload_json,
+            claim_version: Number(row.claim_version ?? 0) + 1,
+            process_reason: "merge-deadline",
+            batch_deadline_at: row.batch_deadline_at ?? row.merge_deadline_at ?? null,
+          });
+          enqueueWorkOp(this.db, {
+            op: "workInboxUpdate", mode: "freeze", eventId, subscriptionId: null, workId: null,
+            eventType: null, sourceVersion: null, causalEventId: null, payloadJson: null, status: null,
+            mergeDeadlineAt: null, mergedCount: null, targetKey: null, batchId: null, batchDeadlineAt: null, now,
+          });
+          const subId = row.subscription_id as string | null | undefined;
+          if (!subId) continue;
+          frozen++;
+          if (row.source_version) {
+            this.setCursor(subId, String(row.source), (row.target_key as string | null | undefined) ?? "default",
+              { highestFrozenVersion: String(row.source_version) });
+          }
+        }
+        return frozen;
+      }
       const rows = this.db.prepare(`SELECT event_id,subscription_id,source,source_version,target_key,payload_json,merge_deadline_at
         FROM work_events_inbox WHERE status='merged' AND frozen_at IS NULL AND merge_deadline_at IS NOT NULL
         AND merge_deadline_at<=? ${workId ? "AND work_id=?" : ""} ORDER BY received_at ASC`)
@@ -306,11 +351,39 @@ export class WorkWatchIngress {
         const mergedPayload = authoritative
           ? { ...payload, authoritativeReadbackRequired: true, batchEventIds: [...this.batchEventIds(openBatch.eventId), event.sourceEventId] }
           : payload;
-        const updated = this.db.prepare(`UPDATE work_events_inbox SET event_type=?,source_version=?,source_event_id=?,
-          causal_event_id=?,payload_json=?,merged_count=merged_count+1,target_key=? WHERE event_id=?
-          AND frozen_at IS NULL AND status='merged'`).run(event.eventType, event.sourceVersion ?? null,
-          event.sourceEventId, event.causalEventId ?? null, JSON.stringify(mergedPayload), targetKey, openBatch.eventId);
-        if (updated.changes) {
+        const mergedPayloadJson = JSON.stringify(mergedPayload);
+        let mergedChanged = false;
+        if (requiresWorkRustWrites(this.db)) {
+          const cur = overlayReadOne<Record<string, unknown>>(this.db, "work_events_inbox", openBatch.eventId,
+            () => this.db.prepare("SELECT * FROM work_events_inbox WHERE event_id=?").get(openBatch.eventId) as Record<string, unknown> | undefined);
+          if (cur && (cur.frozen_at === null || cur.frozen_at === undefined) && cur.status === "merged") {
+            mergedChanged = true;
+            overlaySet(this.db, "work_events_inbox", openBatch.eventId, {
+              ...cur,
+              event_type: event.eventType,
+              source_version: event.sourceVersion ?? null,
+              source_event_id: event.sourceEventId,
+              causal_event_id: event.causalEventId ?? null,
+              payload_json: mergedPayloadJson,
+              merged_count: Number(cur.merged_count ?? 1) + 1,
+              target_key: targetKey,
+            });
+            enqueueWorkOp(this.db, {
+              op: "workInboxUpdate", mode: "mergeOpenBatch", eventId: openBatch.eventId,
+              subscriptionId: null, workId: null, eventType: event.eventType,
+              sourceVersion: event.sourceVersion ?? null, causalEventId: event.causalEventId ?? null,
+              payloadJson: mergedPayloadJson, status: null, mergeDeadlineAt: null, mergedCount: null,
+              targetKey, batchId: event.sourceEventId, batchDeadlineAt: null, now: null,
+            });
+          }
+        } else {
+          const updated = this.db.prepare(`UPDATE work_events_inbox SET event_type=?,source_version=?,source_event_id=?,
+            causal_event_id=?,payload_json=?,merged_count=merged_count+1,target_key=? WHERE event_id=?
+            AND frozen_at IS NULL AND status='merged'`).run(event.eventType, event.sourceVersion ?? null,
+            event.sourceEventId, event.causalEventId ?? null, mergedPayloadJson, targetKey, openBatch.eventId);
+          mergedChanged = updated.changes > 0;
+        }
+        if (mergedChanged) {
           this.upsertRoute({ source: event.source, sourceEventId: event.sourceEventId, subscriptionId: subscription.subscriptionId,
             workId: work.workId, targetKey, inboxEventId: openBatch.eventId, state: "merged",
             reasonCode: authoritative ? "authoritative-readback" : "latest-merge", sourceVersion: event.sourceVersion,
@@ -378,9 +451,12 @@ export class WorkWatchIngress {
         reasonCode: "capacity-refused", targetKey };
     }
     const route = this.works.pausedBacklog.enqueue(work, subscription, this.toSourceEvent(event, now), now, targetKey);
-    const pausedRoute = this.db.prepare(`SELECT inbox_event_id FROM work_paused_source_routes
-      WHERE source=? AND source_event_id=? AND subscription_id=?`).get(event.source, event.sourceEventId,
-      subscription.subscriptionId) as { inbox_event_id: string | null } | undefined;
+    const pausedRoute = overlayReadOne<Record<string, unknown>>(
+      this.db, "work_paused_source_routes", routePk(event.source, event.sourceEventId, subscription.subscriptionId),
+      () => this.db.prepare(`SELECT inbox_event_id FROM work_paused_source_routes
+        WHERE source=? AND source_event_id=? AND subscription_id=?`).get(event.source, event.sourceEventId,
+        subscription.subscriptionId) as Record<string, unknown> | undefined,
+    ) as { inbox_event_id?: string | null } | undefined;
     this.upsertRoute({ source: event.source, sourceEventId: event.sourceEventId, subscriptionId: subscription.subscriptionId,
       workId: work.workId, targetKey, state: route === "blocked" ? "blocked" : route === "duplicate" ? "duplicate" : route,
       inboxEventId: pausedRoute?.inbox_event_id ?? undefined,
@@ -484,6 +560,18 @@ export class WorkWatchIngress {
   }
 
   private openLatestBatch(subscriptionId: string, targetKey: string): WorkInboxEventDto | undefined {
+    if (requiresWorkRustWrites(this.db)) {
+      const dbRows = this.db.prepare(`SELECT * FROM work_events_inbox WHERE subscription_id=? AND target_key=?
+        AND status='merged' AND frozen_at IS NULL ORDER BY received_at ASC,rowid ASC LIMIT 1`)
+        .all(subscriptionId, targetKey) as Array<Record<string, unknown>>;
+      const rows = overlayFindAll(
+        this.db, "work_events_inbox", dbRows, r => String(r.event_id),
+        r => r.subscription_id === subscriptionId && r.target_key === targetKey
+          && r.status === "merged" && (r.frozen_at === null || r.frozen_at === undefined),
+        (a, b) => Number(a.received_at) - Number(b.received_at),
+      );
+      return rows[0] ? this.works.repo.getInbox(String(rows[0].event_id)) : undefined;
+    }
     const row = this.db.prepare(`SELECT event_id FROM work_events_inbox WHERE subscription_id=? AND target_key=?
       AND status='merged' AND frozen_at IS NULL ORDER BY received_at ASC,rowid ASC LIMIT 1`).get(subscriptionId, targetKey) as
       { event_id: string } | undefined;
@@ -491,9 +579,10 @@ export class WorkWatchIngress {
   }
 
   private batchEventIds(eventId: string): string[] {
-    const row = this.db.prepare("SELECT payload_json FROM work_events_inbox WHERE event_id=?").get(eventId) as
-      { payload_json: string } | undefined;
-    if (!row) return [];
+    const row = overlayReadOne<Record<string, unknown>>(this.db, "work_events_inbox", eventId,
+      () => this.db.prepare("SELECT payload_json FROM work_events_inbox WHERE event_id=?").get(eventId) as
+        Record<string, unknown> | undefined) as { payload_json?: string } | undefined;
+    if (!row?.payload_json) return [];
     try {
       const payload = JSON.parse(row.payload_json) as { batchEventIds?: unknown };
       return Array.isArray(payload.batchEventIds) ? payload.batchEventIds.filter((item): item is string => typeof item === "string") : [];
@@ -505,8 +594,15 @@ export class WorkWatchIngress {
     this.freezeDueBatches(now, workId);
     const work = this.works.getWork(workId);
     if (!work || watchTimeExpired(work, now) || work.lifecycle !== "active") return [];
-    const rows = this.db.prepare(`SELECT * FROM work_events_inbox WHERE work_id=? AND status IN ('pending','merged')
+    const dbRows = this.db.prepare(`SELECT * FROM work_events_inbox WHERE work_id=? AND status IN ('pending','merged')
       AND (status='pending' OR frozen_at IS NOT NULL) ORDER BY received_at ASC,rowid ASC`).all(workId) as Array<Record<string, unknown>>;
+    const rows = requiresWorkRustWrites(this.db)
+      ? overlayFindAll(
+          this.db, "work_events_inbox", dbRows, r => String(r.event_id),
+          r => r.work_id === workId && (r.status === "pending" || (r.status === "merged" && r.frozen_at !== null && r.frozen_at !== undefined)),
+          (a, b) => Number(a.received_at) - Number(b.received_at),
+        )
+      : dbRows;
     const seenBatches = new Set<string>();
     const ready: WorkInboxEventDto[] = [];
     for (const row of rows) {
@@ -525,6 +621,7 @@ export class WorkWatchIngress {
   refillBlocked(subscription: WorkSubscriptionDto, limit = 32): number {
     return this.works.transaction(() => {
       if (!this.authority()) return 0;
+      const rust = requiresWorkRustWrites(this.db);
       let promoted = 0;
       for (const event of this.works.repo.listInbox(subscription.workId, ["blocked"])) {
         if (promoted >= limit) break;
@@ -535,8 +632,21 @@ export class WorkWatchIngress {
         if (event.payload._sourceReadbackError) continue;
         const stats = this.queueStats(subscription);
         if (stats.ready + stats.frozen >= subscription.maxQueueDepth) break;
-        this.db.prepare("UPDATE work_events_inbox SET status='pending',payload_json=?,process_reason='backlog-refill' WHERE event_id=? AND status='blocked'")
-          .run(JSON.stringify({ ...event.payload, overflow: false }), event.eventId);
+        const nextPayloadJson = JSON.stringify({ ...event.payload, overflow: false });
+        if (rust) {
+          overlayMutate(this.db, "work_events_inbox", event.eventId,
+            () => this.db.prepare("SELECT * FROM work_events_inbox WHERE event_id=?").get(event.eventId) as Record<string, unknown> | undefined,
+            cur => cur && cur.status === "blocked" ? { ...cur, status: "pending", payload_json: nextPayloadJson, process_reason: "backlog-refill" } : cur);
+          enqueueWorkOp(this.db, {
+            op: "workInboxUpdate", mode: "refillBlocked", eventId: event.eventId,
+            subscriptionId: null, workId: null, eventType: null, sourceVersion: null, causalEventId: null,
+            payloadJson: nextPayloadJson, status: null, mergeDeadlineAt: null, mergedCount: null,
+            targetKey: null, batchId: null, batchDeadlineAt: null, now: null,
+          });
+        } else {
+          this.db.prepare("UPDATE work_events_inbox SET status='pending',payload_json=?,process_reason='backlog-refill' WHERE event_id=? AND status='blocked'")
+            .run(nextPayloadJson, event.eventId);
+        }
         promoted++;
       }
       if (promoted) {
@@ -561,8 +671,29 @@ export class WorkWatchIngress {
       const subscription = this.works.repo.getSubscription(event.subscriptionId);
       if (!subscription) throw new Error("事件缺少原订阅，拒绝消费");
       const targetKey = event.targetKey ?? "default";
-      this.db.prepare(`UPDATE work_ingress_routes SET reason_code='processed'
-        WHERE inbox_event_id=? AND subscription_id=?`).run(eventId, event.subscriptionId);
+      if (requiresWorkRustWrites(this.db)) {
+        const subId = event.subscriptionId;
+        const matched = overlayFindAll(
+          this.db, "work_ingress_routes",
+          this.db.prepare("SELECT * FROM work_ingress_routes WHERE inbox_event_id=? AND subscription_id=?")
+            .all(eventId, subId) as Array<Record<string, unknown>>,
+          r => routePk(String(r.source), String(r.source_event_id), String(r.subscription_id)),
+          r => r.inbox_event_id === eventId && r.subscription_id === subId,
+        );
+        for (const r of matched) {
+          overlaySet(this.db, "work_ingress_routes", routePk(String(r.source), String(r.source_event_id), String(r.subscription_id)), {
+            ...r, reason_code: "processed",
+          });
+        }
+        enqueueWorkOp(this.db, {
+          op: "workIngressRouteWrite", mode: "markProcessed", source: null, sourceEventId: null,
+          subscriptionId: subId, workId: null, targetKey: null, inboxEventId: eventId,
+          state: null, reasonCode: null, sourceVersion: null, trust: null, acceptedAt: null,
+        });
+      } else {
+        this.db.prepare(`UPDATE work_ingress_routes SET reason_code='processed'
+          WHERE inbox_event_id=? AND subscription_id=?`).run(eventId, event.subscriptionId);
+      }
       this.setCursor(subscription.subscriptionId, event.source, targetKey, {
         highestConsumedVersion: consumed.providerSourceVersion ?? event.sourceVersion,
         consumedEvents: 1,
@@ -573,9 +704,25 @@ export class WorkWatchIngress {
   }
 
   queueStats(subscription: WorkSubscriptionDto): WorkQueueStats {
-    const rows = this.db.prepare(`SELECT status,frozen_at,merge_deadline_at,received_at,payload_json FROM work_events_inbox
-      WHERE subscription_id=? AND status IN ('pending','merged','blocked')`).all(subscription.subscriptionId) as Array<{
-        status: string; frozen_at: number | null; merge_deadline_at: number | null; received_at: number; payload_json: string }>;
+    const rust = requiresWorkRustWrites(this.db);
+    const rows = rust
+      ? overlayFindAll(
+          this.db,
+          "work_events_inbox",
+          this.db.prepare("SELECT * FROM work_events_inbox WHERE subscription_id=? AND status IN ('pending','merged','blocked')")
+            .all(subscription.subscriptionId) as Array<Record<string, unknown>>,
+          r => String(r.event_id),
+          r => r.subscription_id === subscription.subscriptionId && ["pending", "merged", "blocked"].includes(String(r.status)),
+        ).map(r => ({
+          status: String(r.status),
+          frozen_at: (r.frozen_at as number | null | undefined) ?? null,
+          merge_deadline_at: (r.merge_deadline_at as number | null | undefined) ?? null,
+          received_at: Number(r.received_at),
+          payload_json: String(r.payload_json),
+        }))
+      : this.db.prepare(`SELECT status,frozen_at,merge_deadline_at,received_at,payload_json FROM work_events_inbox
+          WHERE subscription_id=? AND status IN ('pending','merged','blocked')`).all(subscription.subscriptionId) as Array<{
+            status: string; frozen_at: number | null; merge_deadline_at: number | null; received_at: number; payload_json: string }>;
     let ready = 0, frozen = 0, blocked = 0, bytes = 0, oldestAt: number | undefined;
     let mergeDeadlineAt: number | undefined, readySince: number | undefined;
     for (const row of rows) {
@@ -590,11 +737,31 @@ export class WorkWatchIngress {
     }
     // Paused overflow retains an obligation in the source/route tables before an Inbox
     // slot is available. It still consumes storage and must be visible to hard limits.
-    const pausedOverflow = this.db.prepare(`SELECT event.received_at,event.payload_json
-      FROM work_paused_source_routes route JOIN work_source_events event
-        ON event.source=route.source AND event.source_event_id=route.source_event_id
-      WHERE route.subscription_id=? AND route.inbox_event_id IS NULL`).all(subscription.subscriptionId) as Array<{
-        received_at: number; payload_json: string }>;
+    const pausedOverflow = rust
+      ? (() => {
+          const pausedRoutes = overlayFindAll(
+            this.db, "work_paused_source_routes",
+            this.db.prepare("SELECT * FROM work_paused_source_routes WHERE subscription_id=? AND inbox_event_id IS NULL")
+              .all(subscription.subscriptionId) as Array<Record<string, unknown>>,
+            r => routePk(String(r.source), String(r.source_event_id), String(r.subscription_id)),
+            r => r.subscription_id === subscription.subscriptionId && (r.inbox_event_id === null || r.inbox_event_id === undefined),
+          );
+          const list: Array<{ received_at: number; payload_json: string }> = [];
+          for (const route of pausedRoutes) {
+            const ev = overlayReadOne<Record<string, unknown>>(
+              this.db, "work_source_events", `${route.source}\0${route.source_event_id}`,
+              () => this.db.prepare("SELECT received_at,payload_json FROM work_source_events WHERE source=? AND source_event_id=?")
+                .get(route.source, route.source_event_id) as Record<string, unknown> | undefined,
+            );
+            if (ev) list.push({ received_at: Number(ev.received_at), payload_json: String(ev.payload_json) });
+          }
+          return list;
+        })()
+      : this.db.prepare(`SELECT event.received_at,event.payload_json
+          FROM work_paused_source_routes route JOIN work_source_events event
+            ON event.source=route.source AND event.source_event_id=route.source_event_id
+          WHERE route.subscription_id=? AND route.inbox_event_id IS NULL`).all(subscription.subscriptionId) as Array<{
+            received_at: number; payload_json: string }>;
     for (const row of pausedOverflow) {
       blocked++;
       bytes += Buffer.byteLength(row.payload_json, "utf8");
@@ -606,6 +773,40 @@ export class WorkWatchIngress {
   }
 
   private pendingBytes(subscriptionId: string): number {
+    if (requiresWorkRustWrites(this.db)) {
+      let total = 0;
+      const inboxRows = overlayFindAll(
+        this.db, "work_events_inbox",
+        this.db.prepare("SELECT * FROM work_events_inbox WHERE subscription_id=? AND status IN ('pending','merged','blocked')")
+          .all(subscriptionId) as Array<Record<string, unknown>>,
+        r => String(r.event_id),
+        r => r.subscription_id === subscriptionId && ["pending", "merged", "blocked"].includes(String(r.status)),
+      );
+      for (const inbox of inboxRows) {
+        const ev = overlayReadOne<Record<string, unknown>>(
+          this.db, "work_source_events", `${inbox.source}\0${inbox.source_event_id}`,
+          () => this.db.prepare("SELECT payload_bytes FROM work_source_events WHERE source=? AND source_event_id=?")
+            .get(inbox.source, inbox.source_event_id) as Record<string, unknown> | undefined,
+        );
+        if (ev && ev.payload_bytes !== undefined && ev.payload_bytes !== null) total += Number(ev.payload_bytes);
+      }
+      const pausedRoutes = overlayFindAll(
+        this.db, "work_paused_source_routes",
+        this.db.prepare("SELECT * FROM work_paused_source_routes WHERE subscription_id=? AND inbox_event_id IS NULL")
+          .all(subscriptionId) as Array<Record<string, unknown>>,
+        r => routePk(String(r.source), String(r.source_event_id), String(r.subscription_id)),
+        r => r.subscription_id === subscriptionId && (r.inbox_event_id === null || r.inbox_event_id === undefined),
+      );
+      for (const route of pausedRoutes) {
+        const ev = overlayReadOne<Record<string, unknown>>(
+          this.db, "work_source_events", `${route.source}\0${route.source_event_id}`,
+          () => this.db.prepare("SELECT payload_bytes FROM work_source_events WHERE source=? AND source_event_id=?")
+            .get(route.source, route.source_event_id) as Record<string, unknown> | undefined,
+        );
+        if (ev && ev.payload_bytes !== undefined && ev.payload_bytes !== null) total += Number(ev.payload_bytes);
+      }
+      return total;
+    }
     const row = this.db.prepare(`SELECT COALESCE(SUM(payload_bytes),0) AS bytes FROM (
       SELECT event.payload_bytes FROM work_events_inbox inbox
       LEFT JOIN work_source_events event ON event.source=inbox.source AND event.source_event_id=inbox.source_event_id
@@ -618,8 +819,11 @@ export class WorkWatchIngress {
   }
 
   cursor(subscriptionId: string, source: string, targetKey: string): WorkSubscriptionCursor | undefined {
-    const row = this.db.prepare("SELECT * FROM work_subscription_cursors WHERE subscription_id=? AND source=? AND target_key=?")
-      .get(subscriptionId, source, targetKey) as Record<string, unknown> | undefined;
+    const row = overlayReadOne<Record<string, unknown>>(
+      this.db, "work_subscription_cursors", cursorPk(subscriptionId, source, targetKey),
+      () => this.db.prepare("SELECT * FROM work_subscription_cursors WHERE subscription_id=? AND source=? AND target_key=?")
+        .get(subscriptionId, source, targetKey) as Record<string, unknown> | undefined,
+    );
     return row ? {
       subscriptionId, source, targetKey: String(row.target_key),
       highestAcceptedVersion: row.highest_accepted_version as string | undefined ?? undefined,
@@ -633,9 +837,18 @@ export class WorkWatchIngress {
   }
 
   listCursors(subscriptionId: string): WorkSubscriptionCursor[] {
-    return (this.db.prepare("SELECT source,target_key FROM work_subscription_cursors WHERE subscription_id=? ORDER BY source,target_key")
-      .all(subscriptionId) as Array<{ source: string; target_key: string }>)
-      .map(row => this.cursor(subscriptionId, row.source, row.target_key)!);
+    const dbRows = this.db.prepare("SELECT * FROM work_subscription_cursors WHERE subscription_id=? ORDER BY source,target_key")
+      .all(subscriptionId) as Array<Record<string, unknown>>;
+    const rows = requiresWorkRustWrites(this.db)
+      ? overlayFindAll(
+          this.db, "work_subscription_cursors", dbRows,
+          r => cursorPk(String(r.subscription_id), String(r.source), String(r.target_key)),
+          r => r.subscription_id === subscriptionId,
+          (a, b) => (String(a.source) < String(b.source) ? -1 : String(a.source) > String(b.source) ? 1 : 0)
+            || (String(a.target_key) < String(b.target_key) ? -1 : String(a.target_key) > String(b.target_key) ? 1 : 0),
+        )
+      : dbRows;
+    return rows.map(row => this.cursor(subscriptionId, String(row.source), String(row.target_key))!);
   }
 
   setCursor(subscriptionId: string, source: string, targetKey: string, update: Partial<Pick<WorkSubscriptionCursor,
@@ -661,6 +874,34 @@ export class WorkWatchIngress {
         consumedEvents: (current?.consumedEvents ?? 0) + (update.consumedEvents ?? 0),
         acceptedBytes: (current?.acceptedBytes ?? 0) + (update.acceptedBytes ?? 0),
       };
+      const updatedAt = this.now();
+      if (requiresWorkRustWrites(this.db)) {
+        overlaySet(this.db, "work_subscription_cursors", cursorPk(subscriptionId, source, targetKey), {
+          subscription_id: subscriptionId, source, target_key: targetKey,
+          highest_accepted_version: next.accepted ?? null,
+          highest_consumed_version: next.consumed ?? null,
+          highest_frozen_version: next.frozen ?? null,
+          replay_cursor: next.replay ?? null,
+          enumeration_watermark: next.enumeration ?? null,
+          accepted_events: next.acceptedEvents,
+          consumed_events: next.consumedEvents,
+          accepted_bytes: next.acceptedBytes,
+          updated_at: updatedAt,
+        });
+        enqueueWorkOp(this.db, {
+          op: "workSubscriptionCursorUpsert", subscriptionId, source, targetKey,
+          highestAcceptedVersion: next.accepted ?? null,
+          highestConsumedVersion: next.consumed ?? null,
+          highestFrozenVersion: next.frozen ?? null,
+          replayCursor: next.replay ?? null,
+          enumerationWatermark: next.enumeration ?? null,
+          acceptedEvents: next.acceptedEvents,
+          consumedEvents: next.consumedEvents,
+          acceptedBytes: next.acceptedBytes,
+          updatedAt,
+        });
+        return;
+      }
       this.db.prepare(`INSERT INTO work_subscription_cursors
         (subscription_id,source,target_key,highest_accepted_version,highest_consumed_version,highest_frozen_version,
          replay_cursor,enumeration_watermark,accepted_events,consumed_events,accepted_bytes,updated_at)
@@ -673,25 +914,72 @@ export class WorkWatchIngress {
           accepted_events=excluded.accepted_events,consumed_events=excluded.consumed_events,
           accepted_bytes=excluded.accepted_bytes,updated_at=excluded.updated_at`)
         .run(subscriptionId, source, targetKey, next.accepted ?? null, next.consumed ?? null, next.frozen ?? null,
-          next.replay ?? null, next.enumeration ?? null, next.acceptedEvents, next.consumedEvents, next.acceptedBytes, this.now());
+          next.replay ?? null, next.enumeration ?? null, next.acceptedEvents, next.consumedEvents, next.acceptedBytes, updatedAt);
     });
   }
 
   getRoute(source: string, sourceEventId: string, subscriptionId: string): {
     state: IngressRouteOutcome; reason_code: string | null; inbox_event_id: string | null } | undefined {
-    return this.db.prepare("SELECT state,reason_code,inbox_event_id FROM work_ingress_routes WHERE source=? AND source_event_id=? AND subscription_id=?")
-      .get(source, sourceEventId, subscriptionId) as { state: IngressRouteOutcome; reason_code: string | null; inbox_event_id: string | null } | undefined;
+    const row = overlayReadOne<Record<string, unknown>>(
+      this.db, "work_ingress_routes", routePk(source, sourceEventId, subscriptionId),
+      () => this.db.prepare("SELECT state,reason_code,inbox_event_id FROM work_ingress_routes WHERE source=? AND source_event_id=? AND subscription_id=?")
+        .get(source, sourceEventId, subscriptionId) as Record<string, unknown> | undefined,
+    );
+    return row ? {
+      state: row.state as IngressRouteOutcome,
+      reason_code: (row.reason_code as string | null | undefined) ?? null,
+      inbox_event_id: (row.inbox_event_id as string | null | undefined) ?? null,
+    } : undefined;
   }
 
   routesForEvent(source: string, sourceEventId: string): Array<{ subscriptionId: string; state: IngressRouteOutcome; inboxEventId?: string }> {
-    return (this.db.prepare("SELECT subscription_id,state,inbox_event_id FROM work_ingress_routes WHERE source=? AND source_event_id=?")
-      .all(source, sourceEventId) as Array<{ subscription_id: string; state: IngressRouteOutcome; inbox_event_id: string | null }>)
-      .map(row => ({ subscriptionId: row.subscription_id, state: row.state, inboxEventId: row.inbox_event_id ?? undefined }));
+    const dbRows = this.db.prepare("SELECT * FROM work_ingress_routes WHERE source=? AND source_event_id=?")
+      .all(source, sourceEventId) as Array<Record<string, unknown>>;
+    const rows = requiresWorkRustWrites(this.db)
+      ? overlayFindAll(
+          this.db, "work_ingress_routes", dbRows,
+          r => routePk(String(r.source), String(r.source_event_id), String(r.subscription_id)),
+          r => r.source === source && r.source_event_id === sourceEventId,
+        )
+      : dbRows;
+    return rows.map(row => ({
+      subscriptionId: String(row.subscription_id),
+      state: row.state as IngressRouteOutcome,
+      inboxEventId: (row.inbox_event_id as string | null | undefined) ?? undefined,
+    }));
   }
 
   private upsertRoute(input: { source: string; sourceEventId: string; subscriptionId: string; workId: string;
     targetKey: string; inboxEventId?: string; state: IngressRouteOutcome; reasonCode?: string; sourceVersion?: string;
     trust: "adapter" | "host" | "system"; acceptedAt: number }): void {
+    if (requiresWorkRustWrites(this.db)) {
+      const pk = routePk(input.source, input.sourceEventId, input.subscriptionId);
+      overlayMutate(
+        this.db, "work_ingress_routes", pk,
+        () => this.db.prepare("SELECT * FROM work_ingress_routes WHERE source=? AND source_event_id=? AND subscription_id=?")
+          .get(input.source, input.sourceEventId, input.subscriptionId) as Record<string, unknown> | undefined,
+        cur => ({
+          source: input.source,
+          source_event_id: input.sourceEventId,
+          subscription_id: input.subscriptionId,
+          work_id: input.workId,
+          target_key: input.targetKey,
+          inbox_event_id: input.inboxEventId ?? (cur?.inbox_event_id as string | null | undefined) ?? null,
+          state: input.state,
+          reason_code: input.reasonCode ?? null,
+          source_version: input.sourceVersion ?? null,
+          trust: input.trust,
+          accepted_at: input.acceptedAt,
+        }),
+      );
+      enqueueWorkOp(this.db, {
+        op: "workIngressRouteWrite", mode: "upsert", source: input.source, sourceEventId: input.sourceEventId,
+        subscriptionId: input.subscriptionId, workId: input.workId, targetKey: input.targetKey,
+        inboxEventId: input.inboxEventId ?? null, state: input.state, reasonCode: input.reasonCode ?? null,
+        sourceVersion: input.sourceVersion ?? null, trust: input.trust, acceptedAt: input.acceptedAt,
+      });
+      return;
+    }
     this.db.prepare(`INSERT INTO work_ingress_routes
       (source,source_event_id,subscription_id,work_id,target_key,inbox_event_id,state,reason_code,source_version,trust,accepted_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)

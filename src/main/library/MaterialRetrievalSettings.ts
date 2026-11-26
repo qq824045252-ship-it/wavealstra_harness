@@ -78,16 +78,23 @@ export async function writeMaterialRetrievalSettings(
   db: AppDatabase, patch: Partial<MaterialRetrievalSettings>,
 ): Promise<MaterialRetrievalSettings> {
   const runtime = db.connection.inTransaction ? undefined : db.runtimeAuditReader;
-  if (!runtime) return setMaterialRetrievalSettings(db, patch);
+  const rustRequired = db.connection.readonly || runtime?.supervised === true;
+  if (!runtime) {
+    if (db.connection.readonly) throw new Error("只读数据库模式下无法修改资料检索设置");
+    return setMaterialRetrievalSettings(db, patch);
+  }
   const mode = Object.hasOwn(patch, "mode") ? patch.mode : undefined;
   const setDecisionModel = Object.hasOwn(patch, "decisionModel");
   if (Object.hasOwn(patch, "mode")) validateMode(mode);
   if (setDecisionModel) validateDecisionModel(patch.decisionModel);
   const decisionModel = setDecisionModel ? patch.decisionModel ?? null : null;
-  if (decisionModel && /[\uD800-\uDFFF]/u.test(decisionModel)) return setMaterialRetrievalSettings(db, patch);
+  if (decisionModel && /[\uD800-\uDFFF]/u.test(decisionModel)) {
+    if (rustRequired) throw new Error("无效的决策模型名称");
+    return setMaterialRetrievalSettings(db, patch);
+  }
   const reply = await runtime.materialRetrievalData({ kind: "setSettings", mode, decisionModel, setDecisionModel });
   if (reply?.status === "settings") return reply.settings;
-  if (reply?.status === "needsHost") return setMaterialRetrievalSettings(db, patch);
+  if (reply?.status === "needsHost" && !rustRequired) return setMaterialRetrievalSettings(db, patch);
   throw new Error(reply?.status === "rejected" ? reply.message : "资料检索设置保存未获确认，请刷新后重试");
 }
 
@@ -142,6 +149,9 @@ export function setMaterialRetrievalScope(
   scope: MaterialRetrievalScope,
   mode: MaterialRetrievalMode | null,
 ): MaterialRetrievalScopeSettings {
+  if (db.readonly || db.runtimeAuditReader?.supervised) {
+    throw new Error("资料检索范围设置在只读/受监督模式下仅允许通过 Rust 核心保存");
+  }
   if (scope?.kind !== "space" && scope?.kind !== "project") throw new Error("未知的资料检索范围");
   const isProject = scope.kind === "project";
   if (isProject) {
@@ -187,13 +197,19 @@ export async function writeMaterialRetrievalScope(
   db: AppDatabase, scope: MaterialRetrievalScope, mode: MaterialRetrievalMode | null,
 ): Promise<MaterialRetrievalScopeSettings> {
   const runtime = db.connection.inTransaction ? undefined : db.runtimeAuditReader;
-  if (!runtime || (scope?.kind !== "space" && scope?.kind !== "project") || !nativeScope(scope) ||
+  const rustRequired = db.connection.readonly || runtime?.supervised === true;
+  if (!runtime) {
+    if (db.connection.readonly) throw new Error("只读数据库模式下无法修改资料检索范围");
+    return setMaterialRetrievalScope(db, scope, mode);
+  }
+  if ((scope?.kind !== "space" && scope?.kind !== "project") || !nativeScope(scope) ||
     (mode !== null && mode !== "keyword" && mode !== "hybrid")) {
+    if (rustRequired) throw new Error("资料检索范围参数无效");
     return setMaterialRetrievalScope(db, scope, mode);
   }
   const reply = await runtime.materialRetrievalData({ kind: "setScope", scope, mode });
   if (reply?.status === "scope") return reply.settings;
-  if (reply?.status === "needsHost") return setMaterialRetrievalScope(db, scope, mode);
+  if (reply?.status === "needsHost" && !rustRequired) return setMaterialRetrievalScope(db, scope, mode);
   throw new Error(reply?.status === "rejected" ? reply.message : "资料检索范围保存未获确认，请刷新后重试");
 }
 

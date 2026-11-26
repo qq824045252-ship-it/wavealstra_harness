@@ -355,7 +355,7 @@ export class LibraryService {
     private readonly db: AppDatabase,
     opts?: { libraryRoot?: string },
   ) {
-    this.repo = new LibraryRepository(db.connection);
+    this.repo = new LibraryRepository(db.connection, db.runtimeAuditReader);
     this.root = opts?.libraryRoot ?? getLibraryDir();
     mkdirSync(this.root, { recursive: true });
     this.textSaves = new LibraryTextSaves(this.db, this.root);
@@ -364,6 +364,14 @@ export class LibraryService {
       assertManagedFile: (path) => this.assertManagedFile(path),
       isManagedFileSafe: (path) => this.isManagedFileSafe(path),
     });
+  }
+
+  private get requiresRustWrites(): boolean {
+    return this.repo.requiresRustWrites;
+  }
+
+  async flushWrites(): Promise<void> {
+    await Promise.all([this.flushPendingTextWrites(), this.flushPendingFileMutations(), this.repo.flush()]);
   }
 
   /** 仅兼容既有个人资料/旧版本数据的显式恢复入口；普通启动和查询不再创建个人资料。 */
@@ -779,14 +787,16 @@ export class LibraryService {
     let rowInserted = false;
     try {
       if (projectId || req.workspaceId) {
-        this.db.connection.transaction(() => {
+        const commitSpace = () => {
           if (projectId && !this.projectExists(projectId)) throw new Error("项目不存在");
           if (projectId && this.isProjectArchived(projectId)) throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
           if (req.workspaceId && !this.db.getSpace(req.workspaceId)) throw new Error("工作空间不存在");
           if (req.workspaceId && this.db.isSpaceEffectiveArchived(req.workspaceId)) throw new Error("已归档工作空间的资料只可读取");
           this.repo.insertSpace(space);
           mkdirSync(spacePath, { recursive: true });
-        }).immediate();
+        };
+        if (this.requiresRustWrites) commitSpace();
+        else this.db.connection.transaction(commitSpace).immediate();
         rowInserted = true;
       } else {
         this.repo.insertSpace(space);
@@ -856,7 +866,9 @@ export class LibraryService {
   }
 
   private deleteSpaceUnchecked(space: LibrarySpaceDto): void {
-    const items = this.db.connection.transaction(() => this.deleteSpaceMetadata(space.id))();
+    const items = this.requiresRustWrites
+      ? this.deleteSpaceMetadata(space.id)
+      : this.db.connection.transaction(() => this.deleteSpaceMetadata(space.id))();
     this.removeSpaceFiles(space.id, items);
   }
 
@@ -885,12 +897,15 @@ export class LibraryService {
   }
 
   withHostProjectDeletion<T>(projectId: string, deleteProjectData: () => T): T {
-    const { spaces, result } = this.db.connection.transaction(() => {
+    const runDelete = () => {
       const spaces = this.repo.listProjectSpaces(projectId).map(space => ({
         id: space.id, items: this.deleteSpaceMetadata(space.id),
       }));
       return { spaces, result: deleteProjectData() };
-    }).immediate();
+    };
+    const { spaces, result } = this.requiresRustWrites
+      ? runDelete()
+      : this.db.connection.transaction(runDelete).immediate();
     for (const space of spaces) this.removeSpaceFiles(space.id, space.items);
     return result;
   }
@@ -1198,6 +1213,7 @@ export class LibraryService {
         ? await reader.exportLibraryBackup(this.textSaves.root, owner, staging)
         : "needsHost";
       if (status === "needsHost") {
+        if (this.requiresRustWrites) throw new Error("受监督模式下资料备份必须通过 Rust 核心完成");
         const archive = JSON.stringify(libraryNotesBackup.parse(this.createNoteBackup(owner)));
         if (Buffer.byteLength(archive) > LIBRARY_NOTES_BACKUP_LIMIT) throw new Error("资料超过单份本地备份的大小上限");
         await writeFile(staging, await promisify(gzip)(archive), { flag: "wx" });
@@ -1225,13 +1241,19 @@ export class LibraryService {
     await this.flushPendingTextWrites();
     await this.flushPendingFileMutations();
     const reader = this.db.runtimeAuditReader;
-    if (!reader || this.db.connection.inTransaction) return this.importNoteBackupOnHost(owner, source);
+    if (!reader || this.db.connection.inTransaction) {
+      if (this.requiresRustWrites) throw new Error("受监督模式下资料恢复必须通过 Rust 核心完成");
+      return this.importNoteBackupOnHost(owner, source);
+    }
     const operationId = randomUUID();
     const root = this.textSaves.root;
     return this.trackFileMutation(reader.restoreLibraryBackup({
       source: resolve(source), root, owner, operationId, ...LIBRARY_CHUNK_DEFAULTS,
     }, () => this.ensureOwnedSpace(owner).id).then(async (result) => {
-      if (result?.status === "needsHost") return this.importNoteBackupOnHost(owner, source);
+      if (result?.status === "needsHost") {
+        if (this.requiresRustWrites) throw new Error("受监督模式下资料恢复无法回退到宿主 SQLite");
+        return this.importNoteBackupOnHost(owner, source);
+      }
       if (result?.status === "rejected") throw new Error(result.message);
       let receipt = result?.receipt;
       if (!receipt) {
@@ -1264,7 +1286,7 @@ export class LibraryService {
     const written: LibraryItemDto[] = [];
     let restored = 0, skipped = 0;
     try {
-      this.db.connection.transaction(() => {
+      const runRestore = () => {
         const targetSpace = (id: string) => spaceIds.has(id) ? id : defaultSpace;
         const pending = new Map(backup.folders.map((folder) => [folder.id, folder]));
         if (pending.size !== backup.folders.length || new Set(backup.items.map((entry) => entry.item.id)).size !== backup.items.length) {
@@ -1309,7 +1331,9 @@ export class LibraryService {
           if (!next.trashedAt) this.refreshFts(next);
           restored++;
         }
-      }).immediate();
+      };
+      if (this.requiresRustWrites) runRestore();
+      else this.db.connection.transaction(runRestore).immediate();
       return { restored, skipped };
     } catch (error) {
       for (const item of written) this.removeFileAfterDurableDelete(item);
@@ -1393,6 +1417,12 @@ export class LibraryService {
         return toItem(result.item);
       }
     }
+    if (this.requiresRustWrites) {
+      const mergedTags = tags ?? item.tags;
+      const next = { ...item, tags: mergedTags, pinned: patch.pinned ?? item.pinned, updatedAt: Date.now() };
+      this.repo.updateItem(next, item);
+      return next;
+    }
     return this.setNoteMetadata(owner, id, patch);
   }
 
@@ -1426,6 +1456,7 @@ export class LibraryService {
   async trashNotes(owner: LibraryOwnerScope, ids: string[]): Promise<void> {
     const items = this.requireOwnedNoteItems(owner, ids, true).map(({ id, spaceId }) => ({ id, spaceId }));
     if (items.length && !await this.writeNativeNote({ kind: "trash", items })) {
+      if (this.requiresRustWrites) throw new Error("笔记移入回收站未收到 Rust 核心确认");
       this.setNoteTrashedOnHost(owner, ids, true);
     }
   }
@@ -1437,6 +1468,7 @@ export class LibraryService {
       kind: "restore", items, root: this.textSaves.root, ...LIBRARY_CHUNK_DEFAULTS,
     });
     if (!result) {
+      if (this.requiresRustWrites) throw new Error("笔记恢复未收到 Rust 核心确认");
       this.setNoteTrashedOnHost(owner, ids, false);
       return;
     }
@@ -1448,6 +1480,7 @@ export class LibraryService {
     if (!checked.length || await this.writeNativeNote({
       kind: "move", items: checked.map(({ id, spaceId }) => ({ id, spaceId })), collectionId,
     })) return;
+    if (this.requiresRustWrites) throw new Error("笔记移动未收到 Rust 核心确认");
     const items = this.requireNoteMove(owner, ids, collectionId);
     this.db.connection.transaction(() => {
       for (const item of items) this.repo.updateItem({ ...item, collectionId, updatedAt: Date.now() }, item);
@@ -1500,11 +1533,15 @@ export class LibraryService {
     this.indexMaintenance.forgetItem(id);
     // Durable metadata is the commit point. Never delete the managed file first: a DB failure
     // must not leave a live Library row pointing at a missing file.
-    this.db.connection.transaction(() => {
-      try { (this.db as any).deleteChunkEmbeddings?.(item.id); } catch {}
-      try { this.db.connection.prepare(`DELETE FROM library_chunk_embeddings WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id=?)`).run(item.id); } catch {}
-      this.repo.deleteItem(item.id); // repository also removes FTS/chunks before deleting the row
-    })();
+    if (this.requiresRustWrites) {
+      this.repo.deleteItem(item.id);
+    } else {
+      this.db.connection.transaction(() => {
+        try { (this.db as any).deleteChunkEmbeddings?.(item.id); } catch {}
+        try { this.db.connection.prepare(`DELETE FROM library_chunk_embeddings WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id=?)`).run(item.id); } catch {}
+        this.repo.deleteItem(item.id); // repository also removes FTS/chunks before deleting the row
+      })();
+    }
     try { this.removeFile(item); }
     catch (error) {
       // DB row is already gone; an orphan file is safer than a dangling durable row and can be reconciled later.
@@ -1522,7 +1559,10 @@ export class LibraryService {
 
   private async deleteNative(target: RuntimeLibraryDeleteTarget, committed: () => boolean, fallback: () => void): Promise<void> {
     const reader = this.db.runtimeAuditReader;
-    if (!reader || this.db.connection.inTransaction) return fallback();
+    if (!reader || this.db.connection.inTransaction) {
+      if (this.requiresRustWrites) throw new Error("资料删除在只读/受监督模式下仅允许通过 Rust 核心完成");
+      return fallback();
+    }
     const job = (async () => {
       let result: RuntimeLibraryDeleteReply | undefined;
       try {
@@ -1560,7 +1600,10 @@ export class LibraryService {
             { code: "RUNTIME_OPERATION_UNKNOWN", requestId: error.requestId, operation: "deleteLibrary" });
         }
       }
-      if (result?.status === "needsHost") return fallback();
+      if (result?.status === "needsHost") {
+        if (this.requiresRustWrites) throw new Error("资料删除无法回退到宿主 SQLite");
+        return fallback();
+      }
       if (result?.status === "scopeChanged") throw new Error("资料位置或归档状态已变化，请刷新后重试");
       if (result?.status === "deleted") {
         for (const id of result.itemIds) this.indexMaintenance.forgetItem(id);
@@ -1662,7 +1705,10 @@ export class LibraryService {
 
   async writeContentAsync(req: LibraryWriteContentRequest): Promise<LibraryItemDto> {
     const reader = this.db.runtimeAuditReader;
-    if (!reader || this.db.connection.inTransaction) return this.updateTextContent(req);
+    if (!reader || this.db.connection.inTransaction) {
+      if (this.requiresRustWrites) throw new Error("受监督模式下保存笔记仅允许通过 Rust 核心完成");
+      return this.updateTextContent(req);
+    }
     return this.textSaves.enqueue(req.id, async () => {
       const item = this.requireTextUpdate(req.id);
       const content = req.content ?? "";
@@ -1676,6 +1722,7 @@ export class LibraryService {
       if (Buffer.byteLength(content) > NATIVE_LIBRARY_SAVE_MAX_BYTES
         || [content, title, req.expectedTitle, createdBy].some(value => value && /[\uD800-\uDFFF]/u.test(value))
         || !existsSync(dirname(path))) {
+        if (this.requiresRustWrites) throw new Error("笔记大小超过限制或包含不支持的字符，受监督模式下无法保存");
         return this.updateTextContentOnHost(req);
       }
       const status = await reader.saveLibraryText({
@@ -1684,7 +1731,10 @@ export class LibraryService {
         expectedTitle: req.expectedTitle, expectedContentHash: req.expectedContentHash,
         content, createdBy, updatedAt: Date.now(), ...LIBRARY_CHUNK_DEFAULTS,
       });
-      if (status === "needsHost") return this.updateTextContentOnHost(req);
+      if (status === "needsHost") {
+        if (this.requiresRustWrites) throw new Error("保存笔记无法回退到宿主 SQLite");
+        return this.updateTextContentOnHost(req);
+      }
       if (status === "saved" || status === "unchanged" || this.textSaves.wasCommitted(item.id, operationId)) {
         if (status !== "unchanged") this.indexMaintenance.noteTextIndexed(item.id);
         const updated = this.repo.getItem(item.id, true);
@@ -1833,7 +1883,7 @@ export class LibraryService {
         item.sizeBytes = size;
       }
 
-      return this.db.connection.transaction(() => {
+      const commitFolder = () => {
         this.requireOwnedNoteDestination(req.owner, spaceId, req.collectionId);
         const collections = new Map<string, LibraryCollectionDto>();
         for (const folder of plan.folders) {
@@ -1851,7 +1901,8 @@ export class LibraryService {
           this.refreshFts(item);
         }
         return { folder: collections.get(plan.root)!, fileCount: files.length, skippedEntries: plan.skippedEntries };
-      })();
+      };
+      return this.requiresRustWrites ? commitFolder() : this.db.connection.transaction(commitFolder)();
     } catch (error) {
       for (const item of published) this.removeFileAfterDurableDelete(item);
       throw error;
@@ -2422,13 +2473,15 @@ export class LibraryService {
     const descendants = this.repo.listCollectionsRecursive(collection.spaceId, collection.id);
     const collections = [collection, ...descendants];
     const items = this.repo.listItemsInCollectionTree(collection.spaceId, collection.id);
-    this.db.connection.transaction(() => {
+    const runDelete = () => {
       for (const item of items) this.repo.deleteItem(item.id);
       for (const current of [...collections].reverse()) {
         this.db.deleteLibraryCollectionLinks(current.id);
         this.repo.deleteCollection(current.id);
       }
-    })();
+    };
+    if (this.requiresRustWrites) runDelete();
+    else this.db.connection.transaction(runDelete)();
     for (const item of items) this.removeFileAfterDurableDelete(item);
   }
   private seedWelcomeIfEmpty(space: LibrarySpaceDto): void {

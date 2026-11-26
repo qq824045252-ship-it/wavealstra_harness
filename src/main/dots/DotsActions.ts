@@ -169,16 +169,60 @@ export class DotsActions {
   private readonly deferred: DotsDeferredRequirements;
   private readonly watches: DotsFileWatches;
   private controlRecovery?: Promise<void>;
+  private writeTail = Promise.resolve();
+  private pendingWriteCount = 0;
+  private readonly pendingControlReceipts = new Map<string, { targetTaskId: string; outcome: string }>();
+  private readonly pendingTargetControls = new Map<string, { state: "paused" | "stopped"; operation_id: string } | null>();
+  private readonly pendingContinuationTargets = new Map<string, { priorOperationId: string | null; assignmentQuote: string | null }>();
+  private readonly pendingProactivePauses = new Map<string, string | null>();
+  private readonly pendingControlBatches = new Map<string, string>();
+  private readonly pendingFailedTasks = new Set<string>();
+
+  private get requiresRustWrites(): boolean {
+    return this.db.readonly || Boolean(this.db.runtimeAuditReader?.supervised);
+  }
+
+  async flushWrites(): Promise<void> {
+    await this.writeTail;
+    await this.deferred.flush();
+    await this.followups.flushWrites();
+    await this.foreground.flushWrites();
+    await this.watches.flushWrites();
+  }
+
+  private enqueueActionWrite(request: Record<string, unknown>, label: string): Promise<unknown> {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) return Promise.reject(new Error(`只读模式下缺少 Dots 动作 Rust 写入通道: ${label}`));
+    this.pendingWriteCount += 1;
+    const op = this.writeTail.then(() => reader.batch4aWrite(request));
+    this.writeTail = op.then(() => undefined, error => {
+      console.warn(`[DotsActions] ${label} failed`, error);
+    }).finally(() => {
+      this.pendingWriteCount -= 1;
+      if (this.pendingWriteCount === 0) {
+        this.pendingControlReceipts.clear();
+        this.pendingTargetControls.clear();
+        this.pendingContinuationTargets.clear();
+        this.pendingProactivePauses.clear();
+        this.pendingControlBatches.clear();
+        this.pendingFailedTasks.clear();
+      }
+    });
+    return op;
+  }
 
   constructor(private readonly db: AppDatabase, private readonly agent: Agent & DiagnosticAgent, private readonly hooks: DotsActionHooks,
     private readonly board = new TaskBoardRepository(db.connection, db.runtimeAuditReader)) {
-    this.foreground = new DotsForegroundReads(db.connection);
-    this.deferred = new DotsDeferredRequirements(db.connection);
-    db.connection.exec(`CREATE TABLE IF NOT EXISTS dots_control_batches(id TEXT PRIMARY KEY, selection TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS dots_proactive_pauses(scope TEXT PRIMARY KEY,timer_ids TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS dots_continuation_targets(source TEXT NOT NULL,task_id TEXT NOT NULL,
-        prior_operation_id TEXT,assignment_quote TEXT,PRIMARY KEY(source,task_id))`);
+    this.foreground = new DotsForegroundReads(db.connection, db.runtimeAuditReader);
+    this.deferred = new DotsDeferredRequirements(db.connection, db.runtimeAuditReader);
+    if (!db.readonly) {
+      db.connection.exec(`CREATE TABLE IF NOT EXISTS dots_control_batches(id TEXT PRIMARY KEY, selection TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS dots_proactive_pauses(scope TEXT PRIMARY KEY,timer_ids TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS dots_continuation_targets(source TEXT NOT NULL,task_id TEXT NOT NULL,
+          prior_operation_id TEXT,assignment_quote TEXT,PRIMARY KEY(source,task_id))`);
+    }
     this.followups = new DotsFollowup(db.connection, {
+      native: db.runtimeAuditReader,
       allowed: taskId => {
         try {
           this.task(taskId);
@@ -253,7 +297,14 @@ export class DotsActions {
     })]).then(() => {});
   }
 
-  async closeFileWatches() { await Promise.all([this.watches.close(), this.controlRecovery]); }
+  refreshFileWatches() {
+    this.watches.refresh();
+  }
+
+  async closeFileWatches() {
+    await Promise.all([this.watches.close(), this.controlRecovery]);
+    await this.flushWrites();
+  }
 
   private get preferences() {
     return this.hooks.preferences?.() ?? { followupMode: "continue" as const, spaceIds: null };
@@ -456,6 +507,9 @@ export class DotsActions {
   }
 
   private control(taskId: string) {
+    if (this.pendingTargetControls.has(taskId)) {
+      return this.pendingTargetControls.get(taskId) ?? undefined;
+    }
     return this.db.connection.prepare("SELECT state,operation_id FROM dots_target_controls WHERE task_id=?").get(taskId) as
       { state: "paused" | "stopped"; operation_id: string } | undefined;
   }
@@ -518,8 +572,23 @@ export class DotsActions {
     }
     const control = this.control(request.taskId);
     if (control && control.operation_id !== request.userMessageId) throw new DotsIntentChanged("Dots 已暂停或停止此事项，请明确恢复后再派发");
-    if (initialCwd) this.db.connection.prepare("UPDATE dots_delegations SET cwd=? WHERE operation_id=? AND task_id=? AND status='pending' AND cwd IS NULL")
-      .run(initialCwd, request.userMessageId, request.taskId);
+    if (initialCwd) {
+      if (this.requiresRustWrites) {
+        void this.enqueueActionWrite({
+          kind: "dotsDelegationUpdateCwd",
+          seq: null,
+          operationId: request.userMessageId,
+          taskId: request.taskId,
+          expectedStatus: "pending",
+          expectedCwd: null,
+          cwd: initialCwd,
+          alsoObserve: null,
+        }, "assertAdmissionCwd").catch(() => undefined);
+      } else {
+        this.db.connection.prepare("UPDATE dots_delegations SET cwd=? WHERE operation_id=? AND task_id=? AND status='pending' AND cwd IS NULL")
+          .run(initialCwd, request.userMessageId, request.taskId);
+      }
+    }
   }
 
   async accepted(request: Pick<AgentPromptRequest,"taskId"|"userMessageId">, submissionId: number) {
@@ -528,6 +597,39 @@ export class DotsActions {
     const control = this.control(request.taskId);
     if (!control || control.operation_id !== request.userMessageId) return;
     const version = await this.agent.dotsInputVersion(request.taskId);
+    if (this.requiresRustWrites) {
+      const resumeWatches = JSON.parse(version)[1] === submissionId;
+      const now = Date.now();
+      const scheduleOps = resumeWatches
+        ? this.agent.dotsScheduleIds(false, { taskId: request.taskId }).map(jobId => ({
+            action: "holdRelease",
+            jobId,
+            holder: "task:" + request.taskId,
+            now,
+          }))
+        : [];
+      const res = await this.enqueueActionWrite({
+        kind: "dotsActionTargetControl",
+        mode: "deleteByOp",
+        taskId: request.taskId,
+        operationId: request.userMessageId,
+        expectedOperationId: null,
+        state: null,
+        watchesAction: control.state === "paused" ? (resumeWatches ? "resume" : "stop") : null,
+        watchesInputVersion: resumeWatches ? version : null,
+        scheduleOps,
+        receiptId: null,
+        receiptOutcome: null,
+      }, "accepted") as { changes?: number } | undefined;
+      if (res?.changes && control.state === "paused") {
+        this.pendingTargetControls.set(request.taskId, null);
+        if (resumeWatches) this.releaseTaskHolds(request.taskId, version);
+        else this.watches.controlTarget(request.taskId, "stop");
+      } else if (res?.changes) {
+        this.pendingTargetControls.set(request.taskId, null);
+      }
+      return;
+    }
     this.db.connection.transaction(() => {
       const changed = this.db.connection.prepare("DELETE FROM dots_target_controls WHERE task_id=? AND operation_id=?").run(request.taskId, request.userMessageId);
       if (changed.changes && control.state === "paused") {
@@ -544,8 +646,10 @@ export class DotsActions {
   }
 
   private async resumeFinishedTurn(task: TaskDto, resumeId: string, previousId?: string, checkCurrent?: () => Promise<void>) {
-    const saved = this.db.connection.prepare("SELECT outcome FROM dots_control_receipts WHERE operation_id=? AND target_task_id=?")
-      .pluck().get(resumeId, task.id) as string | undefined;
+    const saved = this.pendingControlReceipts.get(resumeId)?.targetTaskId === task.id
+      ? this.pendingControlReceipts.get(resumeId)!.outcome
+      : (this.db.connection.prepare("SELECT outcome FROM dots_control_receipts WHERE operation_id=? AND target_task_id=?")
+          .pluck().get(resumeId, task.id) as string | undefined);
     if (saved) previousId = saved;
     if (!previousId) return;
     const control = this.control(task.id);
@@ -558,6 +662,39 @@ export class DotsActions {
     if (JSON.parse(version)[1] !== receipt.submissionId)
       throw new DotsIntentChanged("原普通任务已收到更新的要求，不能重新派发先前已完成的交办");
     if (checkCurrent) await checkCurrent();
+    if (this.requiresRustWrites) {
+      const existingReceipt = this.pendingControlReceipts.get(resumeId);
+      if (!(existingReceipt?.targetTaskId === task.id && existingReceipt.outcome === previousId)
+        && !this.db.connection.prepare("SELECT 1 FROM dots_control_receipts WHERE operation_id=? AND target_task_id=? AND outcome=?").get(resumeId, task.id, previousId)) {
+        if (this.followups.latestPlan(task.id)?.request.userMessageId !== previousId || this.control(task.id)?.operation_id !== control?.operation_id)
+          throw new DotsIntentChanged("恢复期间事项已变化，请查询原任务");
+        const now = Date.now();
+        const scheduleOps = this.agent.dotsScheduleIds(false, { taskId: task.id }).map(jobId => ({
+          action: "holdRelease",
+          jobId,
+          holder: "task:" + task.id,
+          now,
+        }));
+        await this.enqueueActionWrite({
+          kind: "dotsActionTargetControl",
+          mode: "resume",
+          taskId: task.id,
+          operationId: null,
+          expectedOperationId: control?.operation_id ?? null,
+          state: null,
+          watchesAction: "resume",
+          watchesInputVersion: version,
+          scheduleOps,
+          receiptId: resumeId,
+          receiptOutcome: previousId,
+        }, "resumeFinishedTurn");
+        this.pendingTargetControls.set(task.id, null);
+        this.pendingControlReceipts.set(resumeId, { targetTaskId: task.id, outcome: previousId });
+        this.releaseTaskHolds(task.id, version);
+      }
+      this.hooks.changed?.();
+      return { ...this.summary(task), resumed: true, receipt };
+    }
     this.db.connection.transaction(() => {
       if (this.db.connection.prepare("SELECT 1 FROM dots_control_receipts WHERE operation_id=? AND target_task_id=? AND outcome=?").get(resumeId, task.id, previousId)) return;
       if (this.followups.latestPlan(task.id)?.request.userMessageId !== previousId || this.control(task.id)?.operation_id !== control?.operation_id)
@@ -597,8 +734,42 @@ export class DotsActions {
   }
 
   private continuationTarget(source: string, taskId: string, originalText?: string, quote?: string) {
-    if (!this.db.connection.prepare("SELECT 1 FROM dots_continuation_targets WHERE source=? AND task_id=?").get(source, taskId))
+    const contKey = `${source}\0${taskId}`;
+    const pendingCont = this.pendingContinuationTargets.get(contKey);
+    const exists = Boolean(pendingCont) || Boolean(this.db.connection.prepare("SELECT 1 FROM dots_continuation_targets WHERE source=? AND task_id=?").get(source, taskId));
+    if (!exists)
       this.assertSeparateContinuation(source, originalText, quote, taskId);
+    if (this.requiresRustWrites) {
+      const priorOp = pendingCont ? pendingCont.priorOperationId : this.latestOperation(taskId);
+      const nextQuote = pendingCont?.assignmentQuote ?? (quote ?? null);
+      if (!pendingCont) {
+        const dbExisting = this.db.connection.prepare("SELECT prior_operation_id, assignment_quote FROM dots_continuation_targets WHERE source=? AND task_id=?")
+          .get(source, taskId) as { prior_operation_id: string | null; assignment_quote: string | null } | undefined;
+        const resolved = dbExisting
+          ? { priorOperationId: dbExisting.prior_operation_id, assignmentQuote: dbExisting.assignment_quote ?? (quote ?? null) }
+          : { priorOperationId: priorOp, assignmentQuote: quote ?? null };
+        this.pendingContinuationTargets.set(contKey, resolved);
+        void this.enqueueActionWrite({
+          kind: "dotsActionContinuationTarget",
+          source,
+          taskId,
+          priorOperationId: resolved.priorOperationId,
+          assignmentQuote: quote ?? null,
+        }, "continuationTarget").catch(() => undefined);
+        return resolved.priorOperationId;
+      }
+      if (!pendingCont.assignmentQuote && nextQuote) {
+        this.pendingContinuationTargets.set(contKey, { priorOperationId: pendingCont.priorOperationId, assignmentQuote: nextQuote });
+      }
+      void this.enqueueActionWrite({
+        kind: "dotsActionContinuationTarget",
+        source,
+        taskId,
+        priorOperationId: priorOp,
+        assignmentQuote: quote ?? null,
+      }, "continuationTarget").catch(() => undefined);
+      return pendingCont.priorOperationId;
+    }
     this.db.connection.prepare(`INSERT INTO dots_continuation_targets VALUES(?,?,?,?)
       ON CONFLICT(source,task_id) DO UPDATE SET assignment_quote=COALESCE(assignment_quote,excluded.assignment_quote)`)
       .run(source, taskId, this.latestOperation(taskId), quote ?? null);
@@ -607,8 +778,16 @@ export class DotsActions {
   }
 
   private assertSeparateContinuation(source: string, originalText?: string, assignment?: string, targetTaskId?: string) {
-    const selected = this.db.connection.prepare("SELECT assignment_quote FROM dots_continuation_targets WHERE source=? AND task_id IS NOT ?")
-      .pluck().all(source, targetTaskId ?? null) as (string | null)[];
+    const dbRows = this.db.connection.prepare("SELECT task_id, assignment_quote FROM dots_continuation_targets WHERE source=? AND task_id IS NOT ?")
+      .all(source, targetTaskId ?? null) as Array<{ task_id: string; assignment_quote: string | null }>;
+    const quotesByTask = new Map(dbRows.map(row => [row.task_id, row.assignment_quote]));
+    const prefix = `${source}\0`;
+    for (const [key, val] of this.pendingContinuationTargets) {
+      if (!key.startsWith(prefix)) continue;
+      const tid = key.slice(prefix.length);
+      if (tid !== targetTaskId) quotesByTask.set(tid, val.assignmentQuote);
+    }
+    const selected = [...quotesByTask.values()];
     if (selected.some(quote => !quote || !assignment || !originalText || !this.separateAssignments(originalText, quote, assignment)))
       throw new DotsIntentChanged("本轮已经选定原任务。另行交办时，需要引用本条消息里独立事项的原话");
   }
@@ -687,15 +866,29 @@ export class DotsActions {
     answer: ReturnType<typeof userAnswer>) {
     const key = dotsRequestDigest(sourceId, JSON.stringify(["answer", task.id, operationId, question.id]));
     const inputKey = dotsRequestDigest(sourceId, JSON.stringify(["dots-answer-input", task.id, sourceId]));
-    this.db.connection.transaction(() => {
+    if (this.requiresRustWrites) {
       if (this.control(task.id)) throw new Error("原任务已暂停或问题已经结束");
-      if (!this.db.connection.prepare("SELECT 1 FROM dots_control_receipts WHERE operation_id=? AND outcome='answered'").get(key)) {
+      const alreadyAnswered = this.pendingControlReceipts.get(key)?.outcome === "answered"
+        || Boolean(this.db.connection.prepare("SELECT 1 FROM dots_control_receipts WHERE operation_id=? AND outcome='answered'").get(key));
+      if (!alreadyAnswered) {
         const reply = this.agent.respondConversationInteraction(question.id, answer);
         if (!reply.ok) throw new Error(reply.message);
-        this.db.connection.prepare("INSERT INTO dots_control_receipts VALUES(?,?,'answered')").run(key, task.id);
+        this.pendingControlReceipts.set(key, { targetTaskId: task.id, outcome: "answered" });
       }
-      this.db.connection.prepare("INSERT OR IGNORE INTO dots_control_receipts VALUES(?,?,'answered')").run(inputKey, task.id);
-    })();
+      this.pendingControlReceipts.set(inputKey, { targetTaskId: task.id, outcome: "answered" });
+      void this.enqueueActionWrite({ kind: "dotsActionRecordAnswer", key, inputKey, taskId: task.id }, "recordAnswer")
+        .catch(() => undefined);
+    } else {
+      this.db.connection.transaction(() => {
+        if (this.control(task.id)) throw new Error("原任务已暂停或问题已经结束");
+        if (!this.db.connection.prepare("SELECT 1 FROM dots_control_receipts WHERE operation_id=? AND outcome='answered'").get(key)) {
+          const reply = this.agent.respondConversationInteraction(question.id, answer);
+          if (!reply.ok) throw new Error(reply.message);
+          this.db.connection.prepare("INSERT INTO dots_control_receipts VALUES(?,?,'answered')").run(key, task.id);
+        }
+        this.db.connection.prepare("INSERT OR IGNORE INTO dots_control_receipts VALUES(?,?,'answered')").run(inputKey, task.id);
+      })();
+    }
     this.hooks.changed?.();
     return { ...this.summary(task), operationId, interactionId: question.id, answered: true };
   }
@@ -1164,19 +1357,46 @@ ${input.text}`),
       const scope = input.spaceId ?? "";
       const pause = input.action === "pause_proactive";
       const key = JSON.stringify([sourceId,input.action,scope]);
-      const prior = this.db.connection.prepare("SELECT outcome FROM dots_control_receipts WHERE operation_id=?").get(key) as {outcome:string} | undefined;
+      const pendingPrior = this.pendingControlReceipts.get(key)?.outcome;
+      const prior = pendingPrior !== undefined
+        ? { outcome: pendingPrior }
+        : (this.db.connection.prepare("SELECT outcome FROM dots_control_receipts WHERE operation_id=?").get(key) as {outcome:string} | undefined);
       if (prior) return JSON.parse(prior.outcome) as {scope:string;proactive:string;schedules:Array<{id:string;state:string}>};
-      const saved = this.db.connection.prepare("SELECT timer_ids FROM dots_proactive_pauses WHERE scope=?").get(scope) as {timer_ids:string} | undefined;
+      const pendingPause = this.pendingProactivePauses.get(scope);
+      const saved = pendingPause !== undefined
+        ? (pendingPause ? { timer_ids: pendingPause } : undefined)
+        : (this.db.connection.prepare("SELECT timer_ids FROM dots_proactive_pauses WHERE scope=?").get(scope) as {timer_ids:string} | undefined);
       const ids: string[] = saved ? JSON.parse(saved.timer_ids) : pause ? this.agent.dotsScheduleIds(false, scope ? { spaceId: scope } : undefined) : [];
-      const schedules = this.db.connection.transaction(() => {
-        if (pause) this.db.connection.prepare("INSERT OR IGNORE INTO dots_proactive_pauses VALUES(?,?)").run(scope,JSON.stringify(ids));
-        else this.db.connection.prepare("DELETE FROM dots_proactive_pauses WHERE scope=?").run(scope);
+      let schedules: Array<{ id: string; state: string }>;
+      if (this.requiresRustWrites) {
+        const timerIdsJson = pause ? JSON.stringify(ids) : null;
+        this.pendingProactivePauses.set(scope, timerIdsJson);
         const existing = new Set(this.agent.dotsScheduleIds());
-        const rows = ids.filter(id => existing.has(id)).map(id => ({ id, state: this.agent.holdDotsSchedule(id, "proactive:" + scope, pause) }));
-        const receipt = {scope:scope || "all",proactive:pause ? "paused" : "enabled", schedules:rows};
-        this.db.connection.prepare("INSERT INTO dots_control_receipts VALUES(?,?,?)").run(key,DOTS_TASK_ID,JSON.stringify(receipt));
-        return rows;
-      })();
+        const now = Date.now();
+        schedules = ids.filter(id => existing.has(id)).map(id => ({ id, state: this.agent.holdDotsSchedule(id, "proactive:" + scope, pause) }));
+        const receipt = { scope: scope || "all", proactive: pause ? "paused" : "enabled", schedules };
+        const receiptJson = JSON.stringify(receipt);
+        this.pendingControlReceipts.set(key, { targetTaskId: DOTS_TASK_ID, outcome: receiptJson });
+        await this.enqueueActionWrite({
+          kind: "dotsActionProactivePause",
+          scope,
+          pause,
+          timerIdsJson,
+          receiptKey: key,
+          receiptJson,
+          holds: [],
+        }, "pauseProactive");
+      } else {
+        schedules = this.db.connection.transaction(() => {
+          if (pause) this.db.connection.prepare("INSERT OR IGNORE INTO dots_proactive_pauses VALUES(?,?)").run(scope,JSON.stringify(ids));
+          else this.db.connection.prepare("DELETE FROM dots_proactive_pauses WHERE scope=?").run(scope);
+          const existing = new Set(this.agent.dotsScheduleIds());
+          const rows = ids.filter(id => existing.has(id)).map(id => ({ id, state: this.agent.holdDotsSchedule(id, "proactive:" + scope, pause) }));
+          const receipt = {scope:scope || "all",proactive:pause ? "paused" : "enabled", schedules:rows};
+          this.db.connection.prepare("INSERT INTO dots_control_receipts VALUES(?,?,?)").run(key,DOTS_TASK_ID,JSON.stringify(receipt));
+          return rows;
+        })();
+      }
       if (!pause) this.watches.refresh();
       this.hooks.changed?.();
       return { scope:scope || "all", proactive:pause ? "paused" : "enabled", schedules };
@@ -1229,7 +1449,9 @@ ${input.text}`),
       const current = existing();
       if (!this.agent.dotsAnswerEvidenceAllowed({kind:"file",path:canonicalFolder}))
         throw new Error("新文件夹属于未授权给 Dots 的空间");
-      const child = current ? checkSpace(current) : this.db.createSpace({ id, name, path: folder, parentId: parent.id });
+      const child = current ? checkSpace(current)
+        : this.requiresRustWrites ? await this.db.writeWorkspaceUpsert({ id, name, path: folder, parentId: parent.id })
+          : this.db.createSpace({ id, name, path: folder, parentId: parent.id });
       this.hooks.changed?.();
       return spaceLink(child);
     }
@@ -1242,7 +1464,7 @@ ${input.text}`),
       if (previous) return previous;
       const path = await realpath(requested);
       if (!(await stat(path)).isDirectory()) throw new Error("指定路径不是文件夹");
-      return this.changeSpaceOnce(operation, () => {
+      return this.changeSpaceOnce(operation, async () => {
         if (!this.agent.dotsAnswerEvidenceAllowed({kind:"file",path}))
           throw new Error("目标目录属于未授权给 Dots 的空间");
         let space = input.spaceId ? this.space(input.spaceId) : undefined;
@@ -1250,17 +1472,22 @@ ${input.text}`),
           const name = required(input.name, "空间名称");
           space = this.db.findRootSpaceByName(name);
           if (space) space = this.space(space.id);
+          else if (this.requiresRustWrites) space = await this.db.writeWorkspaceUpsert({ id: "sp-dots-" + digest(name), name, path });
           else space = this.db.createSpace({ id: "sp-dots-" + digest(name), name, path });
         }
-        if (space.path !== path) this.db.upsertSpace({ id: space.id, name: space.name, path });
+        if (space.path !== path) {
+          if (this.requiresRustWrites) await this.db.writeWorkspaceUpsert({ id: space.id, name: space.name, path });
+          else this.db.upsertSpace({ id: space.id, name: space.name, path });
+        }
         return space.id;
       });
     }
     if (input.action === "rename") {
       const name = required(input.name, "新名称");
-      return this.changeSpaceOnce(digest(JSON.stringify(["rename", input.spaceId, name])), () => {
+      return this.changeSpaceOnce(digest(JSON.stringify(["rename", input.spaceId, name])), async () => {
         const space = this.space(input.spaceId);
-        this.db.renameSpace(space.id, name);
+        if (this.requiresRustWrites) await this.db.writeWorkspaceRename(space.id, name);
+        else this.db.renameSpace(space.id, name);
         return space.id;
       });
     }
@@ -1462,8 +1689,10 @@ ${input.text}`),
         if (selection && foreground?.checkCurrentInstruction) await foreground.checkCurrentInstruction();
         this.space(space.id);
         if (!this.db.getTask(id)) {
-          this.db.upsertTask({ id, spaceId: space.id, title, updatedAt: Date.now(),
-            welcomeMode: executionConfiguration?.welcomeMode, modePresetId: executionConfiguration?.modePresetId, expertId: executionConfiguration?.expertId });
+          const created = { id, spaceId: space.id, title, updatedAt: Date.now(),
+            welcomeMode: executionConfiguration?.welcomeMode, modePresetId: executionConfiguration?.modePresetId, expertId: executionConfiguration?.expertId };
+          if (this.requiresRustWrites) await this.db.writeTaskRecord(created);
+          else this.db.upsertTask(created);
           newTask = true;
         }
       }
@@ -1556,15 +1785,17 @@ ${input.text}`),
       if (foreground?.followUp) await foreground.followUp.checkCurrent();
       if ((!newTask || deferred) && foreground?.checkCurrentInstruction) await foreground.checkCurrentInstruction();
       // 任务记录（upsertTask）已在前面落库：此后的任何失败都必须给委派和任务一个终态。
-      const alreadyLinked = this.db.connection.transaction(() => {
+      const linkPhase = () => {
         if (foreground?.priorOperationId) {
-          const latestOperation = this.db.connection.prepare("SELECT operation_id FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1")
-            .pluck().get(task.id);
+          const latestOperation = this.hooks.list?.().filter(r => r.taskId === task.id).at(-1)?.id
+            ?? (this.db.connection.prepare("SELECT operation_id FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1")
+              .pluck().get(task.id) as string | undefined);
           if (latestOperation !== foreground.priorOperationId && latestOperation !== operationId)
             throw new DotsForegroundUnavailable("原任务的交办已变化，未续办旧事项。");
         }
         foreground?.validateEvidence?.();
-        if ((creating || foreground?.revisions || continuationIdentity) && this.db.connection.prepare("SELECT 1 FROM dots_delegations WHERE operation_id=?").get(operationId)) {
+        if ((creating || foreground?.revisions || continuationIdentity) && (this.hooks.list?.().some(r => r.id === operationId)
+          || this.db.connection.prepare("SELECT 1 FROM dots_delegations WHERE operation_id=?").get(operationId))) {
           if (foreground?.revisions) this.foreground.linked(sourceId);
           return true;
         }
@@ -1579,7 +1810,25 @@ ${input.text}`),
           if (unblocked && resumed?.request.userMessageId !== unblocked.id)
             throw new DotsIntentChanged("待补资料的原交办已变化，请读取当前问题");
           if (sourceId.startsWith("cron-") || sourceId.startsWith("goal-continuation:")) throw new Error("暂停后的恢复需要用户明确交代");
-          this.db.connection.prepare("UPDATE dots_target_controls SET operation_id=? WHERE task_id=?").run(operationId, task.id);
+          if (this.requiresRustWrites) {
+            const curCtrl = this.control(task.id);
+            if (curCtrl) this.pendingTargetControls.set(task.id, { ...curCtrl, operation_id: operationId });
+            void this.enqueueActionWrite({
+              kind: "dotsActionTargetControl",
+              mode: "updateOp",
+              taskId: task.id,
+              operationId,
+              expectedOperationId: null,
+              state: null,
+              watchesAction: null,
+              watchesInputVersion: null,
+              scheduleOps: [],
+              receiptId: null,
+              receiptOutcome: null,
+            }, "resumeUpdateOp").catch(() => undefined);
+          } else {
+            this.db.connection.prepare("UPDATE dots_target_controls SET operation_id=? WHERE task_id=?").run(operationId, task.id);
+          }
         }
         if (!previous) {
           this.assertScheduleSource(sourceId);
@@ -1595,7 +1844,8 @@ ${input.text}`),
         this.link(request, deliverySource, input.action === "steer" || continuePlan || Boolean(foreground?.priorOperationId));
         if (foreground?.revisions) this.foreground.linked(sourceId);
         return false;
-      })();
+      };
+      const alreadyLinked = this.requiresRustWrites ? linkPhase() : this.db.connection.transaction(linkPhase)();
       const persisted = alreadyLinked && (foreground?.revisions || continuationIdentity) ? this.db.connection.prepare(
         "SELECT request_json FROM dots_delegations WHERE operation_id=? AND status='pending'"
       ).pluck().get(operationId) as string | undefined : undefined;
@@ -1626,6 +1876,15 @@ ${input.text}`),
   private failUndelegatedTask(taskId: string, reason: string): void {
     const task = this.db.getTask(taskId);
     if (!task) return;
+    if (this.requiresRustWrites) {
+      const updatedAt = Date.now();
+      if (this.pendingFailedTasks.has(taskId) || (task.status && task.status !== "planning" && task.status !== "pending")) return;
+      this.pendingFailedTasks.add(taskId);
+      void this.enqueueActionWrite({ kind: "dotsActionFailUndelegatedTask", taskId, updatedAt }, "failUndelegatedTask")
+        .catch(() => undefined);
+      this.hooks.failedTask?.({ taskId, title: task.title, reason });
+      return;
+    }
     const updated = this.db.connection.prepare("UPDATE tasks SET status='failed',updated_at=? WHERE id=? AND (status IS NULL OR status IN ('planning','pending'))")
       .run(Date.now(), taskId);
     if (!updated.changes) return;
@@ -1640,17 +1899,37 @@ ${input.text}`),
   }
 
   private spaceReceipt(operation: string) {
-    const id = this.db.connection.prepare("SELECT target_task_id FROM dots_control_receipts WHERE operation_id=? AND outcome='space_changed'").pluck().get(operation) as string | undefined;
+    const pending = this.pendingControlReceipts.get(operation);
+    const id = pending?.outcome === "space_changed"
+      ? pending.targetTaskId
+      : (this.db.connection.prepare("SELECT target_task_id FROM dots_control_receipts WHERE operation_id=? AND outcome='space_changed'").pluck().get(operation) as string | undefined);
     return id ? spaceLink(this.space(id)) : undefined;
   }
 
-  private changeSpaceOnce(operation: string, mutate: () => string) {
+  private async changeSpaceOnce(operation: string, mutate: () => Promise<string> | string) {
+    if (this.requiresRustWrites) {
+      const saved = this.spaceReceipt(operation);
+      if (saved) {
+        this.hooks.changed?.();
+        return saved;
+      }
+      const id = await mutate();
+      await this.enqueueActionWrite({ kind: "dotsActionSpaceReceipt", operation, spaceId: id }, "spaceReceipt");
+      this.pendingControlReceipts.set(operation, { targetTaskId: id, outcome: "space_changed" });
+      this.hooks.changed?.();
+      return spaceLink(this.space(id));
+    }
+    const savedBefore = this.spaceReceipt(operation);
+    if (savedBefore) {
+      this.hooks.changed?.();
+      return savedBefore;
+    }
+    const mutatedId = await mutate();
     const space = this.db.connection.transaction(() => {
       const saved = this.spaceReceipt(operation);
       if (saved) return saved;
-      const id = mutate();
-      this.db.connection.prepare("INSERT INTO dots_control_receipts VALUES(?,?,'space_changed')").run(operation, id);
-      return spaceLink(this.space(id));
+      this.db.connection.prepare("INSERT INTO dots_control_receipts VALUES(?,?,'space_changed')").run(operation, mutatedId);
+      return spaceLink(this.space(mutatedId));
     }).immediate();
     this.hooks.changed?.();
     return space;
@@ -1660,7 +1939,8 @@ ${input.text}`),
       const outcome = (control: string) => this.allowsResult(task.id)
         ? { ...this.summary(task), control, resumedBy: "resume" }
         : { id: task.id, control };
-      const existing = this.db.connection.prepare("SELECT outcome FROM dots_control_receipts WHERE operation_id=?").get(identity) as { outcome: string } | undefined;
+      const pendingExisting = this.pendingControlReceipts.get(identity);
+      const existing = pendingExisting ?? (this.db.connection.prepare("SELECT outcome FROM dots_control_receipts WHERE operation_id=?").get(identity) as { outcome: string } | undefined);
       if (existing) return outcome(existing.outcome);
       if (!this.allowsResult(task.id) && expected === undefined) {
         const last = (this.hooks.list?.() ?? []).filter(row => row.taskId === task.id).at(-1);
@@ -1672,6 +1952,34 @@ ${input.text}`),
           const version = await this.agent.dotsInputVersion(task.id);
           if (receipt && JSON.parse(version)[1] === receipt.submissionId) expected = version;
         }
+      }
+      if (this.requiresRustWrites) {
+        const state = action === "pause" ? "paused" : "stopped";
+        this.watches.controlTarget(task.id, action);
+        for (const id of this.agent.dotsScheduleIds(false, {taskId: task.id})) {
+          if (action === "stop") this.agent.controlDotsSchedule(id, "stop");
+          else this.agent.holdDotsSchedule(id, "task:" + task.id, true);
+        }
+        this.pendingControlReceipts.set(identity, { targetTaskId: task.id, outcome: "stop_outcome_unknown" });
+        this.pendingTargetControls.set(task.id, { state, operation_id: identity });
+        await this.enqueueActionWrite({
+          kind: "dotsActionTargetControl",
+          mode: "control",
+          taskId: task.id,
+          operationId: identity,
+          expectedOperationId: null,
+          state,
+          watchesAction: null,
+          watchesInputVersion: null,
+          scheduleOps: [],
+          receiptId: null,
+          receiptOutcome: null,
+        }, "controlTask");
+        const control = expected === null ? "future_work_only" : await this.agent.stopDotsTarget(task.id, expected);
+        this.pendingControlReceipts.set(identity, { targetTaskId: task.id, outcome: control });
+        await this.enqueueActionWrite({ kind: "dotsActionControlUpdateOutcome", operationId: identity, outcome: control }, "controlTaskOutcome");
+        this.hooks.changed?.();
+        return outcome(control);
       }
       this.db.connection.transaction(() => {
         this.watches.controlTarget(task.id, action);
@@ -1693,7 +2001,9 @@ ${input.text}`),
     if (spaceId) this.space(spaceId, true);
     const id = JSON.stringify([source, action, spaceId]);
     type Selection = { tasks: Array<{ taskId: string; expected: string | null }>; schedules: string[] };
-    const saved = this.db.connection.prepare("SELECT selection FROM dots_control_batches WHERE id=?").get(id) as {selection:string} | undefined;
+    const saved = this.pendingControlBatches.has(id)
+      ? { selection: this.pendingControlBatches.get(id)! }
+      : (this.db.connection.prepare("SELECT selection FROM dots_control_batches WHERE id=?").get(id) as {selection:string} | undefined);
     let selection: Selection;
     if (saved) selection = JSON.parse(saved.selection);
     else {
@@ -1702,10 +2012,15 @@ ${input.text}`),
       const linked = new Map((this.hooks.list?.() ?? []).filter(row =>
         ["pending","running","blocked"].includes(row.status) || unsettled.has(row.id)).map(row => [row.taskId,row.id]));
       const subscriptions = this.watches.list().filter(row => ["watching","sending","paused"].includes(row.state));
-      const paused = this.db.connection.prepare("SELECT task_id FROM dots_target_controls WHERE state='paused'").all() as {task_id:string}[];
+      const dbPaused = (this.db.connection.prepare("SELECT task_id FROM dots_target_controls WHERE state='paused'").all() as {task_id:string}[]).map(r => r.task_id);
+      const pausedSet = new Set(dbPaused);
+      for (const [tid, pendingCtrl] of this.pendingTargetControls) {
+        if (pendingCtrl?.state === "paused") pausedSet.add(tid);
+        else pausedSet.delete(tid);
+      }
       const schedules = this.agent.dotsScheduleIds(false, spaceId ? { spaceId } : undefined);
       const scheduleOwners = new Set(schedules.map(schedule => this.agent.dotsScheduleOwnerTask(schedule)).filter(id => id !== undefined));
-      const targets = new Set([...linked.keys(), ...subscriptions.map(row => row.taskId), ...paused.map(row => row.task_id), ...scheduleOwners]);
+      const targets = new Set([...linked.keys(), ...subscriptions.map(row => row.taskId), ...pausedSet, ...scheduleOwners]);
       const tasks: Selection["tasks"] = [];
       for (const taskId of targets) {
         const task = this.db.getTask(taskId);
@@ -1725,25 +2040,48 @@ ${input.text}`),
         tasks.push({taskId, expected});
       }
       selection = { tasks, schedules };
-      this.db.connection.prepare("INSERT OR IGNORE INTO dots_control_batches VALUES(?,?)").run(id, JSON.stringify(selection));
-      selection = JSON.parse((this.db.connection.prepare("SELECT selection FROM dots_control_batches WHERE id=?").get(id) as {selection:string}).selection);
+      if (this.requiresRustWrites) {
+        const selectionJson = JSON.stringify(selection);
+        this.pendingControlBatches.set(id, selectionJson);
+        await this.enqueueActionWrite({ kind: "dotsActionControlBatchSave", id, selectionJson }, "controlBatchSave");
+      } else {
+        this.db.connection.prepare("INSERT OR IGNORE INTO dots_control_batches VALUES(?,?)").run(id, JSON.stringify(selection));
+        selection = JSON.parse((this.db.connection.prepare("SELECT selection FROM dots_control_batches WHERE id=?").get(id) as {selection:string}).selection);
+      }
     }
-    const schedules = selection.schedules.map(scheduleId => {
+    const schedules: Array<{ id: string; status: string } | { id: string; error: string }> = [];
+    for (const scheduleId of selection.schedules) {
       try {
-        const status = this.db.connection.transaction(() => {
+        if (this.requiresRustWrites) {
           const key = JSON.stringify([id,"schedule",scheduleId]);
-          const prior = this.db.connection.prepare("SELECT outcome FROM dots_control_receipts WHERE operation_id=?").get(key) as {outcome:string} | undefined;
-          if (prior) return prior.outcome;
+          const prior = this.pendingControlReceipts.get(key)
+            ?? (this.db.connection.prepare("SELECT outcome FROM dots_control_receipts WHERE operation_id=?").get(key) as {outcome:string} | undefined);
+          if (prior) {
+            schedules.push({ id: scheduleId, status: prior.outcome });
+            continue;
+          }
           const owner = action === "pause" && this.agent.dotsScheduleOwnerTask(scheduleId);
           const target = owner && selection.tasks.find(t => t.taskId === owner);
           const result = target ? this.agent.holdDotsSchedule(scheduleId, "task:" + target.taskId, true) : this.agent.controlDotsSchedule(scheduleId,action);
-          this.db.connection.prepare("INSERT INTO dots_control_receipts VALUES(?,?,?)").run(key,DOTS_TASK_ID,result);
-          return result;
-        })();
-        return {id:scheduleId, status};
+          this.pendingControlReceipts.set(key, { targetTaskId: DOTS_TASK_ID, outcome: result });
+          await this.enqueueActionWrite({ kind: "dotsActionControlReceipt", operationId: key, targetTaskId: DOTS_TASK_ID, outcome: result, insertIgnore: false }, "controlBatchSchedule");
+          schedules.push({ id: scheduleId, status: result });
+        } else {
+          const status = this.db.connection.transaction(() => {
+            const key = JSON.stringify([id,"schedule",scheduleId]);
+            const prior = this.db.connection.prepare("SELECT outcome FROM dots_control_receipts WHERE operation_id=?").get(key) as {outcome:string} | undefined;
+            if (prior) return prior.outcome;
+            const owner = action === "pause" && this.agent.dotsScheduleOwnerTask(scheduleId);
+            const target = owner && selection.tasks.find(t => t.taskId === owner);
+            const result = target ? this.agent.holdDotsSchedule(scheduleId, "task:" + target.taskId, true) : this.agent.controlDotsSchedule(scheduleId,action);
+            this.db.connection.prepare("INSERT INTO dots_control_receipts VALUES(?,?,?)").run(key,DOTS_TASK_ID,result);
+            return result;
+          })();
+          schedules.push({ id: scheduleId, status });
+        }
       }
-      catch (error) { return {id:scheduleId,error:String(error)}; }
-    });
+      catch (error) { schedules.push({ id: scheduleId, error: String(error) }); }
+    }
     const tasks = await Promise.all(selection.tasks.map(async ({taskId,expected}) => {
       try { return await this.controlTask(this.task(taskId,spaceId,true),action,JSON.stringify([id,taskId]),expected); }
       catch (error) { return { id: taskId, error: String(error) }; }

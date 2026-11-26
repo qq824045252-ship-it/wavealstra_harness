@@ -21,9 +21,9 @@ const MAX_ENTRIES: usize = 2048;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Authorization {
-    generation: String,
-    invocation_id: String,
-    expires_at: u64,
+    pub generation: String,
+    pub invocation_id: String,
+    pub expires_at: u64,
 }
 
 #[derive(Deserialize)]
@@ -85,7 +85,7 @@ pub enum Action {
 
 #[derive(Deserialize)]
 pub struct Expected {
-    revision: Option<String>,
+    pub revision: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -122,8 +122,8 @@ type StateResult<T> = Result<T, Fault>;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Entry {
-    value: Box<RawValue>,
-    revision: String,
+    pub value: Box<RawValue>,
+    pub revision: String,
 }
 
 #[derive(Default, Deserialize)]

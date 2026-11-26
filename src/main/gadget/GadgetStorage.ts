@@ -543,6 +543,7 @@ export class GadgetStorage {
   async removeUnregistered(id: string): Promise<void> {
     const result = this.native ? await this.native.removeUnregisteredGadget(this.canonicalRootDir, id) : "needsHost";
     if (result === "needsHost") {
+      if (this.native?.supervised) throw new Error("Gadget 存储清理需要 Rust 核心确认");
       this.delete(id);
       return;
     }
@@ -553,6 +554,10 @@ export class GadgetStorage {
   async recover(validIds: () => ReadonlySet<string>): Promise<void> {
     const failed = await this.native?.reconcileGadgetStorage(this.canonicalRootDir);
     if (failed === undefined) {
+      if (this.native?.supervised) {
+        console.warn("[GadgetStorage] Supervised mode deferred orphan reconciliation");
+        return;
+      }
       this.reconcile(validIds());
       return;
     }

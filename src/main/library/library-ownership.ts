@@ -87,7 +87,7 @@ export function ensureOwnedLibrarySpace(
   createSpace: (request: LibraryCreateSpaceRequest) => LibrarySpaceDto,
   ensurePersonal: () => LibrarySpaceDto,
 ): LibrarySpaceDto {
-  return db.connection.transaction(() => {
+  const run = (): LibrarySpaceDto => {
     if (owner.type === "personal") return ensurePersonal();
     if (owner.type === "project") {
       const projectId = owner.projectId?.trim();
@@ -106,5 +106,7 @@ export function ensureOwnedLibrarySpace(
         ?? createSpace({ workspaceId, name: `${(workspace.name ?? "工作空间").slice(0, 80)}资料` });
     }
     throw new Error("未知资料归属类型");
-  }).immediate();
+  };
+  if (db.connection.readonly || db.runtimeAuditReader?.supervised) return run();
+  return db.connection.transaction(run).immediate();
 }

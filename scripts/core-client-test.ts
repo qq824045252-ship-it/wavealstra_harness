@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { acquireCoreDatabaseGuard, connectCoreWorker, shutdownCoreWorker, type RuntimeCoreClient } from "../src/main/platform/core-client";
@@ -114,6 +114,32 @@ try {
   await within(shutdownCoreWorker(dataDirectory, database), 6_000);
   assert(!existsSync(endpointPath));
   console.log("PASS explicit fixture shutdown releases the detached Core");
+
+  const aliasDataDirectory = join(directory, "data-alias");
+  symlinkSync(dataDirectory, aliasDataDirectory, process.platform === "win32" ? "junction" : "dir");
+  const aliasDatabase = process.platform === "win32" ? join(directory, "APP.DB") : database;
+  try {
+    const startVia = async (dir: string, db: string) => {
+      const client = await connectCoreWorker(executable!, db, { dataDirectory: dir, timeoutMs: 6_000 });
+      clients.add(client);
+      await ping(client);
+      const active = JSON.parse(readFileSync(join(dir, "core.json"), "utf8")) as { pid: number; workerPid: number; generation: string };
+      await close(client);
+      return active;
+    };
+    const [canonicalEndpoint, aliasEndpoint] = await within(Promise.all([
+      startVia(dataDirectory, database),
+      startVia(aliasDataDirectory, aliasDatabase),
+    ]), 8_000);
+    assert.equal(aliasEndpoint.pid, canonicalEndpoint.pid);
+    assert.equal(aliasEndpoint.workerPid, canonicalEndpoint.workerPid);
+    assert.equal(aliasEndpoint.generation, canonicalEndpoint.generation);
+    await assert.rejects(acquireCoreDatabaseGuard(executable!, aliasDataDirectory), /ownership guard unavailable/);
+    console.log("PASS concurrent path-alias startup shares one Core owner and workerPid");
+  } finally {
+    if (existsSync(endpointPath)) { endpoint(); await within(shutdownCoreWorker(aliasDataDirectory, aliasDatabase), 6_000); }
+    rmSync(aliasDataDirectory, { recursive: true, force: true });
+  }
 
   const versionDirectory = join(directory, "versions"); mkdirSync(versionDirectory);
   const versionDatabase = join(versionDirectory, "app.db"); writeFileSync(versionDatabase, "");

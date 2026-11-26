@@ -54,6 +54,34 @@ export default defineConfig({
           const outputName = fileName;
           this.emitFile({ type: "asset", fileName: outputName, source: readFileSync(resolve(__dirname, "src/main", fileName), "utf8") });
         }
+        const { build } = await import("esbuild");
+        const piPkg = JSON.parse(readFileSync(resolve(__dirname, "node_modules/@earendil-works/pi-coding-agent/package.json"), "utf8")) as { version: string };
+        const piHostResult = await build({
+          entryPoints: [resolve(__dirname, "src/main/host/pi-node-host-entry.ts")],
+          bundle: true,
+          platform: "node",
+          format: "cjs",
+          target: "node22",
+          write: false,
+          logLevel: "warning",
+          define: {
+            "import.meta.url": "__piImportMetaUrl",
+            "__MYBUDDY_BUNDLED_PI_VERSION__": JSON.stringify(piPkg.version),
+          },
+          banner: {
+            js: 'var __piImportMetaUrl = typeof __filename === "string" ? require("node:url").pathToFileURL(__filename).href : "";',
+          },
+          external: ["better-sqlite3", "jiti", "node-pty", "onnxruntime-node", "@napi-rs/keyring", "bufferutil", "utf-8-validate"],
+          alias: {
+            electron: resolve(__dirname, "src/main/shims/node-electron-host.ts"),
+            "node:sqlite": resolve(__dirname, "src/main/shims/node-sqlite.ts"),
+            sqlite: resolve(__dirname, "src/main/shims/node-sqlite.ts"),
+            "@shared": resolve(__dirname, "src/shared"),
+          },
+        });
+        if (piHostResult.outputFiles[0]) {
+          this.emitFile({ type: "asset", fileName: "pi-node-host.cjs", source: piHostResult.outputFiles[0].contents });
+        }
       },
     }],
     resolve: {

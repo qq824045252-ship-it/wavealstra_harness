@@ -33,7 +33,9 @@ const modeProfiles = {
 
 const catalogService = new RemoteAccessService({
   readSpaces: async () => [], readNonTrashedTasks: async () => [],
-  getTask: () => undefined, openDots: () => ({ id: DOTS_TASK_ID, title: "Dots", updatedAt: 1 }),
+  getTask: () => undefined,
+  openDots: () => ({ id: DOTS_TASK_ID, title: "Dots", updatedAt: 1 }),
+  openDotsAsync: async () => ({ id: DOTS_TASK_ID, title: "Dots", updatedAt: 1 }),
 } as any,
   { listModels: async () => [], isTaskBusy: () => false, listPendingActions: () => [],
     getModeProfile: (id: keyof typeof modeProfiles) => modeProfiles[id] } as any,
@@ -540,6 +542,11 @@ try {
     const db = {
       getTask: (id: string) => savedTasks.get(id),
       openDots: () => {
+        const dots = { id: DOTS_TASK_ID, title: "Dots", updatedAt: 1, welcomeMode: "general", modePresetId: "native" };
+        savedTasks.set(DOTS_TASK_ID, dots);
+        return dots;
+      },
+      openDotsAsync: async () => {
         const dots = { id: DOTS_TASK_ID, title: "Dots", updatedAt: 1, welcomeMode: "general", modePresetId: "native" };
         savedTasks.set(DOTS_TASK_ID, dots);
         return dots;

@@ -46,6 +46,10 @@ export interface GadgetRuntimeDiagnostics {
   /** Historical identity only; never a current running URL. */
   url?: string;
   error?: string;
+  code?: string;
+  blocked?: boolean;
+  idleReclaimed?: boolean;
+  hostKind?: "rust-shared" | "node-host";
 }
 
 export interface GadgetRuntimeState {
@@ -56,6 +60,9 @@ export interface GadgetRuntimeState {
   pid?: number;
   startedAt?: number;
   error?: string;
+  code?: string;
+  blocked?: boolean;
+  hostKind?: "rust-shared" | "node-host";
   diagnostics?: GadgetRuntimeDiagnostics;
 }
 

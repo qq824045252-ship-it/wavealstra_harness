@@ -6,6 +6,7 @@ import type { WorkControlResult, WorkExecutionBindingDto } from "../../../shared
 import type { WorkService } from "./WorkService";
 import type { WorkExecutionObservation } from "./WorkExecutionObservation";
 import { workExecutionObservationSchema as observationSchema } from "../../../shared/bot-work-phase3";
+import { enqueueWorkOp, overlayDelete, overlayFindAll, overlayMutate, overlayReadOne, overlaySet, requiresWorkRustWrites } from "./WorkDomainRuntime";
 
 const factSchema = z.object({ fact_id: z.string(), binding_id: z.string(), namespace_hash: z.string(), payload_json: z.string() });
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -20,42 +21,66 @@ export class WorkNativeResultInbox {
     const payload = observationSchema.parse(this.works.partialResults.observe(binding,observationSchema.parse(observation)));
     if (receipt.taskId !== binding.taskId || receipt.operationId !== binding.operationId) throw new Error("结果回执不属于该执行绑定");
     const namespaceHash = namespace(binding);
-    const recovery = z.object({ cycle_id: z.string() }).optional().parse(this.db.prepare("SELECT cycle_id FROM work_native_recovery WHERE binding_id=?").get(binding.bindingId));
+    const recovery = overlayReadOne<{ cycle_id?: string | null }>(this.db, "work_native_recovery", binding.bindingId, () =>
+      this.db.prepare("SELECT * FROM work_native_recovery WHERE binding_id=?").get(binding.bindingId) as { cycle_id?: string | null } | undefined);
     const factId = hash([namespaceHash, receipt.submissionId, payload, recovery?.cycle_id ?? null]);
     const artifactRefs = [...new Set([...(payload.status === "running" ? [] : payload.artifactRefs),...(payload.subitems ?? []).filter(item=>item.origin!=="artifact_revalidation" || item.outcome==="completed").flatMap(item => item.artifactRefs)])];
     const artifacts = this.works.artifacts.register(binding,artifactRefs);
     this.works.transaction(() => {
       this.assertAuthority();
+      const rust = requiresWorkRustWrites(this.db);
+      const now = Date.now();
       const currentBinding = this.works.repo.getBinding(binding.bindingId);
       if (currentBinding) this.works.automaticCompletion.observe(currentBinding, payload.status);
       this.works.artifacts.record(binding,artifacts);
       this.works.generatedArtifacts.record(binding,payload.generatedArtifacts ?? []);
       if (this.works.runtimeObservations.record(binding,payload)) {
         const work = this.works.getWork(binding.workId);
-        if (work) this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: Date.now() });
+        if (work) this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: now });
         this.works.emitCurrentProjection(binding.workId);
       }
-      this.db.prepare(`INSERT OR IGNORE INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at)
-        VALUES (?,?,?,?,?)`).run(factId, binding.bindingId, namespaceHash, JSON.stringify(payload), Date.now());
-      // This position references a fact already durable in the same transaction. It is
-      // a receive position, never permission to skip unconsumed inbox rows.
-      this.db.prepare(`INSERT INTO work_native_cursors(binding_id,fact_id,updated_at) VALUES (?,?,?)
-        ON CONFLICT(binding_id) DO UPDATE SET fact_id=excluded.fact_id,read_failures=0,updated_at=excluded.updated_at`)
-        .run(binding.bindingId, factId, Date.now());
+      const payloadJson = JSON.stringify(payload);
+      if (rust) {
+        overlayMutate(this.db, "work_native_inbox", factId, () =>
+          this.db.prepare("SELECT * FROM work_native_inbox WHERE fact_id=?").get(factId) as Record<string, unknown> | undefined,
+        cur => cur ?? {
+          fact_id: factId, binding_id: binding.bindingId, namespace_hash: namespaceHash,
+          payload_json: payloadJson, received_at: now, consumed_at: null, consume_error: null,
+        });
+        enqueueWorkOp(this.db, {
+          op: "workNativeInboxWrite", mode: "receive", factId, bindingId: binding.bindingId,
+          namespaceHash, payloadJson, now, consumeError: null,
+        });
+      } else {
+        this.db.prepare(`INSERT OR IGNORE INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at)
+          VALUES (?,?,?,?,?)`).run(factId, binding.bindingId, namespaceHash, payloadJson, now);
+        // This position references a fact already durable in the same transaction. It is
+        // a receive position, never permission to skip unconsumed inbox rows.
+        this.db.prepare(`INSERT INTO work_native_cursors(binding_id,fact_id,updated_at) VALUES (?,?,?)
+          ON CONFLICT(binding_id) DO UPDATE SET fact_id=excluded.fact_id,read_failures=0,updated_at=excluded.updated_at`)
+          .run(binding.bindingId, factId, now);
+      }
     });
     return this.consume();
   }
 
   consume(workId?: string): Array<{ bindingId: string; error: unknown }> {
     const failures: Array<{ bindingId: string; error: unknown }> = [];
-    const pending = this.db.prepare(`SELECT fact_id,binding_id,namespace_hash,payload_json FROM work_native_inbox
+    const rust = requiresWorkRustWrites(this.db);
+    const dbPending = this.db.prepare(`SELECT fact_id,binding_id,namespace_hash,payload_json,received_at,consumed_at FROM work_native_inbox
       WHERE consumed_at IS NULL AND (? IS NULL OR binding_id IN (SELECT binding_id FROM work_execution_bindings WHERE work_id=?))
-      ORDER BY received_at,rowid`).all(workId ?? null, workId ?? null).map(row => factSchema.parse(row));
+      ORDER BY received_at,rowid`).all(workId ?? null, workId ?? null) as Array<Record<string, unknown>>;
+    const allowedBindings = workId ? new Set(this.works.repo.listBindings(workId).map(b => b.bindingId)) : undefined;
+    const pending = overlayFindAll(this.db, "work_native_inbox", dbPending, r => String(r.fact_id),
+      r => (r.consumed_at ?? null) === null && (!allowedBindings || allowedBindings.has(String(r.binding_id))),
+      (a, b) => Number(a.received_at ?? 0) - Number(b.received_at ?? 0))
+      .map(row => factSchema.parse(row));
     for (const fact of pending) {
       try { this.works.transaction(() => {
       this.assertAuthority();
-      const unconsumed = this.db.prepare("SELECT 1 FROM work_native_inbox WHERE fact_id=? AND consumed_at IS NULL").get(fact.fact_id);
-      if (!unconsumed) return;
+      const unconsumedRaw = overlayReadOne<Record<string, unknown>>(this.db, "work_native_inbox", fact.fact_id, () =>
+        this.db.prepare("SELECT * FROM work_native_inbox WHERE fact_id=?").get(fact.fact_id) as Record<string, unknown> | undefined);
+      if (!unconsumedRaw || (unconsumedRaw.consumed_at ?? null) !== null) return;
       const binding = this.works.repo.getBinding(fact.binding_id);
       if (!binding || namespace(binding) !== fact.namespace_hash) throw new Error("结果执行命名空间不匹配");
       const work = this.works.getWork(binding.workId);
@@ -78,8 +103,18 @@ export class WorkNativeResultInbox {
         // awaits adoption. Keep the original payload/cursor durable and retryable;
         // publishing aggregate or partial deliverables still requires the owner.
         if (canSettle) this.reconcile(binding, observation);
-        this.db.prepare("UPDATE work_native_inbox SET consume_error=? WHERE fact_id=? AND consumed_at IS NULL")
-          .run("pending_adoption: 当前输入仍有效，等待当前负责人接管原执行委派", fact.fact_id);
+        const msg = "pending_adoption: 当前输入仍有效，等待当前负责人接管原执行委派";
+        if (rust) {
+          overlayMutate(this.db, "work_native_inbox", fact.fact_id, () => unconsumedRaw,
+            cur => cur && (cur.consumed_at ?? null) === null ? { ...cur, consume_error: msg } : cur);
+          enqueueWorkOp(this.db, {
+            op: "workNativeInboxWrite", mode: "pendingAdoption", factId: fact.fact_id,
+            bindingId: null, namespaceHash: null, payloadJson: null, now: null, consumeError: msg,
+          });
+        } else {
+          this.db.prepare("UPDATE work_native_inbox SET consume_error=? WHERE fact_id=? AND consumed_at IS NULL")
+            .run(msg, fact.fact_id);
+        }
         this.works.emitCurrentProjection(binding.workId);
         return;
       }
@@ -91,12 +126,33 @@ export class WorkNativeResultInbox {
         this.reconcile(binding, observation);
         if(observation.status!=="running") this.works.partialResults.settle(binding);
       }
-      this.db.prepare("UPDATE work_native_inbox SET consumed_at=?,consume_error=NULL WHERE fact_id=?").run(Date.now(), fact.fact_id);
+      const now = Date.now();
+      if (rust) {
+        overlayMutate(this.db, "work_native_inbox", fact.fact_id, () => unconsumedRaw,
+          cur => cur ? { ...cur, consumed_at: now, consume_error: null } : cur);
+        enqueueWorkOp(this.db, {
+          op: "workNativeInboxWrite", mode: "consumed", factId: fact.fact_id,
+          bindingId: null, namespaceHash: null, payloadJson: null, now, consumeError: null,
+        });
+      } else {
+        this.db.prepare("UPDATE work_native_inbox SET consumed_at=?,consume_error=NULL WHERE fact_id=?").run(now, fact.fact_id);
+      }
       }); } catch (error) {
         failures.push({ bindingId: fact.binding_id, error });
         this.works.transaction(() => {
           this.assertAuthority();
-          this.db.prepare("UPDATE work_native_inbox SET consume_error=? WHERE fact_id=?").run(error instanceof Error ? error.message : String(error), fact.fact_id);
+          const errMsg = error instanceof Error ? error.message : String(error);
+          if (rust) {
+            overlayMutate(this.db, "work_native_inbox", fact.fact_id, () =>
+              this.db.prepare("SELECT * FROM work_native_inbox WHERE fact_id=?").get(fact.fact_id) as Record<string, unknown> | undefined,
+            cur => cur ? { ...cur, consume_error: errMsg } : cur);
+            enqueueWorkOp(this.db, {
+              op: "workNativeInboxWrite", mode: "consumeError", factId: fact.fact_id,
+              bindingId: null, namespaceHash: null, payloadJson: null, now: null, consumeError: errMsg,
+            });
+          } else {
+            this.db.prepare("UPDATE work_native_inbox SET consume_error=? WHERE fact_id=?").run(errMsg, fact.fact_id);
+          }
           const binding = this.works.repo.getBinding(fact.binding_id);
           if (binding && !this.works.repo.listBlockers(binding.workId).some(item => item.blockerId === `inbox:${fact.fact_id}`)) {
             this.works.repo.insertBlocker({ blockerId: `inbox:${fact.fact_id}`, workId: binding.workId,
@@ -171,20 +227,39 @@ export class WorkNativeResultInbox {
   }
 
   shouldInspect(bindingId: string): boolean {
-    return !this.db.prepare("SELECT 1 FROM work_native_recovery WHERE binding_id=? AND exhausted_at IS NOT NULL").get(bindingId);
+    const row = overlayReadOne<Record<string, unknown>>(this.db, "work_native_recovery", bindingId, () =>
+      this.db.prepare("SELECT * FROM work_native_recovery WHERE binding_id=?").get(bindingId) as Record<string, unknown> | undefined);
+    return !(row && row.exhausted_at !== null && row.exhausted_at !== undefined);
   }
 
   allowInspect(bindingId: string): void {
     this.works.transaction(() => {
       this.assertAuthority();
-      this.db.prepare("UPDATE work_native_recovery SET failures=0,exhausted_at=NULL,first_failure_at=? WHERE binding_id=?").run(Date.now(), bindingId);
+      const now = Date.now();
+      if (requiresWorkRustWrites(this.db)) {
+        overlayMutate(this.db, "work_native_recovery", bindingId,
+          () => this.db.prepare("SELECT * FROM work_native_recovery WHERE binding_id=?").get(bindingId) as Record<string, unknown> | undefined,
+          cur => cur ? { ...cur, failures: 0, exhausted_at: null, first_failure_at: now } : undefined);
+        enqueueWorkOp(this.db, {
+          op: "workNativeRecoveryWrite", mode: "allowInspect", bindingId, now, lastError: null,
+        });
+        return;
+      }
+      this.db.prepare("UPDATE work_native_recovery SET failures=0,exhausted_at=NULL,first_failure_at=? WHERE binding_id=?").run(now, bindingId);
     });
   }
 
   readRecovered(binding: WorkExecutionBindingDto): void {
     this.works.transaction(() => {
       this.assertAuthority();
-      this.db.prepare("DELETE FROM work_native_recovery WHERE binding_id=?").run(binding.bindingId);
+      if (requiresWorkRustWrites(this.db)) {
+        overlayDelete(this.db, "work_native_recovery", binding.bindingId);
+        enqueueWorkOp(this.db, {
+          op: "workNativeRecoveryWrite", mode: "delete", bindingId: binding.bindingId, now: null, lastError: null,
+        });
+      } else {
+        this.db.prepare("DELETE FROM work_native_recovery WHERE binding_id=?").run(binding.bindingId);
+      }
       const work = this.works.getWork(binding.workId);
       const cleared = this.works.repo.listOpenBlockers(binding.workId).filter(blocker => blocker.unknownExternalEffectRef === `native-read:${binding.bindingId}`);
       for (const blocker of cleared) this.works.repo.clearBlocker(blocker.blockerId, binding.workId, Date.now());
@@ -197,10 +272,26 @@ export class WorkNativeResultInbox {
     this.works.transaction(() => {
       this.assertAuthority();
       const now = Date.now();
-      this.db.prepare(`INSERT INTO work_native_recovery(binding_id,failures,first_failure_at,last_error) VALUES (?,1,?,?)
-        ON CONFLICT(binding_id) DO UPDATE SET failures=failures+1,last_error=excluded.last_error,
-        exhausted_at=CASE WHEN failures>=4 OR excluded.first_failure_at-first_failure_at>=90000 THEN excluded.first_failure_at ELSE exhausted_at END`)
-        .run(binding.bindingId, now, error instanceof Error ? error.message : String(error));
+      const lastError = error instanceof Error ? error.message : String(error);
+      if (requiresWorkRustWrites(this.db)) {
+        overlayMutate(this.db, "work_native_recovery", binding.bindingId,
+          () => this.db.prepare("SELECT * FROM work_native_recovery WHERE binding_id=?").get(binding.bindingId) as Record<string, unknown> | undefined,
+          cur => {
+            if (!cur) return { binding_id: binding.bindingId, failures: 1, first_failure_at: now, exhausted_at: null, last_error: lastError };
+            const failures = Number(cur.failures ?? 0);
+            const firstFailureAt = Number(cur.first_failure_at ?? now);
+            const exhaustedAt = failures >= 4 || now - firstFailureAt >= 90000 ? now : (cur.exhausted_at ?? null);
+            return { ...cur, failures: failures + 1, last_error: lastError, exhausted_at: exhaustedAt };
+          });
+        enqueueWorkOp(this.db, {
+          op: "workNativeRecoveryWrite", mode: "readFailed", bindingId: binding.bindingId, now, lastError,
+        });
+      } else {
+        this.db.prepare(`INSERT INTO work_native_recovery(binding_id,failures,first_failure_at,last_error) VALUES (?,1,?,?)
+          ON CONFLICT(binding_id) DO UPDATE SET failures=failures+1,last_error=excluded.last_error,
+          exhausted_at=CASE WHEN failures>=4 OR excluded.first_failure_at-first_failure_at>=90000 THEN excluded.first_failure_at ELSE exhausted_at END`)
+          .run(binding.bindingId, now, lastError);
+      }
       // A failed status query says nothing about whether the original native
       // process stopped. Keep its last lifecycle/admissions, so cancellation and
       // recovery cannot race a still-running writer. The outage itself is only a

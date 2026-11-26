@@ -66,15 +66,37 @@ function text(value: unknown, label: string, max: number): string {
 /** A task owns its identity and files. Templates are only sources for explicit saves. */
 export class TaskExpertBindingService {
   private readonly root: string;
+  private writeTail: Promise<void> = Promise.resolve();
   constructor(private readonly db: AppDatabase, private readonly experts: ExpertService, private readonly options: TaskExpertBindingOptions = {}) {
     this.root = resolve(options.rootDir ?? join(getMyBuddyDir(), "task-expert-bindings"));
-    db.connection.exec(`CREATE TABLE IF NOT EXISTS task_expert_bindings (
-      task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-      desired_json TEXT, active_json TEXT,
-      desired_skills_json TEXT NOT NULL DEFAULT '[]', active_skills_json TEXT NOT NULL DEFAULT '[]',
-      warnings_json TEXT NOT NULL DEFAULT '[]', updated_at INTEGER NOT NULL)`);
+    if (!db.connection.readonly) {
+      db.connection.exec(`CREATE TABLE IF NOT EXISTS task_expert_bindings (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        desired_json TEXT, active_json TEXT,
+        desired_skills_json TEXT NOT NULL DEFAULT '[]', active_skills_json TEXT NOT NULL DEFAULT '[]',
+        warnings_json TEXT NOT NULL DEFAULT '[]', updated_at INTEGER NOT NULL)`);
+    }
     db.setTaskExpertBindingReader(taskId => this.get(taskId));
     db.setTaskExpertBindingBatchReader(taskIds => this.list(taskIds));
+  }
+
+  private get requiresRustWrites(): boolean {
+    return Boolean(this.db.connection.readonly || this.db.runtimeAuditReader?.supervised);
+  }
+
+  async flush(): Promise<void> {
+    await this.writeTail;
+  }
+
+  private enqueueBatch2(context: string, request: Record<string, unknown>): Promise<void> {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error(`${context}：Rust 写入核心未就绪`);
+    const op = this.writeTail.then(async () => {
+      const res = await reader.batch2Write(request);
+      if (res === undefined) throw new Error(`${context}：Rust 核心未响应`);
+    });
+    this.writeTail = op.then(() => undefined, () => undefined);
+    return op;
   }
 
   private row(taskId: string): BindingRow | undefined {
@@ -121,12 +143,29 @@ export class TaskExpertBindingService {
       const copies = copyExpertPackages(directory, packages);
       const owned: SkillCopy[] = copies.map(copy => ({ id: copy.id,
         relativePath: copy.directory.slice(this.taskRoot(taskId).length + 1), origin: copy.origin ?? "private" }));
+      const desiredJson = JSON.stringify(snapshot);
+      const skillsJson = JSON.stringify(owned);
+      const updatedAt = Date.now();
+      if (this.requiresRustWrites) {
+        void this.enqueueBatch2("安装冻结专家", {
+          kind: "taskExpertInstallFrozen",
+          taskId,
+          desiredJson,
+          activeJson: desiredJson,
+          desiredSkillsJson: skillsJson,
+          activeSkillsJson: skillsJson,
+          updatedAt,
+        }).catch((err) => {
+          console.warn("[TaskExpertBindingService] installFrozen Rust 写入失败", err);
+        });
+        return;
+      }
       this.db.connection.transaction(() => {
         this.db.connection.prepare(`INSERT INTO task_expert_bindings(task_id,desired_json,active_json,desired_skills_json,active_skills_json,warnings_json,updated_at)
         VALUES (?,?,?,?,?,'[]',?) ON CONFLICT(task_id) DO UPDATE SET desired_json=excluded.desired_json,
         active_json=excluded.active_json,desired_skills_json=excluded.desired_skills_json,
         active_skills_json=excluded.active_skills_json,warnings_json='[]',updated_at=excluded.updated_at`)
-        .run(taskId, JSON.stringify(snapshot), JSON.stringify(snapshot), JSON.stringify(owned), JSON.stringify(owned), Date.now());
+        .run(taskId, desiredJson, desiredJson, skillsJson, skillsJson, updatedAt);
       })();
     } catch (error) {
       if (dirname(directory) === this.taskRoot(taskId)) rmSync(directory, { recursive: true, force: true });
@@ -165,6 +204,40 @@ export class TaskExpertBindingService {
     const task = this.db.getTask(taskId);
     if (!task) throw new Error("任务不存在");
     if (!task.expertId) return null;
+    if (this.requiresRustWrites) {
+      let revisionDir: string | undefined;
+      try {
+        const prepared = this.prepareSave({ taskId, expertId: task.expertId, expectedRevision: null }, undefined);
+        revisionDir = prepared.revisionDir;
+        const { mutation } = prepared;
+        void this.enqueueBatch2("迁移任务专家", {
+          kind: "taskExpertWriteDesired",
+          taskId,
+          expectedDesiredJson: mutation.expectedDesiredJson,
+          desiredJson: mutation.desiredJson,
+          desiredSkillsJson: mutation.desiredSkillsJson,
+          updatedAt: mutation.at,
+        }).then(() => this.enqueueBatch2("激活迁移专家", {
+          kind: "taskExpertPromote", taskId, updatedAt: Date.now(),
+        })).catch((err) => {
+          console.warn("[TaskExpertBindingService] ensureLegacy Rust 写入失败", err);
+        });
+        const snapshot = parseSnapshot(mutation.desiredJson);
+        return { taskId, desired: snapshot, active: snapshot, pending: false };
+      } catch (error) {
+        this.discardRevision(taskId, revisionDir);
+        const warning = `原专家无法迁移，已解除旧引用：${error instanceof Error ? error.message : String(error)}`;
+        void this.enqueueBatch2("记录任务专家迁移失败", {
+          kind: "taskExpertWriteLegacyFailure",
+          taskId,
+          warningsJson: JSON.stringify([warning]),
+          updatedAt: Date.now(),
+        }).catch((err) => {
+          console.warn("[TaskExpertBindingService] ensureLegacy failure Rust 写入失败", err);
+        });
+        return { taskId, desired: null, active: null, pending: false, warnings: [warning] };
+      }
+    }
     try {
       const result = this.save({ taskId, expertId: task.expertId, expectedRevision: null });
       this.promote(taskId);
@@ -180,6 +253,42 @@ export class TaskExpertBindingService {
     }
   }
 
+  private async ensureLegacyAsync(taskId: string): Promise<void> {
+    if (!this.requiresRustWrites) {
+      this.ensureLegacy(taskId);
+      return;
+    }
+    const existing = this.get(taskId);
+    if (existing) return;
+    const task = this.db.getTask(taskId);
+    if (!task) throw new Error("任务不存在");
+    if (!task.expertId) return;
+    let revisionDir: string | undefined;
+    try {
+      const prepared = this.prepareSave({ taskId, expertId: task.expertId, expectedRevision: null }, undefined);
+      revisionDir = prepared.revisionDir;
+      const { mutation } = prepared;
+      await this.enqueueBatch2("迁移任务专家", {
+        kind: "taskExpertWriteDesired",
+        taskId,
+        expectedDesiredJson: mutation.expectedDesiredJson,
+        desiredJson: mutation.desiredJson,
+        desiredSkillsJson: mutation.desiredSkillsJson,
+        updatedAt: mutation.at,
+      });
+      await this.enqueueBatch2("激活迁移专家", { kind: "taskExpertPromote", taskId, updatedAt: Date.now() });
+    } catch (error) {
+      this.discardRevision(taskId, revisionDir);
+      const warning = `原专家无法迁移，已解除旧引用：${error instanceof Error ? error.message : String(error)}`;
+      await this.enqueueBatch2("记录任务专家迁移失败", {
+        kind: "taskExpertWriteLegacyFailure",
+        taskId,
+        warningsJson: JSON.stringify([warning]),
+        updatedAt: Date.now(),
+      });
+    }
+  }
+
   private hostState(taskId: string): RuntimeTaskExpertBindingState {
     const task = this.db.getTask(taskId);
     if (!task) throw new Error("任务不存在");
@@ -191,8 +300,9 @@ export class TaskExpertBindingService {
     if (native === null) throw new Error("任务不存在");
     const state = native ?? this.hostState(taskId);
     if (state.binding || !state.expertId) return state;
-    this.ensureLegacy(taskId);
-    return this.hostState(taskId);
+    await this.ensureLegacyAsync(taskId);
+    const refreshed = this.db.connection.inTransaction ? undefined : await this.db.runtimeAuditReader?.readTaskExpertBinding(taskId);
+    return refreshed ?? this.hostState(taskId);
   }
 
   private settings(taskId: string, state: RuntimeTaskExpertBindingState): BindingSettings {
@@ -209,6 +319,27 @@ export class TaskExpertBindingService {
   save(request: TaskExpertBindingSaveRequest): TaskExpertBindingDto {
     if (!this.db.getTask(request.taskId)) throw new Error("任务不存在");
     const { mutation, revisionDir } = this.prepareSave(request, this.row(request.taskId));
+    if (this.requiresRustWrites) {
+      try {
+        void this.enqueueBatch2("保存任务专家配置", {
+          kind: "taskExpertWriteDesired",
+          taskId: mutation.taskId,
+          expectedDesiredJson: mutation.expectedDesiredJson,
+          desiredJson: mutation.desiredJson,
+          desiredSkillsJson: mutation.desiredSkillsJson,
+          updatedAt: mutation.at,
+        }).catch((err) => {
+          console.warn("[TaskExpertBindingService] save Rust 写入失败", err);
+        });
+        const existing = this.get(request.taskId);
+        const desired = parseSnapshot(mutation.desiredJson);
+        const active = existing?.active ?? null;
+        return { taskId: request.taskId, desired, active, pending: revision(desired) !== revision(active) };
+      } catch (error) {
+        this.discardRevision(request.taskId, revisionDir);
+        throw error;
+      }
+    }
     try {
       return this.db.connection.transaction(() => {
         this.writeDesired(mutation);
@@ -222,6 +353,9 @@ export class TaskExpertBindingService {
 
   async saveSettings(request: TaskExpertBindingSaveRequest): Promise<BindingSettings> {
     const native = this.db.connection.inTransaction ? undefined : this.db.runtimeAuditReader;
+    if (this.requiresRustWrites && !native) {
+      throw new Error("保存任务专家设置：Rust 写入核心未就绪");
+    }
     const before = await this.settingsState(request.taskId);
     const { mutation, revisionDir } = this.prepareSave(request, before.binding);
     // Keep copied skills when transport fails after submission. The commit may already reference them.
@@ -233,6 +367,7 @@ export class TaskExpertBindingService {
       if (reply.status === "stale") throw new Error("人设已被修改，请刷新后重试");
       if (reply.status === "missing") throw new Error("任务不存在");
       if (reply.status === "rejected") throw new Error(reply.message);
+      if (this.requiresRustWrites) throw new Error("人设保存无法回退到宿主 SQLite");
       state = this.db.connection.transaction(() => {
         if (!this.db.getTask(request.taskId)) throw new Error("任务不存在");
         this.writeDesired(mutation);
@@ -323,8 +458,16 @@ export class TaskExpertBindingService {
 
   /** Caller must establish a safe idle boundary; this never schedules or interrupts work. */
   promote(taskId: string): TaskExpertBindingDto | null {
+    const updatedAt = Date.now();
+    if (this.requiresRustWrites) {
+      const current = this.get(taskId);
+      void this.enqueueBatch2("激活任务专家配置", { kind: "taskExpertPromote", taskId, updatedAt }).catch((err) => {
+        console.warn("[TaskExpertBindingService] promote Rust 写入失败", err);
+      });
+      return current ? { ...current, active: current.desired, pending: false } : null;
+    }
     this.db.connection.prepare(`UPDATE task_expert_bindings SET active_json=desired_json,
-      active_skills_json=desired_skills_json, updated_at=? WHERE task_id=?`).run(Date.now(), taskId);
+      active_skills_json=desired_skills_json, updated_at=? WHERE task_id=?`).run(updatedAt, taskId);
     return this.get(taskId);
   }
   purge(taskId: string): void {

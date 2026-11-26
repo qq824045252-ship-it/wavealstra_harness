@@ -20,6 +20,10 @@ export function repairWorkMemorySnapshot(db: AppDatabase, memory: MemoryService,
   }
   // Preserve the audit trail. Capture immediately replaces this old event text with current facts.
   memory.update({id:memoryId,title:revisions[lastEvent].title,content:revisions[lastEvent].content,changedBy:'event',changeReason:'Repair verified automatic candidate overwrite'});
+  if (db.readonly || db.runtimeAuditReader?.supervised) {
+    memory.queueWorkSnapshotRepairMeta(memoryId, `work-summary:${workId}`);
+    return true;
+  }
   db.connection.prepare("UPDATE memory_records SET source_type='event',source_id=NULL,source_task_id=NULL WHERE id=?").run(memoryId);
   db.connection.prepare("UPDATE memory_capture_receipts SET suppressed=0,content_hash='',updated_at=? WHERE memory_id=? AND source_key=?").run(Date.now(),memoryId,`work-summary:${workId}`);
   return true;

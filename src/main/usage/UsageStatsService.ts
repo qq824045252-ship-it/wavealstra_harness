@@ -274,6 +274,8 @@ export type RuntimeUsageReport =
 export type RuntimeUsageJob =
   | { kind: "session"; file: string; capturedAt: number }
   | { kind: "subagents"; file: string; coverage: boolean }
+  | { kind: "subagentBatch"; entries: SubagentArchiveEntry[]; coverage: boolean }
+  | { kind: "branchWatermark"; sessionFile: string; inheritedLastEntryId: string; fileSize: number; updatedAt: number }
   | { kind: "live"; input: RecordLiveInput; capturedAt: number; coverage: boolean }
   | { kind: "repairCoverage" }
   | { kind: "reattribute" };
@@ -337,13 +339,17 @@ export class UsageStatsService {
   private writesClosed = false;
   private writeTail: Promise<void> = Promise.resolve();
   constructor(private readonly db: Database, private readonly reader?: RuntimeAuditReader) {
-    try {
-      db.exec(`CREATE TABLE IF NOT EXISTS usage_event_coverage (entry_id TEXT PRIMARY KEY REFERENCES usage_events(entry_id) ON DELETE CASCADE ON UPDATE CASCADE,
-        input_known INTEGER NOT NULL, output_known INTEGER NOT NULL, cache_read_known INTEGER NOT NULL, cache_write_known INTEGER NOT NULL, cost_known INTEGER NOT NULL)`);
-    } catch { this.coverageAvailable = false; }
+    if (db.readonly) {
+      this.coverageAvailable = this.hasTable("usage_event_coverage");
+    } else {
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS usage_event_coverage (entry_id TEXT PRIMARY KEY REFERENCES usage_events(entry_id) ON DELETE CASCADE ON UPDATE CASCADE,
+          input_known INTEGER NOT NULL, output_known INTEGER NOT NULL, cache_read_known INTEGER NOT NULL, cache_write_known INTEGER NOT NULL, cost_known INTEGER NOT NULL)`);
+      } catch { this.coverageAvailable = false; }
+    }
     if (this.coverageAvailable) {
-      if (reader) void this.runWrite({ kind: "repairCoverage" }, () => this.repairLegacyCoverage());
-      else this.repairLegacyCoverage();
+      if (reader) void this.runWrite({ kind: "repairCoverage" }, () => this.repairLegacyCoverage()).catch(() => {});
+      else if (!db.readonly) this.repairLegacyCoverage();
     }
   }
 
@@ -515,6 +521,18 @@ export class UsageStatsService {
    *  "没有这个字段"与"这个字段是 0"在表里长得一样，必须由 coverage 行区分——否则缺字段
    *  的行会被当成"已知的缓存未命中"，把命中率分母虚假抬高（实测 0.9 → 0.818）。 */
   recordSubagentArchive(entries: SubagentArchiveEntry[]): void {
+    if (this.writesClosed) return;
+    if (this.reader) {
+      void this.runWrite(
+        { kind: "subagentBatch", entries, coverage: this.coverageAvailable },
+        () => this.recordSubagentArchiveOnHost(entries),
+      ).catch(error => console.warn(`[usage] recordSubagentArchive failed: ${error instanceof Error ? error.message : String(error)}`));
+      return;
+    }
+    this.recordSubagentArchiveOnHost(entries);
+  }
+
+  private recordSubagentArchiveOnHost(entries: SubagentArchiveEntry[]): number {
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO usage_events (
         entry_id, task_id, session_file, source_kind, source_detail,
@@ -525,6 +543,7 @@ export class UsageStatsService {
     const coverage = this.coverageAvailable
       ? this.db.prepare("INSERT OR IGNORE INTO usage_event_coverage VALUES (?,?,?,?,?,?)")
       : null;
+    let added = 0;
     const tx = this.db.transaction((entries: SubagentArchiveEntry[]) => {
       for (const e of entries) {
         const u = e.usage ?? {};
@@ -545,6 +564,7 @@ export class UsageStatsService {
           total,
           u.cost ?? 0,
         );
+        added += inserted.changes;
         if (inserted.changes && coverage) {
           coverage.run(entryId, Number(u.input != null), Number(u.output != null),
             Number(u.cacheRead != null), Number(u.cacheWrite != null), Number(u.cost != null || total > 0));
@@ -552,6 +572,7 @@ export class UsageStatsService {
       }
     });
     tx(entries);
+    return added;
   }
 
   // ---------- 查询 ----------
@@ -1042,12 +1063,23 @@ export class UsageStatsService {
 
   private runWrite(job: RuntimeUsageJob, fallback: () => number): Promise<number> {
     if (this.writesClosed) return Promise.resolve(0);
+    const rustRequired = Boolean(this.db.readonly || this.reader?.supervised);
     const pending = this.writeTail.then(async () => {
-      const result = await this.reader?.usageHistory(job);
-      if (result !== "changed") return result ?? fallback();
-      const retry = await this.reader?.usageHistory(job);
+      if (!this.reader) {
+        if (rustRequired) throw new Error("只读数据库模式下无法写入用量统计");
+        return fallback();
+      }
+      const finish = (value: number | "changed" | undefined): number | undefined => {
+        if (value === "changed") return undefined;
+        if (value !== undefined) return value;
+        if (rustRequired) throw new Error("用量统计写入未获 Rust 核心确认");
+        return fallback();
+      };
+      const result = await this.reader.usageHistory(job);
+      if (result !== "changed") return finish(result) ?? 0;
+      const retry = await this.reader.usageHistory(job);
       if (retry === "changed") return 0;
-      return retry ?? fallback();
+      return finish(retry) ?? 0;
     });
     this.writeTail = pending.then(() => {}, () => {});
     return pending;

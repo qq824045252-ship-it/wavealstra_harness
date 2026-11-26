@@ -18,6 +18,7 @@ import { settleBotCapabilityTools } from "./BotCapabilityPresentation";
 import { delegatedFeedbackText, delegatedReplyWorkIds, reconcileDelegatedFeedback } from "./BotDelegatedTaskProjection";
 import type { ChatToolCallDto } from "../../../shared/agent-ipc";
 import type { RuntimeBotHistoryFacts, RuntimeBotHistoryPage } from "./BotHistoryData";
+import { enqueueWorkOp, overlayDelete, overlayFindAll, overlayHasTable, overlayMutate, overlayReadOne, overlaySet, requiresWorkRustWrites, workDomainInTx, workDomainRunTx } from "./WorkDomainRuntime";
 
 const conversationRow = z.object({ conversation_id: z.string(), bot_id: z.string(), team_id: z.string().nullable().optional(), user_id: z.string(), revision: z.number(),
   current_request_id: z.string().nullable(), archived_at: z.number().nullable(), created_at: z.number(), updated_at: z.number() });
@@ -43,6 +44,7 @@ export class BotConversationRepository {
     this.collaborations = new BotCollaborationRepository(db);
     this.origins = new BotTurnOrigins(db);
     this.peers = new BotPeerIngress(db);
+    if (db.readonly) return;
     // Additive presentation storage: existing conversations need no destructive schema reset.
     db.exec(`CREATE TABLE IF NOT EXISTS bot_message_segments (
       message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
@@ -63,15 +65,62 @@ export class BotConversationRepository {
     CREATE INDEX IF NOT EXISTS idx_bot_collaboration_requests_assistant ON bot_collaboration_requests(assistant_message_id);`);
   }
 
+  private getConvRaw(conversationId: string): Record<string, unknown> | undefined {
+    return overlayReadOne(this.db, "bot_conversations", conversationId, () =>
+      this.db.prepare("SELECT * FROM bot_conversations WHERE conversation_id=?").get(conversationId) as Record<string, unknown> | undefined);
+  }
+
+  private getMessageRaw(messageId: string): Record<string, unknown> | undefined {
+    return overlayReadOne(this.db, "bot_messages", messageId, () =>
+      this.db.prepare("SELECT * FROM bot_messages WHERE message_id=?").get(messageId) as Record<string, unknown> | undefined);
+  }
+
+  private listMessagesForConversation(conversationId: string): Array<Record<string, unknown>> {
+    const dbRows = this.db.prepare("SELECT * FROM bot_messages WHERE conversation_id=? ORDER BY ordinal ASC")
+      .all(conversationId) as Array<Record<string, unknown>>;
+    return overlayFindAll(this.db, "bot_messages", dbRows, r => String(r.message_id),
+      r => r.conversation_id === conversationId, (a, b) => Number(a.ordinal ?? 0) - Number(b.ordinal ?? 0));
+  }
+
+  private nextMessageOrdinal(conversationId: string): number {
+    const msgs = this.listMessagesForConversation(conversationId);
+    const maxOrd = msgs.reduce((max, r) => Math.max(max, Number(r.ordinal ?? 0)), 0);
+    return maxOrd + 1;
+  }
+
+  private hasGatewayConversation(conversationId: string): boolean {
+    const row = overlayReadOne(this.db, "bot_gateway_conversations", conversationId, () =>
+      this.db.prepare("SELECT * FROM bot_gateway_conversations WHERE conversation_id=?").get(conversationId) as Record<string, unknown> | undefined);
+    return Boolean(row);
+  }
+
+  private feedbackForMessage(messageId: string): { message_id: string; metadata_json: string } | undefined {
+    return overlayReadOne<{ message_id: string; metadata_json: string }>(this.db, "bot_work_feedback", messageId, () =>
+      this.db.prepare("SELECT * FROM bot_work_feedback WHERE message_id=?").get(messageId) as { message_id: string; metadata_json: string } | undefined);
+  }
+
   conversation(userId: string, botId: string, conversationId?: string, teamId?: string): BotConversation | undefined {
     // Explicit IDs are internal receipt identities. External send/history validate
     // team scope separately; old requests retain their original executing Bot.
-    const row = conversationId ? this.db.prepare(`SELECT * FROM bot_conversations WHERE user_id=? AND conversation_id=?
-      AND (bot_id=? OR team_id IS NOT NULL)`).get(userId, conversationId, botId)
-      : teamId ? this.db.prepare("SELECT * FROM bot_conversations WHERE user_id=? AND team_id=? AND archived_at IS NULL").get(userId, teamId)
-      : this.db.prepare(`SELECT * FROM bot_conversations c WHERE user_id=? AND bot_id=? AND team_id IS NULL AND archived_at IS NULL AND ingress_kind='desktop' AND source_kind='user'
-          AND NOT EXISTS(SELECT 1 FROM bot_gateway_conversations g WHERE g.conversation_id=c.conversation_id)`)
-          .get(userId, botId);
+    if (conversationId) {
+      const row = this.getConvRaw(conversationId);
+      if (!row || row.user_id !== userId || (row.bot_id !== botId && (row.team_id ?? null) === null)) return undefined;
+      return conversationRow.parse(row);
+    }
+    if (teamId) {
+      const dbRows = this.db.prepare("SELECT * FROM bot_conversations WHERE user_id=? AND team_id=? AND archived_at IS NULL")
+        .all(userId, teamId) as Array<Record<string, unknown>>;
+      const row = overlayFindAll(this.db, "bot_conversations", dbRows, r => String(r.conversation_id),
+        r => r.user_id === userId && r.team_id === teamId && (r.archived_at ?? null) === null)[0];
+      return row ? conversationRow.parse(row) : undefined;
+    }
+    const dbRows = this.db.prepare(`SELECT c.* FROM bot_conversations c WHERE user_id=? AND bot_id=? AND team_id IS NULL AND archived_at IS NULL AND ingress_kind='desktop' AND source_kind='user'
+      AND NOT EXISTS(SELECT 1 FROM bot_gateway_conversations g WHERE g.conversation_id=c.conversation_id)`)
+      .all(userId, botId) as Array<Record<string, unknown>>;
+    const row = overlayFindAll(this.db, "bot_conversations", dbRows, r => String(r.conversation_id),
+      r => r.user_id === userId && r.bot_id === botId && (r.team_id ?? null) === null
+        && (r.archived_at ?? null) === null && (r.ingress_kind ?? "desktop") === "desktop" && (r.source_kind ?? "user") === "user"
+        && !this.hasGatewayConversation(String(r.conversation_id)))[0];
     return row ? conversationRow.parse(row) : undefined;
   }
 
@@ -86,48 +135,118 @@ export class BotConversationRepository {
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       ...(input.selection ? { selection: input.selection } : {}) });
     const hash = createHash("sha256").update(payload).digest("hex");
-    const prior = this.receipt(userId, input.botId, input.requestId);
-    if (prior) {
-      if (prior.payload_hash !== hash) throw new Error("同一消息请求 ID 已用于不同正文、附件或事项引用");
-      return { botId: input.botId, teamId: input.teamId, conversationId: prior.conversation_id, requestId: input.requestId,
-        userMessageId: prior.user_message_id, assistantMessageId: prior.assistant_message_id, replayed: true };
-    }
-    let conversation = this.conversation(userId, input.botId, input.conversationId, input.teamId);
-    this.assertScope(conversation, input.teamId);
-    if (input.conversationId && !conversation) throw new Error("对话不属于当前用户与 Bot");
-    if (conversation?.archived_at) throw new Error("该对话已归档，请开始新对话");
-    if(input.clarificationGoalId) {
-      const question=input.referenceMessageId ? this.message(input.referenceMessageId) : undefined;
-      if(!question || question.conversationId!==conversation?.conversation_id || question.botId!==input.botId
-        || !question.clarifications?.some(card=>card.goalId===input.clarificationGoalId && card.status==="pending"))
-        throw Error("这个问题已回答、失效或不属于当前对话，请刷新后继续");
-    }
-    const now = Date.now();
-    if (!conversation) {
-      const conversationId = `bot-conversation-${randomUUID()}`;
-      this.db.prepare("INSERT INTO bot_conversations(conversation_id,bot_id,user_id,created_at,updated_at,team_id) VALUES (?,?,?,?,?,?)")
-        .run(conversationId, input.botId, userId, now, now, input.teamId ?? null);
-      conversation = this.conversation(userId, input.botId, conversationId)!;
-    }
-    const receipt: BotSendReceipt = { botId: input.botId, teamId: input.teamId, conversationId: conversation.conversation_id, requestId: input.requestId,
-      userMessageId: `${BOT_MESSAGE_ID_PREFIX}${randomUUID()}`, assistantMessageId: `${BOT_MESSAGE_ID_PREFIX}${randomUUID()}`, replayed: false };
-    const insert = this.db.prepare(`INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?)`);
-    insert.run(receipt.userMessageId, receipt.conversationId, input.botId, input.requestId, "user", input.text, "completed", now, now);
-    if (persistedAttachments.length) this.db.prepare("INSERT INTO bot_message_attachments(message_id,attachments_json) VALUES (?,?)")
-      .run(receipt.userMessageId, JSON.stringify(z.array(botAttachmentSchema).parse(persistedAttachments)));
-    insert.run(receipt.assistantMessageId, receipt.conversationId, input.botId, input.requestId, "assistant", "", "queued", now, now);
-    this.db.prepare(`INSERT INTO bot_send_receipts(user_id,bot_id,request_id,payload_hash,conversation_id,user_message_id,
-      assistant_message_id,selected_work_id,reference_message_id) VALUES (?,?,?,?,?,?,?,?,?)`).run(userId, input.botId,
-      input.requestId, hash, receipt.conversationId, receipt.userMessageId, receipt.assistantMessageId,
-      input.selectedWorkId ?? null, input.referenceMessageId ?? null);
-    if(input.clarificationGoalId) this.db.prepare("INSERT INTO bot_clarification_answers(question_message_id,goal_id,answer_message_id) VALUES (?,?,?)").run(input.referenceMessageId,input.clarificationGoalId,receipt.userMessageId);
-    this.touch(receipt.conversationId);
-    return receipt;
+    return workDomainRunTx(this.db, () => {
+      const prior = this.receipt(userId, input.botId, input.requestId);
+      if (prior) {
+        if (prior.payload_hash !== hash) throw new Error("同一消息请求 ID 已用于不同正文、附件或事项引用");
+        return { botId: input.botId, teamId: input.teamId, conversationId: prior.conversation_id, requestId: input.requestId,
+          userMessageId: prior.user_message_id, assistantMessageId: prior.assistant_message_id, replayed: true };
+      }
+      let conversation = this.conversation(userId, input.botId, input.conversationId, input.teamId);
+      this.assertScope(conversation, input.teamId);
+      if (input.conversationId && !conversation) throw new Error("对话不属于当前用户与 Bot");
+      if (conversation?.archived_at) throw new Error("该对话已归档，请开始新对话");
+      if(input.clarificationGoalId) {
+        const question=input.referenceMessageId ? this.message(input.referenceMessageId) : undefined;
+        if(!question || question.conversationId!==conversation?.conversation_id || question.botId!==input.botId
+          || !question.clarifications?.some(card=>card.goalId===input.clarificationGoalId && card.status==="pending"))
+          throw Error("这个问题已回答、失效或不属于当前对话，请刷新后继续");
+      }
+      const now = Date.now();
+      const rust = requiresWorkRustWrites(this.db);
+      if (!conversation) {
+        const conversationId = `bot-conversation-${randomUUID()}`;
+        if (rust) {
+          overlaySet(this.db, "bot_conversations", conversationId, {
+            conversation_id: conversationId, bot_id: input.botId, user_id: userId, team_id: input.teamId ?? null,
+            ingress_kind: "desktop", source_kind: "user", revision: 0, current_request_id: null,
+            archived_at: null, created_at: now, updated_at: now,
+          });
+          enqueueWorkOp(this.db, {
+            op: "botConvInsert", conversationId, botId: input.botId, userId, teamId: input.teamId ?? null,
+            ingressKind: "desktop", sourceKind: "user", archivedAt: null, createdAt: now, updatedAt: now, orIgnore: false,
+          });
+        } else {
+          this.db.prepare("INSERT INTO bot_conversations(conversation_id,bot_id,user_id,created_at,updated_at,team_id) VALUES (?,?,?,?,?,?)")
+            .run(conversationId, input.botId, userId, now, now, input.teamId ?? null);
+        }
+        conversation = this.conversation(userId, input.botId, conversationId, input.teamId)!;
+      }
+      const receipt: BotSendReceipt = { botId: input.botId, teamId: input.teamId, conversationId: conversation.conversation_id, requestId: input.requestId,
+        userMessageId: `${BOT_MESSAGE_ID_PREFIX}${randomUUID()}`, assistantMessageId: `${BOT_MESSAGE_ID_PREFIX}${randomUUID()}`, replayed: false };
+      if (rust) {
+        const nextOrd = this.nextMessageOrdinal(receipt.conversationId);
+        const attachmentsJson = persistedAttachments.length
+          ? JSON.stringify(z.array(botAttachmentSchema).parse(persistedAttachments))
+          : null;
+        overlaySet(this.db, "bot_messages", receipt.userMessageId, {
+          message_id: receipt.userMessageId, conversation_id: receipt.conversationId, bot_id: input.botId,
+          request_id: input.requestId, ordinal: nextOrd, role: "user", text: input.text, status: "completed",
+          work_ids_json: "[]", error: null, created_at: now, updated_at: now,
+        });
+        if (attachmentsJson) {
+          overlaySet(this.db, "bot_message_attachments", receipt.userMessageId, {
+            message_id: receipt.userMessageId, attachments_json: attachmentsJson,
+          });
+        }
+        enqueueWorkOp(this.db, {
+          op: "botMsgInsert", messageId: receipt.userMessageId, conversationId: receipt.conversationId,
+          botId: input.botId, requestId: input.requestId, role: "user", text: input.text, status: "completed",
+          workIdsJson: "[]", createdAt: now, updatedAt: now, orIgnore: false, attachmentsJson,
+        });
+        overlaySet(this.db, "bot_messages", receipt.assistantMessageId, {
+          message_id: receipt.assistantMessageId, conversation_id: receipt.conversationId, bot_id: input.botId,
+          request_id: input.requestId, ordinal: nextOrd + 1, role: "assistant", text: "", status: "queued",
+          work_ids_json: "[]", error: null, created_at: now, updated_at: now,
+        });
+        enqueueWorkOp(this.db, {
+          op: "botMsgInsert", messageId: receipt.assistantMessageId, conversationId: receipt.conversationId,
+          botId: input.botId, requestId: input.requestId, role: "assistant", text: "", status: "queued",
+          workIdsJson: "[]", createdAt: now, updatedAt: now, orIgnore: false, attachmentsJson: null,
+        });
+        overlaySet(this.db, "bot_send_receipts", `${userId}\0${input.botId}\0${input.requestId}`, {
+          user_id: userId, bot_id: input.botId, request_id: input.requestId, payload_hash: hash,
+          conversation_id: receipt.conversationId, user_message_id: receipt.userMessageId,
+          assistant_message_id: receipt.assistantMessageId,
+          selected_work_id: input.selectedWorkId ?? null, reference_message_id: input.referenceMessageId ?? null,
+        });
+        enqueueWorkOp(this.db, {
+          op: "botSendReceiptInsert", userId, botId: input.botId, requestId: input.requestId, payloadHash: hash,
+          conversationId: receipt.conversationId, userMessageId: receipt.userMessageId,
+          assistantMessageId: receipt.assistantMessageId,
+          selectedWorkId: input.selectedWorkId ?? null, referenceMessageId: input.referenceMessageId ?? null,
+        });
+        if (input.clarificationGoalId && input.referenceMessageId) {
+          overlaySet(this.db, "bot_clarification_answers", `${input.referenceMessageId}\0${input.clarificationGoalId}`, {
+            question_message_id: input.referenceMessageId, goal_id: input.clarificationGoalId, answer_message_id: receipt.userMessageId,
+          });
+          enqueueWorkOp(this.db, {
+            op: "botClarificationAnswerInsert", questionMessageId: input.referenceMessageId,
+            goalId: input.clarificationGoalId, answerMessageId: receipt.userMessageId,
+          });
+        }
+        this.touch(receipt.conversationId);
+        return receipt;
+      }
+      const insert = this.db.prepare(`INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?)`);
+      insert.run(receipt.userMessageId, receipt.conversationId, input.botId, input.requestId, "user", input.text, "completed", now, now);
+      if (persistedAttachments.length) this.db.prepare("INSERT INTO bot_message_attachments(message_id,attachments_json) VALUES (?,?)")
+        .run(receipt.userMessageId, JSON.stringify(z.array(botAttachmentSchema).parse(persistedAttachments)));
+      insert.run(receipt.assistantMessageId, receipt.conversationId, input.botId, input.requestId, "assistant", "", "queued", now, now);
+      this.db.prepare(`INSERT INTO bot_send_receipts(user_id,bot_id,request_id,payload_hash,conversation_id,user_message_id,
+        assistant_message_id,selected_work_id,reference_message_id) VALUES (?,?,?,?,?,?,?,?,?)`).run(userId, input.botId,
+        input.requestId, hash, receipt.conversationId, receipt.userMessageId, receipt.assistantMessageId,
+        input.selectedWorkId ?? null, input.referenceMessageId ?? null);
+      if(input.clarificationGoalId) this.db.prepare("INSERT INTO bot_clarification_answers(question_message_id,goal_id,answer_message_id) VALUES (?,?,?)").run(input.referenceMessageId,input.clarificationGoalId,receipt.userMessageId);
+      this.touch(receipt.conversationId);
+      return receipt;
+    });
   }
 
   receipt(userId: string, botId: string, requestId: string): BotMessageReceipt | undefined {
-    const row = this.db.prepare("SELECT * FROM bot_send_receipts WHERE user_id=? AND bot_id=? AND request_id=?").get(userId, botId, requestId);
+    const row = overlayReadOne(this.db, "bot_send_receipts", `${userId}\0${botId}\0${requestId}`, () =>
+      this.db.prepare("SELECT * FROM bot_send_receipts WHERE user_id=? AND bot_id=? AND request_id=?").get(userId, botId, requestId) as Record<string, unknown> | undefined);
     return row ? receiptRow.parse(row) : undefined;
   }
 
@@ -144,7 +263,7 @@ export class BotConversationRepository {
   }
 
   message(messageId: string): BotMessageDto | undefined {
-    const row = this.db.prepare("SELECT * FROM bot_messages WHERE message_id=?").get(messageId);
+    const row = this.getMessageRaw(messageId);
     return row ? this.mapMessage(row) : undefined;
   }
 
@@ -152,20 +271,27 @@ export class BotConversationRepository {
    * before mapping unrelated attachments/metrics/segments; never trust a stale
    * history DTO to decide whether feedback has since been added. */
   messageWithWorkFeedback(messageId: string): BotMessageDto | undefined {
-    const row = this.db.prepare(`SELECT m.* FROM bot_messages m
-      JOIN bot_work_feedback f ON f.message_id=m.message_id
-      WHERE m.message_id=? AND m.role='assistant'`).get(messageId);
-    return row ? this.mapMessage(row) : undefined;
+    const row = this.getMessageRaw(messageId);
+    if (!row || row.role !== "assistant" || !this.feedbackForMessage(messageId)) return undefined;
+    return this.mapMessage(row);
   }
 
   messageBelongsToConversation(userId: string, conversationId: string, messageId: string): boolean {
-    return Boolean(this.db.prepare(`SELECT 1 FROM bot_messages m JOIN bot_conversations c ON c.conversation_id=m.conversation_id
-      JOIN bot_conversations target ON target.conversation_id=? AND target.user_id=c.user_id
-      WHERE m.message_id=? AND c.user_id=? AND (m.conversation_id=target.conversation_id OR
-        (m.conversation_id LIKE 'bot-inbox-%' AND EXISTS (SELECT 1 FROM bot_work_feedback f
-          JOIN work_conversations t ON t.work_id=json_extract(f.metadata_json,'$.workId')
-          WHERE f.message_id=m.message_id AND t.channel_type='bot-delivery' AND t.conversation_id=target.conversation_id)))`)
-      .get(conversationId, messageId, userId));
+    const m = this.getMessageRaw(messageId);
+    if (!m) return false;
+    const mc = this.getConvRaw(String(m.conversation_id));
+    const target = this.getConvRaw(conversationId);
+    if (!mc || !target || mc.user_id !== userId || target.user_id !== userId) return false;
+    if (mc.conversation_id === target.conversation_id) return true;
+    if (!String(m.conversation_id).startsWith("bot-inbox-")) return false;
+    const fb = this.feedbackForMessage(messageId);
+    if (!fb) return false;
+    const meta = JSON.parse(fb.metadata_json) as { workId?: string };
+    if (!meta.workId) return false;
+    const dbLinks = this.db.prepare("SELECT * FROM work_conversations WHERE work_id=? AND channel_type='bot-delivery' AND conversation_id=?")
+      .all(meta.workId, conversationId) as Array<Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_conversations", dbLinks, r => `${r.work_id}\0${r.conversation_id}`,
+      r => r.work_id === meta.workId && r.channel_type === "bot-delivery" && r.conversation_id === conversationId).length > 0;
   }
 
   history(userId: string, request: BotHistoryRequest, options: { reconcile?: boolean } = {}): BotHistoryDto {
@@ -184,32 +310,73 @@ export class BotConversationRepository {
     // all feedback when an inbox is large. Each source contributes at most 101
     // rows, and the rolling merge keeps the same bounded global page.
     const ascending = request.after !== undefined;
-    const ids = request.messageIds ? "AND m.message_id IN (SELECT value FROM json_each(@ids))" : "";
-    const params = { conversationId: conversation.conversation_id, before: request.before ?? Number.MAX_SAFE_INTEGER,
-      after: request.after ?? 0, ids: JSON.stringify(request.messageIds ?? []) };
+    const before = request.before ?? Number.MAX_SAFE_INTEGER;
+    const after = request.after ?? 0;
+    const idSet = request.messageIds ? new Set(request.messageIds) : undefined;
+    const cmp = (a: Record<string, unknown>, b: Record<string, unknown>) =>
+      ascending ? Number(a.ordinal) - Number(b.ordinal) : Number(b.ordinal) - Number(a.ordinal);
+    const idsSql = request.messageIds ? "AND m.message_id IN (SELECT value FROM json_each(@ids))" : "";
+    const params = { conversationId: conversation.conversation_id, before, after, ids: JSON.stringify(request.messageIds ?? []) };
     const pageSql = `SELECT m.* FROM bot_messages m WHERE m.conversation_id=@sourceId
-      AND m.ordinal<@before AND m.ordinal>@after ${ids}`;
-    type HistoryRow = { ordinal: number };
-    let rows = this.db.prepare(pageSql + ` ORDER BY m.ordinal ${ascending ? "ASC" : "DESC"} LIMIT 101`)
-      .all({ ...params, sourceId: conversation.conversation_id }) as HistoryRow[];
-    const inboxes = this.db.prepare(`SELECT conversation_id FROM bot_conversations
-      WHERE user_id=? AND conversation_id LIKE 'bot-inbox-%' AND conversation_id<>?
-        AND EXISTS (SELECT 1 FROM bot_work_feedback)`)
+      AND m.ordinal<@before AND m.ordinal>@after ${idsSql}`;
+    const mainDbRows = this.db.prepare(pageSql + ` ORDER BY m.ordinal ${ascending ? "ASC" : "DESC"} LIMIT 101`)
+      .all({ ...params, sourceId: conversation.conversation_id }) as Array<Record<string, unknown>>;
+    let rows = overlayFindAll(this.db, "bot_messages", mainDbRows, r => String(r.message_id),
+      r => r.conversation_id === conversation!.conversation_id && Number(r.ordinal) < before && Number(r.ordinal) > after
+        && (!idSet || idSet.has(String(r.message_id))), cmp).slice(0, 101);
+    const dbInboxes = this.db.prepare(`SELECT conversation_id FROM bot_conversations
+      WHERE user_id=? AND conversation_id LIKE 'bot-inbox-%' AND conversation_id<>?`)
       .all(userId, conversation.conversation_id) as Array<{ conversation_id: string }>;
+    const inboxes = overlayFindAll(this.db, "bot_conversations", dbInboxes.map(r => ({ conversation_id: r.conversation_id, user_id: userId })),
+      r => String(r.conversation_id),
+      r => r.user_id === userId && String(r.conversation_id).startsWith("bot-inbox-") && r.conversation_id !== conversation!.conversation_id);
     if (inboxes.length) {
-      const linkedPage = this.db.prepare(pageSql + ` AND EXISTS (
-        SELECT 1 FROM bot_work_feedback f JOIN work_conversations t ON t.work_id=json_extract(f.metadata_json,'$.workId')
-        WHERE f.message_id=m.message_id AND t.channel_type='bot-delivery' AND t.conversation_id=@conversationId)
-        ORDER BY m.ordinal ${ascending ? "ASC" : "DESC"} LIMIT 101`);
-      for (const inbox of inboxes) {
-        // Once the global page is full, older (or later for catch-up) inbox
-        // rows cannot enter it. Tighten the indexed range before looking for
-        // links, so a large irrelevant inbox is skipped rather than scanned.
-        const edge = rows.length === 101 ? rows[100].ordinal : undefined;
-        const linked = linkedPage.all({ ...params, sourceId: inbox.conversation_id,
-          before: ascending && edge !== undefined ? Math.min(params.before, edge) : params.before,
-          after: !ascending && edge !== undefined ? Math.max(params.after, edge) : params.after }) as HistoryRow[];
-        rows = rows.concat(linked).sort((a, b) => ascending ? a.ordinal - b.ordinal : b.ordinal - a.ordinal).slice(0, 101);
+      const useIndexedSqlExists = !overlayHasTable(this.db, "bot_messages")
+        && !overlayHasTable(this.db, "bot_work_feedback")
+        && !overlayHasTable(this.db, "work_conversations");
+      if (useIndexedSqlExists) {
+        const linkedSql = this.db.prepare(pageSql + ` AND EXISTS (
+          SELECT 1 FROM bot_work_feedback f JOIN work_conversations t ON t.work_id=json_extract(f.metadata_json,'$.workId')
+          WHERE f.message_id=m.message_id AND t.channel_type='bot-delivery' AND t.conversation_id=@conversationId
+        ) ORDER BY m.ordinal ${ascending ? "ASC" : "DESC"} LIMIT 101`);
+        for (const inbox of inboxes) {
+          const edge = rows.length === 101 ? Number(rows[100].ordinal) : undefined;
+          const inboxBefore = ascending && edge !== undefined ? Math.min(params.before, edge) : params.before;
+          const inboxAfter = !ascending && edge !== undefined ? Math.max(params.after, edge) : params.after;
+          const linked = linkedSql.all({ ...params, sourceId: String(inbox.conversation_id), before: inboxBefore, after: inboxAfter }) as Array<Record<string, unknown>>;
+          const byId = new Map<string, Record<string, unknown>>();
+          for (const r of rows) byId.set(String(r.message_id), r);
+          for (const r of linked) byId.set(String(r.message_id), r);
+          rows = [...byId.values()].sort(cmp).slice(0, 101);
+        }
+      } else {
+        const dbDeliveryWorks = this.db.prepare("SELECT work_id FROM work_conversations WHERE channel_type='bot-delivery' AND conversation_id=?")
+          .all(conversation.conversation_id) as Array<{ work_id: string }>;
+        const deliveryWorks = new Set(overlayFindAll(this.db, "work_conversations",
+          dbDeliveryWorks.map(r => ({ work_id: r.work_id, conversation_id: conversation!.conversation_id, channel_type: "bot-delivery" })),
+          r => `${r.work_id}\0${r.conversation_id}`,
+          r => r.channel_type === "bot-delivery" && r.conversation_id === conversation!.conversation_id).map(r => String(r.work_id)));
+        const linkedSql = this.db.prepare(pageSql + ` ORDER BY m.ordinal ${ascending ? "ASC" : "DESC"}`);
+        for (const inbox of inboxes) {
+          const edge = rows.length === 101 ? Number(rows[100].ordinal) : undefined;
+          const inboxBefore = ascending && edge !== undefined ? Math.min(params.before, edge) : params.before;
+          const inboxAfter = !ascending && edge !== undefined ? Math.max(params.after, edge) : params.after;
+          const dbCandidates = linkedSql.all({ ...params, sourceId: String(inbox.conversation_id), before: inboxBefore, after: inboxAfter }) as Array<Record<string, unknown>>;
+          const linked = overlayFindAll(this.db, "bot_messages", dbCandidates, r => String(r.message_id), r => {
+            if (r.conversation_id !== inbox.conversation_id) return false;
+            const ord = Number(r.ordinal);
+            if (!(ord < inboxBefore && ord > inboxAfter)) return false;
+            if (idSet && !idSet.has(String(r.message_id))) return false;
+            const fb = this.feedbackForMessage(String(r.message_id));
+            if (!fb) return false;
+            const meta = JSON.parse(fb.metadata_json) as { workId?: string };
+            return Boolean(meta.workId && deliveryWorks.has(meta.workId));
+          }, cmp).slice(0, 101);
+          const byId = new Map<string, Record<string, unknown>>();
+          for (const r of rows) byId.set(String(r.message_id), r);
+          for (const r of linked) byId.set(String(r.message_id), r);
+          rows = [...byId.values()].sort(cmp).slice(0, 101);
+        }
       }
     }
     const messages = rows.slice(0, 100).map(row => this.mapMessage(row));
@@ -235,35 +402,78 @@ export class BotConversationRepository {
   activeRequests(userId: string): import("../../../shared/bot-conversation").BotActiveRequestDto[] {
     // Scope comes from the host, never renderer input. No runtime creation, mutation
     // or current-conversation restriction: queued and archived requests stay visible.
-    const rows = this.db.prepare(`SELECT m.*, c.archived_at FROM bot_messages m
-      JOIN bot_conversations c ON c.conversation_id=m.conversation_id
-      WHERE c.user_id=? AND m.role='assistant' AND m.status IN ('queued','running','unknown')
-      ORDER BY m.updated_at DESC, m.ordinal DESC`).all(userId) as Array<{ archived_at: number | null }>;
-    const prompt = this.db.prepare("SELECT * FROM bot_messages WHERE conversation_id=? AND bot_id=? AND request_id=? AND role='user' ORDER BY ordinal LIMIT 1");
-    return rows.map(row => {
+    const dbConvs = this.db.prepare("SELECT * FROM bot_conversations WHERE user_id=?").all(userId) as Array<Record<string, unknown>>;
+    const convById = new Map(overlayFindAll(this.db, "bot_conversations", dbConvs, r => String(r.conversation_id), r => r.user_id === userId)
+      .map(c => [String(c.conversation_id), c]));
+    const dbMsgs = this.db.prepare(`SELECT m.* FROM bot_messages m JOIN bot_conversations c ON c.conversation_id=m.conversation_id
+      WHERE c.user_id=? AND m.role='assistant' AND m.status IN ('queued','running','unknown')`).all(userId) as Array<Record<string, unknown>>;
+    const activeMsgs = overlayFindAll(this.db, "bot_messages", dbMsgs, r => String(r.message_id),
+      r => convById.has(String(r.conversation_id)) && r.role === "assistant" && ["queued", "running", "unknown"].includes(String(r.status)),
+      (a, b) => Number(b.updated_at ?? 0) - Number(a.updated_at ?? 0) || Number(b.ordinal ?? 0) - Number(a.ordinal ?? 0));
+    return activeMsgs.map(row => {
+      const conv = convById.get(String(row.conversation_id));
       const message = this.mapMessage(row);
-      const source = prompt.get(message.conversationId, message.botId, message.requestId);
-      return { message, prompt: source ? this.mapMessage(source) : undefined, archived: row.archived_at !== null };
+      const source = this.listMessagesForConversation(message.conversationId)
+        .find(m => m.bot_id === message.botId && m.request_id === message.requestId && m.role === "user");
+      return { message, prompt: source ? this.mapMessage(source) : undefined, archived: (conv?.archived_at ?? null) !== null };
     });
   }
 
   pending(userId: string): BotConversation[] {
-    return this.db.prepare(`SELECT DISTINCT c.* FROM bot_conversations c JOIN bot_messages m ON m.conversation_id=c.conversation_id
-      WHERE c.user_id=? AND m.role='assistant' AND m.status IN ('queued','running','unknown')`).all(userId).map(row => conversationRow.parse(row));
+    const dbConvs = this.db.prepare("SELECT * FROM bot_conversations WHERE user_id=?").all(userId) as Array<Record<string, unknown>>;
+    const convs = overlayFindAll(this.db, "bot_conversations", dbConvs, r => String(r.conversation_id), r => r.user_id === userId);
+    const dbMsgs = this.db.prepare(`SELECT DISTINCT m.* FROM bot_messages m JOIN bot_conversations c ON c.conversation_id=m.conversation_id
+      WHERE c.user_id=? AND m.role='assistant' AND m.status IN ('queued','running','unknown')`).all(userId) as Array<Record<string, unknown>>;
+    const activeConvIds = new Set(overlayFindAll(this.db, "bot_messages", dbMsgs, r => String(r.message_id),
+      r => r.role === "assistant" && ["queued", "running", "unknown"].includes(String(r.status)))
+      .map(m => String(m.conversation_id)));
+    return convs.filter(c => activeConvIds.has(String(c.conversation_id))).map(row => conversationRow.parse(row));
   }
 
   next(conversationId: string): BotMessageDto | undefined {
-    const row = this.db.prepare(`SELECT * FROM bot_messages WHERE conversation_id=? AND role='assistant'
-      AND status IN ('queued','running','unknown') ORDER BY ordinal LIMIT 1`).get(conversationId);
+    const row = this.listMessagesForConversation(conversationId)
+      .find(m => m.role === "assistant" && ["queued", "running", "unknown"].includes(String(m.status)));
     return row ? this.mapMessage(row) : undefined;
   }
 
   update(messageId: string, status: BotMessageDto["status"], text: string, error?: string, activity?: BotActivityDto, segments?: BotReplySegment[], presentation?: { taskId: string; tools: ChatToolCallDto[] }): void {
-    this.db.transaction(() => {
+    workDomainRunTx(this.db, () => {
       const message = this.message(messageId);
       if (!message) throw new Error("消息不存在");
+      const now = Date.now();
+      if (requiresWorkRustWrites(this.db)) {
+        overlayMutate(this.db, "bot_messages", messageId, () => this.getMessageRaw(messageId),
+          cur => cur ? { ...cur, status, text, error: error ?? null, updated_at: now } : cur);
+        overlayMutate(this.db, "bot_message_revisions", messageId, () =>
+          this.db.prepare("SELECT message_id, revision FROM bot_message_revisions WHERE message_id=?").get(messageId) as Record<string, unknown> | undefined,
+        cur => ({ message_id: messageId, revision: Number(cur?.revision ?? 0) + 1 }));
+        const segmentsJson = segments !== undefined ? JSON.stringify(z.array(botReplySegmentSchema).parse(segments)) : null;
+        if (segmentsJson !== null) overlaySet(this.db, "bot_message_segments", messageId, { message_id: messageId, segments_json: segmentsJson });
+        const tools = presentation !== undefined ? { taskId: presentation.taskId, toolsJson: JSON.stringify(presentation.tools) } : null;
+        if (tools) overlaySet(this.db, "bot_message_tools", messageId, { message_id: messageId, task_id: tools.taskId, tools_json: tools.toolsJson });
+        const activityJson = status === "running" && activity ? JSON.stringify(botActivitySchema.parse(activity)) : null;
+        if (activityJson !== null) overlaySet(this.db, "bot_message_activity", messageId, { message_id: messageId, activity_json: activityJson });
+        else overlayDelete(this.db, "bot_message_activity", messageId);
+        let clearWorkReads: { conversationId: string; requestId: string } | null = null;
+        if (message.role === "assistant" && ["completed", "cancelled", "failed"].includes(status)) {
+          clearWorkReads = { conversationId: message.conversationId, requestId: message.requestId };
+          const readRows = this.db.prepare("SELECT * FROM bot_work_reads WHERE conversation_id=? AND request_id=?")
+            .all(message.conversationId, message.requestId) as Array<Record<string, unknown>>;
+          for (const r of overlayFindAll(this.db, "bot_work_reads", readRows, row => `${row.conversation_id}\0${row.request_id}\0${row.work_id}`,
+            row => row.conversation_id === message.conversationId && row.request_id === message.requestId)) {
+            overlayDelete(this.db, "bot_work_reads", `${r.conversation_id}\0${r.request_id}\0${r.work_id}`);
+          }
+        }
+        overlayMutate(this.db, "bot_conversations", message.conversationId, () => this.getConvRaw(message.conversationId),
+          cur => cur ? { ...cur, revision: Number(cur.revision ?? 0) + 1, updated_at: now } : cur);
+        enqueueWorkOp(this.db, {
+          op: "botMsgUpdate", messageId, status, text, error: error ?? null, updatedAt: now,
+          segmentsJson, tools, activityJson, clearWorkReads,
+        });
+        return;
+      }
       this.db.prepare("UPDATE bot_messages SET status=?,text=?,error=?,updated_at=? WHERE message_id=?")
-        .run(status, text, error ?? null, Date.now(), messageId);
+        .run(status, text, error ?? null, now, messageId);
       if (segments !== undefined) this.db.prepare("INSERT OR REPLACE INTO bot_message_segments(message_id,segments_json) VALUES (?,?)")
         .run(messageId, JSON.stringify(z.array(botReplySegmentSchema).parse(segments)));
       if (presentation !== undefined) this.db.prepare("INSERT OR REPLACE INTO bot_message_tools(message_id,task_id,tools_json) VALUES (?,?,?)")
@@ -279,11 +489,36 @@ export class BotConversationRepository {
           .run(message.conversationId, message.requestId);
       }
       this.touch(message.conversationId);
-    })();
+    });
   }
 
   /** Prune proven terminal requests on recovery; unknown requests can still resume. */
   pruneTerminalWorkReads(userId: string): number {
+    if (requiresWorkRustWrites(this.db)) {
+      const dbReads = this.db.prepare("SELECT * FROM bot_work_reads").all() as Array<Record<string, unknown>>;
+      const allReads = overlayFindAll(this.db, "bot_work_reads", dbReads, r => `${r.conversation_id}\0${r.request_id}\0${r.work_id}`, () => true);
+      let count = 0;
+      for (const read of allReads) {
+        const c = this.getConvRaw(String(read.conversation_id));
+        if (!c || c.user_id !== userId) continue;
+        const dbReceipts = this.db.prepare("SELECT * FROM bot_send_receipts WHERE user_id=? AND conversation_id=? AND request_id=?")
+          .all(userId, read.conversation_id, read.request_id) as Array<Record<string, unknown>>;
+        const matching = overlayFindAll(this.db, "bot_send_receipts", dbReceipts,
+          r => `${r.user_id}\0${r.bot_id}\0${r.request_id}`,
+          r => r.user_id === userId && r.conversation_id === read.conversation_id && r.request_id === read.request_id);
+        const isTerminal = matching.some(r => {
+          const m = this.getMessageRaw(String(r.assistant_message_id));
+          return m && m.conversation_id === r.conversation_id && m.bot_id === r.bot_id && m.request_id === r.request_id
+            && m.role === "assistant" && ["completed", "cancelled", "failed"].includes(String(m.status));
+        });
+        if (isTerminal) {
+          overlayDelete(this.db, "bot_work_reads", `${read.conversation_id}\0${read.request_id}\0${read.work_id}`);
+          count += 1;
+        }
+      }
+      enqueueWorkOp(this.db, { op: "botWorkReadsPruneTerminal", userId });
+      return count;
+    }
     return this.db.prepare(`DELETE FROM bot_work_reads WHERE EXISTS (
       SELECT 1 FROM bot_send_receipts r
       JOIN bot_conversations c ON c.conversation_id=r.conversation_id
@@ -345,7 +580,7 @@ export class BotConversationRepository {
   }
 
   linkWorkUserInput(receipt: BotMessageReceipt, work: WorkDto, sourceMessageIds: readonly string[] = []): void {
-    if (!this.db.inTransaction) throw new Error("用户原文必须与委托受理同事务保存");
+    if (!workDomainInTx(this.db)) throw new Error("用户原文必须与委托受理同事务保存");
     if (work.userId !== receipt.user_id || !this.conversation(receipt.user_id, receipt.bot_id, receipt.conversation_id))
       throw new Error("委托与用户原文不属于同一用户和会话");
     const { current, selected, references } = this.workUserInput(receipt, sourceMessageIds);
@@ -357,27 +592,54 @@ export class BotConversationRepository {
       ...(message.attachments?.length ? { attachments: message.attachments } : {}) });
     const dialogue = [...selected.map(message => compact(message, true)), compact(current)]
       .sort((left, right) => left.ordinal - right.ordinal);
+    const messagesJson = JSON.stringify(dialogue);
+    const referencesJson = JSON.stringify(references.sort((left, right) => left.ordinal - right.ordinal).map(message => compact(message)));
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "bot_work_user_inputs", `${work.workId}\0${current.messageId}`, () =>
+        this.db.prepare("SELECT * FROM bot_work_user_inputs WHERE work_id=? AND source_message_id=?").get(work.workId, current.messageId) as Record<string, unknown> | undefined,
+      cur => cur ?? {
+        work_id: work.workId, source_message_id: current.messageId,
+        intent_revision: work.intentRevision, source_version: work.sourceVersion,
+        messages_json: messagesJson, references_json: referencesJson,
+      });
+      enqueueWorkOp(this.db, {
+        op: "botWorkUserInputInsert", workId: work.workId, sourceMessageId: current.messageId,
+        intentRevision: work.intentRevision, sourceVersion: work.sourceVersion, messagesJson, referencesJson,
+      });
+      return;
+    }
     this.db.prepare(`INSERT OR IGNORE INTO bot_work_user_inputs(work_id,source_message_id,intent_revision,source_version,messages_json,references_json)
-      VALUES (?,?,?,?,?,?)`).run(work.workId, current.messageId, work.intentRevision, work.sourceVersion,
-        JSON.stringify(dialogue), JSON.stringify(references.sort((left, right) => left.ordinal - right.ordinal).map(message => compact(message))));
+      VALUES (?,?,?,?,?,?)`).run(work.workId, current.messageId, work.intentRevision, work.sourceVersion, messagesJson, referencesJson);
   }
 
   /** Immutable input attachment snapshot, independent of human-readable goal length. */
   linkWorkAttachments(receipt: BotMessageReceipt, workId: string, inputSnapshotId: string, previousSnapshotId?: string): void {
-    const existing = this.db.prepare("SELECT attachments_json FROM bot_work_attachments WHERE work_id=? AND input_snapshot_id=?")
-      .get(workId, previousSnapshotId ?? inputSnapshotId) as { attachments_json: string } | undefined;
+    const snapKey = `${workId}\0${previousSnapshotId ?? inputSnapshotId}`;
+    const existing = overlayReadOne<{ attachments_json: string }>(this.db, "bot_work_attachments", snapKey, () =>
+      this.db.prepare("SELECT * FROM bot_work_attachments WHERE work_id=? AND input_snapshot_id=?")
+        .get(workId, previousSnapshotId ?? inputSnapshotId) as { attachments_json: string } | undefined);
     const current = this.message(receipt.user_message_id);
     const reference = receipt.reference_message_id ? this.message(receipt.reference_message_id) : undefined;
     const referenced = reference && this.messageBelongsToConversation(receipt.user_id, receipt.conversation_id, reference.messageId) ? reference.attachments ?? [] : [];
-    const source = this.db.prepare("SELECT messages_json,references_json FROM bot_work_user_inputs WHERE work_id=? AND source_message_id=?")
-      .get(workId, receipt.user_message_id) as { messages_json: string; references_json: string } | undefined;
+    const source = overlayReadOne<{ messages_json: string; references_json: string }>(this.db, "bot_work_user_inputs", `${workId}\0${receipt.user_message_id}`, () =>
+      this.db.prepare("SELECT messages_json,references_json FROM bot_work_user_inputs WHERE work_id=? AND source_message_id=?")
+        .get(workId, receipt.user_message_id) as { messages_json: string; references_json: string } | undefined);
     const contextAttachments = source ? [source.messages_json, source.references_json].flatMap(value =>
       z.array(z.object({ attachments: z.array(botAttachmentSchema).optional() })).parse(JSON.parse(value))
         .flatMap(message => message.attachments ?? [])) : [];
     const inherited = existing ? z.array(botAttachmentSchema).parse(JSON.parse(existing.attachments_json)) : [];
     const attachments = [...new Map([...inherited, ...contextAttachments, ...(current?.attachments ?? []), ...referenced].map(item => [item.path, item])).values()];
-    if (attachments.length) this.db.prepare("INSERT OR IGNORE INTO bot_work_attachments(work_id,input_snapshot_id,attachments_json) VALUES (?,?,?)")
-      .run(workId, inputSnapshotId, JSON.stringify(attachments));
+    if (!attachments.length) return;
+    const attachmentsJson = JSON.stringify(attachments);
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "bot_work_attachments", `${workId}\0${inputSnapshotId}`, () =>
+        this.db.prepare("SELECT * FROM bot_work_attachments WHERE work_id=? AND input_snapshot_id=?").get(workId, inputSnapshotId) as Record<string, unknown> | undefined,
+      cur => cur ?? { work_id: workId, input_snapshot_id: inputSnapshotId, attachments_json: attachmentsJson });
+      enqueueWorkOp(this.db, { op: "botWorkAttachmentsInsert", workId, inputSnapshotId, attachmentsJson });
+      return;
+    }
+    this.db.prepare("INSERT OR IGNORE INTO bot_work_attachments(work_id,input_snapshot_id,attachments_json) VALUES (?,?,?)")
+      .run(workId, inputSnapshotId, attachmentsJson);
   }
 
   linkWork(receipt: BotMessageReceipt, workId: string): void {
@@ -392,29 +654,45 @@ export class BotConversationRepository {
   }
 
   private linkWorkMessages(receipt: BotMessageReceipt, workId: string, messageIds: readonly string[]): void {
-    const storedIds = this.db.prepare("SELECT work_ids_json FROM bot_messages WHERE message_id=?").pluck();
-    const update = this.db.prepare("UPDATE bot_messages SET work_ids_json=? WHERE message_id=?");
+    const rust = requiresWorkRustWrites(this.db);
+    const storedIds = rust ? undefined : this.db.prepare("SELECT work_ids_json FROM bot_messages WHERE message_id=?").pluck();
+    const update = rust ? undefined : this.db.prepare("UPDATE bot_messages SET work_ids_json=? WHERE message_id=?");
     for (const id of messageIds) {
       // Display-only delegated associations must never become stored provenance.
-      const existing = z.array(z.string()).parse(JSON.parse(z.string().parse(storedIds.get(id))));
-      update.run(JSON.stringify([...new Set([...existing, workId])]), id);
+      if (rust) {
+        const msg = this.getMessageRaw(id);
+        const existing = z.array(z.string()).parse(JSON.parse(z.string().parse(msg?.work_ids_json)));
+        const workIdsJson = JSON.stringify([...new Set([...existing, workId])]);
+        overlayMutate(this.db, "bot_messages", id, () => msg, cur => cur ? { ...cur, work_ids_json: workIdsJson } : cur);
+        enqueueWorkOp(this.db, { op: "botMsgWorkIdsUpdate", messageId: id, workIdsJson });
+      } else {
+        const existing = z.array(z.string()).parse(JSON.parse(z.string().parse(storedIds!.get(id))));
+        update!.run(JSON.stringify([...new Set([...existing, workId])]), id);
+      }
     }
     this.touch(receipt.conversation_id);
   }
 
   /** Resolve the original authenticated send, never the current owner or active chat. */
   workOrigin(userId: string, workId: string): BotConversation | undefined {
-    const row = this.db.prepare(`SELECT c.* FROM bot_send_receipts r
-      JOIN bot_conversations c ON c.conversation_id=r.conversation_id AND c.user_id=r.user_id
-      JOIN bot_messages m ON m.message_id=r.user_message_id AND m.conversation_id=c.conversation_id
-        AND m.bot_id=r.bot_id AND m.request_id=r.request_id AND m.role='user'
-      JOIN works w ON w.work_id=? AND w.user_id=r.user_id
-      WHERE r.user_id=? AND (
-        m.message_id=w.source_message_id OR EXISTS (
-          SELECT 1 FROM json_each(m.work_ids_json) j WHERE j.value=w.work_id
-        )
-      ) ORDER BY m.ordinal LIMIT 1`).get(workId, userId);
-    return row ? conversationRow.parse(row) : undefined;
+    const work = overlayReadOne(this.db, "works", workId, () =>
+      this.db.prepare("SELECT work_id, user_id, source_message_id FROM works WHERE work_id=?").get(workId) as Record<string, unknown> | undefined);
+    if (!work || work.user_id !== userId) return undefined;
+    const dbReceipts = this.db.prepare("SELECT * FROM bot_send_receipts WHERE user_id=?").all(userId) as Array<Record<string, unknown>>;
+    const receipts = overlayFindAll(this.db, "bot_send_receipts", dbReceipts,
+      r => `${r.user_id}\0${r.bot_id}\0${r.request_id}`, r => r.user_id === userId);
+    const candidates: Array<{ conv: BotConversation; ordinal: number }> = [];
+    for (const r of receipts) {
+      const m = this.getMessageRaw(String(r.user_message_id));
+      const c = this.getConvRaw(String(r.conversation_id));
+      if (!m || !c || c.user_id !== userId || m.conversation_id !== c.conversation_id || m.bot_id !== r.bot_id || m.request_id !== r.request_id || m.role !== "user") continue;
+      const workIds = z.array(z.string()).parse(JSON.parse(String(m.work_ids_json)));
+      if (m.message_id === work.source_message_id || workIds.includes(workId)) {
+        candidates.push({ conv: conversationRow.parse(c), ordinal: Number(m.ordinal) });
+      }
+    }
+    candidates.sort((a, b) => a.ordinal - b.ordinal);
+    return candidates[0]?.conv;
   }
 
   /** Explicit delivery target first; legacy authenticated origin second. Old
@@ -425,29 +703,48 @@ export class BotConversationRepository {
       const exact = this.conversation(userId, collaboration.sourceBotId, collaboration.sourceConversationId);
       return exact && !exact.team_id && exact.bot_id === collaboration.sourceBotId ? exact : undefined;
     }
-    const work = this.db.prepare("SELECT owner_bot_id FROM works WHERE work_id=? AND user_id=?").get(workId, userId) as { owner_bot_id: string } | undefined;
-    if (!work) return;
-    const targets = this.db.prepare(`SELECT c.* FROM work_conversations t JOIN bot_conversations c ON c.conversation_id=t.conversation_id
-      WHERE t.work_id=? AND t.channel_type='bot-delivery' AND c.user_id=?`).all(workId, userId);
+    const work = overlayReadOne(this.db, "works", workId, () =>
+      this.db.prepare("SELECT owner_bot_id, user_id FROM works WHERE work_id=? AND user_id=?").get(workId, userId) as Record<string, unknown> | undefined);
+    if (!work || work.user_id !== userId) return;
+    const dbTargets = this.db.prepare("SELECT * FROM work_conversations WHERE work_id=? AND channel_type='bot-delivery'")
+      .all(workId) as Array<Record<string, unknown>>;
+    const links = overlayFindAll(this.db, "work_conversations", dbTargets, r => `${r.work_id}\0${r.conversation_id}`,
+      r => r.work_id === workId && r.channel_type === "bot-delivery");
+    const targets = links.map(l => this.getConvRaw(String(l.conversation_id))).filter((c): c is Record<string, unknown> => Boolean(c && c.user_id === userId));
     if (targets.length === 1 && !conversationRow.parse(targets[0]).conversation_id.startsWith("bot-inbox-")) return conversationRow.parse(targets[0]);
     if (targets.length > 1) return; // Ambiguous persisted provenance is not guessed.
     const origin = this.workOrigin(userId, workId);
     const hasTeams = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_team_ownership'").get();
     const team = hasTeams ? this.db.prepare("SELECT team_id FROM work_team_ownership WHERE work_id=?").get(workId) as { team_id: string } | undefined : undefined;
-    const id = origin?.conversation_id ?? (team ? ensureTeamConversation(this.db, userId, work.owner_bot_id, team.team_id)
-      : ensurePersonalConversation(this.db, userId, work.owner_bot_id));
+    const id = origin?.conversation_id ?? (team ? ensureTeamConversation(this.db, userId, String(work.owner_bot_id), team.team_id)
+      : ensurePersonalConversation(this.db, userId, String(work.owner_bot_id)));
     if (!id) return;
     // Only replace the retired inbox route. Messages, IDs, original text and
     // Work state remain intact; history projects them through this exact link.
+    if (requiresWorkRustWrites(this.db)) {
+      const now = Date.now();
+      for (const l of links) {
+        if (String(l.conversation_id).startsWith("bot-inbox-")) {
+          overlayDelete(this.db, "work_conversations", `${workId}\0${l.conversation_id}`);
+        }
+      }
+      overlayMutate(this.db, "work_conversations", `${workId}\0${id}`, () =>
+        this.db.prepare("SELECT * FROM work_conversations WHERE work_id=? AND conversation_id=?").get(workId, id) as Record<string, unknown> | undefined,
+      cur => cur ? { ...cur, channel_type: "bot-delivery" } : { work_id: workId, conversation_id: id, channel_type: "bot-delivery", last_referenced_at: now });
+      overlayMutate(this.db, "bot_conversations", id, () => this.getConvRaw(id),
+        cur => cur ? { ...cur, revision: Number(cur.revision ?? 0) + 1, updated_at: now } : cur);
+      enqueueWorkOp(this.db, { op: "botWorkConvReplaceDelivery", workId, conversationId: id, now });
+      return this.conversation(userId, origin?.bot_id ?? String(work.owner_bot_id), id);
+    }
     this.db.prepare("DELETE FROM work_conversations WHERE work_id=? AND channel_type='bot-delivery' AND conversation_id LIKE 'bot-inbox-%'").run(workId);
     this.db.prepare("INSERT OR IGNORE INTO work_conversations(work_id,conversation_id,channel_type,last_referenced_at) VALUES (?,?,'bot-delivery',?) ON CONFLICT(work_id,conversation_id) DO UPDATE SET channel_type='bot-delivery'").run(workId, id, Date.now());
     this.touch(id);
-    return this.conversation(userId, origin?.bot_id ?? work.owner_bot_id, id);
+    return this.conversation(userId, origin?.bot_id ?? String(work.owner_bot_id), id);
   }
 
   appendWorkDelivery(userId: string, workId: string, event: string, version: string, text: string, metadata?: WorkFeedbackDto):
     { delivered: boolean; inserted: boolean; recorded?: boolean; conversationId?: string } {
-    return this.db.transaction(() => {
+    return workDomainRunTx(this.db, () => {
       const sourceTarget = this.resolveWorkDelivery(userId, workId);
       let target = sourceTarget;
       const collaboration = this.collaborations.byWork(userId, workId);
@@ -463,8 +760,10 @@ export class BotConversationRepository {
         this.collaborations.appendMessage(userId, collaboration.collaborationId, { operationId, version: revision,
           senderBotId: collaboration.targetBotId, senderDisplayName: collaboration.targetDisplayName,
           kind: metadata.report.milestone ? "progress" : "result", text, workFeedback: metadata });
-        const binding = metadata.executionId ? z.object({ settled_at: z.number().nullable() }).optional().parse(
-          this.db.prepare("SELECT settled_at FROM work_execution_bindings WHERE binding_id=? AND work_id=?").get(metadata.executionId, workId)) : undefined;
+        const bindingRaw = metadata.executionId ? overlayReadOne(this.db, "work_execution_bindings", metadata.executionId, () =>
+          this.db.prepare("SELECT settled_at, work_id FROM work_execution_bindings WHERE binding_id=? AND work_id=?").get(metadata.executionId, workId) as Record<string, unknown> | undefined) : undefined;
+        const binding = bindingRaw && bindingRaw.work_id === workId
+          ? z.object({ settled_at: z.number().nullable() }).parse(bindingRaw) : undefined;
         if (binding?.settled_at != null) this.collaborations.event(userId, collaboration.collaborationId,
           { operationId: `execution-end:${metadata.executionId}`, exchangeId: metadata.executionId, kind: "ended", workId, createdAt: binding.settled_at });
         this.collaborations.event(userId, collaboration.collaborationId, { operationId, version: revision, kind: "returning", workId });
@@ -484,7 +783,7 @@ export class BotConversationRepository {
           version: createHash("sha256").update(version).digest("hex"), kind: "returned", workId });
       return { delivered: true, inserted: inserted || mirrored > 0,
         conversationId: sourceTarget?.conversation_id ?? target.conversation_id };
-    })();
+    });
   }
 
   /** The message itself is the delivery receipt: append and revision commit together.
@@ -493,27 +792,41 @@ export class BotConversationRepository {
    * blocker reopening after its cleared version was delivered.
    */
   appendWorkFeedback(origin: BotConversation, workId: string, event: string, version: string, text: string, metadata?: WorkFeedbackDto): boolean {
-    return this.db.transaction(() => {
+    return workDomainRunTx(this.db, () => {
       if (!this.conversation(origin.user_id, origin.bot_id, origin.conversation_id)) return false;
+      const rust = requiresWorkRustWrites(this.db);
       const key = createHash("sha256").update(JSON.stringify([workId, event])).digest("hex");
       const prefix = `work-feedback:${key}:`;
       const fingerprint = createHash("sha256").update(version).digest("hex");
-      const previous = this.db.prepare(`SELECT message_id,request_id FROM bot_messages
-        WHERE (conversation_id=? OR (conversation_id LIKE 'bot-inbox-%' AND EXISTS (
-          SELECT 1 FROM bot_work_feedback f JOIN work_conversations t ON t.work_id=json_extract(f.metadata_json,'$.workId')
-          WHERE f.message_id=bot_messages.message_id AND t.channel_type='bot-delivery' AND t.conversation_id=?)))
-        AND role='assistant' AND message_id LIKE 'work-feedback-%' AND request_id LIKE ? ORDER BY ordinal DESC LIMIT 1`)
-        .get(origin.conversation_id, origin.conversation_id, `${prefix}%`) as { message_id: string; request_id: string } | undefined;
+      const dbInboxLinks = this.db.prepare("SELECT work_id FROM work_conversations WHERE channel_type='bot-delivery' AND conversation_id=?")
+        .all(origin.conversation_id) as Array<{ work_id: string }>;
+      const linkedWorks = new Set(overlayFindAll(this.db, "work_conversations",
+        dbInboxLinks.map(r => ({ work_id: r.work_id, conversation_id: origin.conversation_id, channel_type: "bot-delivery" })),
+        r => `${r.work_id}\0${r.conversation_id}`,
+        r => r.channel_type === "bot-delivery" && r.conversation_id === origin.conversation_id).map(r => String(r.work_id)));
+      const dbPrevCandidates = this.db.prepare(`SELECT * FROM bot_messages
+        WHERE role='assistant' AND message_id LIKE 'work-feedback-%' AND request_id LIKE ? ORDER BY ordinal DESC`)
+        .all(`${prefix}%`) as Array<Record<string, unknown>>;
+      const matchingFeedbackMsgs = overlayFindAll(this.db, "bot_messages", dbPrevCandidates, r => String(r.message_id), r => {
+        if (r.role !== "assistant" || !String(r.message_id).startsWith("work-feedback-") || !String(r.request_id).startsWith(prefix)) return false;
+        if (r.conversation_id === origin.conversation_id) return true;
+        if (!String(r.conversation_id).startsWith("bot-inbox-")) return false;
+        const fb = this.feedbackForMessage(String(r.message_id));
+        if (!fb) return false;
+        const meta = JSON.parse(fb.metadata_json) as { workId?: string };
+        return Boolean(meta.workId && linkedWorks.has(meta.workId));
+      }, (a, b) => Number(b.ordinal ?? 0) - Number(a.ordinal ?? 0));
+      const previous = matchingFeedbackMsgs[0] ? { message_id: String(matchingFeedbackMsgs[0].message_id), request_id: String(matchingFeedbackMsgs[0].request_id) } : undefined;
       const unchanged = previous?.request_id.endsWith(`:${fingerprint}`);
       let annotated = false;
       if (metadata) {
         // Backfill only authenticated host-generated identities from this exact
         // event. Older versions remain expandable history, never deleted or
         // reinterpreted from their human-written text.
-        const legacy = this.db.prepare(`SELECT m.message_id FROM bot_messages m
-          LEFT JOIN bot_work_feedback f ON f.message_id=m.message_id
-          WHERE m.conversation_id=? AND m.bot_id=? AND m.role='assistant' AND m.message_id LIKE 'work-feedback-%'
-            AND m.request_id LIKE ? AND f.message_id IS NULL`).all(origin.conversation_id, origin.bot_id, `${prefix}%`) as { message_id: string }[];
+        const legacy = this.listMessagesForConversation(origin.conversation_id)
+          .filter(m => m.bot_id === origin.bot_id && m.role === "assistant" && String(m.message_id).startsWith("work-feedback-")
+            && String(m.request_id).startsWith(prefix) && !this.feedbackForMessage(String(m.message_id)))
+          .map(m => ({ message_id: String(m.message_id) }));
         for (const item of legacy) annotated = this.saveFeedbackMetadata(item.message_id,
           unchanged && item.message_id === previous?.message_id ? metadata : { ...metadata, report: undefined, category: "progress" }) || annotated;
       }
@@ -521,8 +834,7 @@ export class BotConversationRepository {
         // Upgrade only the exact unchanged event version. Never attach today's
         // result body/files to an older report, and never emit another message.
         if (metadata?.report && previous) {
-          const saved = this.db.prepare("SELECT metadata_json FROM bot_work_feedback WHERE message_id=?")
-            .get(previous.message_id) as { metadata_json: string } | undefined;
+          const saved = this.feedbackForMessage(previous.message_id);
           if (saved) {
             const existing = workFeedbackSchema.parse(JSON.parse(saved.metadata_json));
             // Repair resolved file labels/targets after a re-execution. The event
@@ -532,8 +844,13 @@ export class BotConversationRepository {
               report: { ...existing.report, files: metadata.report.files } };
             const json = JSON.stringify(workFeedbackSchema.parse(upgraded));
             if (json !== saved.metadata_json) {
-              this.db.prepare("UPDATE bot_work_feedback SET metadata_json=? WHERE message_id=?")
-                .run(json, previous.message_id);
+              if (rust) {
+                overlaySet(this.db, "bot_work_feedback", previous.message_id, { message_id: previous.message_id, metadata_json: json });
+                enqueueWorkOp(this.db, { op: "botWorkFeedbackUpsert", messageId: previous.message_id, metadataJson: json, overwrite: true });
+              } else {
+                this.db.prepare("UPDATE bot_work_feedback SET metadata_json=? WHERE message_id=?")
+                  .run(json, previous.message_id);
+              }
               annotated = true;
             }
           }
@@ -545,47 +862,88 @@ export class BotConversationRepository {
       const requestId = `${prefix}${generation}:${fingerprint}`;
       const messageId = `work-feedback-${createHash("sha256").update(JSON.stringify([origin.conversation_id, requestId])).digest("hex")}`;
       const now = Date.now();
-      this.db.prepare(`INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,work_ids_json,created_at,updated_at)
-        VALUES (?,?,?,?,'assistant',?,'completed',?,?,?)`)
-        .run(messageId, origin.conversation_id, origin.bot_id, requestId, text, JSON.stringify([workId]), now, now);
+      const workIdsJson = JSON.stringify([workId]);
+      if (rust) {
+        overlaySet(this.db, "bot_messages", messageId, {
+          message_id: messageId, conversation_id: origin.conversation_id, bot_id: origin.bot_id,
+          request_id: requestId, ordinal: this.nextMessageOrdinal(origin.conversation_id), role: "assistant",
+          text, status: "completed", work_ids_json: workIdsJson, error: null, created_at: now, updated_at: now,
+        });
+        enqueueWorkOp(this.db, {
+          op: "botMsgInsert", messageId, conversationId: origin.conversation_id, botId: origin.bot_id,
+          requestId, role: "assistant", text, status: "completed", workIdsJson,
+          createdAt: now, updatedAt: now, orIgnore: false, attachmentsJson: null,
+        });
+      } else {
+        this.db.prepare(`INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,work_ids_json,created_at,updated_at)
+          VALUES (?,?,?,?,'assistant',?,'completed',?,?,?)`)
+          .run(messageId, origin.conversation_id, origin.bot_id, requestId, text, workIdsJson, now, now);
+      }
       if (metadata) this.saveFeedbackMetadata(messageId, metadata);
       this.touch(origin.conversation_id);
       return true;
-    })();
+    });
   }
 
   archive(userId: string, botId: string, conversationId: string): void {
     const conversation = this.conversation(userId, botId, conversationId);
     if (!conversation) throw new Error("对话不属于当前用户与 Bot");
-    this.db.prepare("UPDATE bot_conversations SET archived_at=? WHERE conversation_id=?").run(Date.now(), conversationId);
+    const now = Date.now();
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "bot_conversations", conversationId, () => this.getConvRaw(conversationId),
+        cur => cur ? { ...cur, archived_at: now, revision: Number(cur.revision ?? 0) + 1, updated_at: now } : cur);
+      enqueueWorkOp(this.db, { op: "botConvArchive", conversationId, now });
+      return;
+    }
+    this.db.prepare("UPDATE bot_conversations SET archived_at=? WHERE conversation_id=?").run(now, conversationId);
     this.touch(conversationId);
   }
 
   private touch(conversationId: string): void {
-    this.db.prepare("UPDATE bot_conversations SET revision=revision+1,updated_at=? WHERE conversation_id=?").run(Date.now(), conversationId);
+    const now = Date.now();
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "bot_conversations", conversationId, () => this.getConvRaw(conversationId),
+        cur => cur ? { ...cur, revision: Number(cur.revision ?? 0) + 1, updated_at: now } : cur);
+      enqueueWorkOp(this.db, { op: "botConvTouch", conversationId, now });
+      return;
+    }
+    this.db.prepare("UPDATE bot_conversations SET revision=revision+1,updated_at=? WHERE conversation_id=?").run(now, conversationId);
   }
 
   private saveFeedbackMetadata(messageId: string, metadata: WorkFeedbackDto): boolean {
     const json = JSON.stringify(workFeedbackSchema.parse(metadata));
+    if (requiresWorkRustWrites(this.db)) {
+      if (this.feedbackForMessage(messageId)) return false;
+      overlaySet(this.db, "bot_work_feedback", messageId, { message_id: messageId, metadata_json: json });
+      enqueueWorkOp(this.db, { op: "botWorkFeedbackUpsert", messageId, metadataJson: json, overwrite: false });
+      return true;
+    }
     return this.db.prepare("INSERT OR IGNORE INTO bot_work_feedback(message_id,metadata_json) VALUES (?,?)").run(messageId, json).changes > 0;
   }
 
   private messageFacts(row: MessageRow): RuntimeBotHistoryFacts {
-    const scope = this.db.prepare(`SELECT c.team_id,c.user_id,r.reference_message_id FROM bot_conversations c
-      LEFT JOIN bot_send_receipts r ON r.user_id=c.user_id AND r.conversation_id=c.conversation_id
-        AND r.bot_id=? AND r.request_id=? AND r.assistant_message_id=?
-      WHERE c.conversation_id=?`).get(row.bot_id, row.request_id, row.message_id, row.conversation_id) as {
-        team_id: string | null; user_id: string; reference_message_id: string | null;
-      } | undefined;
-    const version = this.db.prepare('SELECT revision FROM bot_message_revisions WHERE message_id=?').get(row.message_id) as { revision: number } | undefined;
-    const attachmentRow = this.db.prepare("SELECT attachments_json FROM bot_message_attachments WHERE message_id=?").get(row.message_id) as { attachments_json: string } | undefined;
-    const metadata = this.db.prepare("SELECT metadata_json FROM bot_work_feedback WHERE message_id=?").get(row.message_id) as { metadata_json: string } | undefined;
-    const activityRow = row.status === "running" ? this.db.prepare("SELECT activity_json FROM bot_message_activity WHERE message_id=?")
-      .get(row.message_id) as { activity_json: string } | undefined : undefined;
-    const segmentRow = row.role === "assistant" ? this.db.prepare("SELECT segments_json FROM bot_message_segments WHERE message_id=?")
-      .get(row.message_id) as { segments_json: string } | undefined : undefined;
-    const toolRow = row.role === "assistant" ? this.db.prepare("SELECT task_id,tools_json FROM bot_message_tools WHERE message_id=?")
-      .get(row.message_id) as { task_id: string; tools_json: string } | undefined : undefined;
+    const conv = this.getConvRaw(row.conversation_id);
+    const receipt = conv ? this.receipt(String(conv.user_id), row.bot_id, row.request_id) : undefined;
+    const referenceMessageId = receipt && receipt.conversation_id === row.conversation_id && receipt.assistant_message_id === row.message_id
+      ? receipt.reference_message_id : null;
+    const scope = conv ? { team_id: (conv.team_id as string | null | undefined) ?? null, user_id: String(conv.user_id), reference_message_id: referenceMessageId } : undefined;
+    const version = overlayReadOne<{ revision: number }>(this.db, "bot_message_revisions", row.message_id, () =>
+      this.db.prepare('SELECT message_id, revision FROM bot_message_revisions WHERE message_id=?').get(row.message_id) as { message_id: string; revision: number } | undefined);
+    const attachmentRow = overlayReadOne<{ attachments_json: string }>(this.db, "bot_message_attachments", row.message_id, () =>
+      this.db.prepare("SELECT message_id, attachments_json FROM bot_message_attachments WHERE message_id=?").get(row.message_id) as { message_id: string; attachments_json: string } | undefined);
+    const metadata = this.feedbackForMessage(row.message_id);
+    const activityRow = row.status === "running"
+      ? overlayReadOne<{ activity_json: string }>(this.db, "bot_message_activity", row.message_id, () =>
+        this.db.prepare("SELECT message_id, activity_json FROM bot_message_activity WHERE message_id=?").get(row.message_id) as { message_id: string; activity_json: string } | undefined)
+      : undefined;
+    const segmentRow = row.role === "assistant"
+      ? overlayReadOne<{ segments_json: string }>(this.db, "bot_message_segments", row.message_id, () =>
+        this.db.prepare("SELECT message_id, segments_json FROM bot_message_segments WHERE message_id=?").get(row.message_id) as { message_id: string; segments_json: string } | undefined)
+      : undefined;
+    const toolRow = row.role === "assistant"
+      ? overlayReadOne<{ task_id: string; tools_json: string }>(this.db, "bot_message_tools", row.message_id, () =>
+        this.db.prepare("SELECT message_id, task_id, tools_json FROM bot_message_tools WHERE message_id=?").get(row.message_id) as { message_id: string; task_id: string; tools_json: string } | undefined)
+      : undefined;
     return {
       team_id: scope?.team_id ?? null, user_id: scope?.user_id ?? null, reference_message_id: scope?.reference_message_id ?? null,
       revision: version?.revision ?? 0, attachments_json: attachmentRow?.attachments_json ?? null,
@@ -617,7 +975,10 @@ export class BotConversationRepository {
     const team = needsTeamOwner ? this.db.prepare("SELECT plan_json,deleted_at FROM work_team_templates WHERE template_id=?").get(facts.team_id) as {plan_json:string;deleted_at:number|null}|undefined : undefined;
     const ownerChanged = Boolean(needsTeamOwner && (!team || team.deleted_at!==null || JSON.parse(team.plan_json).ownerBotId!==row.bot_id));
     const clarifications = clarificationGoals.flatMap(goal=>{
-      const answer = this.db.prepare("SELECT m.text FROM bot_clarification_answers a JOIN bot_messages m ON m.message_id=a.answer_message_id WHERE a.question_message_id=? AND a.goal_id=?").get(row.message_id,goal.goalId) as {text:string}|undefined;
+      const answerRow = overlayReadOne<{ answer_message_id: string }>(this.db, "bot_clarification_answers", `${row.message_id}\0${goal.goalId}`, () =>
+        this.db.prepare("SELECT * FROM bot_clarification_answers WHERE question_message_id=? AND goal_id=?").get(row.message_id, goal.goalId) as { answer_message_id: string } | undefined);
+      const answerMsg = answerRow ? this.getMessageRaw(answerRow.answer_message_id) : undefined;
+      const answer = answerMsg ? { text: String(answerMsg.text) } : undefined;
       const answered=goal.state==="pending" && Boolean(answer);
       return goal.options ? [botClarificationSchema.parse({goalId:goal.goalId,question:goal.question,options:goal.options,answerText:answer?.text,status:goal.state==="pending"&&ownerChanged ? "expired" : answered ? "answered" : goal.state})] : [];
     });

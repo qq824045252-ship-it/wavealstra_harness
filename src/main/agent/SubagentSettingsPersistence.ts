@@ -12,6 +12,7 @@ export type RuntimeSubagentSettingsReply =
   | { status: "failed"; message: string };
 
 export interface SubagentSettingsWorker {
+  readonly supervised?: boolean;
   subagentSettings(request: RuntimeSubagentSettingsRequest): Promise<RuntimeSubagentSettingsReply | undefined>;
 }
 
@@ -39,6 +40,9 @@ export async function observeSubagentSettings(root: string, worker?: SubagentSet
   const before = await worker?.subagentSettings({ kind: "read", root });
   if (worker && before?.status === "observed") {
     return { kind: "native", worker, root, path, text: before.text, version: before.version };
+  }
+  if (worker?.supervised) {
+    throw new Error("未收到子代理设置读取确认，无法进入只读宿主机回退");
   }
   return { kind: "host", path, text: readSubagentSettingsOnHost(path) };
 }

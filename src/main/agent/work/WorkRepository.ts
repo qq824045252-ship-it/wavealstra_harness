@@ -26,6 +26,7 @@ import type { ExpertConfigSnapshotDto, WorkAuthorizationDto } from "../../../sha
 import { captureTeamReportContext, capturedTeamReportContext } from "./WorkReportPresentation";
 import { botDelegationInput, BOT_DELEGATION_INSTRUCTIONS } from "./BotDelegationInput";
 import { WORK_FILE_DELIVERY_INSTRUCTIONS } from "./WorkFileDeliveryInstructions";
+import { enqueueWorkOp, overlayFindAll, overlayHasTable, overlayMutate, overlayReadOne, overlaySet, requiresWorkRustWrites } from "./WorkDomainRuntime";
 import { z } from "zod";
 
 function json<T>(value: string | null | undefined, fallback: T): T {
@@ -286,10 +287,12 @@ export class WorkRepository {
 
   constructor(private readonly db: Database.Database) {
     this.metrics = new WorkExecutionMetricsStore(db);
-    db.exec(`CREATE TABLE IF NOT EXISTS conversation_goal_sources (
-      work_id TEXT PRIMARY KEY REFERENCES works(work_id) ON DELETE CASCADE,
-      source_json TEXT NOT NULL CHECK(json_valid(source_json))
-    )`);
+    if (!db.readonly) {
+      db.exec(`CREATE TABLE IF NOT EXISTS conversation_goal_sources (
+        work_id TEXT PRIMARY KEY REFERENCES works(work_id) ON DELETE CASCADE,
+        source_json TEXT NOT NULL CHECK(json_valid(source_json))
+      )`);
+    }
     // Older current-version files retain their inert quota history. Their required
     // JSON column has no default; supply an empty tombstone only for new rows.
     // Do not bump the schema version or rewrite existing history to remove a module.
@@ -297,9 +300,58 @@ export class WorkRepository {
       .some(column => column.name === "budget_json");
   }
 
+  private workRowOf(work: WorkDto): WorkRow & Record<string, unknown> {
+    return {
+      work_id: work.workId,
+      user_id: work.userId,
+      project_id: work.projectId ?? null,
+      workspace_path: work.workspacePath ?? null,
+      source_message_id: work.sourceMessageId ?? null,
+      legacy_task_id: work.legacyTaskId ?? null,
+      owner_bot_id: work.ownerBotId,
+      owner_epoch: work.ownerEpoch,
+      intent_revision: work.intentRevision,
+      source_version: work.sourceVersion,
+      title: work.title,
+      goal_description: work.goalDescription ?? null,
+      constraints_json: jsonText(work.constraints),
+      criteria_json: jsonText(work.criteria),
+      authorization_json: jsonText(work.authorization),
+      active_intent_snapshot_id: work.activeIntentSnapshotId,
+      input_snapshot_id: work.inputSnapshotId,
+      goal_sources_json: jsonText(work.goalSources),
+      mode: work.mode,
+      lifecycle: work.lifecycle,
+      pending_conclusion: work.pendingConclusion ?? null,
+      cancel_requested_at: work.cancelRequestedAt ?? null,
+      closure_conclusion: work.closureConclusion ?? null,
+      closure_summary: work.closureSummary ?? null,
+      accepted_deliverable_ids_json: jsonText(work.acceptedDeliverableIds),
+      active_execution_ids_json: jsonText(work.activeExecutionIds),
+      progress_summary: work.progressSummary ?? null,
+      watch_rule_json: work.watchRule ? jsonText(work.watchRule) : null,
+      deadline_at: work.deadlineAt ?? null,
+      deadline_revision: work.deadlineRevision ?? 1,
+      deadline_set_at: work.deadlineSetAt ?? null,
+      causal_policy_json: jsonText(work.causalPolicy ?? {}),
+      state_version: work.stateVersion,
+      created_by: work.createdBy,
+      created_at: work.createdAt,
+      updated_at: work.updatedAt,
+      closed_at: work.closedAt ?? null,
+      close_operation_id: work.closeOperationId ?? null,
+    };
+  }
+
   // ------------------------------------------------------------------ works
 
   insertWork(work: WorkDto): void {
+    const p = this.workParams(work);
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "works", work.workId, this.workRowOf(work));
+      enqueueWorkOp(this.db, { op: "workInsert", ...p });
+      return;
+    }
     this.db.prepare(`INSERT INTO works (
       work_id,user_id,project_id,workspace_path,source_message_id,legacy_task_id,
       owner_bot_id,owner_epoch,intent_revision,source_version,title,goal_description,
@@ -318,10 +370,17 @@ export class WorkRepository {
       @progressSummary,@watchRuleJson,@deadlineAt,@deadlineRevision,@deadlineSetAt,
       @causalPolicyJson,@stateVersion,@createdBy,@createdAt,@updatedAt,
       @closedAt,@closeOperationId${this.legacyWorkInsert ? ",'{}'" : ""}
-    )`).run(this.workParams(work));
+    )`).run(p);
   }
 
   updateWork(work: WorkDto): void {
+    const p = this.workParams(work);
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "works", work.workId, this.workRowOf(work));
+      const { userId: _userId, createdBy: _createdBy, createdAt: _createdAt, ...rest } = p;
+      enqueueWorkOp(this.db, { op: "workUpdate", ...rest });
+      return;
+    }
     this.db.prepare(`UPDATE works SET
       project_id=@projectId, workspace_path=@workspacePath, source_message_id=@sourceMessageId,
       legacy_task_id=@legacyTaskId, owner_bot_id=@ownerBotId, owner_epoch=@ownerEpoch,
@@ -336,7 +395,7 @@ export class WorkRepository {
       deadline_revision=@deadlineRevision, deadline_set_at=@deadlineSetAt,
       causal_policy_json=@causalPolicyJson, state_version=@stateVersion, updated_at=@updatedAt,
       closed_at=@closedAt, close_operation_id=@closeOperationId
-      WHERE work_id=@workId`).run(this.workParams(work));
+      WHERE work_id=@workId`).run(p);
   }
 
   private workParams(work: WorkDto): Record<string, unknown> {
@@ -383,72 +442,116 @@ export class WorkRepository {
   }
 
   getWork(workId: string): WorkDto | undefined {
-    const row = this.db.prepare("SELECT * FROM works WHERE work_id=?").get(workId) as WorkRow | undefined;
-    return row ? this.hydrate(row) : undefined;
+    const row = overlayReadOne(this.db, "works", workId, () =>
+      this.db.prepare("SELECT * FROM works WHERE work_id=?").get(workId) as (WorkRow & Record<string, unknown>) | undefined);
+    return row ? this.hydrate(row as WorkRow) : undefined;
   }
 
   listWorks(userId: string, options: { includeClosed?: boolean } = {}): WorkDto[] {
-    const rows = (options.includeClosed
+    const dbRows = (options.includeClosed
       ? this.db.prepare("SELECT * FROM works WHERE user_id=? ORDER BY updated_at DESC").all(userId)
-      : this.db.prepare("SELECT * FROM works WHERE user_id=? AND lifecycle != 'closed' ORDER BY updated_at DESC").all(userId)) as WorkRow[];
-    return rows.map((row) => this.hydrate(row));
+      : this.db.prepare("SELECT * FROM works WHERE user_id=? AND lifecycle != 'closed' ORDER BY updated_at DESC").all(userId)) as Array<WorkRow & Record<string, unknown>>;
+    const rows = overlayFindAll(this.db, "works", dbRows, r => String(r.work_id),
+      r => r.user_id === userId && (Boolean(options.includeClosed) || r.lifecycle !== "closed"),
+      (a, b) => Number(b.updated_at) - Number(a.updated_at));
+    return rows.map((row) => this.hydrate(row as WorkRow));
   }
 
   listWorksByOwner(botId: string, options: { includeClosed?: boolean } = {}): WorkDto[] {
-    const rows = (options.includeClosed
+    const dbRows = (options.includeClosed
       ? this.db.prepare("SELECT * FROM works WHERE owner_bot_id=? ORDER BY updated_at DESC").all(botId)
-      : this.db.prepare("SELECT * FROM works WHERE owner_bot_id=? AND lifecycle != 'closed' ORDER BY updated_at DESC").all(botId)) as WorkRow[];
-    return rows.map((row) => this.hydrate(row));
+      : this.db.prepare("SELECT * FROM works WHERE owner_bot_id=? AND lifecycle != 'closed' ORDER BY updated_at DESC").all(botId)) as Array<WorkRow & Record<string, unknown>>;
+    const rows = overlayFindAll(this.db, "works", dbRows, r => String(r.work_id),
+      r => r.owner_bot_id === botId && (Boolean(options.includeClosed) || r.lifecycle !== "closed"),
+      (a, b) => Number(b.updated_at) - Number(a.updated_at));
+    return rows.map((row) => this.hydrate(row as WorkRow));
   }
 
   saveGoalSource(workId: string, source: import("../../../shared/conversation-goal").ConversationGoalSourceDto): void {
-    this.db.prepare("INSERT INTO conversation_goal_sources VALUES(?,?)").run(workId, JSON.stringify(source));
+    const sourceJson = JSON.stringify(source);
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "conversation_goal_sources", workId, { work_id: workId, source_json: sourceJson });
+      enqueueWorkOp(this.db, { op: "workGoalSourceInsert", workId, sourceJson });
+      return;
+    }
+    this.db.prepare("INSERT INTO conversation_goal_sources VALUES(?,?)").run(workId, sourceJson);
   }
 
   getGoalSource(workId: string): import("../../../shared/conversation-goal").ConversationGoalSourceDto | undefined {
-    const row = this.db.prepare("SELECT source_json FROM conversation_goal_sources WHERE work_id=?").get(workId) as { source_json: string } | undefined;
+    const row = overlayReadOne<{ source_json: string }>(this.db, "conversation_goal_sources", workId, () =>
+      this.db.prepare("SELECT work_id, source_json FROM conversation_goal_sources WHERE work_id=?").get(workId) as { work_id: string; source_json: string } | undefined);
     return row ? JSON.parse(row.source_json) : undefined;
   }
 
   findWorkByGoalSource(userId: string, source: import("../../../shared/conversation-goal").ConversationGoalSourceDto): WorkDto | undefined {
-    const row = this.db.prepare(`SELECT w.* FROM works w
-      INNER JOIN conversation_goal_sources s ON s.work_id = w.work_id
+    const key = source.entryId ?? source.messageId;
+    const dbSources = this.db.prepare(`SELECT s.work_id, s.source_json FROM conversation_goal_sources s
+      INNER JOIN works w ON w.work_id = s.work_id
       WHERE w.user_id = ? AND json_extract(s.source_json, '$.taskId') = ?
         AND json_extract(s.source_json, '$.conversationId') = ?
         AND coalesce(json_extract(s.source_json, '$.entryId'), json_extract(s.source_json, '$.messageId')) = ?`)
-      .get(userId, source.taskId, source.conversationId, source.entryId ?? source.messageId) as WorkRow | undefined;
-    return row ? this.hydrate(row) : undefined;
+      .all(userId, source.taskId, source.conversationId, key) as Array<{ work_id: string; source_json: string }>;
+    const matched = overlayFindAll(this.db, "conversation_goal_sources", dbSources, r => String(r.work_id), r => {
+      const parsed = JSON.parse(String(r.source_json)) as { taskId?: string; conversationId?: string; entryId?: string; messageId?: string };
+      return parsed.taskId === source.taskId && parsed.conversationId === source.conversationId && (parsed.entryId ?? parsed.messageId) === key;
+    });
+    for (const s of matched) {
+      const work = this.getWork(String(s.work_id));
+      if (work && work.userId === userId) return work;
+    }
+    return undefined;
   }
 
   listWorksByTaskForUser(taskId: string, userId: string): WorkDto[] {
-    const rows = this.db.prepare(`SELECT w.* FROM works w
-      INNER JOIN work_conversations c ON c.work_id = w.work_id
-      WHERE c.conversation_id=? AND w.user_id=?
-      ORDER BY w.created_at DESC, w.work_id`).all(taskId, userId) as WorkRow[];
-    return rows.map(row => this.hydrate(row));
+    const dbLinks = this.db.prepare("SELECT * FROM work_conversations WHERE conversation_id=?").all(taskId) as Array<Record<string, unknown>>;
+    const workIds = new Set(overlayFindAll(this.db, "work_conversations", dbLinks, r => `${r.work_id}\0${r.conversation_id}`,
+      r => r.conversation_id === taskId).map(r => String(r.work_id)));
+    const results: WorkDto[] = [];
+    for (const id of workIds) {
+      const w = this.getWork(id);
+      if (w && w.userId === userId) results.push(w);
+    }
+    results.sort((a, b) => b.createdAt - a.createdAt || a.workId.localeCompare(b.workId));
+    return results;
   }
 
   getWorkByTaskForUser(workId: string, taskId: string, userId: string): WorkDto | undefined {
-    const row = this.db.prepare(`SELECT w.* FROM works w
-      INNER JOIN work_conversations c ON c.work_id=w.work_id
-      WHERE w.work_id=? AND c.conversation_id=? AND w.user_id=?`).get(workId, taskId, userId) as WorkRow | undefined;
-    return row ? this.hydrate(row) : undefined;
+    const link = overlayReadOne(this.db, "work_conversations", `${workId}\0${taskId}`, () =>
+      this.db.prepare("SELECT * FROM work_conversations WHERE work_id=? AND conversation_id=?").get(workId, taskId) as Record<string, unknown> | undefined);
+    if (!link) return undefined;
+    const work = this.getWork(workId);
+    return work && work.userId === userId ? work : undefined;
   }
 
   listLiveWorksByTask(taskId: string): WorkDto[] {
-    const rows = this.db.prepare(`SELECT DISTINCT w.* FROM works w
-      INNER JOIN work_conversations c ON c.work_id = w.work_id
-      WHERE c.conversation_id=? AND w.lifecycle != 'closed'
-      ORDER BY w.updated_at DESC`).all(taskId) as WorkRow[];
-    return rows.map((row) => this.hydrate(row));
+    const dbLinks = this.db.prepare("SELECT * FROM work_conversations WHERE conversation_id=?").all(taskId) as Array<Record<string, unknown>>;
+    const workIds = new Set(overlayFindAll(this.db, "work_conversations", dbLinks, r => `${r.work_id}\0${r.conversation_id}`,
+      r => r.conversation_id === taskId).map(r => String(r.work_id)));
+    const results: WorkDto[] = [];
+    for (const id of workIds) {
+      const w = this.getWork(id);
+      if (w && w.lifecycle !== "closed") results.push(w);
+    }
+    results.sort((a, b) => b.updatedAt - a.updatedAt);
+    return results;
   }
 
   listConversationIds(workId: string): string[] {
-    return (this.db.prepare("SELECT conversation_id FROM work_conversations WHERE work_id=? ORDER BY last_referenced_at DESC")
-      .all(workId) as Array<{ conversation_id: string }>).map((row) => row.conversation_id);
+    const dbRows = this.db.prepare("SELECT * FROM work_conversations WHERE work_id=? ORDER BY last_referenced_at DESC")
+      .all(workId) as Array<Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_conversations", dbRows, r => `${r.work_id}\0${r.conversation_id}`,
+      r => r.work_id === workId, (a, b) => Number(b.last_referenced_at) - Number(a.last_referenced_at))
+      .map((row) => String(row.conversation_id));
   }
 
   linkConversation(workId: string, conversationId: string, channelType = "desktop", now = Date.now()): void {
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_conversations", `${workId}\0${conversationId}`, () =>
+        this.db.prepare("SELECT * FROM work_conversations WHERE work_id=? AND conversation_id=?").get(workId, conversationId) as Record<string, unknown> | undefined,
+      cur => ({ work_id: workId, conversation_id: conversationId, channel_type: cur ? cur.channel_type : channelType, last_referenced_at: now }));
+      enqueueWorkOp(this.db, { op: "workConversationLink", workId, conversationId, channelType, lastReferencedAt: now });
+      return;
+    }
     this.db.prepare(`INSERT INTO work_conversations (work_id,conversation_id,channel_type,last_referenced_at)
       VALUES (?,?,?,?) ON CONFLICT(work_id,conversation_id) DO UPDATE SET last_referenced_at=excluded.last_referenced_at`)
       .run(workId, conversationId, channelType, now);
@@ -501,13 +604,7 @@ export class WorkRepository {
   // ------------------------------------------------------- intent snapshots
 
   insertIntentSnapshot(snapshot: WorkIntentSnapshotDto): void {
-    this.db.prepare(`INSERT INTO work_intent_snapshots (
-      snapshot_id,work_id,intent_revision,source_version,title,goal_description,constraints_json,
-      criteria_json,authorization_json,expert_snapshot_json,input_snapshot_id,goal_sources_json,
-      created_by,source_message_id,created_at
-    ) VALUES (@snapshotId,@workId,@intentRevision,@sourceVersion,@title,@goalDescription,@constraintsJson,
-      @criteriaJson,@authorizationJson,@expertSnapshotJson,@inputSnapshotId,@goalSourcesJson,
-      @createdBy,@sourceMessageId,@createdAt)`).run({
+    const params = {
       snapshotId: snapshot.snapshotId,
       workId: snapshot.workId,
       intentRevision: snapshot.intentRevision,
@@ -523,16 +620,37 @@ export class WorkRepository {
       createdBy: snapshot.createdBy,
       sourceMessageId: snapshot.sourceMessageId ?? null,
       createdAt: snapshot.createdAt,
-    });
+    };
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "work_intent_snapshots", snapshot.snapshotId, {
+        snapshot_id: params.snapshotId, work_id: params.workId, intent_revision: params.intentRevision,
+        source_version: params.sourceVersion, title: params.title, goal_description: params.goalDescription,
+        constraints_json: params.constraintsJson, criteria_json: params.criteriaJson,
+        authorization_json: params.authorizationJson, expert_snapshot_json: params.expertSnapshotJson,
+        input_snapshot_id: params.inputSnapshotId, goal_sources_json: params.goalSourcesJson,
+        created_by: params.createdBy, source_message_id: params.sourceMessageId, created_at: params.createdAt,
+      });
+      enqueueWorkOp(this.db, { op: "workIntentSnapshotInsert", ...params });
+      return;
+    }
+    this.db.prepare(`INSERT INTO work_intent_snapshots (
+      snapshot_id,work_id,intent_revision,source_version,title,goal_description,constraints_json,
+      criteria_json,authorization_json,expert_snapshot_json,input_snapshot_id,goal_sources_json,
+      created_by,source_message_id,created_at
+    ) VALUES (@snapshotId,@workId,@intentRevision,@sourceVersion,@title,@goalDescription,@constraintsJson,
+      @criteriaJson,@authorizationJson,@expertSnapshotJson,@inputSnapshotId,@goalSourcesJson,
+      @createdBy,@sourceMessageId,@createdAt)`).run(params);
   }
 
   /** Requirement revisions for the expanded diagnostics view, newest first. */
   listIntentSnapshots(workId: string): Array<{ intentRevision: number; inputSnapshotId: string; sourceVersion: number; createdAt: number }> {
-    return (this.db.prepare(`SELECT intent_revision,input_snapshot_id,source_version,created_at
+    const dbRows = this.db.prepare(`SELECT snapshot_id,work_id,intent_revision,input_snapshot_id,source_version,created_at
       FROM work_intent_snapshots WHERE work_id=? ORDER BY intent_revision DESC,source_version DESC`)
-      .all(workId) as Array<{ intent_revision: number; input_snapshot_id: string; source_version: number; created_at: number }>)
-      .map(row => ({ intentRevision: row.intent_revision, inputSnapshotId: row.input_snapshot_id,
-        sourceVersion: row.source_version, createdAt: row.created_at }));
+      .all(workId) as Array<Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_intent_snapshots", dbRows, r => String(r.snapshot_id), r => r.work_id === workId,
+      (a, b) => Number(b.intent_revision) - Number(a.intent_revision) || Number(b.source_version) - Number(a.source_version))
+      .map(row => ({ intentRevision: Number(row.intent_revision), inputSnapshotId: String(row.input_snapshot_id),
+        sourceVersion: Number(row.source_version), createdAt: Number(row.created_at) }));
   }
 
   // ----------------------------------------------------------- participants
@@ -541,8 +659,9 @@ export class WorkRepository {
   reportContext(binding: WorkExecutionBindingDto): unknown { return capturedTeamReportContext(this.db, binding); }
 
   attachmentInput(binding: WorkExecutionBindingDto): string {
-    const row = this.db.prepare("SELECT attachments_json FROM bot_work_attachments WHERE work_id=? AND input_snapshot_id=?")
-      .get(binding.workId, binding.inputSnapshotId) as { attachments_json: string } | undefined;
+    const row = overlayReadOne<{ attachments_json: string }>(this.db, "bot_work_attachments", `${binding.workId}\0${binding.inputSnapshotId}`, () =>
+      this.db.prepare("SELECT attachments_json FROM bot_work_attachments WHERE work_id=? AND input_snapshot_id=?")
+        .get(binding.workId, binding.inputSnapshotId) as { attachments_json: string } | undefined);
     if (!row) return "";
     const attachments = botAttachmentSchema.array().parse(JSON.parse(row.attachments_json));
     return `\n\n用户附件（此执行输入快照的宿主持久副本；读取实际文件，不要仅凭文件名推断内容）：\n${attachments.map(item => JSON.stringify(item)).join("\n")}`;
@@ -563,17 +682,23 @@ export class WorkRepository {
   }
 
   executionInput(binding: WorkExecutionBindingDto): string {
-    const row = this.db.prepare(`SELECT title,goal_description,constraints_json,criteria_json,source_version,created_by
+    const dbSnapshots = this.db.prepare(`SELECT snapshot_id,work_id,intent_revision,input_snapshot_id,title,goal_description,constraints_json,criteria_json,source_version,created_by
       FROM work_intent_snapshots WHERE work_id=? AND intent_revision=? AND input_snapshot_id=?
-      ORDER BY source_version DESC LIMIT 1`).get(binding.workId, binding.intentRevision, binding.inputSnapshotId) as
+      ORDER BY source_version DESC`).all(binding.workId, binding.intentRevision, binding.inputSnapshotId) as Array<Record<string, unknown>>;
+    const row = overlayFindAll(this.db, "work_intent_snapshots", dbSnapshots, r => String(r.snapshot_id),
+      r => r.work_id === binding.workId && r.intent_revision === binding.intentRevision && r.input_snapshot_id === binding.inputSnapshotId,
+      (a, b) => Number(b.source_version) - Number(a.source_version))[0] as
       { title: string; goal_description: string | null; constraints_json: string; criteria_json: string;
         source_version: number; created_by: "user" | "bot" } | undefined;
     if (!row) throw new Error("执行缺少持久化的要求与输入快照");
     const userRequest = botDelegationInput(this.db, binding, row.source_version);
     const hasCollaborationContext = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_collaboration_work_context'").get();
-    const collaborationContext = hasCollaborationContext ? z.object({ context_json: z.string() }).optional().parse(
-      this.db.prepare("SELECT context_json FROM bot_collaboration_work_context WHERE work_id=? AND input_snapshot_id=?")
-        .get(binding.workId, binding.inputSnapshotId)) : undefined;
+    const collaborationContext = hasCollaborationContext
+      ? z.object({ context_json: z.string() }).optional().parse(
+        overlayReadOne(this.db, "bot_collaboration_work_context", `${binding.workId}\0${binding.inputSnapshotId}`, () =>
+          this.db.prepare("SELECT context_json FROM bot_collaboration_work_context WHERE work_id=? AND input_snapshot_id=?")
+            .get(binding.workId, binding.inputSnapshotId) as Record<string, unknown> | undefined))
+      : undefined;
     const definition = { title: row.title, description: row.goal_description, constraints: json<string[]>(row.constraints_json, []),
       criteria: json<WorkDto["criteria"]>(row.criteria_json, []) };
     const userDefinition: Partial<typeof definition> = {}, planDefinition: Partial<typeof definition> = {};
@@ -594,9 +719,15 @@ export class WorkRepository {
     const hasContinuationPlans=!!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_continuation_plans'").get();
     while(hasContinuationPlans && this.getWork(binding.workId)?.mode === "watch" && triggerBinding && !triggerBinding.inboxEventId && !seenTriggers.has(triggerBinding.bindingId)){
       seenTriggers.add(triggerBinding.bindingId);
-      const parent=this.db.prepare(`SELECT p.source_binding_id FROM work_dispatch_requests r JOIN work_continuation_plans p ON p.plan_id=r.continuation_plan_id
-        WHERE r.task_id=? AND r.work_id=? AND r.state!='cancelled' AND p.state!='cancelled'
-          AND p.work_id=? AND p.intent_revision=? AND p.input_snapshot_id=? AND p.owner_epoch=? AND p.owner_bot_id=?`).get(triggerBinding.taskId,binding.workId,binding.workId,binding.intentRevision,binding.inputSnapshotId,binding.ownerEpoch,binding.botId) as {source_binding_id:string}|undefined;
+      const dbReqs = this.db.prepare("SELECT * FROM work_dispatch_requests WHERE task_id=? AND work_id=?")
+        .all(triggerBinding.taskId, binding.workId) as Array<Record<string, unknown>>;
+      const req = overlayFindAll(this.db, "work_dispatch_requests", dbReqs, r => String(r.operation_id),
+        r => r.task_id === triggerBinding!.taskId && r.work_id === binding.workId && r.state !== "cancelled")[0];
+      const plan = req?.continuation_plan_id ? overlayReadOne(this.db, "work_continuation_plans", String(req.continuation_plan_id), () =>
+        this.db.prepare("SELECT * FROM work_continuation_plans WHERE plan_id=?").get(String(req.continuation_plan_id)) as Record<string, unknown> | undefined) : undefined;
+      const parent = plan && plan.state !== "cancelled" && plan.work_id === binding.workId && plan.intent_revision === binding.intentRevision
+        && plan.input_snapshot_id === binding.inputSnapshotId && plan.owner_epoch === binding.ownerEpoch && plan.owner_bot_id === binding.botId
+        ? { source_binding_id: String(plan.source_binding_id) } : undefined;
       const source=parent?this.getBinding(parent.source_binding_id):undefined;
       triggerBinding=source && !source.invalidatedAt && source.workId===binding.workId && source.intentRevision===binding.intentRevision
         && source.inputSnapshotId===binding.inputSnapshotId && source.ownerEpoch===binding.ownerEpoch ? source : undefined;
@@ -649,13 +780,29 @@ export class WorkRepository {
   }
 
   upsertParticipant(participant: WorkParticipantDto & { workId: string }): void {
+    const delegatedScopeJson = jsonText(participant.delegatedScope);
+    const expertSnapshotJson = jsonText(participant.expertSnapshot);
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_participants", `${participant.workId}\0${participant.botId}`, () =>
+        this.db.prepare("SELECT * FROM work_participants WHERE work_id=? AND bot_id=?").get(participant.workId, participant.botId) as Record<string, unknown> | undefined,
+      cur => ({
+        work_id: participant.workId, bot_id: participant.botId, role: participant.role,
+        delegated_scope_json: delegatedScopeJson, expert_snapshot_json: expertSnapshotJson,
+        added_at: cur ? Number(cur.added_at) : participant.addedAt,
+      }));
+      enqueueWorkOp(this.db, {
+        op: "workParticipantUpsert", workId: participant.workId, botId: participant.botId,
+        role: participant.role, delegatedScopeJson, expertSnapshotJson, addedAt: participant.addedAt,
+      });
+      return;
+    }
     this.db.prepare(`INSERT INTO work_participants (work_id,bot_id,role,delegated_scope_json,expert_snapshot_json,added_at)
       VALUES (?,?,?,?,?,?)
       ON CONFLICT(work_id,bot_id) DO UPDATE SET
         role=excluded.role, delegated_scope_json=excluded.delegated_scope_json,
         expert_snapshot_json=excluded.expert_snapshot_json`)
       .run(participant.workId, participant.botId, participant.role,
-        jsonText(participant.delegatedScope), jsonText(participant.expertSnapshot), participant.addedAt);
+        delegatedScopeJson, expertSnapshotJson, participant.addedAt);
   }
 
   getParticipant(workId: string, botId: string): WorkParticipantDto | undefined {
@@ -663,8 +810,10 @@ export class WorkRepository {
   }
 
   listParticipants(workId: string): WorkParticipantDto[] {
-    const rows = this.db.prepare("SELECT * FROM work_participants WHERE work_id=? ORDER BY added_at ASC")
-      .all(workId) as Array<{
+    const dbRows = this.db.prepare("SELECT * FROM work_participants WHERE work_id=? ORDER BY added_at ASC")
+      .all(workId) as Array<Record<string, unknown>>;
+    const rows = overlayFindAll(this.db, "work_participants", dbRows, r => `${r.work_id}\0${r.bot_id}`,
+      r => r.work_id === workId, (a, b) => Number(a.added_at) - Number(b.added_at)) as Array<{
         bot_id: string; role: WorkParticipantDto["role"]; delegated_scope_json: string;
         expert_snapshot_json: string; added_at: number;
       }>;
@@ -683,8 +832,8 @@ export class WorkRepository {
   // -------------------------------------------------------------- receipts
 
   getReceipt(userId: string, operationId: string): ReceiptRow | undefined {
-    return this.db.prepare("SELECT * FROM work_operation_receipts WHERE user_id=? AND operation_id=?")
-      .get(userId, operationId) as ReceiptRow | undefined;
+    return overlayReadOne<ReceiptRow & Record<string, unknown>>(this.db, "work_operation_receipts", `${userId}\0${operationId}`, () =>
+      this.db.prepare("SELECT * FROM work_operation_receipts WHERE user_id=? AND operation_id=?").get(userId, operationId) as (ReceiptRow & Record<string, unknown>) | undefined);
   }
 
   saveReceipt(params: {
@@ -692,16 +841,36 @@ export class WorkRepository {
     payloadHash: string; workSnapshot: WorkDto; outboxEventId?: string; now: number;
     receiptMetadata?: import("./WorkControlTypes").WorkReceiptMetadata;
   }): void {
+    const resultSnapshotJson = jsonText(params.receiptMetadata
+      ? { ...params.workSnapshot, _controlResult: params.receiptMetadata } : params.workSnapshot);
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "work_operation_receipts", `${params.userId}\0${params.operationId}`, {
+        user_id: params.userId, operation_id: params.operationId, work_id: params.workId ?? null,
+        operation_type: params.operationType, payload_hash: params.payloadHash,
+        result_snapshot_json: resultSnapshotJson, outbox_event_id: params.outboxEventId ?? null, created_at: params.now,
+      });
+      enqueueWorkOp(this.db, {
+        op: "workReceiptInsert", userId: params.userId, operationId: params.operationId,
+        workId: params.workId ?? null, operationType: params.operationType, payloadHash: params.payloadHash,
+        resultSnapshotJson, outboxEventId: params.outboxEventId ?? null, createdAt: params.now,
+      });
+      return;
+    }
     this.db.prepare(`INSERT INTO work_operation_receipts
       (user_id,operation_id,work_id,operation_type,payload_hash,result_snapshot_json,outbox_event_id,created_at)
       VALUES (?,?,?,?,?,?,?,?)`).run(
       params.userId, params.operationId, params.workId ?? null, params.operationType,
-      params.payloadHash, jsonText(params.receiptMetadata
-        ? { ...params.workSnapshot, _controlResult: params.receiptMetadata } : params.workSnapshot), params.outboxEventId ?? null, params.now,
+      params.payloadHash, resultSnapshotJson, params.outboxEventId ?? null, params.now,
     );
   }
 
   countReceiptsForUser(userId: string): number {
+    if (overlayHasTable(this.db, "work_operation_receipts")) {
+      const dbRows = this.db.prepare("SELECT user_id, operation_id FROM work_operation_receipts WHERE user_id=?")
+        .all(userId) as Array<Record<string, unknown>>;
+      return overlayFindAll(this.db, "work_operation_receipts", dbRows, r => `${r.user_id}\0${r.operation_id}`,
+        r => r.user_id === userId).length;
+    }
     return Number((this.db.prepare("SELECT COUNT(*) AS count FROM work_operation_receipts WHERE user_id=?")
       .get(userId) as { count: number }).count);
   }
@@ -709,13 +878,7 @@ export class WorkRepository {
   // ------------------------------------------------------ execution bindings
 
   insertBinding(binding: WorkExecutionBindingDto): void {
-    this.db.prepare(`INSERT INTO work_execution_bindings (
-      binding_id,work_id,operation_id,bot_id,task_id,durable_store_key,conversation_id,intent_revision,
-      owner_epoch,input_snapshot_id,expert_snapshot_json,delegated_scope_json,workspace_binding,
-      status,attempt_id,submission_receipt,settlement_note,admitted_at,submitted_at,invalidated_at,settled_at,inbox_event_id
-    ) VALUES (@bindingId,@workId,@operationId,@botId,@taskId,@durableStoreKey,@conversationId,@intentRevision,
-      @ownerEpoch,@inputSnapshotId,@expertSnapshotJson,@delegatedScopeJson,@workspaceBinding,
-      @status,@attemptId,@submissionReceipt,@settlementNote,@admittedAt,@submittedAt,@invalidatedAt,@settledAt,@inboxEventId)`).run({
+    const p = {
       ...binding,
       attemptId: binding.attemptId ?? null,
       submissionReceipt: binding.submissionReceipt ?? null,
@@ -726,13 +889,42 @@ export class WorkRepository {
       inboxEventId: binding.inboxEventId ?? null,
       expertSnapshotJson: jsonText(binding.expertSnapshot),
       delegatedScopeJson: jsonText(binding.delegatedScope),
-    });
+    };
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "work_execution_bindings", binding.bindingId, {
+        binding_id: p.bindingId, work_id: p.workId, operation_id: p.operationId, bot_id: p.botId,
+        task_id: p.taskId, durable_store_key: p.durableStoreKey, conversation_id: p.conversationId,
+        intent_revision: p.intentRevision, owner_epoch: p.ownerEpoch, input_snapshot_id: p.inputSnapshotId,
+        expert_snapshot_json: p.expertSnapshotJson, delegated_scope_json: p.delegatedScopeJson,
+        workspace_binding: p.workspaceBinding, status: p.status, attempt_id: p.attemptId,
+        submission_receipt: p.submissionReceipt, settlement_note: p.settlementNote,
+        admitted_at: p.admittedAt, submitted_at: p.submittedAt, invalidated_at: p.invalidatedAt,
+        settled_at: p.settledAt, inbox_event_id: p.inboxEventId,
+      });
+      enqueueWorkOp(this.db, {
+        op: "workBindingInsert",
+        bindingId: p.bindingId, workId: p.workId, operationId: p.operationId, botId: p.botId,
+        taskId: p.taskId, durableStoreKey: p.durableStoreKey, conversationId: p.conversationId,
+        intentRevision: p.intentRevision, ownerEpoch: p.ownerEpoch, inputSnapshotId: p.inputSnapshotId,
+        expertSnapshotJson: p.expertSnapshotJson, delegatedScopeJson: p.delegatedScopeJson,
+        workspaceBinding: p.workspaceBinding, status: p.status, attemptId: p.attemptId,
+        submissionReceipt: p.submissionReceipt, settlementNote: p.settlementNote,
+        admittedAt: p.admittedAt, submittedAt: p.submittedAt, invalidatedAt: p.invalidatedAt,
+        settledAt: p.settledAt, inboxEventId: p.inboxEventId,
+      });
+      return;
+    }
+    this.db.prepare(`INSERT INTO work_execution_bindings (
+      binding_id,work_id,operation_id,bot_id,task_id,durable_store_key,conversation_id,intent_revision,
+      owner_epoch,input_snapshot_id,expert_snapshot_json,delegated_scope_json,workspace_binding,
+      status,attempt_id,submission_receipt,settlement_note,admitted_at,submitted_at,invalidated_at,settled_at,inbox_event_id
+    ) VALUES (@bindingId,@workId,@operationId,@botId,@taskId,@durableStoreKey,@conversationId,@intentRevision,
+      @ownerEpoch,@inputSnapshotId,@expertSnapshotJson,@delegatedScopeJson,@workspaceBinding,
+      @status,@attemptId,@submissionReceipt,@settlementNote,@admittedAt,@submittedAt,@invalidatedAt,@settledAt,@inboxEventId)`).run(p);
   }
 
   updateBinding(binding: WorkExecutionBindingDto): void {
-    this.db.prepare(`UPDATE work_execution_bindings SET status=@status, attempt_id=@attemptId,
-      submission_receipt=@submissionReceipt, settlement_note=@settlementNote, submitted_at=@submittedAt,
-      invalidated_at=@invalidatedAt, settled_at=@settledAt, inbox_event_id=@inboxEventId WHERE binding_id=@bindingId`).run({
+    const p = {
       bindingId: binding.bindingId,
       status: binding.status,
       attemptId: binding.attemptId ?? null,
@@ -742,87 +934,122 @@ export class WorkRepository {
       invalidatedAt: binding.invalidatedAt ?? null,
       settledAt: binding.settledAt ?? null,
       inboxEventId: binding.inboxEventId ?? null,
-    });
+    };
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_execution_bindings", binding.bindingId, () =>
+        this.db.prepare("SELECT * FROM work_execution_bindings WHERE binding_id=?").get(binding.bindingId) as Record<string, unknown> | undefined,
+      cur => cur ? {
+        ...cur, status: p.status, attempt_id: p.attemptId, submission_receipt: p.submissionReceipt,
+        settlement_note: p.settlementNote, submitted_at: p.submittedAt, invalidated_at: p.invalidatedAt,
+        settled_at: p.settledAt, inbox_event_id: p.inboxEventId,
+      } : cur);
+      enqueueWorkOp(this.db, { op: "workBindingUpdate", ...p });
+      return;
+    }
+    this.db.prepare(`UPDATE work_execution_bindings SET status=@status, attempt_id=@attemptId,
+      submission_receipt=@submissionReceipt, settlement_note=@settlementNote, submitted_at=@submittedAt,
+      invalidated_at=@invalidatedAt, settled_at=@settledAt, inbox_event_id=@inboxEventId WHERE binding_id=@bindingId`).run(p);
   }
 
   consumeMetricsChange(bindingId: string): boolean { return this.metrics.consumeChange(bindingId); }
 
   getBinding(bindingId: string): WorkExecutionBindingDto | undefined {
-    const row = this.db.prepare("SELECT * FROM work_execution_bindings WHERE binding_id=?").get(bindingId) as BindingRow | undefined;
+    const row = overlayReadOne<BindingRow & Record<string, unknown>>(this.db, "work_execution_bindings", bindingId, () =>
+      this.db.prepare("SELECT * FROM work_execution_bindings WHERE binding_id=?").get(bindingId) as (BindingRow & Record<string, unknown>) | undefined);
     return row ? { ...mapBinding(row), metrics: this.metrics.read(row.binding_id) } : undefined;
   }
 
   bindingForTask(taskId: string): WorkExecutionBindingDto | undefined {
-    const row = this.db.prepare("SELECT * FROM work_execution_bindings WHERE task_id=? ORDER BY admitted_at DESC, rowid DESC LIMIT 1")
-      .get(taskId) as BindingRow | undefined;
+    const dbRows = this.db.prepare("SELECT * FROM work_execution_bindings WHERE task_id=? ORDER BY admitted_at DESC, rowid DESC")
+      .all(taskId) as Array<BindingRow & Record<string, unknown>>;
+    const row = overlayFindAll(this.db, "work_execution_bindings", dbRows, r => String(r.binding_id),
+      r => r.task_id === taskId, (a, b) => Number(b.admitted_at) - Number(a.admitted_at))[0];
     return row ? { ...mapBinding(row), metrics: this.metrics.read(row.binding_id) } : undefined;
   }
 
   getBindingByOperation(workId: string, operationId: string): WorkExecutionBindingDto | undefined {
-    const row = this.db.prepare("SELECT * FROM work_execution_bindings WHERE work_id=? AND operation_id=?")
-      .get(workId, operationId) as BindingRow | undefined;
+    const dbRows = this.db.prepare("SELECT * FROM work_execution_bindings WHERE work_id=? AND operation_id=?")
+      .all(workId, operationId) as Array<BindingRow & Record<string, unknown>>;
+    const row = overlayFindAll(this.db, "work_execution_bindings", dbRows, r => String(r.binding_id),
+      r => r.work_id === workId && r.operation_id === operationId)[0];
     return row ? { ...mapBinding(row), metrics: this.metrics.read(row.binding_id) } : undefined;
   }
 
   listBindings(workId: string): WorkExecutionBindingDto[] {
-    return (this.db.prepare("SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC,rowid ASC")
-      .all(workId) as BindingRow[]).map(row => ({ ...mapBinding(row), metrics: this.metrics.read(row.binding_id) }));
+    const dbRows = this.db.prepare("SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC,rowid ASC")
+      .all(workId) as Array<BindingRow & Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_execution_bindings", dbRows, r => String(r.binding_id),
+      r => r.work_id === workId, (a, b) => Number(a.admitted_at) - Number(b.admitted_at))
+      .map(row => ({ ...mapBinding(row), metrics: this.metrics.read(row.binding_id) }));
   }
 
   /** Watch risk checks need unsettled facts, never execution payloads or metrics. */
   executionRiskFacts(workId: string) {
-    const fields = { bindingId: z.string(), operationId: z.string(), state: z.string(), intentRevision: z.number(),
-      ownerEpoch: z.number(), invalidatedAt: z.number().nullable() };
-    const executions = z.array(z.object(fields)).parse(this.db.prepare(`SELECT binding_id bindingId,operation_id operationId,
-      status state,intent_revision intentRevision,owner_epoch ownerEpoch,invalidated_at invalidatedAt
-      FROM work_execution_bindings WHERE work_id=? AND status IN ('pending','submitted','running','unknown')
-      ORDER BY admitted_at ASC,rowid ASC`).all(workId));
-    const operations = z.array(z.object({ ...fields, bindingId: z.string().nullable(), admissionId: z.string(), actionKind: z.string() }))
-      .parse(this.db.prepare(`SELECT a.admission_id admissionId,a.binding_id bindingId,a.operation_id operationId,
-        a.action_kind actionKind,a.state,a.intent_revision intentRevision,a.owner_epoch ownerEpoch,b.invalidated_at invalidatedAt
-        FROM work_action_admissions a LEFT JOIN work_execution_bindings b ON b.binding_id=a.binding_id AND b.work_id=a.work_id
-        WHERE a.work_id=? AND a.state IN ('admitted','attempted','unknown') ORDER BY a.admitted_at ASC,a.rowid ASC`).all(workId));
+    const executions = this.listBindings(workId)
+      .filter(b => ["pending", "submitted", "running", "unknown"].includes(b.status))
+      .map(b => ({ bindingId: b.bindingId, operationId: b.operationId, state: b.status,
+        intentRevision: b.intentRevision, ownerEpoch: b.ownerEpoch, invalidatedAt: b.invalidatedAt ?? null }));
+    const bindingInvalidated = new Map(this.listBindings(workId).map(b => [b.bindingId, b.invalidatedAt ?? null]));
+    const operations = this.listAdmissions(workId)
+      .filter(a => ["admitted", "attempted", "unknown"].includes(a.state))
+      .map(a => ({ admissionId: a.admissionId, bindingId: a.bindingId ?? null, operationId: a.operationId,
+        actionKind: a.actionKind, state: a.state, intentRevision: a.intentRevision, ownerEpoch: a.ownerEpoch,
+        invalidatedAt: a.bindingId ? (bindingInvalidated.get(a.bindingId) ?? null) : null }));
     return { executions, operations };
   }
 
   // ------------------------------------------------------------- admissions
 
   insertAdmission(admission: WorkAdmissionDto): void {
+    const p = { ...admission, bindingId: admission.bindingId ?? null, settledAt: admission.settledAt ?? null };
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "work_action_admissions", admission.admissionId, {
+        admission_id: p.admissionId, work_id: p.workId, binding_id: p.bindingId, operation_id: p.operationId,
+        action_kind: p.actionKind, state: p.state, intent_revision: p.intentRevision, owner_epoch: p.ownerEpoch,
+        admitted_at: p.admittedAt, settled_at: p.settledAt,
+      });
+      enqueueWorkOp(this.db, {
+        op: "workAdmissionInsert", admissionId: p.admissionId, workId: p.workId, bindingId: p.bindingId,
+        operationId: p.operationId, actionKind: p.actionKind, state: p.state,
+        intentRevision: p.intentRevision, ownerEpoch: p.ownerEpoch, admittedAt: p.admittedAt, settledAt: p.settledAt,
+      });
+      return;
+    }
     this.db.prepare(`INSERT INTO work_action_admissions
       (admission_id,work_id,binding_id,operation_id,action_kind,state,intent_revision,owner_epoch,admitted_at,settled_at)
       VALUES (@admissionId,@workId,@bindingId,@operationId,@actionKind,@state,@intentRevision,@ownerEpoch,@admittedAt,@settledAt)`)
-      .run({
-        ...admission,
-        bindingId: admission.bindingId ?? null,
-        settledAt: admission.settledAt ?? null,
-      });
+      .run(p);
   }
 
   updateAdmissionState(admissionId: string, state: WorkAdmissionDto["state"], settledAt?: number): void {
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_action_admissions", admissionId, () =>
+        this.db.prepare("SELECT * FROM work_action_admissions WHERE admission_id=?").get(admissionId) as Record<string, unknown> | undefined,
+      cur => cur ? { ...cur, state, settled_at: settledAt ?? null } : cur);
+      enqueueWorkOp(this.db, { op: "workAdmissionUpdateState", admissionId, state, settledAt: settledAt ?? null });
+      return;
+    }
     this.db.prepare("UPDATE work_action_admissions SET state=?, settled_at=? WHERE admission_id=?")
       .run(state, settledAt ?? null, admissionId);
   }
 
   getAdmission(admissionId: string): WorkAdmissionDto | undefined {
-    const row = this.db.prepare("SELECT * FROM work_action_admissions WHERE admission_id=?").get(admissionId) as AdmissionRow | undefined;
+    const row = overlayReadOne<AdmissionRow & Record<string, unknown>>(this.db, "work_action_admissions", admissionId, () =>
+      this.db.prepare("SELECT * FROM work_action_admissions WHERE admission_id=?").get(admissionId) as (AdmissionRow & Record<string, unknown>) | undefined);
     return row ? mapAdmission(row) : undefined;
   }
 
   listAdmissions(workId: string): WorkAdmissionDto[] {
-    return (this.db.prepare("SELECT * FROM work_action_admissions WHERE work_id=? ORDER BY admitted_at ASC")
-      .all(workId) as AdmissionRow[]).map(mapAdmission);
+    const dbRows = this.db.prepare("SELECT * FROM work_action_admissions WHERE work_id=? ORDER BY admitted_at ASC")
+      .all(workId) as Array<AdmissionRow & Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_action_admissions", dbRows, r => String(r.admission_id),
+      r => r.work_id === workId, (a, b) => Number(a.admitted_at) - Number(b.admitted_at)).map(mapAdmission);
   }
 
   // ------------------------------------------------------------ deliverables
 
   insertDeliverable(deliverable: WorkDeliverableDto): void {
-    this.db.prepare(`INSERT INTO work_deliverables (
-      deliverable_id,work_id,producer_bot_id,execution_id,intent_revision,owner_epoch,input_snapshot_id,
-      status,summary,artifact_refs_json,evidence_refs_json,uncovered_scope_json,uncovered_criterion_ids_json,is_speculation,
-      has_write_conflicts,rejected_reason,created_at,reviewed_at,reviewed_by_bot_id
-    ) VALUES (@deliverableId,@workId,@producerBotId,@executionId,@intentRevision,@ownerEpoch,@inputSnapshotId,
-      @status,@summary,@artifactRefsJson,@evidenceRefsJson,@uncoveredScopeJson,@uncoveredCriterionIdsJson,@isSpeculation,
-      @hasWriteConflicts,@rejectedReason,@createdAt,@reviewedAt,@reviewedByBotId)`).run({
+    const p = {
       ...deliverable,
       artifactRefsJson: jsonText(deliverable.artifactRefs),
       evidenceRefsJson: jsonText(deliverable.evidenceRefs),
@@ -833,31 +1060,76 @@ export class WorkRepository {
       rejectedReason: deliverable.rejectedReason ?? null,
       reviewedAt: deliverable.reviewedAt ?? null,
       reviewedByBotId: deliverable.reviewedByBotId ?? null,
-    });
+    };
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "work_deliverables", deliverable.deliverableId, {
+        deliverable_id: p.deliverableId, work_id: p.workId, producer_bot_id: p.producerBotId,
+        execution_id: p.executionId, intent_revision: p.intentRevision, owner_epoch: p.ownerEpoch,
+        input_snapshot_id: p.inputSnapshotId, status: p.status, summary: p.summary,
+        artifact_refs_json: p.artifactRefsJson, evidence_refs_json: p.evidenceRefsJson,
+        uncovered_scope_json: p.uncoveredScopeJson, uncovered_criterion_ids_json: p.uncoveredCriterionIdsJson,
+        is_speculation: p.isSpeculation, has_write_conflicts: p.hasWriteConflicts,
+        rejected_reason: p.rejectedReason, created_at: p.createdAt, reviewed_at: p.reviewedAt,
+        reviewed_by_bot_id: p.reviewedByBotId,
+      });
+      enqueueWorkOp(this.db, {
+        op: "workDeliverableInsert",
+        deliverableId: p.deliverableId, workId: p.workId, producerBotId: p.producerBotId,
+        executionId: p.executionId, intentRevision: p.intentRevision, ownerEpoch: p.ownerEpoch,
+        inputSnapshotId: p.inputSnapshotId, status: p.status, summary: p.summary,
+        artifactRefsJson: p.artifactRefsJson, evidenceRefsJson: p.evidenceRefsJson,
+        uncoveredScopeJson: p.uncoveredScopeJson, uncoveredCriterionIdsJson: p.uncoveredCriterionIdsJson,
+        isSpeculation: p.isSpeculation, hasWriteConflicts: p.hasWriteConflicts,
+        rejectedReason: p.rejectedReason, createdAt: p.createdAt, reviewedAt: p.reviewedAt,
+        reviewedByBotId: p.reviewedByBotId,
+      });
+      return;
+    }
+    this.db.prepare(`INSERT INTO work_deliverables (
+      deliverable_id,work_id,producer_bot_id,execution_id,intent_revision,owner_epoch,input_snapshot_id,
+      status,summary,artifact_refs_json,evidence_refs_json,uncovered_scope_json,uncovered_criterion_ids_json,is_speculation,
+      has_write_conflicts,rejected_reason,created_at,reviewed_at,reviewed_by_bot_id
+    ) VALUES (@deliverableId,@workId,@producerBotId,@executionId,@intentRevision,@ownerEpoch,@inputSnapshotId,
+      @status,@summary,@artifactRefsJson,@evidenceRefsJson,@uncoveredScopeJson,@uncoveredCriterionIdsJson,@isSpeculation,
+      @hasWriteConflicts,@rejectedReason,@createdAt,@reviewedAt,@reviewedByBotId)`).run(p);
   }
 
   updateDeliverableReview(deliverableId: string, params: {
     status: WorkDeliverableDto["status"]; reviewedAt?: number; reviewedByBotId?: string; rejectedReason?: string;
   }): void {
+    const p = {
+      deliverableId,
+      status: params.status,
+      reviewedAt: params.reviewedAt ?? null,
+      reviewedByBotId: params.reviewedByBotId ?? null,
+      rejectedReason: params.rejectedReason ?? null,
+    };
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_deliverables", deliverableId, () =>
+        this.db.prepare("SELECT * FROM work_deliverables WHERE deliverable_id=?").get(deliverableId) as Record<string, unknown> | undefined,
+      cur => cur ? {
+        ...cur, status: p.status, reviewed_at: p.reviewedAt,
+        reviewed_by_bot_id: p.reviewedByBotId, rejected_reason: p.rejectedReason,
+      } : cur);
+      enqueueWorkOp(this.db, { op: "workDeliverableUpdateReview", ...p });
+      return;
+    }
     this.db.prepare(`UPDATE work_deliverables SET status=@status, reviewed_at=@reviewedAt,
       reviewed_by_bot_id=@reviewedByBotId, rejected_reason=@rejectedReason WHERE deliverable_id=@deliverableId`)
-      .run({
-        deliverableId,
-        status: params.status,
-        reviewedAt: params.reviewedAt ?? null,
-        reviewedByBotId: params.reviewedByBotId ?? null,
-        rejectedReason: params.rejectedReason ?? null,
-      });
+      .run(p);
   }
 
   getDeliverable(deliverableId: string): WorkDeliverableDto | undefined {
-    const row = this.db.prepare("SELECT * FROM work_deliverables WHERE deliverable_id=?").get(deliverableId) as DeliverableRow | undefined;
+    const row = overlayReadOne<DeliverableRow & Record<string, unknown>>(this.db, "work_deliverables", deliverableId, () =>
+      this.db.prepare("SELECT * FROM work_deliverables WHERE deliverable_id=?").get(deliverableId) as (DeliverableRow & Record<string, unknown>) | undefined);
     return row ? mapDeliverable(row) : undefined;
   }
 
   listDeliverables(workId: string): WorkDeliverableDto[] {
-    return (this.db.prepare("SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC,rowid ASC")
-      .all(workId) as DeliverableRow[]).map(mapDeliverable);
+    const dbRows = this.db.prepare("SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC,rowid ASC")
+      .all(workId) as Array<DeliverableRow & Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_deliverables", dbRows, r => String(r.deliverable_id),
+      r => r.work_id === workId, (a, b) => Number(a.created_at) - Number(b.created_at)).map(mapDeliverable);
   }
 
   /** History that already existed when this observation was admitted. The same
@@ -865,6 +1137,34 @@ export class WorkRepository {
    * later round (even one finishing first) must never become an earlier baseline.
    * Incomplete reports remain history, not proof that anything is unchanged. */
   previousWatchReports(binding: WorkExecutionBindingDto, includeBaseline = false): WorkDeliverableDto[] {
+    const comparable = (r: WorkDeliverableDto) => !r.isSpeculation && !r.hasWriteConflicts && !r.uncoveredScope.length
+      && parseWatchObservation(r.summary)?.status === "observed";
+    if (overlayHasTable(this.db, "work_deliverables") || overlayHasTable(this.db, "work_execution_bindings")) {
+      const bindings = this.listBindings(binding.workId);
+      const bindingById = new Map(bindings.map(b => [b.bindingId, b]));
+      const currentIdx = bindings.findIndex(b => b.bindingId === binding.bindingId);
+      const eligible = this.listDeliverables(binding.workId).filter(d => {
+        if (d.intentRevision !== binding.intentRevision || d.inputSnapshotId !== binding.inputSnapshotId
+          || d.ownerEpoch !== binding.ownerEpoch || d.producerBotId !== binding.botId
+          || d.status === "superseded" || d.status === "rejected" || d.createdAt > binding.admittedAt) return false;
+        const b = bindingById.get(d.executionId);
+        if (!b || b.workId !== d.workId || b.intentRevision !== d.intentRevision || b.inputSnapshotId !== d.inputSnapshotId
+          || b.ownerEpoch !== d.ownerEpoch || b.botId !== d.producerBotId || b.invalidatedAt !== undefined || b.status === "invalidated") return false;
+        if (binding.inboxEventId && b.inboxEventId && b.inboxEventId === binding.inboxEventId) return false;
+        if (b.admittedAt < binding.admittedAt) return true;
+        if (b.admittedAt === binding.admittedAt && currentIdx >= 0) {
+          const bIdx = bindings.findIndex(item => item.bindingId === b.bindingId);
+          return bIdx >= 0 && bIdx < currentIdx;
+        }
+        return false;
+      });
+      const recent = eligible.slice(-3);
+      if (includeBaseline && !recent.some(comparable)) {
+        const baseline = [...eligible].reverse().find(comparable);
+        if (baseline) recent.unshift(baseline);
+      }
+      return recent;
+    }
     const sql = `SELECT d.* FROM work_deliverables d
       JOIN work_execution_bindings b ON b.binding_id=d.execution_id
       JOIN work_execution_bindings current ON current.binding_id=@bindingId
@@ -881,8 +1181,6 @@ export class WorkRepository {
       ownerEpoch: binding.ownerEpoch, botId: binding.botId };
     const order = " ORDER BY d.created_at DESC,d.rowid DESC";
     const recent = (this.db.prepare(sql + order + " LIMIT 3").all(params) as DeliverableRow[]).map(mapDeliverable).reverse();
-    const comparable = (r: WorkDeliverableDto) => !r.isSpeculation && !r.hasWriteConflicts && !r.uncoveredScope.length
-      && parseWatchObservation(r.summary)?.status === "observed";
     // Repeated failed rounds must not erase a prior changes-only baseline. Find
     // just that one candidate lazily; never materialize an unbounded report list.
     if (includeBaseline && !recent.some(comparable)) {
@@ -897,6 +1195,21 @@ export class WorkRepository {
   supersedeStaleDeliverables(workId: string, intentRevision: number, inputSnapshotId: string): void {
     // A pending result from an old input is no longer awaiting current acceptance.
     // Accepted rows retain their historical review; Work tracks current result IDs.
+    if (requiresWorkRustWrites(this.db)) {
+      const bindingsById = new Map(this.listBindings(workId).map(b => [b.bindingId, b]));
+      const dbRows = this.db.prepare("SELECT * FROM work_deliverables WHERE work_id=? AND status='proposed'")
+        .all(workId) as Array<Record<string, unknown>>;
+      for (const row of overlayFindAll(this.db, "work_deliverables", dbRows, r => String(r.deliverable_id),
+        r => r.work_id === workId && r.status === "proposed")) {
+        const b = bindingsById.get(String(row.execution_id));
+        const invalidated = Boolean(b && (b.invalidatedAt !== undefined || b.status === "invalidated"));
+        if (Number(row.intent_revision) !== intentRevision || String(row.input_snapshot_id) !== inputSnapshotId || invalidated) {
+          overlaySet(this.db, "work_deliverables", String(row.deliverable_id), { ...row, status: "superseded" });
+        }
+      }
+      enqueueWorkOp(this.db, { op: "workDeliverablesSupersedeProposed", workId, intentRevision, inputSnapshotId });
+      return;
+    }
     this.db.prepare(`UPDATE work_deliverables SET status='superseded'
       WHERE work_id=? AND status='proposed' AND (
         intent_revision != ? OR input_snapshot_id != ? OR EXISTS (
@@ -910,11 +1223,7 @@ export class WorkRepository {
   // ---------------------------------------------------------------- evidence
 
   insertEvidence(evidence: WorkEvidenceDto): void {
-    this.db.prepare(`INSERT INTO work_evidence (
-      evidence_id,work_id,deliverable_id,execution_id,criterion_ids_json,kind,provenance,source_ref,
-      source_sha,input_snapshot_id,environment,intent_revision,detail,recorded_at
-    ) VALUES (@evidenceId,@workId,@deliverableId,@executionId,@criterionIdsJson,@kind,@provenance,@sourceRef,
-      @sourceSha,@inputSnapshotId,@environment,@intentRevision,@detail,@recordedAt)`).run({
+    const p = {
       ...evidence,
       deliverableId: evidence.deliverableId ?? null,
       executionId: evidence.executionId ?? null,
@@ -922,30 +1231,48 @@ export class WorkRepository {
       sourceSha: evidence.sourceSha ?? null,
       environment: evidence.environment ?? null,
       detail: evidence.detail ?? null,
-    });
+    };
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "work_evidence", evidence.evidenceId, {
+        evidence_id: p.evidenceId, work_id: p.workId, deliverable_id: p.deliverableId,
+        execution_id: p.executionId, criterion_ids_json: p.criterionIdsJson, kind: p.kind,
+        provenance: p.provenance, source_ref: p.sourceRef, source_sha: p.sourceSha,
+        input_snapshot_id: p.inputSnapshotId, environment: p.environment,
+        intent_revision: p.intentRevision, detail: p.detail, recorded_at: p.recordedAt,
+      });
+      enqueueWorkOp(this.db, {
+        op: "workEvidenceInsert", evidenceId: p.evidenceId, workId: p.workId, deliverableId: p.deliverableId,
+        executionId: p.executionId, criterionIdsJson: p.criterionIdsJson, kind: p.kind, provenance: p.provenance,
+        sourceRef: p.sourceRef, sourceSha: p.sourceSha, inputSnapshotId: p.inputSnapshotId,
+        environment: p.environment, intentRevision: p.intentRevision, detail: p.detail, recordedAt: p.recordedAt,
+      });
+      return;
+    }
+    this.db.prepare(`INSERT INTO work_evidence (
+      evidence_id,work_id,deliverable_id,execution_id,criterion_ids_json,kind,provenance,source_ref,
+      source_sha,input_snapshot_id,environment,intent_revision,detail,recorded_at
+    ) VALUES (@evidenceId,@workId,@deliverableId,@executionId,@criterionIdsJson,@kind,@provenance,@sourceRef,
+      @sourceSha,@inputSnapshotId,@environment,@intentRevision,@detail,@recordedAt)`).run(p);
   }
 
   getEvidence(evidenceId: string): WorkEvidenceDto | undefined {
-    const row = this.db.prepare("SELECT * FROM work_evidence WHERE evidence_id=?").get(evidenceId) as EvidenceRow | undefined;
+    const row = overlayReadOne<EvidenceRow & Record<string, unknown>>(this.db, "work_evidence", evidenceId, () =>
+      this.db.prepare("SELECT * FROM work_evidence WHERE evidence_id=?").get(evidenceId) as (EvidenceRow & Record<string, unknown>) | undefined);
     return row ? mapEvidence(row) : undefined;
   }
 
   listEvidence(workId: string): WorkEvidenceDto[] {
-    return (this.db.prepare("SELECT * FROM work_evidence WHERE work_id=? ORDER BY recorded_at ASC")
-      .all(workId) as EvidenceRow[]).map(mapEvidence);
+    const dbRows = this.db.prepare("SELECT * FROM work_evidence WHERE work_id=? ORDER BY recorded_at ASC")
+      .all(workId) as Array<EvidenceRow & Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_evidence", dbRows, r => String(r.evidence_id),
+      r => r.work_id === workId, (a, b) => Number(a.recorded_at) - Number(b.recorded_at)).map(mapEvidence);
   }
 
   // ---------------------------------------------------------------- blockers
 
   insertBlocker(blocker: WorkBlockerDto): void {
     blocker = nonBlockingEffect(blocker);
-    this.db.prepare(`INSERT INTO work_blockers (
-      blocker_id,work_id,reported_by_bot_id,reason,kind,unknown_external_effect_ref,
-      reason_code,details_json,source_ref,subscription_id,causal_chain_id,
-      waiting_for_user_input,status,created_at,cleared_at
-    ) VALUES (@blockerId,@workId,@reportedByBotId,@reason,@kind,@unknownExternalEffectRef,
-      @reasonCode,@detailsJson,@sourceRef,@subscriptionId,@causalChainId,
-      @waitingForUserInput,@status,@createdAt,@clearedAt)`).run({
+    const p = {
       ...blocker,
       reportedByBotId: blocker.reportedByBotId ?? null,
       unknownExternalEffectRef: blocker.unknownExternalEffectRef ?? null,
@@ -956,27 +1283,79 @@ export class WorkRepository {
       causalChainId: blocker.causalChainId ?? null,
       waitingForUserInput: blocker.waitingForUserInput ? 1 : 0,
       clearedAt: blocker.clearedAt ?? null,
-    });
+    };
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "work_blockers", blocker.blockerId, {
+        blocker_id: p.blockerId, work_id: p.workId, reported_by_bot_id: p.reportedByBotId,
+        reason: p.reason, kind: p.kind, unknown_external_effect_ref: p.unknownExternalEffectRef,
+        reason_code: p.reasonCode, details_json: p.detailsJson, source_ref: p.sourceRef,
+        subscription_id: p.subscriptionId, causal_chain_id: p.causalChainId,
+        waiting_for_user_input: p.waitingForUserInput, status: p.status,
+        created_at: p.createdAt, cleared_at: p.clearedAt,
+      });
+      enqueueWorkOp(this.db, {
+        op: "workBlockerInsert", blockerId: p.blockerId, workId: p.workId, reportedByBotId: p.reportedByBotId,
+        reason: p.reason, kind: p.kind, unknownExternalEffectRef: p.unknownExternalEffectRef,
+        reasonCode: p.reasonCode, detailsJson: p.detailsJson, sourceRef: p.sourceRef,
+        subscriptionId: p.subscriptionId, causalChainId: p.causalChainId,
+        waitingForUserInput: p.waitingForUserInput, status: p.status,
+        createdAt: p.createdAt, clearedAt: p.clearedAt,
+      });
+      return;
+    }
+    this.db.prepare(`INSERT INTO work_blockers (
+      blocker_id,work_id,reported_by_bot_id,reason,kind,unknown_external_effect_ref,
+      reason_code,details_json,source_ref,subscription_id,causal_chain_id,
+      waiting_for_user_input,status,created_at,cleared_at
+    ) VALUES (@blockerId,@workId,@reportedByBotId,@reason,@kind,@unknownExternalEffectRef,
+      @reasonCode,@detailsJson,@sourceRef,@subscriptionId,@causalChainId,
+      @waitingForUserInput,@status,@createdAt,@clearedAt)`).run(p);
   }
 
   clearBlocker(blockerId: string, workId: string, now: number): void {
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_blockers", blockerId, () =>
+        this.db.prepare("SELECT * FROM work_blockers WHERE blocker_id=?").get(blockerId) as Record<string, unknown> | undefined,
+      cur => cur && cur.work_id === workId && cur.status === "open" ? { ...cur, status: "cleared", cleared_at: now } : cur);
+      enqueueWorkOp(this.db, {
+        op: "workBlockerUpdate", blockerId, workId, mode: "clear", reason: null,
+        detailsJson: null, sourceRef: null, subscriptionId: null, causalChainId: null, clearedAt: now,
+      });
+      return;
+    }
     this.db.prepare("UPDATE work_blockers SET status='cleared', cleared_at=? WHERE blocker_id=? AND work_id=? AND status='open'")
       .run(now, blockerId, workId);
   }
 
   recordBlockerResponse(blocker: WorkBlockerDto, response: Record<string, unknown>, now: number): void {
+    const detailsJson = jsonText({ ...blocker.details, response });
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_blockers", blocker.blockerId, () =>
+        this.db.prepare("SELECT * FROM work_blockers WHERE blocker_id=?").get(blocker.blockerId) as Record<string, unknown> | undefined,
+      cur => cur && cur.work_id === blocker.workId && cur.status === "open"
+        ? { ...cur, details_json: detailsJson, status: "cleared", cleared_at: now } : cur);
+      enqueueWorkOp(this.db, {
+        op: "workBlockerUpdate", blockerId: blocker.blockerId, workId: blocker.workId, mode: "respond", reason: null,
+        detailsJson, sourceRef: null, subscriptionId: null, causalChainId: null, clearedAt: now,
+      });
+      return;
+    }
     this.db.prepare("UPDATE work_blockers SET details_json=?,status='cleared',cleared_at=? WHERE blocker_id=? AND work_id=? AND status='open'")
-      .run(jsonText({ ...blocker.details, response }), now, blocker.blockerId, blocker.workId);
+      .run(detailsJson, now, blocker.blockerId, blocker.workId);
   }
 
   getBlocker(blockerId: string): WorkBlockerDto | undefined {
-    const row = this.db.prepare("SELECT * FROM work_blockers WHERE blocker_id=?").get(blockerId) as BlockerRow | undefined;
+    const row = overlayReadOne<BlockerRow & Record<string, unknown>>(this.db, "work_blockers", blockerId, () =>
+      this.db.prepare("SELECT * FROM work_blockers WHERE blocker_id=?").get(blockerId) as (BlockerRow & Record<string, unknown>) | undefined);
     return row ? mapBlocker(row) : undefined;
   }
 
   listBlockers(workId: string): WorkBlockerDto[] {
-    return (this.db.prepare("SELECT * FROM work_blockers WHERE work_id=? ORDER BY created_at ASC")
-      .all(workId) as BlockerRow[]).filter(row => !isRetiredQuotaBlocker(row) && !this.isRetiredTeamQuotaBlocker(row)).map(mapBlocker);
+    const dbRows = this.db.prepare("SELECT * FROM work_blockers WHERE work_id=? ORDER BY created_at ASC")
+      .all(workId) as Array<BlockerRow & Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_blockers", dbRows, r => String(r.blocker_id),
+      r => r.work_id === workId, (a, b) => Number(a.created_at) - Number(b.created_at))
+      .filter(row => !isRetiredQuotaBlocker(row) && !this.isRetiredTeamQuotaBlocker(row)).map(mapBlocker);
   }
 
   /** Read-only retirement of exact module errors; never reinterpret an existing execution/effect. */
@@ -1001,12 +1380,73 @@ export class WorkRepository {
   }
 
   reopenBlocker(blockerId: string, workId: string): void {
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_blockers", blockerId, () =>
+        this.db.prepare("SELECT * FROM work_blockers WHERE blocker_id=?").get(blockerId) as Record<string, unknown> | undefined,
+      cur => cur && cur.work_id === workId && cur.kind !== "external_effect" && (cur.unknown_external_effect_ref ?? null) === null
+        ? { ...cur, status: "open", cleared_at: null } : cur);
+      enqueueWorkOp(this.db, {
+        op: "workBlockerUpdate", blockerId, workId, mode: "reopen", reason: null,
+        detailsJson: null, sourceRef: null, subscriptionId: null, causalChainId: null, clearedAt: null,
+      });
+      return;
+    }
     this.db.prepare("UPDATE work_blockers SET status='open',cleared_at=NULL WHERE blocker_id=? AND work_id=? AND kind!='external_effect' AND unknown_external_effect_ref IS NULL").run(blockerId, workId);
   }
 
   // ------------------------------------------------------------- subscriptions
 
+  private subscriptionParams(subscription: WorkSubscriptionDto, isUpdate: boolean) {
+    return {
+      subscriptionId: subscription.subscriptionId,
+      workId: subscription.workId,
+      source: subscription.source,
+      filterJson: jsonText(subscription.filter),
+      catchUpPolicy: subscription.catchUpPolicy,
+      maxMergeWaitMs: subscription.maxMergeWaitMs,
+      maxQueueDepth: subscription.maxQueueDepth,
+      stopConditionText: subscription.stopConditionText ?? null,
+      timezone: subscription.timezone ?? null,
+      cronExpression: subscription.cronExpression ?? null,
+      nextWakeAt: subscription.nextWakeAt ?? null,
+      lastProcessedSourceVersion: subscription.lastProcessedSourceVersion ?? null,
+      scheduleRevision: subscription.scheduleRevision ?? 1,
+      configRevision: subscription.configRevision ?? 1,
+      sourceTarget: subscription.sourceTarget ?? null,
+      versionMode: subscription.versionMode ?? "readback",
+      dstPolicy: subscription.dstPolicy ?? "first-valid",
+      maxBacklogEvents: subscription.maxBacklogEvents ?? 400,
+      maxBacklogBytes: subscription.maxBacklogBytes ?? 8_388_608,
+      lastCheckedAt: subscription.lastCheckedAt ?? null,
+      stoppedReason: subscription.stoppedReason ?? null,
+      configJson: jsonText(subscription.filter),
+      createdAt: subscription.createdAt,
+      updatedAt: subscription.updatedAt,
+      stoppedAt: subscription.stoppedAt ?? null,
+      isUpdate,
+    };
+  }
+
+  private subscriptionRowFromParams(p: ReturnType<WorkRepository["subscriptionParams"]>): SubscriptionRow & Record<string, unknown> {
+    return {
+      subscription_id: p.subscriptionId, work_id: p.workId, source: p.source, filter_json: p.filterJson,
+      catch_up_policy: p.catchUpPolicy, max_merge_wait_ms: p.maxMergeWaitMs, max_queue_depth: p.maxQueueDepth,
+      stop_condition_text: p.stopConditionText, timezone: p.timezone, cron_expression: p.cronExpression,
+      next_wake_at: p.nextWakeAt, last_processed_source_version: p.lastProcessedSourceVersion,
+      schedule_revision: p.scheduleRevision, config_revision: p.configRevision, source_target: p.sourceTarget,
+      version_mode: p.versionMode, dst_policy: p.dstPolicy, max_backlog_events: p.maxBacklogEvents,
+      max_backlog_bytes: p.maxBacklogBytes, last_checked_at: p.lastCheckedAt, stopped_reason: p.stoppedReason,
+      config_json: p.configJson, created_at: p.createdAt, updated_at: p.updatedAt, stopped_at: p.stoppedAt,
+    };
+  }
+
   insertSubscription(subscription: WorkSubscriptionDto): void {
+    const p = this.subscriptionParams(subscription, false);
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "work_subscriptions", subscription.subscriptionId, this.subscriptionRowFromParams(p));
+      enqueueWorkOp(this.db, { op: "workSubscriptionUpsert", ...p });
+      return;
+    }
     this.db.prepare(`INSERT INTO work_subscriptions (
       subscription_id,work_id,source,filter_json,catch_up_policy,max_merge_wait_ms,max_queue_depth,
       stop_condition_text,timezone,cron_expression,next_wake_at,last_processed_source_version,
@@ -1017,29 +1457,16 @@ export class WorkRepository {
       @stopConditionText,@timezone,@cronExpression,@nextWakeAt,@lastProcessedSourceVersion,
       @scheduleRevision,@configRevision,@sourceTarget,@versionMode,@dstPolicy,@maxBacklogEvents,
       @maxBacklogBytes,@lastCheckedAt,@stoppedReason,@configJson,
-      @createdAt,@updatedAt,@stoppedAt)`).run({
-      ...subscription,
-      filterJson: jsonText(subscription.filter),
-      stopConditionText: subscription.stopConditionText ?? null,
-      timezone: subscription.timezone ?? null,
-      cronExpression: subscription.cronExpression ?? null,
-      nextWakeAt: subscription.nextWakeAt ?? null,
-      lastProcessedSourceVersion: subscription.lastProcessedSourceVersion ?? null,
-      scheduleRevision: subscription.scheduleRevision ?? 1,
-      configRevision: subscription.configRevision ?? 1,
-      sourceTarget: subscription.sourceTarget ?? null,
-      versionMode: subscription.versionMode ?? "readback",
-      dstPolicy: subscription.dstPolicy ?? "first-valid",
-      maxBacklogEvents: subscription.maxBacklogEvents ?? 400,
-      maxBacklogBytes: subscription.maxBacklogBytes ?? 8_388_608,
-      lastCheckedAt: subscription.lastCheckedAt ?? null,
-      stoppedReason: subscription.stoppedReason ?? null,
-      configJson: jsonText(subscription.filter),
-      stoppedAt: subscription.stoppedAt ?? null,
-    });
+      @createdAt,@updatedAt,@stoppedAt)`).run(p);
   }
 
   updateSubscription(subscription: WorkSubscriptionDto): void {
+    const p = this.subscriptionParams(subscription, true);
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "work_subscriptions", subscription.subscriptionId, this.subscriptionRowFromParams(p));
+      enqueueWorkOp(this.db, { op: "workSubscriptionUpsert", ...p });
+      return;
+    }
     this.db.prepare(`UPDATE work_subscriptions SET filter_json=@filterJson, catch_up_policy=@catchUpPolicy,
       max_merge_wait_ms=@maxMergeWaitMs, max_queue_depth=@maxQueueDepth, stop_condition_text=@stopConditionText,
       timezone=@timezone, cron_expression=@cronExpression, next_wake_at=@nextWakeAt,
@@ -1048,48 +1475,44 @@ export class WorkRepository {
       dst_policy=@dstPolicy, max_backlog_events=@maxBacklogEvents, max_backlog_bytes=@maxBacklogBytes,
       last_checked_at=@lastCheckedAt, stopped_reason=@stoppedReason, config_json=@configJson,
       updated_at=@updatedAt, stopped_at=@stoppedAt
-      WHERE subscription_id=@subscriptionId`).run({
-      ...subscription,
-      filterJson: jsonText(subscription.filter),
-      stopConditionText: subscription.stopConditionText ?? null,
-      timezone: subscription.timezone ?? null,
-      cronExpression: subscription.cronExpression ?? null,
-      nextWakeAt: subscription.nextWakeAt ?? null,
-      lastProcessedSourceVersion: subscription.lastProcessedSourceVersion ?? null,
-      scheduleRevision: subscription.scheduleRevision ?? 1,
-      configRevision: subscription.configRevision ?? 1,
-      sourceTarget: subscription.sourceTarget ?? null,
-      versionMode: subscription.versionMode ?? "readback",
-      dstPolicy: subscription.dstPolicy ?? "first-valid",
-      maxBacklogEvents: subscription.maxBacklogEvents ?? 400,
-      maxBacklogBytes: subscription.maxBacklogBytes ?? 8_388_608,
-      lastCheckedAt: subscription.lastCheckedAt ?? null,
-      stoppedReason: subscription.stoppedReason ?? null,
-      configJson: jsonText(subscription.filter),
-      stoppedAt: subscription.stoppedAt ?? null,
-    });
+      WHERE subscription_id=@subscriptionId`).run(p);
   }
 
   getSubscription(subscriptionId: string): WorkSubscriptionDto | undefined {
-    const row = this.db.prepare("SELECT * FROM work_subscriptions WHERE subscription_id=?").get(subscriptionId) as SubscriptionRow | undefined;
+    const row = overlayReadOne<SubscriptionRow & Record<string, unknown>>(this.db, "work_subscriptions", subscriptionId, () =>
+      this.db.prepare("SELECT * FROM work_subscriptions WHERE subscription_id=?").get(subscriptionId) as (SubscriptionRow & Record<string, unknown>) | undefined);
     return row ? mapSubscription(row) : undefined;
   }
 
   listSubscriptions(workId: string, options: { includeStopped?: boolean } = {}): WorkSubscriptionDto[] {
-    const rows = (options.includeStopped
+    const dbRows = (options.includeStopped
       ? this.db.prepare("SELECT * FROM work_subscriptions WHERE work_id=? ORDER BY created_at ASC").all(workId)
-      : this.db.prepare("SELECT * FROM work_subscriptions WHERE work_id=? AND stopped_at IS NULL ORDER BY created_at ASC").all(workId)) as SubscriptionRow[];
-    return rows.map(mapSubscription);
+      : this.db.prepare("SELECT * FROM work_subscriptions WHERE work_id=? AND stopped_at IS NULL ORDER BY created_at ASC").all(workId)) as Array<SubscriptionRow & Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_subscriptions", dbRows, r => String(r.subscription_id),
+      r => r.work_id === workId && (Boolean(options.includeStopped) || (r.stopped_at ?? null) === null),
+      (a, b) => Number(a.created_at) - Number(b.created_at)).map(mapSubscription);
   }
 
   listActiveSubscriptions(source?: string): WorkSubscriptionDto[] {
-    const rows = source === undefined
+    const dbRows = (source === undefined
       ? this.db.prepare("SELECT * FROM work_subscriptions WHERE stopped_at IS NULL ORDER BY created_at ASC").all()
-      : this.db.prepare("SELECT * FROM work_subscriptions WHERE source=? AND stopped_at IS NULL ORDER BY created_at ASC").all(source);
-    return (rows as SubscriptionRow[]).map(mapSubscription);
+      : this.db.prepare("SELECT * FROM work_subscriptions WHERE source=? AND stopped_at IS NULL ORDER BY created_at ASC").all(source)) as Array<SubscriptionRow & Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_subscriptions", dbRows, r => String(r.subscription_id),
+      r => (r.stopped_at ?? null) === null && (source === undefined || r.source === source),
+      (a, b) => Number(a.created_at) - Number(b.created_at)).map(mapSubscription);
   }
 
   stopSubscriptionsForWork(workId: string, now: number): void {
+    if (requiresWorkRustWrites(this.db)) {
+      const dbRows = this.db.prepare("SELECT * FROM work_subscriptions WHERE work_id=? AND stopped_at IS NULL")
+        .all(workId) as Array<Record<string, unknown>>;
+      for (const row of overlayFindAll(this.db, "work_subscriptions", dbRows, r => String(r.subscription_id),
+        r => r.work_id === workId && (r.stopped_at ?? null) === null)) {
+        overlaySet(this.db, "work_subscriptions", String(row.subscription_id), { ...row, stopped_at: now, updated_at: now });
+      }
+      enqueueWorkOp(this.db, { op: "workSubscriptionsStopForWork", workId, now });
+      return;
+    }
     this.db.prepare("UPDATE work_subscriptions SET stopped_at=?, updated_at=? WHERE work_id=? AND stopped_at IS NULL")
       .run(now, now, workId);
   }
@@ -1103,28 +1526,44 @@ export class WorkRepository {
     occurredAt?: number; targetKey?: string; adapter?: string; trustedOrigin?: string;
   }): boolean {
     const payloadJson = jsonText(event.payload);
+    const payloadBytes = Buffer.byteLength(payloadJson, "utf8");
+    if (requiresWorkRustWrites(this.db)) {
+      const pk = `${event.source}\0${event.sourceEventId}`;
+      const existing = overlayReadOne(this.db, "work_source_events", pk, () =>
+        this.db.prepare("SELECT * FROM work_source_events WHERE source=? AND source_event_id=?")
+          .get(event.source, event.sourceEventId) as Record<string, unknown> | undefined);
+      enqueueWorkOp(this.db, {
+        op: "workSourceEventInsert",
+        source: event.source, sourceEventId: event.sourceEventId, eventType: event.eventType,
+        sourceVersion: event.sourceVersion ?? null, causalEventId: event.causalEventId ?? null,
+        payloadJson, receivedAt: event.receivedAt, occurredAt: event.occurredAt ?? null,
+        targetKey: event.targetKey ?? null, payloadBytes,
+        adapter: event.adapter ?? null, trustedOrigin: event.trustedOrigin ?? null,
+      });
+      if (existing) return false;
+      overlaySet(this.db, "work_source_events", pk, {
+        source: event.source, source_event_id: event.sourceEventId, event_type: event.eventType,
+        source_version: event.sourceVersion ?? null, causal_event_id: event.causalEventId ?? null,
+        payload_json: payloadJson, received_at: event.receivedAt, occurred_at: event.occurredAt ?? null,
+        target_key: event.targetKey ?? null, payload_bytes: payloadBytes,
+        adapter: event.adapter ?? null, trusted_origin: event.trustedOrigin ?? null,
+      });
+      return true;
+    }
     const result = this.db.prepare(`INSERT OR IGNORE INTO work_source_events
       (source,source_event_id,event_type,source_version,causal_event_id,payload_json,received_at,
        occurred_at,target_key,payload_bytes,adapter,trusted_origin)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       event.source, event.sourceEventId, event.eventType, event.sourceVersion ?? null,
       event.causalEventId ?? null, payloadJson, event.receivedAt,
-      event.occurredAt ?? null, event.targetKey ?? null, Buffer.byteLength(payloadJson, "utf8"),
+      event.occurredAt ?? null, event.targetKey ?? null, payloadBytes,
       event.adapter ?? null, event.trustedOrigin ?? null,
     );
     return result.changes > 0;
   }
 
   insertInbox(event: WorkInboxEventDto): boolean {
-    const result = this.db.prepare(`INSERT OR IGNORE INTO work_events_inbox (
-      event_id,dedupe_key,source,source_event_id,event_type,work_id,subscription_id,intent_revision,
-      state_version,owner_epoch,source_version,causal_event_id,payload_json,status,merged_count,
-      merge_deadline_at,received_at,processed_at,batch_id,batch_deadline_at,frozen_at,frozen_payload_json,
-      claim_version,target_key,process_reason
-    ) VALUES (@eventId,@dedupeKey,@source,@sourceEventId,@eventType,@workId,@subscriptionId,@intentRevision,
-      @stateVersion,@ownerEpoch,@sourceVersion,@causalEventId,@payloadJson,@status,@mergedCount,
-      @mergeDeadlineAt,@receivedAt,@processedAt,@batchId,@batchDeadlineAt,@frozenAt,@frozenPayloadJson,
-      @claimVersion,@targetKey,@processReason)`).run({
+    const p = {
       ...event,
       subscriptionId: event.subscriptionId ?? null,
       causalEventId: event.causalEventId ?? null,
@@ -1139,97 +1578,217 @@ export class WorkRepository {
       claimVersion: event.claimVersion ?? 0,
       targetKey: event.targetKey ?? null,
       processReason: event.processReason ?? null,
-    });
+    };
+    if (requiresWorkRustWrites(this.db)) {
+      const dbExisting = this.db.prepare("SELECT * FROM work_events_inbox WHERE event_id=? OR dedupe_key=?")
+        .all(event.eventId, event.dedupeKey) as Array<Record<string, unknown>>;
+      const existing = overlayFindAll(this.db, "work_events_inbox", dbExisting, r => String(r.event_id),
+        r => r.event_id === event.eventId || r.dedupe_key === event.dedupeKey)[0];
+      enqueueWorkOp(this.db, {
+        op: "workInboxInsert",
+        eventId: p.eventId, dedupeKey: p.dedupeKey, source: p.source, sourceEventId: p.sourceEventId,
+        eventType: p.eventType, workId: p.workId, subscriptionId: p.subscriptionId,
+        intentRevision: p.intentRevision, stateVersion: p.stateVersion, ownerEpoch: p.ownerEpoch,
+        sourceVersion: p.sourceVersion, causalEventId: p.causalEventId, payloadJson: p.payloadJson,
+        status: p.status, mergedCount: p.mergedCount, mergeDeadlineAt: p.mergeDeadlineAt,
+        receivedAt: p.receivedAt, processedAt: p.processedAt, batchId: p.batchId,
+        batchDeadlineAt: p.batchDeadlineAt, frozenAt: p.frozenAt, frozenPayloadJson: p.frozenPayloadJson,
+        claimVersion: p.claimVersion, targetKey: p.targetKey, processReason: p.processReason,
+        queuedWhilePaused: null,
+      });
+      if (existing) return false;
+      overlaySet(this.db, "work_events_inbox", p.eventId, {
+        event_id: p.eventId, dedupe_key: p.dedupeKey, source: p.source, source_event_id: p.sourceEventId,
+        event_type: p.eventType, work_id: p.workId, subscription_id: p.subscriptionId,
+        intent_revision: p.intentRevision, state_version: p.stateVersion, owner_epoch: p.ownerEpoch,
+        source_version: p.sourceVersion, causal_event_id: p.causalEventId, payload_json: p.payloadJson,
+        status: p.status, merged_count: p.mergedCount, merge_deadline_at: p.mergeDeadlineAt,
+        received_at: p.receivedAt, processed_at: p.processedAt, batch_id: p.batchId,
+        batch_deadline_at: p.batchDeadlineAt, frozen_at: p.frozenAt, frozen_payload_json: p.frozenPayloadJson,
+        claim_version: p.claimVersion, target_key: p.targetKey, process_reason: p.processReason,
+      });
+      return true;
+    }
+    const result = this.db.prepare(`INSERT OR IGNORE INTO work_events_inbox (
+      event_id,dedupe_key,source,source_event_id,event_type,work_id,subscription_id,intent_revision,
+      state_version,owner_epoch,source_version,causal_event_id,payload_json,status,merged_count,
+      merge_deadline_at,received_at,processed_at,batch_id,batch_deadline_at,frozen_at,frozen_payload_json,
+      claim_version,target_key,process_reason
+    ) VALUES (@eventId,@dedupeKey,@source,@sourceEventId,@eventType,@workId,@subscriptionId,@intentRevision,
+      @stateVersion,@ownerEpoch,@sourceVersion,@causalEventId,@payloadJson,@status,@mergedCount,
+      @mergeDeadlineAt,@receivedAt,@processedAt,@batchId,@batchDeadlineAt,@frozenAt,@frozenPayloadJson,
+      @claimVersion,@targetKey,@processReason)`).run(p);
     return result.changes > 0;
   }
 
   getInbox(eventId: string): WorkInboxEventDto | undefined {
-    const row = this.db.prepare("SELECT * FROM work_events_inbox WHERE event_id=?").get(eventId) as InboxRow | undefined;
+    const row = overlayReadOne<InboxRow & Record<string, unknown>>(this.db, "work_events_inbox", eventId, () =>
+      this.db.prepare("SELECT * FROM work_events_inbox WHERE event_id=?").get(eventId) as (InboxRow & Record<string, unknown>) | undefined);
     return row ? mapInbox(row) : undefined;
   }
 
   listInbox(workId: string, statuses: WorkInboxEventDto["status"][] = ["pending", "merged"]): WorkInboxEventDto[] {
     const placeholders = statuses.map(() => "?").join(",");
-    return (this.db.prepare(`SELECT * FROM work_events_inbox WHERE work_id=? AND status IN (${placeholders})
-      ORDER BY received_at ASC`).all(workId, ...statuses) as InboxRow[]).map(mapInbox);
+    const dbRows = this.db.prepare(`SELECT * FROM work_events_inbox WHERE work_id=? AND status IN (${placeholders})
+      ORDER BY received_at ASC`).all(workId, ...statuses) as Array<InboxRow & Record<string, unknown>>;
+    const statusSet = new Set(statuses);
+    return overlayFindAll(this.db, "work_events_inbox", dbRows, r => String(r.event_id),
+      r => r.work_id === workId && statusSet.has(r.status),
+      (a, b) => Number(a.received_at) - Number(b.received_at)).map(mapInbox);
   }
 
   mergeLatestInbox(params: {
     subscriptionId: string; eventType: string; sourceVersion?: string; causalEventId?: string;
     payload: Record<string, unknown>; now: number;
   }): { merged: boolean } {
-    const pending = this.db.prepare(`SELECT * FROM work_events_inbox
+    const dbRows = this.db.prepare(`SELECT * FROM work_events_inbox
       WHERE subscription_id=? AND status IN ('pending','merged') ORDER BY received_at ASC LIMIT 1`)
-      .get(params.subscriptionId) as InboxRow | undefined;
+      .all(params.subscriptionId) as Array<InboxRow & Record<string, unknown>>;
+    const pending = overlayFindAll(this.db, "work_events_inbox", dbRows, r => String(r.event_id),
+      r => r.subscription_id === params.subscriptionId && ["pending", "merged"].includes(String(r.status)),
+      (a, b) => Number(a.received_at) - Number(b.received_at))[0];
     if (!pending) return { merged: false };
+    const payloadJson = jsonText(params.payload);
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "work_events_inbox", String(pending.event_id), {
+        ...pending, event_type: params.eventType, source_version: params.sourceVersion ?? null,
+        causal_event_id: params.causalEventId ?? null, payload_json: payloadJson,
+        status: "merged", merged_count: Number(pending.merged_count ?? 0) + 1,
+      });
+      enqueueWorkOp(this.db, {
+        op: "workInboxUpdate", mode: "mergeLatest", eventId: String(pending.event_id),
+        subscriptionId: null, workId: null, eventType: params.eventType,
+        sourceVersion: params.sourceVersion ?? null, causalEventId: params.causalEventId ?? null,
+        payloadJson, status: null, mergeDeadlineAt: null, mergedCount: null, targetKey: null,
+        batchId: null, batchDeadlineAt: null, now: null,
+      });
+      return { merged: true };
+    }
     this.db.prepare(`UPDATE work_events_inbox SET event_type=?, source_version=?, causal_event_id=?,
       payload_json=?, status='merged', merged_count=merged_count+1 WHERE event_id=?`).run(
       params.eventType, params.sourceVersion ?? null, params.causalEventId ?? null,
-      jsonText(params.payload), pending.event_id,
+      payloadJson, pending.event_id,
     );
     return { merged: true };
   }
 
   countPendingInboxForSubscription(subscriptionId: string): number {
+    if (overlayHasTable(this.db, "work_events_inbox")) {
+      const dbRows = this.db.prepare("SELECT * FROM work_events_inbox WHERE subscription_id=? AND status IN ('pending','merged','blocked')")
+        .all(subscriptionId) as Array<Record<string, unknown>>;
+      return overlayFindAll(this.db, "work_events_inbox", dbRows, r => String(r.event_id),
+        r => r.subscription_id === subscriptionId && ["pending", "merged", "blocked"].includes(String(r.status))).length;
+    }
     return Number((this.db.prepare("SELECT COUNT(*) AS count FROM work_events_inbox WHERE subscription_id=? AND status IN ('pending','merged','blocked')")
       .get(subscriptionId) as { count: number }).count);
   }
 
   setInboxStatus(eventId: string, status: WorkInboxEventDto["status"], now?: number): void {
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_events_inbox", eventId, () =>
+        this.db.prepare("SELECT * FROM work_events_inbox WHERE event_id=?").get(eventId) as Record<string, unknown> | undefined,
+      cur => cur ? { ...cur, status, processed_at: now ?? null } : cur);
+      enqueueWorkOp(this.db, {
+        op: "workInboxUpdate", mode: "setStatus", eventId, subscriptionId: null, workId: null,
+        eventType: null, sourceVersion: null, causalEventId: null, payloadJson: null,
+        status, mergeDeadlineAt: null, mergedCount: null, targetKey: null, batchId: null, batchDeadlineAt: null,
+        now: now ?? null,
+      });
+      return;
+    }
     this.db.prepare("UPDATE work_events_inbox SET status=?, processed_at=? WHERE event_id=?")
       .run(status, now ?? null, eventId);
   }
 
   insertOutbox(instruction: WorkOutboxInstructionDto): void {
-    this.db.prepare(`INSERT INTO work_events_outbox (
-      event_id,dedupe_key,event_type,work_id,binding_id,intent_revision,state_version,owner_epoch,
-      request_id,causal_event_id,payload_json,delivery_status,attempt_id,attempt_count,created_at,delivered_at
-    ) VALUES (@eventId,@dedupeKey,@eventType,@workId,@bindingId,@intentRevision,@stateVersion,@ownerEpoch,
-      @requestId,@causalEventId,@payloadJson,@deliveryStatus,@attemptId,@attemptCount,@createdAt,@deliveredAt)`).run({
+    const p = {
       ...instruction,
       bindingId: instruction.bindingId ?? null,
       causalEventId: instruction.causalEventId ?? null,
       payloadJson: jsonText(instruction.payload),
       attemptId: instruction.attemptId ?? null,
       deliveredAt: instruction.deliveredAt ?? null,
-    });
+    };
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "work_events_outbox", instruction.eventId, {
+        event_id: p.eventId, dedupe_key: p.dedupeKey, event_type: p.eventType, work_id: p.workId,
+        binding_id: p.bindingId, intent_revision: p.intentRevision, state_version: p.stateVersion,
+        owner_epoch: p.ownerEpoch, request_id: p.requestId, causal_event_id: p.causalEventId,
+        payload_json: p.payloadJson, delivery_status: p.deliveryStatus, attempt_id: p.attemptId,
+        attempt_count: p.attemptCount, created_at: p.createdAt, delivered_at: p.deliveredAt,
+      });
+      enqueueWorkOp(this.db, {
+        op: "workOutboxInsert", eventId: p.eventId, dedupeKey: p.dedupeKey, eventType: p.eventType,
+        workId: p.workId, bindingId: p.bindingId, intentRevision: p.intentRevision,
+        stateVersion: p.stateVersion, ownerEpoch: p.ownerEpoch, requestId: p.requestId,
+        causalEventId: p.causalEventId, payloadJson: p.payloadJson, deliveryStatus: p.deliveryStatus,
+        attemptId: p.attemptId, attemptCount: p.attemptCount, createdAt: p.createdAt, deliveredAt: p.deliveredAt,
+      });
+      return;
+    }
+    this.db.prepare(`INSERT INTO work_events_outbox (
+      event_id,dedupe_key,event_type,work_id,binding_id,intent_revision,state_version,owner_epoch,
+      request_id,causal_event_id,payload_json,delivery_status,attempt_id,attempt_count,created_at,delivered_at
+    ) VALUES (@eventId,@dedupeKey,@eventType,@workId,@bindingId,@intentRevision,@stateVersion,@ownerEpoch,
+      @requestId,@causalEventId,@payloadJson,@deliveryStatus,@attemptId,@attemptCount,@createdAt,@deliveredAt)`).run(p);
   }
 
   getOutbox(eventId: string): WorkOutboxInstructionDto | undefined {
-    const row = this.db.prepare("SELECT * FROM work_events_outbox WHERE event_id=?").get(eventId) as OutboxRow | undefined;
+    const row = overlayReadOne<OutboxRow & Record<string, unknown>>(this.db, "work_events_outbox", eventId, () =>
+      this.db.prepare("SELECT * FROM work_events_outbox WHERE event_id=?").get(eventId) as (OutboxRow & Record<string, unknown>) | undefined);
     return row ? mapOutbox(row) : undefined;
   }
 
   listOutbox(workId: string, statuses?: WorkOutboxInstructionDto["deliveryStatus"][]): WorkOutboxInstructionDto[] {
-    const rows = statuses?.length
+    const dbRows = (statuses?.length
       ? this.db.prepare(`SELECT * FROM work_events_outbox WHERE work_id=? AND delivery_status IN (${statuses.map(() => "?").join(",")}) ORDER BY created_at ASC`)
         .all(workId, ...statuses)
-      : this.db.prepare("SELECT * FROM work_events_outbox WHERE work_id=? ORDER BY created_at ASC").all(workId);
-    return (rows as OutboxRow[]).map(mapOutbox);
+      : this.db.prepare("SELECT * FROM work_events_outbox WHERE work_id=? ORDER BY created_at ASC").all(workId)) as Array<OutboxRow & Record<string, unknown>>;
+    const statusSet = statuses?.length ? new Set(statuses) : undefined;
+    return overlayFindAll(this.db, "work_events_outbox", dbRows, r => String(r.event_id),
+      r => r.work_id === workId && (!statusSet || statusSet.has(r.delivery_status)),
+      (a, b) => Number(a.created_at) - Number(b.created_at)).map(mapOutbox);
   }
 
   markOutboxAttempt(eventId: string, attemptId: string): void {
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_events_outbox", eventId, () =>
+        this.db.prepare("SELECT * FROM work_events_outbox WHERE event_id=?").get(eventId) as Record<string, unknown> | undefined,
+      cur => cur ? { ...cur, delivery_status: "attempted", attempt_id: attemptId, attempt_count: Number(cur.attempt_count ?? 0) + 1 } : cur);
+      enqueueWorkOp(this.db, { op: "workOutboxUpdate", eventId, mode: "attempt", attemptId, status: null, now: null });
+      return;
+    }
     this.db.prepare("UPDATE work_events_outbox SET delivery_status='attempted', attempt_id=?, attempt_count=attempt_count+1 WHERE event_id=?")
       .run(attemptId, eventId);
   }
 
   markOutboxDelivered(eventId: string, now: number): void {
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_events_outbox", eventId, () =>
+        this.db.prepare("SELECT * FROM work_events_outbox WHERE event_id=?").get(eventId) as Record<string, unknown> | undefined,
+      cur => cur ? { ...cur, delivery_status: "delivered", delivered_at: now } : cur);
+      enqueueWorkOp(this.db, { op: "workOutboxUpdate", eventId, mode: "delivered", attemptId: null, status: null, now });
+      return;
+    }
     this.db.prepare("UPDATE work_events_outbox SET delivery_status='delivered', delivered_at=? WHERE event_id=?")
       .run(now, eventId);
   }
 
   markOutboxStatus(eventId: string, status: WorkOutboxInstructionDto["deliveryStatus"]): void {
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_events_outbox", eventId, () =>
+        this.db.prepare("SELECT * FROM work_events_outbox WHERE event_id=?").get(eventId) as Record<string, unknown> | undefined,
+      cur => cur ? { ...cur, delivery_status: status } : cur);
+      enqueueWorkOp(this.db, { op: "workOutboxUpdate", eventId, mode: "status", attemptId: null, status, now: null });
+      return;
+    }
     this.db.prepare("UPDATE work_events_outbox SET delivery_status=? WHERE event_id=?").run(status, eventId);
   }
 
   // ---------------------------------------------------------- notifications
 
   insertNotification(notification: WorkNotificationDto): boolean {
-    const result = this.db.prepare(`INSERT OR IGNORE INTO work_notifications (
-      notification_id,work_id,semantic_key,kind,title,body,state_version,intent_revision,delivery,
-      channel,idempotency_key,attempt_count,external_receipt,read_at,created_at,sent_at,card_key,effect_key,target_key
-    ) VALUES (@notificationId,@workId,@semanticKey,@kind,@title,@body,@stateVersion,@intentRevision,@delivery,
-      @channel,@idempotencyKey,@attemptCount,@externalReceipt,@readAt,@createdAt,@sentAt,@cardKey,@effectKey,@targetKey)`).run({
+    const p = {
       ...notification,
       body: notification.body ?? null,
       channel: notification.channel ?? null,
@@ -1240,32 +1799,91 @@ export class WorkRepository {
       cardKey: notification.cardKey ?? null,
       effectKey: notification.effectKey ?? null,
       targetKey: notification.targetKey ?? null,
-    });
+    };
+    if (requiresWorkRustWrites(this.db)) {
+      const dbExisting = this.db.prepare("SELECT * FROM work_notifications WHERE notification_id=? OR semantic_key=?")
+        .all(notification.notificationId, notification.semanticKey) as Array<Record<string, unknown>>;
+      const existing = overlayFindAll(this.db, "work_notifications", dbExisting, r => String(r.notification_id),
+        r => r.notification_id === notification.notificationId || r.semantic_key === notification.semanticKey)[0];
+      enqueueWorkOp(this.db, {
+        op: "workNotificationInsert",
+        notificationId: p.notificationId, workId: p.workId, semanticKey: p.semanticKey, kind: p.kind,
+        title: p.title, body: p.body, stateVersion: p.stateVersion, intentRevision: p.intentRevision,
+        delivery: p.delivery, channel: p.channel, idempotencyKey: p.idempotencyKey,
+        attemptCount: p.attemptCount, externalReceipt: p.externalReceipt, readAt: p.readAt,
+        createdAt: p.createdAt, sentAt: p.sentAt, cardKey: p.cardKey, effectKey: p.effectKey, targetKey: p.targetKey,
+      });
+      if (existing) return false;
+      overlaySet(this.db, "work_notifications", p.notificationId, {
+        notification_id: p.notificationId, work_id: p.workId, semantic_key: p.semanticKey, kind: p.kind,
+        title: p.title, body: p.body, state_version: p.stateVersion, intent_revision: p.intentRevision,
+        delivery: p.delivery, channel: p.channel, idempotency_key: p.idempotencyKey,
+        attempt_count: p.attemptCount, external_receipt: p.externalReceipt, read_at: p.readAt,
+        created_at: p.createdAt, sent_at: p.sentAt, card_key: p.cardKey, effect_key: p.effectKey, target_key: p.targetKey,
+      });
+      const w = this.getWork(p.workId);
+      if (w) {
+        overlaySet(this.db, "work_notification_identity", p.notificationId, {
+          notification_id: p.notificationId, input_snapshot_id: w.inputSnapshotId,
+          owner_epoch: w.ownerEpoch, sender_bot_id: w.ownerBotId, semantic_validity: "active",
+        });
+      }
+      return true;
+    }
+    const result = this.db.prepare(`INSERT OR IGNORE INTO work_notifications (
+      notification_id,work_id,semantic_key,kind,title,body,state_version,intent_revision,delivery,
+      channel,idempotency_key,attempt_count,external_receipt,read_at,created_at,sent_at,card_key,effect_key,target_key
+    ) VALUES (@notificationId,@workId,@semanticKey,@kind,@title,@body,@stateVersion,@intentRevision,@delivery,
+      @channel,@idempotencyKey,@attemptCount,@externalReceipt,@readAt,@createdAt,@sentAt,@cardKey,@effectKey,@targetKey)`).run(p);
     return result.changes > 0;
   }
 
   /** Link an existing intent to its card or provider effect without touching delivery. */
   updateNotificationLinks(notificationId: string, params: { cardKey?: string; effectKey?: string; targetKey?: string }): void {
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_notifications", notificationId, () =>
+        this.db.prepare("SELECT * FROM work_notifications WHERE notification_id=?").get(notificationId) as Record<string, unknown> | undefined,
+      cur => cur ? {
+        ...cur, card_key: params.cardKey ?? cur.card_key, effect_key: params.effectKey ?? cur.effect_key,
+        target_key: params.targetKey ?? cur.target_key,
+      } : cur);
+      enqueueWorkOp(this.db, {
+        op: "workNotificationUpdate", notificationId, mode: "links",
+        delivery: null, channel: null, attemptCount: null, externalReceipt: null, sentAt: null,
+        idempotencyKey: null, cardKey: params.cardKey ?? null, effectKey: params.effectKey ?? null,
+        targetKey: params.targetKey ?? null, readAt: null,
+      });
+      return;
+    }
     this.db.prepare(`UPDATE work_notifications SET card_key=COALESCE(?,card_key), effect_key=COALESCE(?,effect_key),
       target_key=COALESCE(?,target_key) WHERE notification_id=?`)
       .run(params.cardKey ?? null, params.effectKey ?? null, params.targetKey ?? null, notificationId);
   }
 
   listWorksForNotifications(): WorkDto[] {
-    const rows = this.db.prepare(`SELECT DISTINCT w.* FROM works w
-      INNER JOIN work_notifications n ON n.work_id = w.work_id
-      WHERE n.delivery IN ('pending','unknown') ORDER BY w.updated_at DESC`).all() as WorkRow[];
-    return rows.map((row) => this.hydrate(row));
+    const dbPending = this.db.prepare("SELECT * FROM work_notifications WHERE delivery IN ('pending','unknown')")
+      .all() as Array<Record<string, unknown>>;
+    const workIds = new Set(overlayFindAll(this.db, "work_notifications", dbPending, r => String(r.notification_id),
+      r => r.delivery === "pending" || r.delivery === "unknown").map(r => String(r.work_id)));
+    const works: WorkDto[] = [];
+    for (const id of workIds) {
+      const w = this.getWork(id);
+      if (w) works.push(w);
+    }
+    works.sort((a, b) => b.updatedAt - a.updatedAt);
+    return works;
   }
 
   listNotifications(workId: string): WorkNotificationDto[] {
-    return (this.db.prepare("SELECT * FROM work_notifications WHERE work_id=? ORDER BY created_at DESC")
-      .all(workId) as NotificationRow[]).map(mapNotification);
+    const dbRows = this.db.prepare("SELECT * FROM work_notifications WHERE work_id=? ORDER BY created_at DESC")
+      .all(workId) as Array<NotificationRow & Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_notifications", dbRows, r => String(r.notification_id),
+      r => r.work_id === workId, (a, b) => Number(b.created_at) - Number(a.created_at)).map(mapNotification);
   }
 
   getNotification(notificationId: string): WorkNotificationDto | undefined {
-    const row = this.db.prepare("SELECT * FROM work_notifications WHERE notification_id=?")
-      .get(notificationId) as NotificationRow | undefined;
+    const row = overlayReadOne<NotificationRow & Record<string, unknown>>(this.db, "work_notifications", notificationId, () =>
+      this.db.prepare("SELECT * FROM work_notifications WHERE notification_id=?").get(notificationId) as (NotificationRow & Record<string, unknown>) | undefined);
     return row ? mapNotification(row) : undefined;
   }
 
@@ -1273,6 +1891,24 @@ export class WorkRepository {
     delivery: WorkNotificationDelivery; channel?: string; attemptCount?: number;
     externalReceipt?: string; sentAt?: number; idempotencyKey?: string;
   }): void {
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_notifications", notificationId, () =>
+        this.db.prepare("SELECT * FROM work_notifications WHERE notification_id=?").get(notificationId) as Record<string, unknown> | undefined,
+      cur => cur ? {
+        ...cur, delivery: params.delivery, channel: params.channel ?? cur.channel,
+        attempt_count: params.attemptCount ?? cur.attempt_count,
+        external_receipt: params.externalReceipt ?? cur.external_receipt,
+        sent_at: params.sentAt ?? cur.sent_at,
+        idempotency_key: params.idempotencyKey ?? cur.idempotency_key,
+      } : cur);
+      enqueueWorkOp(this.db, {
+        op: "workNotificationUpdate", notificationId, mode: "delivery",
+        delivery: params.delivery, channel: params.channel ?? null, attemptCount: params.attemptCount ?? null,
+        externalReceipt: params.externalReceipt ?? null, sentAt: params.sentAt ?? null,
+        idempotencyKey: params.idempotencyKey ?? null, cardKey: null, effectKey: null, targetKey: null, readAt: null,
+      });
+      return;
+    }
     this.db.prepare(`UPDATE work_notifications SET delivery=?, channel=COALESCE(?,channel),
       attempt_count=COALESCE(?,attempt_count), external_receipt=COALESCE(?,external_receipt),
       sent_at=COALESCE(?,sent_at), idempotency_key=COALESCE(?,idempotency_key) WHERE notification_id=?`)
@@ -1281,12 +1917,38 @@ export class WorkRepository {
   }
 
   markNotificationRead(notificationId: string, now: number): void {
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_notifications", notificationId, () =>
+        this.db.prepare("SELECT * FROM work_notifications WHERE notification_id=?").get(notificationId) as Record<string, unknown> | undefined,
+      cur => cur ? { ...cur, read_at: now } : cur);
+      enqueueWorkOp(this.db, {
+        op: "workNotificationUpdate", notificationId, mode: "read",
+        delivery: null, channel: null, attemptCount: null, externalReceipt: null, sentAt: null,
+        idempotencyKey: null, cardKey: null, effectKey: null, targetKey: null, readAt: now,
+      });
+      return;
+    }
     this.db.prepare("UPDATE work_notifications SET read_at=? WHERE notification_id=?").run(now, notificationId);
   }
 
   /** Move a stale completion card to "superseded by newer requirement" without deleting history. */
   supersedeNotifications(workId: string, intentRevision: number, inputSnapshotId: string): void {
     if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_notification_identity'").get()) return;
+    if (requiresWorkRustWrites(this.db)) {
+      const results = this.listNotifications(workId).filter(n => n.kind === "result");
+      for (const n of results) {
+        const idRow = overlayReadOne<Record<string, unknown>>(this.db, "work_notification_identity", n.notificationId, () =>
+          this.db.prepare("SELECT * FROM work_notification_identity WHERE notification_id=?").get(n.notificationId) as Record<string, unknown> | undefined);
+        if (idRow && (n.intentRevision !== intentRevision || idRow.input_snapshot_id !== inputSnapshotId)) {
+          overlaySet(this.db, "work_notification_identity", n.notificationId, { ...idRow, semantic_validity: "superseded" });
+        }
+      }
+      enqueueWorkOp(this.db, {
+        op: "workNotificationIdentityUpdate", mode: "supersedeByWork", workId, notificationId: null,
+        intentRevision, inputSnapshotId, ownerEpoch: null, senderBotId: null, semanticValidity: null,
+      });
+      return;
+    }
     this.db.prepare(`UPDATE work_notification_identity SET semantic_validity='superseded' WHERE notification_id IN (
       SELECT n.notification_id FROM work_notifications n WHERE n.work_id=? AND n.kind='result'
       AND (n.intent_revision<>? OR work_notification_identity.input_snapshot_id<>?))`)
@@ -1295,6 +1957,18 @@ export class WorkRepository {
 
   cancelPendingResultNotifications(workId: string): void {
     if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_notification_identity'").get()) return;
+    if (requiresWorkRustWrites(this.db)) {
+      for (const n of this.listNotifications(workId).filter(item => item.kind === "result")) {
+        overlayMutate(this.db, "work_notification_identity", n.notificationId, () =>
+          this.db.prepare("SELECT * FROM work_notification_identity WHERE notification_id=?").get(n.notificationId) as Record<string, unknown> | undefined,
+        cur => cur ? { ...cur, semantic_validity: "cancelled" } : cur);
+      }
+      enqueueWorkOp(this.db, {
+        op: "workNotificationIdentityUpdate", mode: "cancelPendingByWork", workId, notificationId: null,
+        intentRevision: null, inputSnapshotId: null, ownerEpoch: null, senderBotId: null, semanticValidity: null,
+      });
+      return;
+    }
     this.db.prepare(`UPDATE work_notification_identity SET semantic_validity='cancelled' WHERE notification_id IN (
       SELECT notification_id FROM work_notifications WHERE work_id=? AND kind='result')`).run(workId);
   }
@@ -1304,6 +1978,24 @@ export class WorkRepository {
   recordTelemetry(params: {
     workId: string; executionId?: string; streamingText?: string; tokensPerSecond?: number; now: number;
   }): void {
+    if (requiresWorkRustWrites(this.db)) {
+      overlayMutate(this.db, "work_telemetry_state", params.workId, () =>
+        this.db.prepare("SELECT * FROM work_telemetry_state WHERE work_id=?").get(params.workId) as Record<string, unknown> | undefined,
+      cur => ({
+        work_id: params.workId,
+        active_execution_id: params.executionId ?? cur?.active_execution_id ?? null,
+        streaming_text: params.streamingText ?? cur?.streaming_text ?? null,
+        tokens_per_second: params.tokensPerSecond ?? cur?.tokens_per_second ?? null,
+        last_heartbeat_at: params.now,
+        updated_at: params.now,
+      }));
+      enqueueWorkOp(this.db, {
+        op: "workTelemetryUpsert", workId: params.workId,
+        executionId: params.executionId ?? null, streamingText: params.streamingText ?? null,
+        tokensPerSecond: params.tokensPerSecond ?? null, now: params.now,
+      });
+      return;
+    }
     this.db.prepare(`INSERT INTO work_telemetry_state
       (work_id,active_execution_id,streaming_text,tokens_per_second,last_heartbeat_at,updated_at)
       VALUES (@workId,@executionId,@streamingText,@tokensPerSecond,@now,@now)

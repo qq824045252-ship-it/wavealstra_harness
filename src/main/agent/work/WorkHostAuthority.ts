@@ -42,6 +42,7 @@ export interface RuntimeWorkHostLeaseReply {
 
 export interface WorkHostLeaseWriter {
   workHostLease(request: RuntimeWorkHostLeaseRequest): Promise<RuntimeWorkHostLeaseReply | undefined>;
+  workScheduler?<T = Record<string, unknown>>(command: Record<string, unknown> & { action: string }): Promise<T | undefined>;
 }
 
 /**
@@ -69,6 +70,7 @@ export class WorkHostAuthority {
     private readonly leaseTtlMs = 60_000,
     private readonly now: () => number = () => Date.now(),
     private readonly writer?: WorkHostLeaseWriter,
+    private readonly delegatedToCore = false,
   ) {}
 
   /** Read the previous holder's watermark before `start()` overwrites the heartbeat. */
@@ -160,6 +162,7 @@ export class WorkHostAuthority {
       this.generation += 1;
       this.nativeState = undefined;
       this.nativeRefresh = undefined;
+      if (this.delegatedToCore) return;
       const writer = this.writer;
       this.nativeTail = this.nativeTail.then(async () => {
         await writer.workHostLease(this.request("release"));
@@ -175,7 +178,10 @@ export class WorkHostAuthority {
   isAuthority(): boolean {
     if (this.writer) {
       const state = this.nativeState;
-      return !this.stopped && state?.ok === true && state.holderAuthorityId === this.authorityId
+      const holderMatch = this.delegatedToCore
+        ? typeof state?.holderAuthorityId === "string" && state.holderAuthorityId.startsWith("core:")
+        : state?.holderAuthorityId === this.authorityId;
+      return !this.stopped && state?.ok === true && holderMatch
         && state.releasedAt == null && typeof state.heartbeatAt === "number"
         && this.now() - state.heartbeatAt < this.leaseTtlMs;
     }
@@ -187,7 +193,8 @@ export class WorkHostAuthority {
   status(): HostAuthorityStatus {
     if (this.writer) {
       const current = this.nativeState;
-      return { authorityId: this.authorityId, isAuthority: this.isAuthority(), online: this.isAuthority(),
+      return { authorityId: this.delegatedToCore ? (current?.holderAuthorityId ?? this.authorityId) : this.authorityId,
+        isAuthority: this.isAuthority(), online: this.isAuthority(),
         heartbeatAt: current?.heartbeatAt ?? undefined, acquiredAt: current?.acquiredAt ?? undefined,
         holderAuthorityId: current?.holderAuthorityId ?? undefined };
     }
@@ -218,8 +225,29 @@ export class WorkHostAuthority {
     const generation = this.generation;
     const refresh = this.nativeTail.then(async () => {
       if (this.stopped || generation !== this.generation) return;
-      const action = this.isAuthority() ? "heartbeat" : "acquire";
-      const reply = await writer.workHostLease(this.request(action));
+      let reply: RuntimeWorkHostLeaseReply | undefined;
+      if (this.delegatedToCore && writer.workScheduler) {
+        const status = await writer.workScheduler<{
+          isOwner?: boolean;
+          holderAuthorityId?: string | null;
+          acquiredAt?: number | null;
+          heartbeatAt?: number | null;
+          releasedAt?: number | null;
+        }>({ action: "ownerStatus", nowMs: this.now(), leaseTtlMs: this.leaseTtlMs });
+        if (status) {
+          reply = {
+            ok: Boolean(status.isOwner && typeof status.holderAuthorityId === "string" && status.holderAuthorityId.startsWith("core:")),
+            authorityId: this.authorityId,
+            holderAuthorityId: status.holderAuthorityId ?? null,
+            acquiredAt: status.acquiredAt ?? null,
+            heartbeatAt: status.heartbeatAt ?? null,
+            releasedAt: status.releasedAt ?? null,
+          };
+        }
+      } else {
+        const action = this.isAuthority() ? "heartbeat" : "acquire";
+        reply = await writer.workHostLease(this.request(action));
+      }
       if (this.stopped || generation !== this.generation) return;
       const previouslyAuthoritative = this.isAuthority();
       this.nativeState = reply;

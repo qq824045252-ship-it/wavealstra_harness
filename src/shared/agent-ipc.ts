@@ -1531,6 +1531,7 @@ export interface ModelsFileConfigDto {
 
 export interface AppSettingsDto {
   residentHostEnabled?: boolean;
+  autostartEnabled?: boolean;
   language: string;
   permissionMode: PermissionMode;
   defaultModelId: string;

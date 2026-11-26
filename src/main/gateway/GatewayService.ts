@@ -1,4 +1,4 @@
-import { hasStableConversationMessageId, isNewConversationCommand, reserveGatewayConversation, type ConversationAdmission } from "./GatewayConversationSession";
+import { flushGatewayConversationReservations, hasStableConversationMessageId, isNewConversationCommand, reserveGatewayConversation, type ConversationAdmission } from "./GatewayConversationSession";
 import { BusinessBotRegistration } from "./BusinessBotRegistration";
 import { createFeishuRegistrationDriver, createDingTalkRegistrationDriver, createWecomRegistrationDriver } from "./BusinessBotRegistrationDrivers";
 import type { GatewayRegistrationProvider, GatewayRegistrationDetails } from "../../shared/gateway-registration";
@@ -128,6 +128,15 @@ export class GatewayService {
   private weixinDotsConsent = false;
   private readonly bindingSessionId = randomUUID();
   private readonly bindingGenerations = new Map<string, number>();
+  private readonly deliveryJournal?: GatewayDeliveryJournal;
+
+  private get requiresRustWrites(): boolean {
+    return this.db.readonly || Boolean(this.db.runtimeAuditReader?.supervised);
+  }
+
+  private runDbTransaction<T>(fn: () => T): T {
+    return this.requiresRustWrites ? fn() : this.db.connection.transaction(fn)();
+  }
 
   private beginChannelOperation(channelId: string): symbol {
     const operation = Symbol(channelId);
@@ -140,7 +149,7 @@ export class GatewayService {
     return this.channelOperations.get(channelId) === operation && this.lifecycleEpoch === epoch && !this.stopping;
   }
   /** 侧栏删除会把目录移进回收区，绑定仍指向原路径。下一条外部消息到来时移回。 */
-  private restoreTrashedWorkspace?: (taskId: string) => void;
+  private restoreTrashedWorkspace?: (taskId: string) => unknown;
 
   constructor(
     private readonly db: AppDatabase,
@@ -149,8 +158,9 @@ export class GatewayService {
     options: GatewayServiceOptions = {},
   ) {
     this.settingsStore = options.settingsStore ?? new AppSettingsStore();
-    this.dotsBindings = db.connection ? new GatewayDotsBindings(db.connection) : undefined;
-    const journal = options.durableInbox !== false && db.connection ? new GatewayDeliveryJournal(db.connection) : undefined;
+    this.dotsBindings = db.connection ? new GatewayDotsBindings(db.connection, db.runtimeAuditReader) : undefined;
+    const journal = options.durableInbox !== false && db.connection ? new GatewayDeliveryJournal(db.connection, { native: db.runtimeAuditReader }) : undefined;
+    this.deliveryJournal = journal;
     const reserve = (channelId: string, accountKey: string, chatId: string, senderId: string | undefined, messageId: string, text: string, admission: ConversationAdmission, message?: import("./channels").GatewayInboundMessage) => {
       if (!db.connection || !senderId || this.stopping || !this.channelPolicies.get(channelId)?.allowUsers.includes(senderId)) return;
       if (admission.recovered && this.dotsBindings && !this.dotsBindings.coversDelivery(admission.acceptedAt)) {
@@ -161,7 +171,7 @@ export class GatewayService {
       const origin = { channelId, connectionKey: accountKey, chatId, senderId, messageId, audience: message?.audience ?? "shared" as const };
       const personalMemoryBindingId = message && hasStableConversationMessageId(messageId)
         ? this.dotsBindings?.admit(origin, message.replyRoute, admission.acceptedAt) : undefined;
-      reserveGatewayConversation(db.connection, { ...origin, personalMemoryBindingId }, command, admission);
+      reserveGatewayConversation(db.connection, { ...origin, personalMemoryBindingId }, command, admission, db.runtimeAuditReader);
     };
     this.platforms = new GatewayPlatformRegistry({
       reserveConversation: (message, accountKey, messageId, admission) => reserve(message.channelId, accountKey, message.chatId, message.sender?.id, messageId, message.text, admission, message),
@@ -173,11 +183,27 @@ export class GatewayService {
       replyCurrent: deliveryId => {
         const entry = journal?.get(deliveryId);
         if (entry && this.dotsBindings && (!this.dotsBindings.coversDelivery(entry.created_at)
-          || !this.dotsBindings.replyCurrent(gatewayPrivateAdmission(db.connection, entry.channel_id, entry.account_key, entry.chat_id, entry.message_id)))) return false;
+          || !this.dotsBindings.replyCurrent(this.dotsBindings.privateAdmission(entry.channel_id, entry.account_key, entry.chat_id, entry.message_id)))) return false;
         const operationId = journal?.continuationOperation(deliveryId);
         return !operationId || this.agent.canSendBotContinuation?.(operationId) !== false;
       },
       replayNativeReceipts: true,
+      coreControlled: Boolean(db.runtimeAuditReader?.supervised),
+      onScheduleRecover: (channelId, delayMs) => {
+        void db.runtimeAuditReader?.gatewayScheduler?.({ action: "scheduleRecover", channelId, delayMs }).catch(() => undefined);
+      },
+      onOutboundUnknown: info => {
+        void db.runtimeAuditReader?.gatewayScheduler?.({
+          action: "trackOutbound",
+          deliveryId: info.deliveryId,
+          channelId: info.channelId,
+          channelType: info.channelType,
+          accountKey: info.accountKey,
+          queryable: info.queryable,
+          state: "unknown",
+          detail: "provider_receipt_unknown",
+        }).catch(() => undefined);
+      },
       authorize: message => !this.stopping && this.channelPolicies.has(message.channelId)
         && this.isAllowed(message.channelId, message.sender?.id),
       onStatus: (channelId, text) => this.emitEvent({ channelId, direction: "system", text, at: Date.now() }),
@@ -287,7 +313,10 @@ export class GatewayService {
         await adapter.connect(config);
         current();
         if (signal.aborted || !this.ownsChannelOperation(adapter.id, owner, epoch)) throw new Error("cancelled");
-        this.db.connection.transaction(() => {
+        const runTx = (this.db.readonly || this.db.runtimeAuditReader?.supervised)
+          ? (fn: () => void) => fn()
+          : (fn: () => void) => this.db.connection.transaction(fn)();
+        runTx(() => {
           const stored = this.db.listGatewayChannels().find(channel => channel.id === adapter.id);
           if (stored?.connected || (stored && stored.configJson.trim() !== "" && stored.configJson.trim() !== "{}")) throw new Error("existing configuration must not be replaced");
           this.db.upsertGatewayChannel({ id: adapter.id, type: adapter.type, name: adapter.name,
@@ -296,7 +325,7 @@ export class GatewayService {
           if (provider === "feishu" && personalMemoryOwnerId) {
             this.dotsBindings?.replace(adapter.id, adapter.workConnectionKey?.(), personalMemoryOwnerId, true);
           }
-        })();
+        });
         this.channelPolicies.set(adapter.id, { allowUsers: toStrArray(config.allowUsers) });
         this.platforms.resume(adapter.id);
         this.running = true;
@@ -373,12 +402,12 @@ export class GatewayService {
         assertCurrent();
         if (signal.aborted || !this.ownsChannelOperation(this.qq.id, owner, epoch)) throw new Error("QQ 授权已取消");
         // No await between the final cancellation check, synchronous save and activation.
-        this.db.connection.transaction(() => {
+        this.runDbTransaction(() => {
           this.db.upsertGatewayChannel({ id: this.qq.id, type: this.qq.type, name: this.qq.name,
             configJson: JSON.stringify(savedConfig), connected: true, statusText: this.qq.statusText() });
           this.qq.activate();
           this.dotsBindings?.replace(this.qq.id, this.qq.workConnectionKey?.(), credentials.userOpenid, dotsConsent);
-        })();
+        });
         this.channelPolicies.set(this.qq.id, { allowUsers: [credentials.userOpenid] });
         this.platforms.resume(this.qq.id);
         this.running = true;
@@ -457,12 +486,12 @@ export class GatewayService {
         assertCurrent();
         if (signal.aborted || !this.ownsChannelOperation(this.weixin.id, owner, epoch)) throw new Error("微信 授权已取消");
         // No await between the final cancellation check, synchronous save and activation.
-        this.db.connection.transaction(() => {
+        this.runDbTransaction(() => {
           this.db.upsertGatewayChannel({ id: this.weixin.id, type: this.weixin.type, name: this.weixin.name,
             configJson: JSON.stringify(savedConfig), connected: true, statusText: this.weixin.statusText() });
           this.weixin.activate();
           this.dotsBindings?.replace(this.weixin.id, this.weixin.workConnectionKey?.(), credentials.userId, dotsConsent);
-        })();
+        });
         this.channelPolicies.set(this.weixin.id, { allowUsers: [credentials.userId] });
         this.platforms.resume(this.weixin.id);
         this.running = true;
@@ -537,7 +566,7 @@ export class GatewayService {
       .update(JSON.stringify([this.bindingSessionId, this.lifecycleEpoch, channelId,
         this.bindingGenerations.get(channelId) ?? 0, identity.connectionKey])).digest("hex") };
   }
-  setTrashedWorkspaceRestorer(restore: (taskId: string) => void): void {
+  setTrashedWorkspaceRestorer(restore: (taskId: string) => unknown): void {
     this.restoreTrashedWorkspace = restore;
   }
 
@@ -545,10 +574,10 @@ export class GatewayService {
     return new GatewayRouter({
       db: this.db, adapters: this.adapters, dotsBindings: this.dotsBindings,
       agent: {
-        runGatewayTurn: request => {
+        runGatewayTurn: async request => {
           // The router has already resolved the authorized sender's canonical conversation ID.
           if (this.restoreTrashedWorkspace && this.db.getTaskExecutionWorkspaceState(request.taskId)?.state === "trashed") {
-            this.restoreTrashedWorkspace(request.taskId);
+            await this.restoreTrashedWorkspace(request.taskId);
           }
           return this.agent.runGatewayTurn(request);
         },
@@ -579,8 +608,47 @@ export class GatewayService {
     });
   }
 
+  async runCoreControlCycle(cycle: string, channelId: string, extra?: Record<string, unknown>): Promise<void> {
+    if (this.stopping) return;
+    if (cycle === "recoverOutbox") {
+      this.platforms.resume(channelId, true);
+      return;
+    }
+    if (cycle === "reconnect") {
+      const row = this.db.listGatewayChannels().find(c => c.id === channelId);
+      if (row?.connected) await this.restoreChannels();
+      return;
+    }
+    if (cycle === "reconcileUnknown") {
+      const deliveryId = typeof extra?.deliveryId === "string" ? extra.deliveryId : undefined;
+      const adapter = this.adapters.get(channelId) as (ChannelAdapter & {
+        lookupOutboundDelivery?: (deliveryId: string, providerMessageId?: string) => Promise<"confirmed_sent" | "confirmed_not_sent" | "still_unknown">;
+      }) | undefined;
+      if (!deliveryId) return;
+      if (!adapter?.isConnected() || typeof adapter.lookupOutboundDelivery !== "function") {
+        await this.db.runtimeAuditReader?.gatewayScheduler?.({
+          action: "settleUnknown",
+          deliveryId,
+          outcome: "unqueryable",
+          detail: "adapter_lookup_unavailable",
+        }).catch(() => undefined);
+        return;
+      }
+      const outcome = await adapter.lookupOutboundDelivery(
+        deliveryId,
+        typeof extra?.providerMessageId === "string" ? extra.providerMessageId : undefined,
+      ).catch(() => "still_unknown" as const);
+      await this.db.runtimeAuditReader?.gatewayScheduler?.({
+        action: "settleUnknown",
+        deliveryId,
+        outcome,
+      }).catch(() => undefined);
+    }
+  }
+
   /** 应用启动时恢复上次已连接的通道（配置从 DB 读回，无需重新手输） */
   async restoreChannels(): Promise<void> {
+    void this.db.runtimeAuditReader?.gatewayScheduler?.({ action: "start" }).catch(() => undefined);
     const epoch = this.lifecycleEpoch;
     const priorOperations = new Map(this.channelOperations);
     this.stopping = false;
@@ -626,6 +694,12 @@ export class GatewayService {
         if (adapter.type === "qq") this.qq.activate();
         if (adapter.type === "weixin") this.weixin.activate();
         this.platforms.resume(adapter.id);
+        void this.db.runtimeAuditReader?.gatewayScheduler?.({
+          action: "channelConnected",
+          channelId: row.id,
+          channelType: adapter.type,
+          accountKey: adapter.workConnectionKey?.() ?? null,
+        }).catch(() => undefined);
         this.emitEvent({
           channelId: row.id,
           direction: "system",
@@ -664,8 +738,13 @@ export class GatewayService {
   }
 
   async stop(): Promise<void> {
+    await this.db.runtimeAuditReader?.gatewayScheduler?.({ action: "stop" }).catch(() => undefined);
     await this.suspend();
     await this.lifecycle.stop();
+    await this.dotsBindings?.flush();
+    await this.deliveryJournal?.flush();
+    if (this.db.connection) await flushGatewayConversationReservations(this.db.connection);
+    await this.db.flushGatewayWrites?.();
     this.running = false;
   }
 
@@ -794,6 +873,12 @@ export class GatewayService {
     if (adapter.type === "qq") this.qq.activate();
     if (adapter.type === "weixin") this.weixin.activate();
     this.platforms.resume(adapter.id);
+    void this.db.runtimeAuditReader?.gatewayScheduler?.({
+      action: "channelConnected",
+      channelId,
+      channelType: adapter.type,
+      accountKey: adapter.workConnectionKey?.() ?? null,
+    }).catch(() => undefined);
     this.emitEvent({
       channelId,
       direction: "system",
@@ -826,6 +911,13 @@ export class GatewayService {
     if (!current()) return this.status();
     const stored = adapter.type === "slack" || isSecureGatewayProvider(adapter.type) ? this.db.listGatewayChannels().find(row => row.id === channelId) : undefined;
     this.channelPolicies.delete(channelId);
+    void this.db.runtimeAuditReader?.gatewayScheduler?.({
+      action: "channelDisconnected",
+      channelId,
+      channelType: adapter.type,
+      paused: true,
+      reason: "manual_disconnect",
+    }).catch(() => undefined);
     this.db.upsertGatewayChannel({
       id: adapter.id,
       type: adapter.type,

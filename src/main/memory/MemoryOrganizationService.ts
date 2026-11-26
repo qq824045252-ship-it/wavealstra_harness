@@ -68,13 +68,42 @@ export class MemoryOrganizationService {
   private runningId?: string;
   private paused = false;
   private abort?: AbortController;
+  private writeTail: Promise<void> = Promise.resolve();
+
   constructor(private readonly db: AppDatabase, private readonly memory: MemoryService, private readonly changed: () => void = () => {}) {
     // A crashed process cannot leave a permanently running job.
-    db.connection.prepare(`UPDATE memory_organization_runs SET updated_at=@at,
-      state_json=json_set(state_json,'$.run.status','paused','$.run.updatedAt',@at,'$.run.error',@error)
-      WHERE json_extract(state_json,'$.run.status')='scanning'`)
-      .run({ at: Date.now(), error: "上次整理已中断，可从已保存的进度继续。" });
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("恢复记忆整理状态", {
+        kind: "memoryOrganizationRecover",
+        now: Date.now(),
+        error: "上次整理已中断，可从已保存的进度继续。",
+      });
+    } else {
+      db.connection.prepare(`UPDATE memory_organization_runs SET updated_at=@at,
+        state_json=json_set(state_json,'$.run.status','paused','$.run.updatedAt',@at,'$.run.error',@error)
+        WHERE json_extract(state_json,'$.run.status')='scanning'`)
+        .run({ at: Date.now(), error: "上次整理已中断，可从已保存的进度继续。" });
+    }
   }
+
+  private get requiresRustWrites(): boolean {
+    return Boolean(this.db.readonly || this.db.runtimeAuditReader?.supervised);
+  }
+
+  async flush(): Promise<void> {
+    await this.writeTail;
+  }
+
+  private enqueueBatch3(context: string, request: Record<string, unknown>): void {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error(`${context}：Rust 写入核心未就绪`);
+    const next = this.writeTail.then(async () => {
+      const result = await reader.batch3Write(request);
+      if (result === undefined) throw new Error(`${context}：Rust 写入未收到确认`);
+    });
+    this.writeTail = next.then(() => undefined, () => undefined);
+  }
+
   private read(id: string): State | undefined {
     if (!this.db.connection.open) return undefined;
     const row = this.db.connection.prepare("SELECT state_json FROM memory_organization_runs WHERE id=?").get(id) as { state_json: string } | undefined;
@@ -82,6 +111,16 @@ export class MemoryOrganizationService {
   }
   private save(state: State): void {
     state.run.updatedAt = Date.now();
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("保存记忆整理进度", {
+        kind: "memoryOrganizationSaveRun",
+        id: state.run.id,
+        createdAt: state.run.createdAt,
+        updatedAt: state.run.updatedAt,
+        stateJson: JSON.stringify(state),
+      });
+      return;
+    }
     this.db.connection.prepare(`INSERT INTO memory_organization_runs(id,created_at,updated_at,state_json) VALUES (?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at,state_json=excluded.state_json`)
       .run(state.run.id, state.run.createdAt, state.run.updatedAt, JSON.stringify(state));
@@ -96,6 +135,7 @@ export class MemoryOrganizationService {
     const runJson = JSON.stringify(run);
     const result = runtime && await runtime.writeMemoryOrganizationProgress({ id: run.id, scanId, updatedAt: run.updatedAt, runJson });
     if (result !== undefined) return result;
+    if (this.requiresRustWrites) return false;
     if (!this.db.connection.open) return false;
     return this.db.connection.prepare(`UPDATE memory_organization_runs
       SET updated_at=@at,state_json=json_set(state_json,'$.run',json(@runJson))
@@ -223,11 +263,23 @@ export class MemoryOrganizationService {
     return run;
   }
   private pauseSaved(id: string): MemoryOrganizationRun | undefined {
+    const at = Date.now();
+    if (this.requiresRustWrites) {
+      const row = this.db.connection.prepare(`SELECT json_extract(state_json,'$.run') AS run_json FROM memory_organization_runs
+        WHERE id=@id AND json_extract(state_json,'$.run.status') IN ('scanning','paused')`)
+        .get({ id }) as { run_json: string } | undefined;
+      if (!row) return undefined;
+      this.enqueueBatch3("暂停记忆整理", { kind: "memoryOrganizationPauseRun", id, at });
+      if (id === this.runningId) { this.paused = true; this.abort?.abort(); }
+      this.changed();
+      const parsed = JSON.parse(row.run_json) as MemoryOrganizationRun;
+      return { ...parsed, status: "paused", updatedAt: at };
+    }
     const row = this.db.connection.prepare(`UPDATE memory_organization_runs SET updated_at=@at,
       state_json=json_set(state_json,'$.run.status','paused','$.run.updatedAt',@at)
       WHERE id=@id AND json_extract(state_json,'$.run.status') IN ('scanning','paused')
       RETURNING json_extract(state_json,'$.run') AS run_json`)
-      .get({ id, at: Date.now() }) as { run_json: string } | undefined;
+      .get({ id, at }) as { run_json: string } | undefined;
     if (!row) return undefined;
     if (id === this.runningId) { this.paused = true; this.abort?.abort(); }
     this.changed();
@@ -329,7 +381,9 @@ export class MemoryOrganizationService {
     const proposals = state.run.proposals.filter(p => p.action !== "conflict");
     if (!proposals.length) throw new Error("没有可应用的整理变更。");
     const affected = new Set(proposals.flatMap(p => p.before.map(r => r.id)));
-    this.db.connection.transaction(() => {
+    const mutated = new Map<string, MemoryRecordDto>();
+    const currentRecord = (recordId: string) => mutated.get(recordId) ?? this.memory.get(recordId)!;
+    const runApply = () => {
       for (const sourceId of affected) {
         this.assertCurrent(state.snapshots[sourceId]!);
         this.memory.assertMemoryWritable(sourceId);
@@ -341,33 +395,52 @@ export class MemoryOrganizationService {
         const outputIds: string[] = [];
         for (const [index, output] of proposal.after.entries()) {
           let record: MemoryRecordDto;
-          if (index === 0) record = this.memory.update({ id: base.id, ...output, confidence: Math.min(...sources.map(r => r.confidence)),
-            importance: Math.max(...sources.map(r => r.importance)), explicit: sources.every(r => r.explicit), changedBy: "manual", changeReason: `organization:${id}` });
-          else {
+          if (index === 0) {
+            record = this.memory.update({ id: base.id, ...output, confidence: Math.min(...sources.map(r => r.confidence)),
+              importance: Math.max(...sources.map(r => r.importance)), explicit: sources.every(r => r.explicit), changedBy: "manual", changeReason: `organization:${id}` });
+            mutated.set(base.id, record);
+          } else {
             const owned = base.scopes.find(s => s.binding === "owned") ?? base.scopes[0]!;
             record = this.memory.create({ ...output, scopeType: owned.scopeType, scopeId: owned.scopeId, confidence: base.confidence,
               importance: base.importance, explicit: base.explicit, sourceType: "manual", sourceTaskId: base.sourceTaskId,
               validFrom: base.validFrom, validUntil: base.validUntil });
             // Copy the exact bindings, including promotion, without broadening access.
-            this.db.connection.prepare("DELETE FROM memory_scopes WHERE memory_id=?").run(record.id);
-            for (const scope of base.scopes) this.memory.repository.addScope({ ...scope, memoryId: record.id, createdAt: Date.now() });
+            if (this.requiresRustWrites) {
+              this.memory.repository.removeAllScopes(record.id);
+            } else {
+              this.db.connection.prepare("DELETE FROM memory_scopes WHERE memory_id=?").run(record.id);
+            }
+            const copiedScopes: MemoryRecordDto["scopes"] = [];
+            for (const scope of base.scopes) {
+              const boundScope = { ...scope, memoryId: record.id, createdAt: Date.now() };
+              this.memory.repository.addScope(boundScope);
+              copiedScopes.push(boundScope);
+            }
             state.createdIds.push(record.id); state.sourceIds.push(record.id);
             const relationId = `mrel_${randomUUID()}`;
-            this.memory.repository.addRelation({ id: relationId, fromMemoryId: record.id, toMemoryId: base.id, relation: "DERIVED_FROM", createdAt: Date.now() });
+            const rel = { id: relationId, fromMemoryId: record.id, toMemoryId: base.id, relation: "DERIVED_FROM" as const, createdAt: Date.now() };
+            this.memory.repository.addRelation(rel);
             state.addedRelationIds.push(relationId);
+            record = { ...record, scopes: copiedScopes, relations: [...record.relations, rel] };
+            mutated.set(record.id, record);
           }
           outputIds.push(record.id);
           for (const source of sources) for (const evidence of source.evidence) {
-            const exists = this.db.connection.prepare("SELECT 1 FROM memory_evidence WHERE memory_id=? AND evidence_kind=? AND ref_id=?").get(record.id, evidence.evidenceKind, evidence.refId);
+            const current = currentRecord(record.id);
+            const exists = current.evidence.some((e) => e.evidenceKind === evidence.evidenceKind && e.refId === evidence.refId)
+              || (!this.requiresRustWrites && Boolean(this.db.connection.prepare("SELECT 1 FROM memory_evidence WHERE memory_id=? AND evidence_kind=? AND ref_id=?").get(record.id, evidence.evidenceKind, evidence.refId)));
             if (exists) continue;
             const evidenceId = `mev_${randomUUID()}`;
-            this.memory.repository.addEvidence({ ...evidence, id: evidenceId, memoryId: record.id });
+            const addedEv = { ...evidence, id: evidenceId, memoryId: record.id };
+            this.memory.repository.addEvidence(addedEv);
             state.addedEvidenceIds.push(evidenceId);
+            mutated.set(record.id, { ...current, evidence: [...current.evidence, addedEv] });
           }
         }
         for (const source of sources) {
           if (outputIds.includes(source.id)) continue;
-          this.memory.update({ id: source.id, status: "superseded", changedBy: "manual", changeReason: `organization:${id}` });
+          const superseded = this.memory.update({ id: source.id, status: "superseded", changedBy: "manual", changeReason: `organization:${id}` });
+          mutated.set(source.id, superseded);
           if (outputIds[0]) {
             const relationId = `mrel_${randomUUID()}`;
             this.memory.repository.addRelation({ id: relationId, fromMemoryId: outputIds[0], toMemoryId: source.id, relation: "SUPERSEDES", createdAt: Date.now() });
@@ -375,25 +448,43 @@ export class MemoryOrganizationService {
           }
         }
       }
-      state.appliedStamps = Object.fromEntries([...affected, ...state.createdIds].map(sourceId => [sourceId, stamp(this.memory.get(sourceId)!)]));
+      state.appliedStamps = Object.fromEntries([...affected, ...state.createdIds].map(sourceId => [sourceId, stamp(currentRecord(sourceId))]));
       // Reuse a check only if its entire original group survived unchanged apart from our own operations.
-      const current = this.activeRecords().filter(r => this.eligible(r));
+      const activePool = this.activeRecords().map((r) => mutated.get(r.id) ?? r);
+      for (const createdId of state.createdIds) {
+        const created = mutated.get(createdId);
+        if (created && !activePool.some((r) => r.id === createdId)) activePool.push(created);
+      }
+      const current = activePool.filter(r => r.status === "active" && this.eligible(r));
       const beforeChecks = state.checkedGroups;
       const afterChecks = this.groupChecks(current);
-      const expected = Object.values(state.snapshots).map(s => this.memory.get(s.record.id)).filter((r): r is MemoryRecordDto => Boolean(r && r.status === "active" && this.eligible(r)));
-      expected.push(...state.createdIds.map(sourceId => this.memory.get(sourceId)!));
+      const expected = Object.values(state.snapshots).map(s => currentRecord(s.record.id)).filter((r): r is MemoryRecordDto => Boolean(r && r.status === "active" && this.eligible(r)));
+      expected.push(...state.createdIds.map(sourceId => currentRecord(sourceId)));
       const expectedChecks = this.groupChecks(expected);
       const conflicts = new Set(state.run.proposals.filter(p => p.action === "conflict").flatMap(p => p.before.map(r => groupKey(state.snapshots[r.id]!.record))));
       state.checkedGroups = Object.fromEntries(Object.entries(afterChecks).filter(([key, value]) => !conflicts.has(key) && key in beforeChecks && value === expectedChecks[key]
-        && Object.values(state.snapshots).filter(s => groupKey(s.record) === key && !affected.has(s.record.id)).every(s => stamp(this.memory.get(s.record.id)!) === s.stamp)));
+        && Object.values(state.snapshots).filter(s => groupKey(s.record) === key && !affected.has(s.record.id)).every(s => stamp(currentRecord(s.record.id)) === s.stamp)));
       state.run.status = "applied";
-      this.save(state);
-    })();
+      if (this.requiresRustWrites) {
+        state.run.updatedAt = Date.now();
+        this.enqueueBatch3("保存记忆整理应用状态", {
+          kind: "memoryOrganizationMarkApplied",
+          id: state.run.id,
+          createdAt: state.run.createdAt,
+          updatedAt: state.run.updatedAt,
+          stateJson: JSON.stringify(state),
+        });
+      } else {
+        this.save(state);
+      }
+    };
+    if (this.requiresRustWrites) runApply();
+    else this.db.connection.transaction(runApply)();
     this.changed(); return state.run;
   }
   undo(id: string): MemoryOrganizationRun {
     const state = this.require(id, ["applied"]);
-    this.db.connection.transaction(() => {
+    const runUndo = () => {
       for (const [sourceId, expected] of Object.entries(state.appliedStamps ?? {})) {
         const record = this.memory.get(sourceId);
         if (!record || stamp(record) !== expected || !this.eligible(record)) throw new Error("整理后的记忆已有新的修改、归档或有效期变化，不能覆盖这些修改。请查看记忆历史。");
@@ -405,12 +496,27 @@ export class MemoryOrganizationService {
           explicit: before.explicit, validFrom: before.validFrom ?? null, validUntil: before.validUntil ?? null, metadata: before.metadata, changedBy: "manual", changeReason: `undo-organization:${id}` });
         else this.memory.update({ id: sourceId, status: "superseded", changedBy: "manual", changeReason: `undo-organization:${id}` });
       }
-      for (const evidenceId of state.addedEvidenceIds ?? []) this.db.connection.prepare("DELETE FROM memory_evidence WHERE id=?").run(evidenceId);
-      for (const relationId of state.addedRelationIds ?? []) this.db.connection.prepare("DELETE FROM memory_relations WHERE id=?").run(relationId);
       state.checkedGroups = {};
       state.run.status = "undone";
-      this.save(state);
-    })();
+      if (this.requiresRustWrites) {
+        state.run.updatedAt = Date.now();
+        this.enqueueBatch3("撤销记忆整理", {
+          kind: "memoryOrganizationDeleteUndo",
+          evidenceIds: state.addedEvidenceIds ?? [],
+          relationIds: state.addedRelationIds ?? [],
+          id: state.run.id,
+          createdAt: state.run.createdAt,
+          updatedAt: state.run.updatedAt,
+          stateJson: JSON.stringify(state),
+        });
+      } else {
+        for (const evidenceId of state.addedEvidenceIds ?? []) this.db.connection.prepare("DELETE FROM memory_evidence WHERE id=?").run(evidenceId);
+        for (const relationId of state.addedRelationIds ?? []) this.db.connection.prepare("DELETE FROM memory_relations WHERE id=?").run(relationId);
+        this.save(state);
+      }
+    };
+    if (this.requiresRustWrites) runUndo();
+    else this.db.connection.transaction(runUndo)();
     this.changed(); return state.run;
   }
 }

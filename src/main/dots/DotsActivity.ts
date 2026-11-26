@@ -18,7 +18,7 @@ type ActivityRow = {
 export class DotsActivity {
   constructor(private readonly db: Database.Database, private readonly visible: (taskId: string) => boolean,
     private readonly liveOutput: (operationId: string) => DotsTaskOutput | undefined = () => undefined) {
-    db.exec("CREATE INDEX IF NOT EXISTS dots_delegations_task_seq ON dots_delegations(task_id,seq DESC)");
+    if (!db.readonly) db.exec("CREATE INDEX IF NOT EXISTS dots_delegations_task_seq ON dots_delegations(task_id,seq DESC)");
   }
 
   list(): DotsActivityItem[] {

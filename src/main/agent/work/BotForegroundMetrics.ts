@@ -2,24 +2,34 @@ import { emptyUsageEvidence, type ProviderUsageEvidence } from "../../../shared/
 import type Database from 'better-sqlite3';
 import type { DurableBotSnapshot } from '../../../shared/durable-bot';
 import type { BotForegroundMetrics } from '../../../shared/bot-conversation';
+import { enqueueWorkOp, overlayFindAll, overlayReadOne, overlaySet, requiresWorkRustWrites } from './WorkDomainRuntime';
 
 /** One foreground reply only. Imported context and sibling requests are never billed here. */
 export class BotForegroundMetricsStore {
   constructor(private db: Database.Database) {
-    db.exec(`CREATE TABLE IF NOT EXISTS bot_foreground_metrics(message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE, value_json TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS bot_foreground_usage(message_id TEXT NOT NULL REFERENCES bot_messages(message_id) ON DELETE CASCADE, generation_id INTEGER NOT NULL, value_json TEXT NOT NULL, PRIMARY KEY(message_id,generation_id));`);
+    if (!db.readonly) {
+      db.exec(`CREATE TABLE IF NOT EXISTS bot_foreground_metrics(message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE, value_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS bot_foreground_usage(message_id TEXT NOT NULL REFERENCES bot_messages(message_id) ON DELETE CASCADE, generation_id INTEGER NOT NULL, value_json TEXT NOT NULL, PRIMARY KEY(message_id,generation_id));`);
+    }
   }
   usage(messageId: string, input: {generationTaskId:number;responseTimestamp?:number;reported:boolean;inputTokens:number;outputTokens:number;cacheReadTokens:number;cacheWriteTokens:number;usageEvidence?:ProviderUsageEvidence}) {
     const evidence=input.usageEvidence??emptyUsageEvidence();
     const record={...input,normalizedUsage:{inputTokens:input.inputTokens,outputTokens:input.outputTokens,cacheReadTokens:input.cacheReadTokens,cacheWriteTokens:input.cacheWriteTokens},...evidence,reported:input.reported && evidence.observed};
     const key=input.responseTimestamp===undefined?String(input.generationTaskId):`${input.generationTaskId}:${input.responseTimestamp}`;
-    const prior=this.db.prepare('SELECT value_json FROM bot_foreground_usage WHERE message_id=? AND generation_id=?').get(messageId,key) as {value_json:string}|undefined;
+    const pk=`${messageId}\0${key}`;
+    const prior=overlayReadOne<{value_json:string}>(this.db,'bot_foreground_usage',pk,()=>this.db.prepare('SELECT value_json FROM bot_foreground_usage WHERE message_id=? AND generation_id=?').get(messageId,key) as {value_json:string}|undefined);
     // Durable replay has no fresh HTTP stream; never erase the original receipt.
     if(prior && JSON.parse(prior.value_json).observed)return;
-    this.db.prepare('INSERT OR REPLACE INTO bot_foreground_usage VALUES(?,?,?)').run(messageId,key,JSON.stringify(record));
+    const valueJson=JSON.stringify(record);
+    if(requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db,'bot_foreground_usage',pk,{message_id:messageId,generation_id:key,value_json:valueJson});
+      enqueueWorkOp(this.db,{op:'botForegroundUsageUpsert',messageId,generationId:key,valueJson});
+      return;
+    }
+    this.db.prepare('INSERT OR REPLACE INTO bot_foreground_usage VALUES(?,?,?)').run(messageId,key,valueJson);
   }
   read(messageId:string): BotForegroundMetrics|undefined {
-    const row=this.db.prepare('SELECT value_json FROM bot_foreground_metrics WHERE message_id=?').get(messageId) as {value_json:string}|undefined;
+    const row=overlayReadOne<{value_json:string}>(this.db,'bot_foreground_metrics',messageId,()=>this.db.prepare('SELECT value_json FROM bot_foreground_metrics WHERE message_id=?').get(messageId) as {value_json:string}|undefined);
     if(!row)return undefined;
     const value=JSON.parse(row.value_json) as BotForegroundMetrics;
     // Older records did not distinguish absent raw fields from SDK zero defaults.
@@ -41,7 +51,8 @@ export class BotForegroundMetricsStore {
       generation={...generation!,startedAt:settled[0].startedAt,ttftMs:settled[0].ttftMs,
         outputTokens:outputs,tps:measured && seconds>0 && outputs!=null?outputs/seconds:null};
     }
-    const calls=(this.db.prepare('SELECT value_json FROM bot_foreground_usage WHERE message_id=?').all(messageId) as {value_json:string}[]).map(row=>JSON.parse(row.value_json) as ProviderUsageEvidence & {reported:boolean;responseTimestamp?:number});
+    const dbCalls=this.db.prepare('SELECT message_id,generation_id,value_json FROM bot_foreground_usage WHERE message_id=?').all(messageId) as {message_id:string;generation_id:string;value_json:string}[];
+    const calls=overlayFindAll(this.db,'bot_foreground_usage',dbCalls,r=>`${r.message_id}\0${r.generation_id}`,r=>r.message_id===messageId).map(row=>JSON.parse(String(row.value_json)) as ProviderUsageEvidence & {reported:boolean;responseTimestamp?:number});
     const sum=(key:'inputTokens'|'totalInputTokens'|'outputTokens'|'cacheReadTokens'|'cacheWriteTokens')=>calls.length && calls.every(call=>call.reported && call[key]!=null)?calls.reduce((total,call)=>total+call[key]!,0):null;
     const context=snapshot.contextUsage;
     if(sum('outputTokens')===null && generation?.phase==='complete') generation={...generation,tps:null,outputTokens:null};
@@ -50,8 +61,13 @@ export class BotForegroundMetricsStore {
     const value:BotForegroundMetrics={evidenceVersion:1,totalInputTokens:sum('totalInputTokens'),inputTokens:sum('inputTokens'),outputTokens:sum('outputTokens'),cacheReadTokens:sum('cacheReadTokens'),cacheWriteTokens:sum('cacheWriteTokens'),reportedCalls:calls.filter(call=>call.reported).length,
       contextTokens:used,contextWindow:context?.contextWindow??null,contextEstimated:context?.estimated??true,
       generation,modelName:reply?.modelName,durationMs:generation?.phase==='complete'?Math.max(0,generation.updatedAt-generation.startedAt):undefined};
-    if(JSON.stringify(this.read(messageId))!==JSON.stringify(value))
-      this.db.prepare('INSERT OR REPLACE INTO bot_foreground_metrics VALUES(?,?)').run(messageId,JSON.stringify(value));
+    if(JSON.stringify(this.read(messageId))!==JSON.stringify(value)) {
+      const valueJson=JSON.stringify(value);
+      if(requiresWorkRustWrites(this.db)) {
+        overlaySet(this.db,'bot_foreground_metrics',messageId,{message_id:messageId,value_json:valueJson});
+        enqueueWorkOp(this.db,{op:'botForegroundMetricsUpsert',messageId,valueJson});
+      } else this.db.prepare('INSERT OR REPLACE INTO bot_foreground_metrics VALUES(?,?)').run(messageId,valueJson);
+    }
     return value;
   }
 }

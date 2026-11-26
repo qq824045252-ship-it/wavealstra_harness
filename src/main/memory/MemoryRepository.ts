@@ -47,6 +47,10 @@ export class MemoryRepository {
   private readonly findScopes: Database.Statement<[string]>;
   private readonly findEvidence: Database.Statement<[string]>;
   private readonly findRelations: Database.Statement<[string, string]>;
+  private writeTail: Promise<void> = Promise.resolve();
+  private pendingWriteCount = 0;
+  private readonly pendingRecords = new Map<string, MemoryRecordDto | null>();
+  private readonly pendingCandidates = new Map<string, MemoryCandidateDto | null>();
 
   constructor(private readonly db: AppDatabase) {
     this.findRecord = this.conn.prepare("SELECT * FROM memory_records WHERE id = ?");
@@ -65,7 +69,115 @@ export class MemoryRepository {
 
   private get conn() { return this.db.connection; }
 
+  private get requiresRustWrites(): boolean {
+    return Boolean(this.db.readonly || this.db.runtimeAuditReader?.supervised);
+  }
+
+  async flush(): Promise<void> {
+    await this.writeTail;
+  }
+
+  private enqueueBatch3(context: string, request: Record<string, unknown>): void {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error(`${context}：Rust 写入核心未就绪`);
+    this.pendingWriteCount += 1;
+    const next = this.writeTail.then(async () => {
+      try {
+        const result = await reader.batch3Write(request);
+        if (result === undefined) throw new Error(`${context}：Rust 写入未收到确认`);
+      } finally {
+        this.pendingWriteCount -= 1;
+        if (this.pendingWriteCount === 0) {
+          this.pendingRecords.clear();
+          this.pendingCandidates.clear();
+        }
+      }
+    });
+    this.writeTail = next.then(() => undefined, () => undefined);
+  }
+
+  queueWorkSnapshotRepairMeta(memoryId: string, sourceKey: string): void {
+    this.enqueueBatch3("修复 Work 记忆元数据", {
+      kind: "workMemoryRepairMeta",
+      memoryId,
+      sourceKey,
+      updatedAt: Date.now(),
+    });
+    const cached = this.pendingRecords.get(memoryId) ?? this.get(memoryId);
+    if (cached) {
+      this.pendingRecords.set(memoryId, {
+        ...cached,
+        sourceType: "event",
+        sourceId: undefined,
+        sourceTaskId: undefined,
+      });
+    }
+  }
+
+  private async runBatch3<T = Record<string, unknown>>(context: string, request: Record<string, unknown>): Promise<T> {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error(`${context}：Rust 写入核心未就绪`);
+    const next = this.writeTail.then(async () => {
+      const result = await reader.batch3Write<T>(request);
+      if (result === undefined) throw new Error(`${context}：Rust 写入未收到确认`);
+      return result;
+    });
+    this.writeTail = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  private toRustRecord(record: MemoryRecordDto) {
+    return {
+      id: record.id,
+      kind: record.kind,
+      title: record.title,
+      content: record.content,
+      status: record.status,
+      importance: record.importance,
+      confidence: record.confidence,
+      explicit: record.explicit,
+      sourceType: record.sourceType,
+      sourceId: record.sourceId ?? null,
+      sourceTaskId: record.sourceTaskId ?? null,
+      validFrom: record.validFrom ?? null,
+      validUntil: record.validUntil ?? null,
+      contentHash: record.contentHash,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      lastRecalledAt: record.lastRecalledAt ?? null,
+      recallCount: record.recallCount,
+      metadataJson: JSON.stringify(record.metadata ?? {}),
+      scopes: record.scopes.map((s) => ({
+        id: randomUUID(),
+        memoryId: s.memoryId,
+        scopeType: s.scopeType,
+        scopeId: s.scopeId ?? null,
+        binding: s.binding,
+        createdAt: s.createdAt,
+      })),
+      evidence: record.evidence.map((e) => ({
+        id: e.id,
+        memoryId: e.memoryId,
+        evidenceKind: e.evidenceKind,
+        refId: e.refId,
+        refTitle: e.refTitle ?? null,
+        excerpt: e.excerpt ?? null,
+        createdAt: e.createdAt,
+      })),
+      relations: record.relations.map((r) => ({
+        id: r.id,
+        fromMemoryId: r.fromMemoryId,
+        relation: r.relation,
+        toMemoryId: r.toMemoryId,
+        createdAt: r.createdAt,
+      })),
+    };
+  }
+
   get(id: string): MemoryRecordDto | undefined {
+    if (this.pendingRecords.has(id)) {
+      return this.pendingRecords.get(id) ?? undefined;
+    }
     const row = this.findRecord.get(id);
     return row ? this.hydrate(row) : undefined;
   }
@@ -235,6 +347,30 @@ export class MemoryRepository {
   }
 
   insert(record: MemoryRecordDto, changeReason?: string): MemoryRecordDto {
+    if (this.requiresRustWrites) {
+      for (const scope of record.scopes) {
+        if (scope.scopeType === "project") {
+          const project = this.conn.prepare("SELECT archived FROM projects WHERE id=?").get(scope.scopeId) as { archived: number } | undefined;
+          if (!project) throw new Error(`项目不存在：${scope.scopeId}`);
+          if (project.archived) throw new Error("项目已归档（只读），不能写入项目记忆");
+        }
+      }
+      this.enqueueBatch3("写入记忆", {
+        kind: "memoryInsertRecord",
+        record: this.toRustRecord(record),
+        changeReason: changeReason ?? "created",
+        revisionId: randomUUID(),
+      });
+      const saved: MemoryRecordDto = {
+        ...record,
+        metadata: { ...(record.metadata ?? {}) },
+        scopes: record.scopes.map((s) => ({ ...s })),
+        evidence: record.evidence.map((e) => ({ ...e })),
+        relations: record.relations.map((r) => ({ ...r })),
+      };
+      this.pendingRecords.set(record.id, saved);
+      return saved;
+    }
     this.conn.transaction(() => this.insertWithinTransaction(record, changeReason))();
     return this.get(record.id)!;
   }
@@ -269,6 +405,37 @@ export class MemoryRepository {
   update(record: MemoryRecordDto, changedBy: MemoryRecordDto["sourceType"], changeReason?: string): MemoryRecordDto {
     const before = this.get(record.id);
     if (!before) throw new Error(`记忆不存在：${record.id}`);
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("更新记忆", {
+        kind: "memoryUpdateRecord",
+        id: record.id,
+        memoryKind: record.kind,
+        title: record.title,
+        content: record.content,
+        status: record.status,
+        importance: record.importance,
+        confidence: record.confidence,
+        explicit: record.explicit,
+        validFrom: record.validFrom ?? null,
+        validUntil: record.validUntil ?? null,
+        contentHash: record.contentHash,
+        updatedAt: record.updatedAt,
+        metadataJson: JSON.stringify(record.metadata ?? {}),
+        changedBy,
+        changeReason: changeReason ?? "updated",
+        revisionId: randomUUID(),
+      });
+      const saved: MemoryRecordDto = {
+        ...before,
+        ...record,
+        metadata: { ...(record.metadata ?? {}) },
+        scopes: [...before.scopes],
+        evidence: [...before.evidence],
+        relations: [...before.relations],
+      };
+      this.pendingRecords.set(record.id, saved);
+      return saved;
+    }
     this.conn.transaction(() => this.updateWithinTransaction(record, changedBy, changeReason))();
     return this.get(record.id)!;
   }
@@ -316,6 +483,61 @@ export class MemoryRepository {
     replacementReason?: string,
   ): MemoryRecordDto {
     if (!this.get(oldRecord.id)) throw new Error(`被替代记忆不存在：${oldRecord.id}`);
+    if (this.requiresRustWrites) {
+      for (const scope of replacement.scopes) {
+        if (scope.scopeType === "project") {
+          const project = this.conn.prepare("SELECT archived FROM projects WHERE id=?").get(scope.scopeId) as { archived: number } | undefined;
+          if (!project) throw new Error(`项目不存在：${scope.scopeId}`);
+          if (project.archived) throw new Error("项目已归档（只读），不能写入项目记忆");
+        }
+      }
+      this.enqueueBatch3("替换记忆", {
+        kind: "memorySupersede",
+        oldId: oldRecord.id,
+        oldStatus: oldRecord.status,
+        oldValidUntil: oldRecord.validUntil ?? null,
+        oldUpdatedAt: oldRecord.updatedAt,
+        oldKind: oldRecord.kind,
+        oldTitle: oldRecord.title,
+        oldContent: oldRecord.content,
+        oldImportance: oldRecord.importance,
+        oldConfidence: oldRecord.confidence,
+        oldExplicit: oldRecord.explicit,
+        oldValidFrom: oldRecord.validFrom ?? null,
+        oldContentHash: oldRecord.contentHash,
+        oldMetadataJson: JSON.stringify(oldRecord.metadata ?? {}),
+        oldRevisionId: randomUUID(),
+        changedBy,
+        changeReason,
+        replacement: this.toRustRecord(replacement),
+        replacementReason: replacementReason ?? "created",
+        replacementRevisionId: randomUUID(),
+        relation: {
+          id: relation.id,
+          fromMemoryId: relation.fromMemoryId,
+          relation: relation.relation,
+          toMemoryId: relation.toMemoryId,
+          createdAt: relation.createdAt,
+        },
+      });
+      const saved: MemoryRecordDto = {
+        ...replacement,
+        metadata: { ...(replacement.metadata ?? {}) },
+        scopes: replacement.scopes.map((s) => ({ ...s })),
+        evidence: replacement.evidence.map((e) => ({ ...e })),
+        relations: replacement.relations.map((r) => ({ ...r })),
+      };
+      const priorOld = this.get(oldRecord.id);
+      if (priorOld) {
+        this.pendingRecords.set(oldRecord.id, {
+          ...priorOld,
+          ...oldRecord,
+          metadata: { ...(oldRecord.metadata ?? {}) },
+        });
+      }
+      this.pendingRecords.set(replacement.id, saved);
+      return saved;
+    }
     this.conn.transaction(() => {
       this.insertWithinTransaction(replacement, replacementReason);
       this.updateWithinTransaction(oldRecord, changedBy, changeReason);
@@ -325,6 +547,27 @@ export class MemoryRepository {
   }
 
   addScope(scope: MemoryScopeDto): void {
+    if (this.requiresRustWrites) {
+      if (scope.scopeType === "project") {
+        const project = this.conn.prepare("SELECT archived FROM projects WHERE id=?").get(scope.scopeId) as { archived: number } | undefined;
+        if (!project) throw new Error(`项目不存在：${scope.scopeId}`);
+        if (project.archived) throw new Error("项目已归档（只读），不能写入项目记忆");
+      }
+      this.enqueueBatch3("绑定记忆范围", {
+        kind: "memoryAddScope",
+        id: randomUUID(),
+        memoryId: scope.memoryId,
+        scopeType: scope.scopeType,
+        scopeId: scope.scopeId ?? null,
+        binding: scope.binding,
+        createdAt: scope.createdAt,
+      });
+      const cached = this.get(scope.memoryId);
+      if (cached && !cached.scopes.some((s) => s.scopeType === scope.scopeType && (s.scopeId ?? "") === (scope.scopeId ?? ""))) {
+        this.pendingRecords.set(scope.memoryId, { ...cached, scopes: [...cached.scopes, { ...scope }] });
+      }
+      return;
+    }
     const insert = () => this.conn.prepare(
       `INSERT OR IGNORE INTO memory_scopes
        (id, memory_id, scope_type, scope_id, binding, created_at)
@@ -343,6 +586,22 @@ export class MemoryRepository {
   }
 
   removeScope(memoryId: string, scopeType: MemoryScopeType, scopeId?: string): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("移除记忆范围", {
+        kind: "memoryRemoveScope",
+        memoryId,
+        scopeType,
+        scopeId: scopeType === "global" ? null : (scopeId ?? ""),
+      });
+      const cached = this.get(memoryId);
+      if (cached) {
+        this.pendingRecords.set(memoryId, {
+          ...cached,
+          scopes: cached.scopes.filter((s) => !(s.scopeType === scopeType && (s.scopeId ?? "") === (scopeId ?? ""))),
+        });
+      }
+      return;
+    }
     if (scopeType === "global") {
       this.conn.prepare("DELETE FROM memory_scopes WHERE memory_id=? AND scope_type='global' AND scope_id IS NULL").run(memoryId);
     } else {
@@ -350,7 +609,43 @@ export class MemoryRepository {
     }
   }
 
+  removeAllScopes(memoryId: string): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("清空记忆范围", {
+        kind: "memoryRemoveScope",
+        memoryId,
+        scopeType: null,
+        scopeId: null,
+      });
+      const cached = this.get(memoryId);
+      if (cached) {
+        this.pendingRecords.set(memoryId, { ...cached, scopes: [] });
+      }
+      return;
+    }
+    this.conn.prepare("DELETE FROM memory_scopes WHERE memory_id=?").run(memoryId);
+  }
+
   addEvidence(evidence: MemoryEvidenceDto): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("添加记忆证据", {
+        kind: "memoryAddEvidence",
+        evidence: {
+          id: evidence.id,
+          memoryId: evidence.memoryId,
+          evidenceKind: evidence.evidenceKind,
+          refId: evidence.refId,
+          refTitle: evidence.refTitle ?? null,
+          excerpt: evidence.excerpt ?? null,
+          createdAt: evidence.createdAt,
+        },
+      });
+      const cached = this.get(evidence.memoryId);
+      if (cached && !cached.evidence.some((e) => e.evidenceKind === evidence.evidenceKind && e.refId === evidence.refId)) {
+        this.pendingRecords.set(evidence.memoryId, { ...cached, evidence: [...cached.evidence, { ...evidence }] });
+      }
+      return;
+    }
     this.conn.prepare(
       `INSERT INTO memory_evidence
        (id, memory_id, evidence_kind, ref_id, ref_title, excerpt, created_at)
@@ -360,6 +655,25 @@ export class MemoryRepository {
   }
 
   addRelation(relation: MemoryRelationDto): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("添加记忆关联", {
+        kind: "memoryAddRelation",
+        relation: {
+          id: relation.id,
+          fromMemoryId: relation.fromMemoryId,
+          relation: relation.relation,
+          toMemoryId: relation.toMemoryId,
+          createdAt: relation.createdAt,
+        },
+      });
+      for (const mid of [relation.fromMemoryId, relation.toMemoryId]) {
+        const cached = this.get(mid);
+        if (cached && !cached.relations.some((r) => r.id === relation.id)) {
+          this.pendingRecords.set(mid, { ...cached, relations: [...cached.relations, { ...relation }] });
+        }
+      }
+      return;
+    }
     this.conn.prepare(
       `INSERT OR IGNORE INTO memory_relations
        (id, from_memory_id, relation, to_memory_id, created_at)
@@ -405,6 +719,11 @@ export class MemoryRepository {
   }
 
   hardDelete(id: string): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("彻底删除记忆", { kind: "memoryHardDelete", id });
+      this.pendingRecords.set(id, null);
+      return;
+    }
     this.conn.transaction(() => {
       this.conn.prepare("DELETE FROM memory_relations WHERE from_memory_id=? OR to_memory_id=?").run(id, id);
       this.conn.prepare("DELETE FROM memory_embeddings WHERE memory_id=?").run(id);
@@ -416,6 +735,20 @@ export class MemoryRepository {
   markRecalled(ids: string[], now = Date.now()): void {
     const unique = [...new Set(ids)].filter(Boolean);
     if (!unique.length) return;
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("记录记忆召回", { kind: "memoryRecordRecall", ids: unique, now });
+      for (const id of unique) {
+        const cached = this.get(id);
+        if (cached) {
+          this.pendingRecords.set(id, {
+            ...cached,
+            lastRecalledAt: now,
+            recallCount: cached.recallCount + 1,
+          });
+        }
+      }
+      return;
+    }
     const stmt = this.conn.prepare(
       "UPDATE memory_records SET last_recalled_at=?, recall_count=recall_count+1 WHERE id=?",
     );
@@ -423,6 +756,29 @@ export class MemoryRepository {
   }
 
   insertCandidate(candidate: MemoryCandidateDto): void {
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("写入候选记忆", {
+        kind: "memoryInsertCandidate",
+        id: candidate.id,
+        taskId: candidate.taskId,
+        memoryKind: candidate.kind,
+        title: candidate.title,
+        content: candidate.content,
+        scopeType: candidate.scopeType,
+        scopeId: candidate.scopeId ?? null,
+        confidence: candidate.confidence,
+        importance: candidate.importance,
+        explicit: candidate.explicit,
+        operationHint: candidate.operationHint,
+        replaces: candidate.replaces ?? null,
+        status: candidate.status,
+        rawJson: candidate.rawJson ?? null,
+        createdAt: candidate.createdAt,
+        resolvedAt: candidate.resolvedAt ?? null,
+      });
+      this.pendingCandidates.set(candidate.id, { ...candidate });
+      return;
+    }
     this.conn.prepare(
       `INSERT INTO memory_candidates (
         id, task_id, kind, title, content, scope_type, scope_id, confidence, importance,
@@ -443,23 +799,71 @@ export class MemoryRepository {
   }
 
   resolveCandidate(id: string, status: MemoryCandidateDto["status"], resolvedMemoryId?: string): void {
+    const now = Date.now();
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("更新候选记忆状态", {
+        kind: "memoryResolveCandidate",
+        id,
+        status,
+        resolvedAt: now,
+        resolvedMemoryId: resolvedMemoryId ?? null,
+        pendingOnly: false,
+      });
+      const cached = this.getCandidate(id);
+      if (cached) {
+        this.pendingCandidates.set(id, { ...cached, status, resolvedAt: now });
+      }
+      return;
+    }
     this.conn.prepare(
       "UPDATE memory_candidates SET status=?, resolved_at=?, resolved_memory_id=? WHERE id=?",
-    ).run(status, Date.now(), resolvedMemoryId ?? null, id);
+    ).run(status, now, resolvedMemoryId ?? null, id);
   }
 
   resolvePendingCandidate(id: string, status: "rejected" | "needs_review"): void {
+    const now = Date.now();
+    if (this.requiresRustWrites) {
+      this.enqueueBatch3("处理待审核候选记忆", {
+        kind: "memoryResolveCandidate",
+        id,
+        status,
+        resolvedAt: now,
+        resolvedMemoryId: null,
+        pendingOnly: true,
+      });
+      const cached = this.getCandidate(id);
+      if (cached && cached.status === "pending") {
+        this.pendingCandidates.set(id, { ...cached, status, resolvedAt: now });
+      }
+      return;
+    }
     this.conn.prepare(`UPDATE memory_candidates SET status=?, resolved_at=?, resolved_memory_id=NULL
-      WHERE id=? AND status='pending'`).run(status, Date.now(), id);
+      WHERE id=? AND status='pending'`).run(status, now, id);
   }
 
   getCandidate(id: string): MemoryCandidateDto | undefined {
+    if (this.pendingCandidates.has(id)) {
+      return this.pendingCandidates.get(id) ?? undefined;
+    }
     const row = this.conn.prepare("SELECT * FROM memory_candidates WHERE id=?").get(id) as Record<string, unknown> | undefined;
     return row ? this.mapCandidate(row) : undefined;
   }
 
   /** Candidates left 'pending' by an interrupted extraction become reviewable instead of invisible. */
   reapStalePendingCandidates(olderThan: number): number {
+    if (this.requiresRustWrites) {
+      const staleCount = Number((this.conn.prepare(
+        "SELECT COUNT(1) n FROM memory_candidates WHERE status='pending' AND created_at < ?",
+      ).get(olderThan) as { n: number }).n);
+      if (staleCount > 0) {
+        this.enqueueBatch3("清理过期候选记忆", {
+          kind: "memoryReapStaleCandidates",
+          olderThan,
+          now: Date.now(),
+        });
+      }
+      return staleCount;
+    }
     const result = this.conn.prepare(
       "UPDATE memory_candidates SET status='needs_review', resolved_at=? WHERE status='pending' AND created_at < ?",
     ).run(Date.now(), olderThan);

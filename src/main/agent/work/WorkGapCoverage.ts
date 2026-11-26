@@ -10,7 +10,7 @@ import type { WorkService } from "./WorkService";
  */
 export class WorkGapCoverage {
   constructor(private readonly db: Database.Database, private readonly works: WorkService) {
-    db.exec(`CREATE TABLE IF NOT EXISTS work_gap_coverages (
+    if (!db.readonly) db.exec(`CREATE TABLE IF NOT EXISTS work_gap_coverages (
       fact_id TEXT NOT NULL REFERENCES work_subitem_results(fact_id),
       work_id TEXT NOT NULL REFERENCES works(work_id), operation_id TEXT NOT NULL,
       receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json)), created_at INTEGER NOT NULL,

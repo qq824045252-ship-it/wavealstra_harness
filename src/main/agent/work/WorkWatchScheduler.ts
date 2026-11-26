@@ -6,6 +6,9 @@ import { Cron } from "croner";
 import { newId } from "./WorkRepository";
 import { cronNextWake } from "./WorkSchedule";
 import type { WorkService } from "./WorkService";
+import {
+  enqueueWorkOp, overlayFindAll, overlayMutate, overlayReadOne, overlaySet, requiresWorkRustWrites,
+} from "./WorkDomainRuntime";
 
 export interface WorkTickResult {
   subscriptionId: string;
@@ -58,8 +61,11 @@ export class WorkWatchScheduler {
 
   getSessionId(): string { return this.sessionId; }
 
-  /** Register the scheduler on the real host lifecycle; the caller owns process exit. */
+  /** Register the scheduler on the real host lifecycle; supervised Core owns scheduling. */
   start(intervalMs = 5_000): void {
+    if (requiresWorkRustWrites(this.db)) {
+      throw new Error("Rust Core owns Work scheduling; Main cannot start WorkWatchScheduler");
+    }
     if (this.timer) return;
     this.intervalMs = Math.max(500, intervalMs);
     this.timer = setInterval(() => {
@@ -141,6 +147,62 @@ export class WorkWatchScheduler {
     });
   }
 
+  private updateGap(gapId: string, cur: Record<string, unknown>, fields: {
+    queryable: number;
+    state: string;
+    recoveredCountDelta?: number;
+    mergedCountDelta?: number;
+    skippedCount?: number | null;
+    unknownCount?: number | null;
+    continuationCursor?: string | null;
+    gapReason?: string | null;
+    updatedAt: number;
+  }): void {
+    const recoveredDelta = fields.recoveredCountDelta ?? 0;
+    const mergedDelta = fields.mergedCountDelta ?? 0;
+    const nextSkipped = fields.skippedCount ?? null;
+    const nextUnknown = fields.unknownCount ?? null;
+    const nextCursor = fields.continuationCursor ?? null;
+    const nextReason = fields.gapReason ?? null;
+    overlaySet(this.db, "work_offline_gaps", gapId, {
+      ...cur,
+      queryable: fields.queryable,
+      state: fields.state,
+      recovered_count: Number(cur.recovered_count ?? 0) + recoveredDelta,
+      merged_count: Number(cur.merged_count ?? 0) + mergedDelta,
+      skipped_count: nextSkipped,
+      unknown_count: nextUnknown,
+      continuation_cursor: nextCursor,
+      gap_reason: nextReason,
+      updated_at: fields.updatedAt,
+    });
+    enqueueWorkOp(this.db, {
+      op: "workOfflineGapWrite",
+      mode: "update",
+      gapId,
+      hostSessionId: null,
+      subscriptionId: null,
+      workId: null,
+      offlineGapFrom: null,
+      offlineGapTo: null,
+      detectedBy: null,
+      confidence: null,
+      policy: null,
+      policyRevision: null,
+      sourceCursor: null,
+      queryable: fields.queryable,
+      recoveredCountDelta: recoveredDelta,
+      mergedCountDelta: mergedDelta,
+      skippedCount: nextSkipped,
+      unknownCount: nextUnknown,
+      state: fields.state,
+      continuationCursor: nextCursor,
+      gapReason: nextReason,
+      nextWakeAt: null,
+      now: fields.updatedAt,
+    });
+  }
+
   /** Apply the saved policy for an observed gap; repeated resume notifications reuse the same gap. */
   applyGap(gapId: string, options: { queryable?: boolean; unknownCount?: number; skippedCount?: number;
     events?: Array<{ sourceEventId: string; eventType: string; sourceVersion?: string; payload?: Record<string, unknown>; occurredAt?: number }> } = {}): WorkOfflineGapDto | undefined {
@@ -150,27 +212,64 @@ export class WorkWatchScheduler {
       if (!this.authority() || row.state === "recovered") return this.toGapDto(row);
       const subscription = this.works.repo.getSubscription(String(row.subscription_id));
       if (!subscription) return undefined;
+      const rust = requiresWorkRustWrites(this.db);
       // A cron gap is recoverable from the persisted schedule, not from an external
       // business-history query. Do not enqueue a second generic latest readback.
       if (subscription.source === "cron") {
-        this.db.prepare(`UPDATE work_offline_gaps SET queryable=1,state='recovering',
-          gap_reason='等待持久调度游标恢复；不代表业务来源历史已回查',updated_at=? WHERE gap_id=?`)
-          .run(this.now(), gapId);
+        const now = this.now();
+        const reason = "等待持久调度游标恢复；不代表业务来源历史已回查";
+        if (rust) {
+          this.updateGap(gapId, row, {
+            queryable: 1, state: "recovering",
+            skippedCount: (row.skipped_count as number | null | undefined) ?? null,
+            unknownCount: (row.unknown_count as number | null | undefined) ?? null,
+            continuationCursor: (row.continuation_cursor as string | null | undefined) ?? null,
+            gapReason: reason, updatedAt: now,
+          });
+        } else {
+          this.db.prepare(`UPDATE work_offline_gaps SET queryable=1,state='recovering',
+            gap_reason='等待持久调度游标恢复；不代表业务来源历史已回查',updated_at=? WHERE gap_id=?`)
+            .run(now, gapId);
+        }
         this.settleScheduleGaps(subscription);
         return this.toGapDto(this.gapRow(gapId)!);
       }
       const queryable = options.queryable ?? (this.works.ingress.adapter(subscription.source)?.canQueryHistory === true);
       const policy = subscription.catchUpPolicy;
       if (!queryable) {
-        this.db.prepare("UPDATE work_offline_gaps SET queryable=0,state='unqueryable',unknown_count=?,updated_at=? WHERE gap_id=?")
-          .run(options.unknownCount ?? null, this.now(), gapId);
+        const now = this.now();
+        if (rust) {
+          this.updateGap(gapId, row, {
+            queryable: 0, state: "unqueryable",
+            skippedCount: (row.skipped_count as number | null | undefined) ?? null,
+            unknownCount: options.unknownCount ?? null,
+            continuationCursor: (row.continuation_cursor as string | null | undefined) ?? null,
+            gapReason: (row.gap_reason as string | null | undefined) ?? null,
+            updatedAt: now,
+          });
+        } else {
+          this.db.prepare("UPDATE work_offline_gaps SET queryable=0,state='unqueryable',unknown_count=?,updated_at=? WHERE gap_id=?")
+            .run(options.unknownCount ?? null, now, gapId);
+        }
         this.gapBlocker(row.work_id ? String(row.work_id) : undefined, gapId, "unqueryable-offline-gap",
           "来源没有历史回查能力，离线区间内的触发与业务变化无法补查", subscription.subscriptionId);
         return this.toGapDto(this.gapRow(gapId)!);
       }
       if (policy === "skip") {
-        this.db.prepare("UPDATE work_offline_gaps SET queryable=1,state='recovered',skipped_count=?,updated_at=? WHERE gap_id=?")
-          .run(options.skippedCount ?? null, this.now(), gapId);
+        const now = this.now();
+        if (rust) {
+          this.updateGap(gapId, row, {
+            queryable: 1, state: "recovered",
+            skippedCount: options.skippedCount ?? null,
+            unknownCount: (row.unknown_count as number | null | undefined) ?? null,
+            continuationCursor: (row.continuation_cursor as string | null | undefined) ?? null,
+            gapReason: (row.gap_reason as string | null | undefined) ?? null,
+            updatedAt: now,
+          });
+        } else {
+          this.db.prepare("UPDATE work_offline_gaps SET queryable=1,state='recovered',skipped_count=?,updated_at=? WHERE gap_id=?")
+            .run(options.skippedCount ?? null, now, gapId);
+        }
       } else if (policy === "latest") {
         // One authoritative readback, merged into a single follow-up, never the last arrival payload.
         const work = this.works.getWork(String(row.work_id));
@@ -185,17 +284,53 @@ export class WorkWatchScheduler {
             mergedCount: 1, receivedAt: this.now(), processAfter: this.now() + subscription.maxMergeWaitMs,
             batchId: `gap:${gapId}:${subscription.subscriptionId}`, batchDeadlineAt: this.now() + subscription.maxMergeWaitMs,
             targetKey: subscription.sourceTarget, processReason: "offline-latest" });
-          this.db.prepare("UPDATE work_offline_gaps SET queryable=1,state='recovered',merged_count=merged_count+?,updated_at=? WHERE gap_id=?")
-            .run(inserted ? 1 : 0, this.now(), gapId);
+          const now = this.now();
+          if (rust) {
+            this.updateGap(gapId, row, {
+              queryable: 1, state: "recovered", mergedCountDelta: inserted ? 1 : 0,
+              skippedCount: (row.skipped_count as number | null | undefined) ?? null,
+              unknownCount: (row.unknown_count as number | null | undefined) ?? null,
+              continuationCursor: (row.continuation_cursor as string | null | undefined) ?? null,
+              gapReason: (row.gap_reason as string | null | undefined) ?? null,
+              updatedAt: now,
+            });
+          } else {
+            this.db.prepare("UPDATE work_offline_gaps SET queryable=1,state='recovered',merged_count=merged_count+?,updated_at=? WHERE gap_id=?")
+              .run(inserted ? 1 : 0, now, gapId);
+          }
         } else {
-          this.db.prepare("UPDATE work_offline_gaps SET queryable=1,state='recovered',updated_at=? WHERE gap_id=?").run(this.now(), gapId);
+          const now = this.now();
+          if (rust) {
+            this.updateGap(gapId, row, {
+              queryable: 1, state: "recovered",
+              skippedCount: (row.skipped_count as number | null | undefined) ?? null,
+              unknownCount: (row.unknown_count as number | null | undefined) ?? null,
+              continuationCursor: (row.continuation_cursor as string | null | undefined) ?? null,
+              gapReason: (row.gap_reason as string | null | undefined) ?? null,
+              updatedAt: now,
+            });
+          } else {
+            this.db.prepare("UPDATE work_offline_gaps SET queryable=1,state='recovered',updated_at=? WHERE gap_id=?").run(now, gapId);
+          }
         }
       } else {
         // Capability metadata is not a completed history query. Host resume calls this
         // before an adapter has supplied a page; keep that gap visibly unresolved.
         if (options.events === undefined) {
-          this.db.prepare(`UPDATE work_offline_gaps SET queryable=1,state='recovering',
-            gap_reason='等待来源历史回查结果',updated_at=? WHERE gap_id=?`).run(this.now(), gapId);
+          const now = this.now();
+          const reason = "等待来源历史回查结果";
+          if (rust) {
+            this.updateGap(gapId, row, {
+              queryable: 1, state: "recovering",
+              skippedCount: (row.skipped_count as number | null | undefined) ?? null,
+              unknownCount: (row.unknown_count as number | null | undefined) ?? null,
+              continuationCursor: (row.continuation_cursor as string | null | undefined) ?? null,
+              gapReason: reason, updatedAt: now,
+            });
+          } else {
+            this.db.prepare(`UPDATE work_offline_gaps SET queryable=1,state='recovering',
+              gap_reason='等待来源历史回查结果',updated_at=? WHERE gap_id=?`).run(now, gapId);
+          }
           return this.toGapDto(this.gapRow(gapId)!);
         }
         const page = options.events.slice(0, 32);
@@ -220,10 +355,23 @@ export class WorkWatchScheduler {
           else if (route.outcome !== "duplicate") ingested++;
           cursor = item.sourceEventId;
         }
-        this.db.prepare(`UPDATE work_offline_gaps SET queryable=1,state=?,recovered_count=recovered_count+?,
-          skipped_count=COALESCE(skipped_count,0)+?,continuation_cursor=?,gap_reason=?,updated_at=? WHERE gap_id=?`)
-          .run(page.length ? "recovering" : "recovered", ingested, skipped + (options.skippedCount ?? 0),
-            cursor, refused ? "来源回放受背压阻碍，保留游标等待重试" : null, this.now(), gapId);
+        const now = this.now();
+        const nextState = page.length ? "recovering" : "recovered";
+        const gapReason = refused ? "来源回放受背压阻碍，保留游标等待重试" : null;
+        if (rust) {
+          const nextSkipped = Number(row.skipped_count ?? 0) + skipped + (options.skippedCount ?? 0);
+          this.updateGap(gapId, row, {
+            queryable: 1, state: nextState, recoveredCountDelta: ingested,
+            skippedCount: nextSkipped,
+            unknownCount: (row.unknown_count as number | null | undefined) ?? null,
+            continuationCursor: cursor ?? null, gapReason, updatedAt: now,
+          });
+        } else {
+          this.db.prepare(`UPDATE work_offline_gaps SET queryable=1,state=?,recovered_count=recovered_count+?,
+            skipped_count=COALESCE(skipped_count,0)+?,continuation_cursor=?,gap_reason=?,updated_at=? WHERE gap_id=?`)
+            .run(nextState, ingested, skipped + (options.skippedCount ?? 0),
+              cursor, gapReason, now, gapId);
+        }
       }
       return this.toGapDto(this.gapRow(gapId)!);
     });
@@ -236,19 +384,67 @@ export class WorkWatchScheduler {
       if (!this.authority()) return [];
       this.upsertHostState({ sessionId: this.sessionId, now });
       const results: WorkTickResult[] = [];
-      for (const row of this.db.prepare(`SELECT work_id FROM works WHERE mode='watch' AND lifecycle IN ('active','paused','closing')
-        AND ((json_type(watch_rule_json,'$.endsAt') IN ('integer','real') AND json_extract(watch_rule_json,'$.endsAt')<=?)
-          OR json_extract(watch_rule_json,'$.termination.reason')='schedule_expired')`).all(now) as Array<{ work_id: string }>)
-        this.works.expireWatchTime(row.work_id, now, this.expiryReviewDelivered(row.work_id));
-      const cursor = this.db.prepare(`SELECT last_scan_cursor FROM work_watch_host_state
-        WHERE last_scan_cursor IS NOT NULL ORDER BY (authority_id=?) DESC,rowid DESC LIMIT 1`)
-        .get(this.authorityId()) as { last_scan_cursor: string | null } | undefined;
-      const after = cursor?.last_scan_cursor ?? "";
-      const due = (comparison: ">" | "<=", limit: number) => this.db.prepare(`SELECT subscription.subscription_id
-        FROM work_subscriptions subscription JOIN works work ON work.work_id=subscription.work_id
-        WHERE subscription.stopped_at IS NULL AND work.lifecycle='active' AND subscription.next_wake_at<=?
-          AND subscription.subscription_id ${comparison} ? ORDER BY subscription.subscription_id LIMIT ?`)
-        .all(now, after, limit) as Array<{ subscription_id: string }>;
+      const rust = requiresWorkRustWrites(this.db);
+      const expiringWorkIds: string[] = rust
+        ? overlayFindAll(
+            this.db,
+            "works",
+            this.db.prepare("SELECT * FROM works WHERE mode='watch' AND lifecycle IN ('active','paused','closing')").all() as Array<Record<string, unknown>>,
+            r => String(r.work_id),
+            r => {
+              if (r.mode !== "watch" || !["active", "paused", "closing"].includes(String(r.lifecycle))) return false;
+              if (!r.watch_rule_json) return false;
+              try {
+                const rule = JSON.parse(String(r.watch_rule_json)) as { endsAt?: unknown; termination?: { reason?: unknown } };
+                return (typeof rule.endsAt === "number" && rule.endsAt <= now) || rule.termination?.reason === "schedule_expired";
+              } catch { return false; }
+            },
+          ).map(r => String(r.work_id))
+        : (this.db.prepare(`SELECT work_id FROM works WHERE mode='watch' AND lifecycle IN ('active','paused','closing')
+            AND ((json_type(watch_rule_json,'$.endsAt') IN ('integer','real') AND json_extract(watch_rule_json,'$.endsAt')<=?)
+              OR json_extract(watch_rule_json,'$.termination.reason')='schedule_expired')`).all(now) as Array<{ work_id: string }>).map(r => r.work_id);
+      for (const workId of expiringWorkIds)
+        this.works.expireWatchTime(workId, now, this.expiryReviewDelivered(workId));
+      const authId = this.authorityId();
+      const after = rust
+        ? (() => {
+            const dbStates = this.db.prepare("SELECT rowid,* FROM work_watch_host_state WHERE last_scan_cursor IS NOT NULL").all() as Array<Record<string, unknown>>;
+            const rows = overlayFindAll(
+              this.db, "work_watch_host_state", dbStates, r => String(r.authority_id),
+              r => r.last_scan_cursor !== null && r.last_scan_cursor !== undefined,
+              (a, b) => (a.authority_id === authId ? 0 : 1) - (b.authority_id === authId ? 0 : 1) || Number(b.rowid ?? 0) - Number(a.rowid ?? 0),
+            );
+            return (rows[0]?.last_scan_cursor as string | null | undefined) ?? "";
+          })()
+        : ((this.db.prepare(`SELECT last_scan_cursor FROM work_watch_host_state
+            WHERE last_scan_cursor IS NOT NULL ORDER BY (authority_id=?) DESC,rowid DESC LIMIT 1`)
+            .get(authId) as { last_scan_cursor: string | null } | undefined)?.last_scan_cursor ?? "");
+      const due = (comparison: ">" | "<=", limit: number): Array<{ subscription_id: string }> => {
+        if (rust) {
+          const allDue = overlayFindAll(
+            this.db,
+            "work_subscriptions",
+            this.db.prepare(`SELECT subscription.* FROM work_subscriptions subscription
+              JOIN works work ON work.work_id=subscription.work_id
+              WHERE subscription.stopped_at IS NULL AND work.lifecycle='active' AND subscription.next_wake_at<=?`)
+              .all(now) as Array<Record<string, unknown>>,
+            r => String(r.subscription_id),
+            r => (r.stopped_at === null || r.stopped_at === undefined)
+              && r.next_wake_at !== null && r.next_wake_at !== undefined && Number(r.next_wake_at) <= now
+              && this.works.getWork(String(r.work_id))?.lifecycle === "active",
+            (a, b) => String(a.subscription_id) < String(b.subscription_id) ? -1 : String(a.subscription_id) > String(b.subscription_id) ? 1 : 0,
+          );
+          return allDue
+            .filter(r => comparison === ">" ? String(r.subscription_id) > after : String(r.subscription_id) <= after)
+            .slice(0, limit)
+            .map(r => ({ subscription_id: String(r.subscription_id) }));
+        }
+        return this.db.prepare(`SELECT subscription.subscription_id
+          FROM work_subscriptions subscription JOIN works work ON work.work_id=subscription.work_id
+          WHERE subscription.stopped_at IS NULL AND work.lifecycle='active' AND subscription.next_wake_at<=?
+            AND subscription.subscription_id ${comparison} ? ORDER BY subscription.subscription_id LIMIT ?`)
+          .all(now, after, limit) as Array<{ subscription_id: string }>;
+      };
       // A capacity-blocked each subscription must not starve the rest of the
       // user's watches. Persist a bounded round-robin cursor across restarts.
       const rows = due(">", 128);
@@ -262,8 +458,22 @@ export class WorkWatchScheduler {
         results.push({ subscriptionId: subscription.subscriptionId, workId: work.workId,
           scheduledAt: subscription.nextWakeAt ?? now, fired });
       }
-      if (rows.length) this.db.prepare("UPDATE work_watch_host_state SET last_scan_cursor=? WHERE authority_id=?")
-        .run(rows.at(-1)!.subscription_id, this.authorityId());
+      if (rows.length) {
+        const nextCursor = rows.at(-1)!.subscription_id;
+        if (rust) {
+          overlayMutate(this.db, "work_watch_host_state", authId,
+            () => this.db.prepare("SELECT * FROM work_watch_host_state WHERE authority_id=?").get(authId) as Record<string, unknown> | undefined,
+            cur => cur ? { ...cur, last_scan_cursor: nextCursor } : undefined);
+          enqueueWorkOp(this.db, {
+            op: "workWatchHostStateWrite", mode: "updateCursor", authorityId: authId,
+            sessionId: null, lastScanAt: null, lastScanCursor: nextCursor,
+            activeSince: null, lastSeenAt: null, suspendEvidence: null, stoppedAt: null, updatedAt: now,
+          });
+        } else {
+          this.db.prepare("UPDATE work_watch_host_state SET last_scan_cursor=? WHERE authority_id=?")
+            .run(nextCursor, authId);
+        }
+      }
       this.expireDeadlines(now);
       return results;
     });
@@ -278,6 +488,7 @@ export class WorkWatchScheduler {
     if (scheduledAt === undefined || scheduledAt > now) return fired;
     let cursor = scheduledAt;
     let guard = 0;
+    const rust = requiresWorkRustWrites(this.db);
     // A wall-clock rollback never replays a persisted slot; the high-water mark wins.
     const highWater = this.highestTickAt(subscription.subscriptionId, revision);
     if (wallJumped && highWater !== undefined && now < highWater) return fired;
@@ -295,42 +506,144 @@ export class WorkWatchScheduler {
     if (subscription.catchUpPolicy === "latest") {
       // Replace only unclaimed checks. A frozen batch or an admitted execution owns
       // its snapshot even if it has not yet changed the Inbox status.
-      const stale = this.db.prepare(`SELECT inbox.event_id FROM work_events_inbox inbox
-        JOIN work_schedule_ticks tick ON tick.inbox_event_id=inbox.event_id
-        WHERE inbox.subscription_id=? AND inbox.event_type='work.tick'
-          AND inbox.status='pending' AND inbox.frozen_at IS NULL
-          AND tick.schedule_revision=? AND tick.planned_at<?
-          AND NOT EXISTS (SELECT 1 FROM work_execution_bindings binding WHERE binding.inbox_event_id=inbox.event_id)`)
-        .all(subscription.subscriptionId, revision, cursor) as Array<{ event_id: string }>;
-      for (const event of stale) {
-        this.db.prepare("UPDATE work_events_inbox SET status='skipped',processed_at=?,process_reason='schedule-latest-coalesced' WHERE event_id=?")
-          .run(now, event.event_id);
-        this.db.prepare("UPDATE work_schedule_ticks SET status='skipped' WHERE inbox_event_id=?").run(event.event_id);
+      if (rust) {
+        const dbBound = this.db.prepare("SELECT * FROM work_execution_bindings WHERE work_id=?").all(work.workId) as Array<Record<string, unknown>>;
+        const boundInboxIds = new Set(
+          overlayFindAll(this.db, "work_execution_bindings", dbBound, r => String(r.binding_id),
+            r => r.inbox_event_id !== null && r.inbox_event_id !== undefined)
+            .map(r => String(r.inbox_event_id)),
+        );
+        const dbTicks = this.db.prepare("SELECT * FROM work_schedule_ticks WHERE subscription_id=? AND schedule_revision=? AND planned_at<?")
+          .all(subscription.subscriptionId, revision, cursor) as Array<Record<string, unknown>>;
+        const candidateTicks = overlayFindAll(
+          this.db, "work_schedule_ticks", dbTicks, r => String(r.tick_id),
+          r => r.subscription_id === subscription.subscriptionId && Number(r.schedule_revision) === revision
+            && Number(r.planned_at) < cursor && r.inbox_event_id !== null && r.inbox_event_id !== undefined,
+        );
+        const staleEventIds = new Set<string>();
+        for (const tick of candidateTicks) {
+          const eid = String(tick.inbox_event_id);
+          if (boundInboxIds.has(eid)) continue;
+          const inboxRow = overlayReadOne<Record<string, unknown>>(this.db, "work_events_inbox", eid,
+            () => this.db.prepare("SELECT * FROM work_events_inbox WHERE event_id=?").get(eid) as Record<string, unknown> | undefined);
+          if (inboxRow && inboxRow.subscription_id === subscription.subscriptionId
+            && inboxRow.event_type === "work.tick" && inboxRow.status === "pending"
+            && (inboxRow.frozen_at === null || inboxRow.frozen_at === undefined)) {
+            staleEventIds.add(eid);
+          }
+        }
+        const allSubTicks = overlayFindAll(
+          this.db, "work_schedule_ticks",
+          this.db.prepare("SELECT * FROM work_schedule_ticks WHERE subscription_id=?").all(subscription.subscriptionId) as Array<Record<string, unknown>>,
+          r => String(r.tick_id), r => r.subscription_id === subscription.subscriptionId,
+        );
+        for (const eventId of staleEventIds) {
+          overlayMutate(this.db, "work_events_inbox", eventId,
+            () => this.db.prepare("SELECT * FROM work_events_inbox WHERE event_id=?").get(eventId) as Record<string, unknown> | undefined,
+            cur => cur ? { ...cur, status: "skipped", processed_at: now, process_reason: "schedule-latest-coalesced" } : undefined);
+          enqueueWorkOp(this.db, {
+            op: "workInboxUpdate", mode: "coalesceTick", eventId, subscriptionId: null, workId: null,
+            eventType: null, sourceVersion: null, causalEventId: null, payloadJson: null, status: null,
+            mergeDeadlineAt: null, mergedCount: null, targetKey: null, batchId: null, batchDeadlineAt: null, now,
+          });
+          for (const t of allSubTicks) {
+            if (t.inbox_event_id === eventId) {
+              overlaySet(this.db, "work_schedule_ticks", String(t.tick_id), { ...t, status: "skipped" });
+            }
+          }
+          enqueueWorkOp(this.db, {
+            op: "workScheduleTickWrite", mode: "skipByInbox", tickId: null, subscriptionId: null, workId: null,
+            scheduleRevision: null, logicalSlotKey: null, plannedAt: null, effectiveAt: null, status: null,
+            inboxEventId: eventId, mergedFromSlotKeysJson: null, createdAt: null,
+          });
+        }
+      } else {
+        const stale = this.db.prepare(`SELECT inbox.event_id FROM work_events_inbox inbox
+          JOIN work_schedule_ticks tick ON tick.inbox_event_id=inbox.event_id
+          WHERE inbox.subscription_id=? AND inbox.event_type='work.tick'
+            AND inbox.status='pending' AND inbox.frozen_at IS NULL
+            AND tick.schedule_revision=? AND tick.planned_at<?
+            AND NOT EXISTS (SELECT 1 FROM work_execution_bindings binding WHERE binding.inbox_event_id=inbox.event_id)`)
+          .all(subscription.subscriptionId, revision, cursor) as Array<{ event_id: string }>;
+        for (const event of stale) {
+          this.db.prepare("UPDATE work_events_inbox SET status='skipped',processed_at=?,process_reason='schedule-latest-coalesced' WHERE event_id=?")
+            .run(now, event.event_id);
+          this.db.prepare("UPDATE work_schedule_ticks SET status='skipped' WHERE inbox_event_id=?").run(event.event_id);
+        }
       }
     }
-    const depth = this.db.prepare(`SELECT COUNT(*) AS count FROM work_events_inbox
-      WHERE subscription_id=? AND status IN ('pending','merged','blocked')`)
-      .get(subscription.subscriptionId) as { count: number };
-    let available = Math.max(0, subscription.maxQueueDepth - depth.count);
+    const depthCount = rust
+      ? overlayFindAll(
+          this.db,
+          "work_events_inbox",
+          this.db.prepare("SELECT * FROM work_events_inbox WHERE subscription_id=? AND status IN ('pending','merged','blocked')")
+            .all(subscription.subscriptionId) as Array<Record<string, unknown>>,
+          r => String(r.event_id),
+          r => r.subscription_id === subscription.subscriptionId && ["pending", "merged", "blocked"].includes(String(r.status)),
+        ).length
+      : (this.db.prepare(`SELECT COUNT(*) AS count FROM work_events_inbox
+          WHERE subscription_id=? AND status IN ('pending','merged','blocked')`)
+          .get(subscription.subscriptionId) as { count: number }).count;
+    let available = Math.max(0, subscription.maxQueueDepth - depthCount);
     if (!available) return fired;
     while (cursor <= now && guard++ < 64) {
       // Keep the persisted continuation intact until capacity becomes available.
       if (available <= 0) break;
       const slot = this.logicalSlot(cursor, subscription.cronExpression, timezone);
       const effectiveAt = cursor;
-      const mergedInto = this.db.prepare(`SELECT tick_id,inbox_event_id,merged_from_slot_keys_json FROM work_schedule_ticks
-        WHERE subscription_id=? AND schedule_revision=? AND effective_at=? AND status='dispatched' LIMIT 1`)
-        .get(subscription.subscriptionId, revision, effectiveAt) as { tick_id: string; inbox_event_id: string | null;
-          merged_from_slot_keys_json: string } | undefined;
+      const mergedInto = rust
+        ? overlayFindAll(
+            this.db,
+            "work_schedule_ticks",
+            this.db.prepare("SELECT * FROM work_schedule_ticks WHERE subscription_id=? AND schedule_revision=? AND effective_at=? AND status='dispatched'")
+              .all(subscription.subscriptionId, revision, effectiveAt) as Array<Record<string, unknown>>,
+            r => String(r.tick_id),
+            r => r.subscription_id === subscription.subscriptionId && Number(r.schedule_revision) === revision
+              && Number(r.effective_at) === effectiveAt && r.status === "dispatched",
+          )[0] as { tick_id: string; inbox_event_id: string | null; merged_from_slot_keys_json: string } | undefined
+        : this.db.prepare(`SELECT tick_id,inbox_event_id,merged_from_slot_keys_json FROM work_schedule_ticks
+            WHERE subscription_id=? AND schedule_revision=? AND effective_at=? AND status='dispatched' LIMIT 1`)
+            .get(subscription.subscriptionId, revision, effectiveAt) as { tick_id: string; inbox_event_id: string | null;
+              merged_from_slot_keys_json: string } | undefined;
       const tickId = newId("tick");
-      const inserted = this.db.prepare(`INSERT OR IGNORE INTO work_schedule_ticks
-        (tick_id,subscription_id,work_id,schedule_revision,logical_slot_key,planned_at,effective_at,status,
-         merged_from_slot_keys_json,created_at)
-        VALUES (?,?,?,?,?,?,?,?,'[]',?)`).run(
-        tickId, subscription.subscriptionId, work.workId, revision, slot.key, cursor, effectiveAt,
-        mergedInto ? "skipped" : "pending", this.now(),
-      );
-      if (inserted.changes && !mergedInto) {
+      const initialStatus = mergedInto ? "skipped" : "pending";
+      const createdAt = this.now();
+      let inserted = false;
+      if (rust) {
+        const existingSlot = overlayFindAll(
+          this.db,
+          "work_schedule_ticks",
+          this.db.prepare("SELECT * FROM work_schedule_ticks WHERE subscription_id=? AND schedule_revision=? AND logical_slot_key=?")
+            .all(subscription.subscriptionId, revision, slot.key) as Array<Record<string, unknown>>,
+          r => String(r.tick_id),
+          r => r.subscription_id === subscription.subscriptionId && Number(r.schedule_revision) === revision
+            && r.logical_slot_key === slot.key,
+        )[0];
+        if (!existingSlot) {
+          inserted = true;
+          overlaySet(this.db, "work_schedule_ticks", tickId, {
+            tick_id: tickId, subscription_id: subscription.subscriptionId, work_id: work.workId,
+            schedule_revision: revision, logical_slot_key: slot.key, planned_at: cursor,
+            effective_at: effectiveAt, status: initialStatus, merged_from_slot_keys_json: "[]",
+            inbox_event_id: null, offline_gap_id: null, created_at: createdAt,
+          });
+          enqueueWorkOp(this.db, {
+            op: "workScheduleTickWrite", mode: "insert", tickId, subscriptionId: subscription.subscriptionId,
+            workId: work.workId, scheduleRevision: revision, logicalSlotKey: slot.key,
+            plannedAt: cursor, effectiveAt, status: initialStatus, inboxEventId: null,
+            mergedFromSlotKeysJson: null, createdAt,
+          });
+        }
+      } else {
+        inserted = this.db.prepare(`INSERT OR IGNORE INTO work_schedule_ticks
+          (tick_id,subscription_id,work_id,schedule_revision,logical_slot_key,planned_at,effective_at,status,
+           merged_from_slot_keys_json,created_at)
+          VALUES (?,?,?,?,?,?,?,?,'[]',?)`).run(
+          tickId, subscription.subscriptionId, work.workId, revision, slot.key, cursor, effectiveAt,
+          initialStatus, createdAt,
+        ).changes > 0;
+      }
+      if (inserted && !mergedInto) {
         const eventId = newId("event");
         const dedupeKey = `sub:${subscription.subscriptionId}:tick:${revision}:${slot.key}`;
         this.works.repo.insertInbox({ eventId, dedupeKey, source: "cron", sourceEventId: dedupeKey,
@@ -344,16 +657,39 @@ export class WorkWatchScheduler {
               catchUpFrom: scheduledAt, catchUpTo: cursor } : {}) }, status: "pending", mergedCount: 1,
           receivedAt: now, targetKey: subscription.sourceTarget, processReason: "schedule-tick" });
         available--;
-        this.db.prepare("UPDATE work_schedule_ticks SET status='dispatched',inbox_event_id=? WHERE tick_id=?")
-          .run(eventId, tickId);
+        if (rust) {
+          overlayMutate(this.db, "work_schedule_ticks", tickId,
+            () => this.db.prepare("SELECT * FROM work_schedule_ticks WHERE tick_id=?").get(tickId) as Record<string, unknown> | undefined,
+            cur => cur ? { ...cur, status: "dispatched", inbox_event_id: eventId } : undefined);
+          enqueueWorkOp(this.db, {
+            op: "workScheduleTickWrite", mode: "dispatched", tickId, subscriptionId: null, workId: null,
+            scheduleRevision: null, logicalSlotKey: null, plannedAt: null, effectiveAt: null, status: null,
+            inboxEventId: eventId, mergedFromSlotKeysJson: null, createdAt: null,
+          });
+        } else {
+          this.db.prepare("UPDATE work_schedule_ticks SET status='dispatched',inbox_event_id=? WHERE tick_id=?")
+            .run(eventId, tickId);
+        }
         fired.push({ subscriptionId: subscription.subscriptionId, workId: work.workId, scheduledAt: cursor });
-      } else if (inserted.changes && mergedInto) {
+      } else if (inserted && mergedInto) {
         // Multiple logical (e.g. missing-hour) slots that resolve to one real instant share
         // one business work item; the first tick records the covered slot identities.
         const covered = new Set<string>(JSON.parse(mergedInto.merged_from_slot_keys_json) as string[]);
         covered.add(slot.key);
-        this.db.prepare("UPDATE work_schedule_ticks SET merged_from_slot_keys_json=? WHERE tick_id=?")
-          .run(JSON.stringify([...covered].sort()), mergedInto.tick_id);
+        const mergedJson = JSON.stringify([...covered].sort());
+        if (rust) {
+          overlayMutate(this.db, "work_schedule_ticks", mergedInto.tick_id,
+            () => this.db.prepare("SELECT * FROM work_schedule_ticks WHERE tick_id=?").get(mergedInto.tick_id) as Record<string, unknown> | undefined,
+            cur => cur ? { ...cur, merged_from_slot_keys_json: mergedJson } : undefined);
+          enqueueWorkOp(this.db, {
+            op: "workScheduleTickWrite", mode: "mergedSlots", tickId: mergedInto.tick_id, subscriptionId: null,
+            workId: null, scheduleRevision: null, logicalSlotKey: null, plannedAt: null, effectiveAt: null,
+            status: null, inboxEventId: null, mergedFromSlotKeysJson: mergedJson, createdAt: null,
+          });
+        } else {
+          this.db.prepare("UPDATE work_schedule_ticks SET merged_from_slot_keys_json=? WHERE tick_id=?")
+            .run(mergedJson, mergedInto.tick_id);
+        }
       }
       const next = this.nextSlot(subscription, effectiveAt);
       if (next === undefined || next <= cursor) { cursor = cursor + 60_000; break; }
@@ -370,11 +706,39 @@ export class WorkWatchScheduler {
     if (subscription.source !== "cron") return;
     // Recovered means the scheduling policy was applied. It says nothing about
     // changes that happened in the watched business source while the host was away.
+    const now = this.now();
+    const reason = "已按策略恢复调度槽；业务来源需由后续检查读取";
+    if (requiresWorkRustWrites(this.db)) {
+      const candidates = overlayFindAll(
+        this.db,
+        "work_offline_gaps",
+        this.db.prepare("SELECT * FROM work_offline_gaps WHERE subscription_id=? AND state IN ('open','recovering','unqueryable')")
+          .all(subscription.subscriptionId) as Array<Record<string, unknown>>,
+        r => String(r.gap_id),
+        r => r.subscription_id === subscription.subscriptionId
+          && ["open", "recovering", "unqueryable"].includes(String(r.state))
+          && (subscription.nextWakeAt === undefined || Number(r.offline_gap_to) < subscription.nextWakeAt),
+      );
+      for (const row of candidates) {
+        overlaySet(this.db, "work_offline_gaps", String(row.gap_id), {
+          ...row, queryable: 1, state: "recovered", gap_reason: reason, updated_at: now,
+        });
+      }
+      enqueueWorkOp(this.db, {
+        op: "workOfflineGapWrite", mode: "settleCron", gapId: null, hostSessionId: null,
+        subscriptionId: subscription.subscriptionId, workId: null, offlineGapFrom: null,
+        offlineGapTo: null, detectedBy: null, confidence: null, policy: null, policyRevision: null,
+        sourceCursor: null, queryable: null, recoveredCountDelta: null, mergedCountDelta: null,
+        skippedCount: null, unknownCount: null, state: null, continuationCursor: null,
+        gapReason: null, nextWakeAt: subscription.nextWakeAt ?? null, now,
+      });
+      return;
+    }
     this.db.prepare(`UPDATE work_offline_gaps SET queryable=1,state='recovered',
       gap_reason='已按策略恢复调度槽；业务来源需由后续检查读取',updated_at=?
       WHERE subscription_id=? AND state IN ('open','recovering','unqueryable')
         AND (? IS NULL OR offline_gap_to<?)`)
-      .run(this.now(), subscription.subscriptionId, subscription.nextWakeAt ?? null, subscription.nextWakeAt ?? null);
+      .run(now, subscription.subscriptionId, subscription.nextWakeAt ?? null, subscription.nextWakeAt ?? null);
   }
 
   private latestDueSlot(subscription: WorkSubscriptionDto, first: number, now: number): number {
@@ -401,6 +765,18 @@ export class WorkWatchScheduler {
   }
 
   private highestTickAt(subscriptionId: string, revision: number): number | undefined {
+    if (requiresWorkRustWrites(this.db)) {
+      const rows = overlayFindAll(
+        this.db,
+        "work_schedule_ticks",
+        this.db.prepare("SELECT * FROM work_schedule_ticks WHERE subscription_id=? AND schedule_revision=?")
+          .all(subscriptionId, revision) as Array<Record<string, unknown>>,
+        r => String(r.tick_id),
+        r => r.subscription_id === subscriptionId && Number(r.schedule_revision) === revision,
+      );
+      if (!rows.length) return undefined;
+      return rows.reduce((max, r) => Math.max(max, Number(r.planned_at)), -Infinity);
+    }
     const row = this.db.prepare(`SELECT MAX(planned_at) AS at FROM work_schedule_ticks
       WHERE subscription_id=? AND schedule_revision=?`).get(subscriptionId, revision) as { at: number | null };
     return row.at ?? undefined;
@@ -438,36 +814,89 @@ export class WorkWatchScheduler {
     return false;
   }
 
+  private deadlineRow(workId: string, revision: number, at: number): { state: string; inbox_event_id: string | null } | undefined {
+    const pk = `${workId}\0${revision}\0${at}`;
+    const row = overlayReadOne<Record<string, unknown>>(this.db, "work_deadline_instances", pk,
+      () => this.db.prepare("SELECT * FROM work_deadline_instances WHERE work_id=? AND deadline_revision=? AND deadline_at=?")
+        .get(workId, revision, at) as Record<string, unknown> | undefined);
+    return row ? { state: String(row.state), inbox_event_id: (row.inbox_event_id as string | null | undefined) ?? null } : undefined;
+  }
+
   private expireDeadlines(now: number): void {
+    const rust = requiresWorkRustWrites(this.db);
     // Filter settled instances before the bounded scan. Otherwise the first 64
     // historical deadlines permanently hide every newer commitment.
-    const rows = this.db.prepare(`SELECT w.* FROM works w LEFT JOIN work_deadline_instances d
-      ON d.work_id=w.work_id AND d.deadline_revision=w.deadline_revision AND d.deadline_at=w.deadline_at
-      WHERE w.lifecycle IN ('active','paused') AND w.deadline_at IS NOT NULL AND w.deadline_at<=?
-      AND (d.work_id IS NULL OR d.state='armed'
-        OR (w.lifecycle='active' AND d.state='followed-up' AND d.inbox_event_id IS NULL))
-      ORDER BY w.deadline_at ASC,w.work_id ASC LIMIT 64`).all(now) as Array<Record<string, unknown>>;
-    for (const raw of rows) {
-      const work = this.works.getWork(String(raw.work_id));
+    const candidateWorkIds: string[] = rust
+      ? (() => {
+          const allWorks = overlayFindAll(
+            this.db, "works",
+            this.db.prepare("SELECT * FROM works WHERE lifecycle IN ('active','paused') AND deadline_at IS NOT NULL AND deadline_at<=?")
+              .all(now) as Array<Record<string, unknown>>,
+            r => String(r.work_id),
+            r => ["active", "paused"].includes(String(r.lifecycle)) && r.deadline_at !== null && r.deadline_at !== undefined && Number(r.deadline_at) <= now,
+            (a, b) => Number(a.deadline_at) - Number(b.deadline_at) || (String(a.work_id) < String(b.work_id) ? -1 : String(a.work_id) > String(b.work_id) ? 1 : 0),
+          );
+          const matched: string[] = [];
+          for (const w of allWorks) {
+            const inst = this.deadlineRow(String(w.work_id), Number(w.deadline_revision ?? 1), Number(w.deadline_at));
+            if (!inst || inst.state === "armed" || (w.lifecycle === "active" && inst.state === "followed-up" && inst.inbox_event_id === null)) {
+              matched.push(String(w.work_id));
+              if (matched.length >= 64) break;
+            }
+          }
+          return matched;
+        })()
+      : (this.db.prepare(`SELECT w.work_id FROM works w LEFT JOIN work_deadline_instances d
+          ON d.work_id=w.work_id AND d.deadline_revision=w.deadline_revision AND d.deadline_at=w.deadline_at
+          WHERE w.lifecycle IN ('active','paused') AND w.deadline_at IS NOT NULL AND w.deadline_at<=?
+          AND (d.work_id IS NULL OR d.state='armed'
+            OR (w.lifecycle='active' AND d.state='followed-up' AND d.inbox_event_id IS NULL))
+          ORDER BY w.deadline_at ASC,w.work_id ASC LIMIT 64`).all(now) as Array<{ work_id: string }>).map(r => r.work_id);
+    for (const workId of candidateWorkIds) {
+      const work = this.works.getWork(workId);
       if (!work || work.deadlineAt === undefined || work.deadlineAt > now) continue;
       const revision = work.deadlineRevision;
       const at = work.deadlineAt;
-      let instance = this.db.prepare("SELECT * FROM work_deadline_instances WHERE work_id=? AND deadline_revision=? AND deadline_at=?")
-        .get(work.workId, revision, at) as { state: string; inbox_event_id: string | null } | undefined;
+      let instance = this.deadlineRow(work.workId, revision, at);
       if (!instance) {
-        this.db.prepare(`INSERT OR IGNORE INTO work_deadline_instances
-          (work_id,deadline_revision,deadline_at,state,created_at) VALUES (?,?,?,'armed',?)`)
-          .run(work.workId, revision, at, now);
-        instance = this.db.prepare("SELECT * FROM work_deadline_instances WHERE work_id=? AND deadline_revision=? AND deadline_at=?")
-          .get(work.workId, revision, at) as { state: string; inbox_event_id: string | null } | undefined;
+        if (rust) {
+          const pk = `${work.workId}\0${revision}\0${at}`;
+          overlayMutate(this.db, "work_deadline_instances", pk, () => undefined, cur => cur ?? {
+            work_id: work.workId, deadline_revision: revision, deadline_at: at,
+            state: "armed", inbox_event_id: null, created_at: now, followed_at: null,
+          });
+          enqueueWorkOp(this.db, {
+            op: "workDeadlineInstanceWrite", mode: "insertArmed", workId: work.workId,
+            deadlineRevision: revision, deadlineAt: at, state: null, inboxEventId: null, now,
+          });
+          instance = this.deadlineRow(work.workId, revision, at);
+        } else {
+          this.db.prepare(`INSERT OR IGNORE INTO work_deadline_instances
+            (work_id,deadline_revision,deadline_at,state,created_at) VALUES (?,?,?,'armed',?)`)
+            .run(work.workId, revision, at, now);
+          instance = this.deadlineRow(work.workId, revision, at);
+        }
       }
       // A paused expiry records the fact but has no dispatched event. Once
       // resumed it still owes exactly one follow-up, unlike an emitted expiry.
       if (!instance || !(instance.state === "armed" || work.lifecycle === "active"
         && instance.state === "followed-up" && instance.inbox_event_id === null)) continue;
       if (work.lifecycle === "paused") {
-        this.db.prepare("UPDATE work_deadline_instances SET state='followed-up',followed_at=? WHERE work_id=? AND deadline_revision=? AND deadline_at=?")
-          .run(now, work.workId, revision, at);
+        if (rust) {
+          const pk = `${work.workId}\0${revision}\0${at}`;
+          overlayMutate(this.db, "work_deadline_instances", pk, () => undefined, cur => ({
+            work_id: work.workId, deadline_revision: revision, deadline_at: at,
+            inbox_event_id: cur?.inbox_event_id ?? null, created_at: cur?.created_at ?? now,
+            state: "followed-up", followed_at: now,
+          }));
+          enqueueWorkOp(this.db, {
+            op: "workDeadlineInstanceWrite", mode: "followedUp", workId: work.workId,
+            deadlineRevision: revision, deadlineAt: at, state: null, inboxEventId: null, now,
+          });
+        } else {
+          this.db.prepare("UPDATE work_deadline_instances SET state='followed-up',followed_at=? WHERE work_id=? AND deadline_revision=? AND deadline_at=?")
+            .run(now, work.workId, revision, at);
+        }
         this.gapBlocker(work.workId, `deadline:${revision}:${at}`, "deadline-follow-up",
           "事项承诺期限已到，但事项处于暂停状态；保留到期事实，恢复后再决定跟进", undefined, now);
         continue;
@@ -481,8 +910,20 @@ export class WorkWatchScheduler {
           deadlineAt: at, inputSnapshotId: work.inputSnapshotId }, status: "pending", mergedCount: 1,
         receivedAt: now, batchId: `deadline:${work.workId}:${revision}:${at}`, processReason: "deadline-expired" });
       if (event) {
-        this.db.prepare("UPDATE work_deadline_instances SET state='followed-up',inbox_event_id=?,followed_at=? WHERE work_id=? AND deadline_revision=? AND deadline_at=?")
-          .run(eventId, now, work.workId, revision, at);
+        if (rust) {
+          const pk = `${work.workId}\0${revision}\0${at}`;
+          overlayMutate(this.db, "work_deadline_instances", pk, () => undefined, cur => ({
+            work_id: work.workId, deadline_revision: revision, deadline_at: at,
+            created_at: cur?.created_at ?? now, state: "followed-up", inbox_event_id: eventId, followed_at: now,
+          }));
+          enqueueWorkOp(this.db, {
+            op: "workDeadlineInstanceWrite", mode: "followedUp", workId: work.workId,
+            deadlineRevision: revision, deadlineAt: at, state: null, inboxEventId: eventId, now,
+          });
+        } else {
+          this.db.prepare("UPDATE work_deadline_instances SET state='followed-up',inbox_event_id=?,followed_at=? WHERE work_id=? AND deadline_revision=? AND deadline_at=?")
+            .run(eventId, now, work.workId, revision, at);
+        }
         this.works.repo.clearBlocker(`offline:${work.workId}:deadline-follow-up`, work.workId, now);
         this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: now });
       }
@@ -490,21 +931,57 @@ export class WorkWatchScheduler {
   }
 
   private recordGap(input: WorkOfflineGapInput): WorkOfflineGapDto | undefined {
-    const existing = this.db.prepare(`SELECT gap_id FROM work_offline_gaps WHERE host_session_id=?
-      AND COALESCE(subscription_id,'')=COALESCE(?,'') AND offline_gap_from=?`)
-      .get(input.hostSessionId, input.subscriptionId ?? null, input.from) as { gap_id: string } | undefined;
-    if (existing) return this.toGapDto(this.gapRow(existing.gap_id)!);
+    const rust = requiresWorkRustWrites(this.db);
+    const existing = rust
+      ? overlayFindAll(
+          this.db,
+          "work_offline_gaps",
+          this.db.prepare(`SELECT * FROM work_offline_gaps WHERE host_session_id=?
+            AND COALESCE(subscription_id,'')=COALESCE(?,'') AND offline_gap_from=?`)
+            .all(input.hostSessionId, input.subscriptionId ?? null, input.from) as Array<Record<string, unknown>>,
+          r => String(r.gap_id),
+          r => r.host_session_id === input.hostSessionId
+            && String(r.subscription_id ?? "") === String(input.subscriptionId ?? "")
+            && Number(r.offline_gap_from) === input.from,
+        )[0]
+      : this.db.prepare(`SELECT * FROM work_offline_gaps WHERE host_session_id=?
+          AND COALESCE(subscription_id,'')=COALESCE(?,'') AND offline_gap_from=?`)
+          .get(input.hostSessionId, input.subscriptionId ?? null, input.from) as Record<string, unknown> | undefined;
+    if (existing) return this.toGapDto(existing);
     const gapId = newId("gap");
-    this.db.prepare(`INSERT INTO work_offline_gaps
-      (gap_id,host_session_id,subscription_id,work_id,offline_gap_from,offline_gap_to,detected_by,confidence,
-       policy,policy_revision,source_cursor,queryable,recovered_count,merged_count,skipped_count,unknown_count,
-       state,continuation_cursor,gap_reason,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,NULL,?,NULL,?,?,?)`).run(
-      gapId, input.hostSessionId, input.subscriptionId ?? null, input.workId ?? null, input.from, input.to,
-      input.detectedBy, input.confidence, input.policy, input.policyRevision, input.sourceCursor ?? null,
-      input.queryable ? 1 : 0, input.queryable ? "open" : "unqueryable", input.gapReason ?? null,
-      this.now(), this.now(),
-    );
+    const now = this.now();
+    const state = input.queryable ? "open" : "unqueryable";
+    if (rust) {
+      overlaySet(this.db, "work_offline_gaps", gapId, {
+        gap_id: gapId, host_session_id: input.hostSessionId, subscription_id: input.subscriptionId ?? null,
+        work_id: input.workId ?? null, offline_gap_from: input.from, offline_gap_to: input.to,
+        detected_by: input.detectedBy, confidence: input.confidence, policy: input.policy,
+        policy_revision: input.policyRevision, source_cursor: input.sourceCursor ?? null,
+        queryable: input.queryable ? 1 : 0, recovered_count: 0, merged_count: 0,
+        skipped_count: 0, unknown_count: null, state, continuation_cursor: null,
+        gap_reason: input.gapReason ?? null, created_at: now, updated_at: now,
+      });
+      enqueueWorkOp(this.db, {
+        op: "workOfflineGapWrite", mode: "insert", gapId, hostSessionId: input.hostSessionId,
+        subscriptionId: input.subscriptionId ?? null, workId: input.workId ?? null,
+        offlineGapFrom: input.from, offlineGapTo: input.to, detectedBy: input.detectedBy,
+        confidence: input.confidence, policy: input.policy, policyRevision: input.policyRevision,
+        sourceCursor: input.sourceCursor ?? null, queryable: input.queryable ? 1 : 0,
+        recoveredCountDelta: null, mergedCountDelta: null, skippedCount: null, unknownCount: null,
+        state, continuationCursor: null, gapReason: input.gapReason ?? null, nextWakeAt: null, now,
+      });
+    } else {
+      this.db.prepare(`INSERT INTO work_offline_gaps
+        (gap_id,host_session_id,subscription_id,work_id,offline_gap_from,offline_gap_to,detected_by,confidence,
+         policy,policy_revision,source_cursor,queryable,recovered_count,merged_count,skipped_count,unknown_count,
+         state,continuation_cursor,gap_reason,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,NULL,?,NULL,?,?,?)`).run(
+        gapId, input.hostSessionId, input.subscriptionId ?? null, input.workId ?? null, input.from, input.to,
+        input.detectedBy, input.confidence, input.policy, input.policyRevision, input.sourceCursor ?? null,
+        input.queryable ? 1 : 0, state, input.gapReason ?? null,
+        now, now,
+      );
+    }
     if (!input.queryable && input.subscriptionId) {
       this.gapBlocker(input.workId, gapId, "unqueryable-offline-gap",
         "来源没有历史回查能力，无法证明离线区间内没有错过事件", input.subscriptionId);
@@ -526,19 +1003,41 @@ export class WorkWatchScheduler {
       this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: now });
     } else {
       const refs = new Set<string>([...(Array.isArray(existing.details?.gapRefs) ? existing.details.gapRefs as string[] : []), ref]);
-      this.db.prepare("UPDATE work_blockers SET details_json=?,source_ref=?,subscription_id=?,status='open',cleared_at=NULL WHERE blocker_id=?")
-        .run(JSON.stringify({ gapRefs: [...refs] }), ref, subscriptionId ?? null, blockerId);
+      const detailsJson = JSON.stringify({ gapRefs: [...refs] });
+      if (requiresWorkRustWrites(this.db)) {
+        overlayMutate(this.db, "work_blockers", blockerId,
+          () => this.db.prepare("SELECT * FROM work_blockers WHERE blocker_id=?").get(blockerId) as Record<string, unknown> | undefined,
+          cur => cur ? { ...cur, details_json: detailsJson, source_ref: ref, subscription_id: subscriptionId ?? null, status: "open", cleared_at: null } : undefined);
+        enqueueWorkOp(this.db, {
+          op: "workBlockerUpdate", blockerId, workId, mode: "gapReopen", reason: null,
+          detailsJson, sourceRef: ref, subscriptionId: subscriptionId ?? null, causalChainId: null, clearedAt: null,
+        });
+      } else {
+        this.db.prepare("UPDATE work_blockers SET details_json=?,source_ref=?,subscription_id=?,status='open',cleared_at=NULL WHERE blocker_id=?")
+          .run(detailsJson, ref, subscriptionId ?? null, blockerId);
+      }
     }
   }
 
   private gapsForHostSession(hostSessionId: string, to: number): WorkOfflineGapDto[] {
-    return (this.db.prepare("SELECT * FROM work_offline_gaps WHERE host_session_id=? AND offline_gap_to=? ORDER BY gap_id")
-      .all(hostSessionId, to) as Array<Record<string, unknown>>).map(row => this.toGapDto(row));
+    const dbRows = this.db.prepare("SELECT * FROM work_offline_gaps WHERE host_session_id=? AND offline_gap_to=? ORDER BY gap_id")
+      .all(hostSessionId, to) as Array<Record<string, unknown>>;
+    const rows = requiresWorkRustWrites(this.db)
+      ? overlayFindAll(this.db, "work_offline_gaps", dbRows, r => String(r.gap_id),
+          r => r.host_session_id === hostSessionId && Number(r.offline_gap_to) === to,
+          (a, b) => String(a.gap_id) < String(b.gap_id) ? -1 : String(a.gap_id) > String(b.gap_id) ? 1 : 0)
+      : dbRows;
+    return rows.map(row => this.toGapDto(row));
   }
 
   gaps(workId: string): WorkOfflineGapDto[] {
-    return (this.db.prepare("SELECT * FROM work_offline_gaps WHERE work_id=? ORDER BY offline_gap_from DESC LIMIT 20")
-      .all(workId) as Array<Record<string, unknown>>).map(row => this.toGapDto(row));
+    const dbRows = this.db.prepare("SELECT * FROM work_offline_gaps WHERE work_id=? ORDER BY offline_gap_from DESC LIMIT 20")
+      .all(workId) as Array<Record<string, unknown>>;
+    const rows = requiresWorkRustWrites(this.db)
+      ? overlayFindAll(this.db, "work_offline_gaps", dbRows, r => String(r.gap_id),
+          r => r.work_id === workId, (a, b) => Number(b.offline_gap_from) - Number(a.offline_gap_from)).slice(0, 20)
+      : dbRows;
+    return rows.map(row => this.toGapDto(row));
   }
 
   hostState(): WorkWatchHostStateDto {
@@ -555,23 +1054,51 @@ export class WorkWatchScheduler {
   /** Leave an explicit stop watermark; the next start can separate a stop from a guessed pause. */
   markStopped(at = this.now()): void {
     this.works.transaction(() => {
+      const authId = this.authorityId();
+      if (requiresWorkRustWrites(this.db)) {
+        overlayMutate(this.db, "work_watch_host_state", authId,
+          () => this.db.prepare("SELECT * FROM work_watch_host_state WHERE authority_id=?").get(authId) as Record<string, unknown> | undefined,
+          cur => cur ? { ...cur, stopped_at: at, updated_at: at } : undefined);
+        enqueueWorkOp(this.db, {
+          op: "workWatchHostStateWrite", mode: "markStopped", authorityId: authId,
+          sessionId: null, lastScanAt: null, lastScanCursor: null, activeSince: null,
+          lastSeenAt: null, suspendEvidence: null, stoppedAt: at, updatedAt: at,
+        });
+        return;
+      }
       this.db.prepare("UPDATE work_watch_host_state SET stopped_at=?,updated_at=? WHERE authority_id=?")
-        .run(at, at, this.authorityId());
+        .run(at, at, authId);
     });
   }
 
   private upsertHostState(input: { sessionId: string; now: number; stopped?: boolean; suspendEvidence?: string }): void {
     const authorityId = this.authorityId();
     const existing = this.hostStateRow();
+    const lastScanCursor = existing?.last_scan_cursor ?? null;
+    const activeSince = existing?.active_since ?? input.now;
+    const suspendEvidence = input.suspendEvidence ?? null;
+    const stoppedAt = input.stopped ? input.now : null;
+    if (requiresWorkRustWrites(this.db)) {
+      overlaySet(this.db, "work_watch_host_state", authorityId, {
+        authority_id: authorityId, session_id: input.sessionId, last_scan_at: input.now,
+        last_scan_cursor: lastScanCursor, active_since: activeSince, last_seen_at: input.now,
+        suspend_evidence: suspendEvidence, stopped_at: stoppedAt, updated_at: input.now,
+      });
+      enqueueWorkOp(this.db, {
+        op: "workWatchHostStateWrite", mode: "upsert", authorityId, sessionId: input.sessionId,
+        lastScanAt: input.now, lastScanCursor, activeSince, lastSeenAt: input.now,
+        suspendEvidence, stoppedAt, updatedAt: input.now,
+      });
+      return;
+    }
     this.db.prepare(`INSERT INTO work_watch_host_state
       (authority_id,session_id,last_scan_at,last_scan_cursor,active_since,last_seen_at,suspend_evidence,stopped_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?)
       ON CONFLICT(authority_id) DO UPDATE SET session_id=excluded.session_id,last_scan_at=excluded.last_scan_at,
         last_scan_cursor=excluded.last_scan_cursor,active_since=excluded.active_since,last_seen_at=excluded.last_seen_at,
         suspend_evidence=excluded.suspend_evidence,stopped_at=excluded.stopped_at,updated_at=excluded.updated_at`).run(
-      authorityId, input.sessionId, input.now, existing?.last_scan_cursor ?? null,
-      existing?.active_since ?? input.now, input.now, input.suspendEvidence ?? null,
-      input.stopped ? input.now : null, input.now,
+      authorityId, input.sessionId, input.now, lastScanCursor,
+      activeSince, input.now, suspendEvidence, stoppedAt, input.now,
     );
   }
 
@@ -583,13 +1110,18 @@ export class WorkWatchScheduler {
   private hostStateRow(): { authority_id: string; session_id: string; last_scan_at: number | null;
     last_scan_cursor: string | null; active_since: number | null; suspend_evidence: string | null;
     stopped_at: number | null } | undefined {
-    return this.db.prepare("SELECT * FROM work_watch_host_state WHERE authority_id=?").get(this.authorityId()) as
-      { authority_id: string; session_id: string; last_scan_at: number | null; last_scan_cursor: string | null;
-        active_since: number | null; suspend_evidence: string | null; stopped_at: number | null } | undefined;
+    const authId = this.authorityId();
+    return overlayReadOne(this.db, "work_watch_host_state", authId,
+      () => this.db.prepare("SELECT * FROM work_watch_host_state WHERE authority_id=?").get(authId) as Record<string, unknown> | undefined) as {
+      authority_id: string; session_id: string; last_scan_at: number | null;
+      last_scan_cursor: string | null; active_since: number | null; suspend_evidence: string | null;
+      stopped_at: number | null;
+    } | undefined;
   }
 
   private gapRow(gapId: string): Record<string, unknown> | undefined {
-    return this.db.prepare("SELECT * FROM work_offline_gaps WHERE gap_id=?").get(gapId) as Record<string, unknown> | undefined;
+    return overlayReadOne<Record<string, unknown>>(this.db, "work_offline_gaps", gapId,
+      () => this.db.prepare("SELECT * FROM work_offline_gaps WHERE gap_id=?").get(gapId) as Record<string, unknown> | undefined);
   }
 
   private toGapDto(row: Record<string, unknown>): WorkOfflineGapDto {

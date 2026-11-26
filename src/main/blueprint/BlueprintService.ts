@@ -63,8 +63,13 @@ export class BlueprintService {
 
   async recoverStorage(): Promise<void> {
     const reader = this.deps.db.runtimeAuditReader;
+    const rustRequired = Boolean(this.deps.db.connection.readonly || reader?.supervised);
     const failures = reader ? await reader.reconcileBlueprintStorage(resolve(this.deps.workspaceInstancesRoot)) : "needsHost";
     if (failures === "needsHost") {
+      if (rustRequired) {
+        console.warn("[BlueprintService] Supervised mode skipped host orphan cleanup");
+        return;
+      }
       this.reconcileWorkspaceInstances();
     } else if (failures) {
       for (const error of failures) console.warn("[BlueprintService] 无法清理 orphan instance", error);

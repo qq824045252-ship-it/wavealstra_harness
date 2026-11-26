@@ -189,15 +189,34 @@ export class RemoteAccessController {
       commands: this.commands,
       events: this.events,
       work: this.workBridge(),
+      remoteControl: this.db.runtimeAuditReader?.supervised
+        ? (command) => this.db.runtimeAuditReader!.remoteControl!(command)
+        : undefined,
     });
     try {
       const address = await server.start();
       this.server = server;
       this.runningPort = address.port;
       this.lastError = undefined;
+      void this.db.runtimeAuditReader?.remoteControl?.({
+        action: "lifecycle",
+        configuredEnabled: settings.remoteAccessEnabled,
+        running: true,
+        port: address.port,
+        baseUrl: settings.remoteAccessBaseUrl || null,
+        error: null,
+      }).catch(() => undefined);
       return this.status();
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
+      void this.db.runtimeAuditReader?.remoteControl?.({
+        action: "lifecycle",
+        configuredEnabled: settings.remoteAccessEnabled,
+        running: false,
+        port: null,
+        baseUrl: settings.remoteAccessBaseUrl || null,
+        error: this.lastError,
+      }).catch(() => undefined);
       await server.stop().catch(() => undefined);
       throw error;
     }
@@ -208,5 +227,14 @@ export class RemoteAccessController {
     this.server = null;
     this.runningPort = null;
     if (server) await server.stop();
+    const settings = this.settings.read();
+    void this.db.runtimeAuditReader?.remoteControl?.({
+      action: "lifecycle",
+      configuredEnabled: settings.remoteAccessEnabled,
+      running: false,
+      port: null,
+      baseUrl: settings.remoteAccessBaseUrl || null,
+      error: this.lastError ?? null,
+    }).catch(() => undefined);
   }
 }

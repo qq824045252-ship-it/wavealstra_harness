@@ -64,6 +64,13 @@ export class LibraryTextSaves {
   }
 
   recoverItem(id: string): void {
+    if (this.db.connection.readonly || this.db.runtimeAuditReader?.supervised) {
+      const intent = this.db.connection.prepare(
+        "SELECT * FROM library_text_saves WHERE item_id=? AND root=? AND committed=0",
+      ).get(id, this.root) as Intent | undefined;
+      if (intent) this.restore(intent);
+      return;
+    }
     this.db.connection.transaction(() => {
       const intent = this.db.connection.prepare(
         "SELECT * FROM library_text_saves WHERE item_id=? AND root=? AND committed=0",
@@ -104,6 +111,14 @@ export class LibraryTextSaves {
       else atomicWriteFileSync(path, old_content);
     }
     rmSync(join(dirname(path), `.mybuddy-note-${operation_id}.tmp`), { force: true });
+    if (this.db.connection.readonly || this.db.runtimeAuditReader?.supervised) {
+      void this.db.runtimeAuditReader?.batch3Write({
+        kind: "libraryDeleteTextSaveIntent",
+        itemId: item_id,
+        operationId: operation_id,
+      }).catch((err) => console.warn("[Library] 清理笔记保存记录失败", err));
+      return;
+    }
     this.db.connection.prepare(
       "DELETE FROM library_text_saves WHERE item_id=? AND operation_id=? AND committed=0",
     ).run(item_id, operation_id);

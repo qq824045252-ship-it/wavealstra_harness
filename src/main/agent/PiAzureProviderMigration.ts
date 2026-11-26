@@ -72,7 +72,7 @@ function writeAtomic(path: string, original: string, next: string): void {
 }
 
 /** Run before ModelRuntime reads auth/models/settings. Backups and the migration are idempotent. */
-export function migratePiAzureProvider(agentDir: string, db: Database.Database): { files: number; selections: number } {
+function planAndApplyAzureFiles(agentDir: string, db: Database.Database): number {
   const taskCwds = db.prepare("SELECT DISTINCT cwd FROM tasks WHERE cwd IS NOT NULL").all() as Array<{ cwd: string }>;
   const settingsPaths = new Set([join(agentDir, "settings.json"), join(agentDir, "subagent.json")]);
   for (const { cwd } of taskCwds) settingsPaths.add(join(resolve(cwd), ".pi", "settings.json"));
@@ -103,6 +103,11 @@ export function migratePiAzureProvider(agentDir: string, db: Database.Database):
       });
     } else writeAtomic(entry.path, entry.original, entry.next);
   }
+  return planned.length;
+}
+
+export function migratePiAzureProvider(agentDir: string, db: Database.Database): { files: number; selections: number } {
+  const files = planAndApplyAzureFiles(agentDir, db);
   // Only future execution selections change; usage attribution and session transcripts are immutable.
   const selections = db.transaction(() => {
     let count = 0;
@@ -111,5 +116,25 @@ export function migratePiAzureProvider(agentDir: string, db: Database.Database):
     ).run(CURRENT, LEGACY.length + 1, LEGACY.length + 1, LEGACY + "/").changes;
     return count;
   })();
-  return { files: planned.length, selections };
+  return { files, selections };
+}
+
+export async function migratePiAzureProviderAsync(
+  agentDir: string,
+  db: Database.Database,
+  reader?: import("../platform/runtime-audit").RuntimeAuditReader,
+): Promise<{ files: number; selections: number }> {
+  if (!reader) return migratePiAzureProvider(agentDir, db);
+  const files = planAndApplyAzureFiles(agentDir, db);
+  const res = await reader.batch1Write<{ selections?: number }>({ kind: "migratePiAzureSelections" });
+  if (res && typeof res.selections === "number") return { files, selections: res.selections };
+  if (db.readonly || reader.supervised) throw new Error("Pi Azure 数据库选择迁移未获 Rust 核心确认");
+  const selections = db.transaction(() => {
+    let count = 0;
+    for (const table of ["tasks", "cron_jobs"]) count += db.prepare(
+      `UPDATE ${table} SET model_id = ? || substr(model_id, ?) WHERE substr(model_id, 1, ?) = ?`,
+    ).run(CURRENT, LEGACY.length + 1, LEGACY.length + 1, LEGACY + "/").changes;
+    return count;
+  })();
+  return { files, selections };
 }

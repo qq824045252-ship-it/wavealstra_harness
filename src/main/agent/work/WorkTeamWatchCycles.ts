@@ -8,7 +8,7 @@ type Cycle = { work_id: string; inbox_event_id: string; sequence: number; create
 /** Read-only projection of historical team watch rounds. */
 export class WorkTeamWatchCycles {
   constructor(private readonly db: Database.Database, private readonly works: WorkService) {
-    db.exec(`CREATE TABLE IF NOT EXISTS work_team_watch_cycles (
+    if (!db.readonly) db.exec(`CREATE TABLE IF NOT EXISTS work_team_watch_cycles (
       work_id TEXT NOT NULL, inbox_event_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL,
       created_at INTEGER NOT NULL, UNIQUE(work_id,sequence))`);
   }

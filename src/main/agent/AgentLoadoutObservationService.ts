@@ -85,9 +85,32 @@ function key(kind: AgentLoadoutCapabilityKind, id: string): string {
 
 /** Observational only. Never changes Expert/Skill/Connector/MCP configuration. */
 export class AgentLoadoutObservationService {
+  private writeTail: Promise<unknown> = Promise.resolve();
+
   constructor(private readonly db: AppDatabase) {}
 
   private get conn() { return this.db.connection; }
+
+  flush(): Promise<void> {
+    return this.writeTail.then(() => undefined, () => undefined);
+  }
+
+  private get rustRequired(): boolean {
+    return Boolean(this.conn.readonly || this.db.runtimeAuditReader?.supervised);
+  }
+
+  private enqueueRustWrite(request: Record<string, unknown>): void {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) throw new Error("AgentLoadoutObservationService 缺少 Rust 写入通道");
+    const next = this.writeTail.then(async () => {
+      const reply = await reader.batch1Write(request);
+      if (reply === undefined) throw new Error(`装配观测写入未获 Rust 确认: ${String(request.kind)}`);
+      return reply;
+    });
+    this.writeTail = next.catch(error => {
+      console.warn(`[LoadoutObservations] Rust write failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
 
   recordAcceptedTurn(input: {
     taskId: string;
@@ -125,6 +148,49 @@ export class AgentLoadoutObservationService {
       profileIds: input.recommendation.context.profileIds,
     };
     const id = `aload_${randomUUID()}`;
+    const contextJson = JSON.stringify(context);
+    const recommendedJson = JSON.stringify(recommended);
+    const actualJson = JSON.stringify(actual);
+    const matchedActualJson = JSON.stringify(matchedActual);
+    const notSelectedJson = JSON.stringify(notSelected);
+    const blockedJson = JSON.stringify(blocked);
+    if (this.db.runtimeAuditReader && this.rustRequired) {
+      this.enqueueRustWrite({
+        kind: "loadoutRecordTurn",
+        id,
+        taskId: input.taskId,
+        userMessageId: input.userMessageId,
+        assistantMessageId: input.assistantMessageId,
+        queryHash,
+        contextJson,
+        recommendedJson,
+        actualJson,
+        matchedActualJson,
+        notSelectedJson,
+        blockedJson,
+        at,
+        cutoff: at - AGENT_LOADOUT_MAX_AGE_MS,
+        maxRecords: AGENT_LOADOUT_MAX_RECORDS_PER_TASK,
+      });
+      return {
+        id,
+        taskId: input.taskId,
+        userMessageId: input.userMessageId,
+        assistantMessageId: input.assistantMessageId,
+        queryHash,
+        context,
+        recommended,
+        actual,
+        matchedActual,
+        notSelected,
+        blocked,
+        usedSkillIds: [],
+        outcome: "pending",
+        createdAt: at,
+        updatedAt: at,
+      };
+    }
+    if (this.conn.readonly) throw new Error("只读数据库模式下无法写入 agent_loadout_observations");
     this.conn.prepare(
       `INSERT INTO agent_loadout_observations (
         id,task_id,user_message_id,assistant_message_id,query_hash,context_json,
@@ -151,12 +217,12 @@ export class AgentLoadoutObservationService {
       input.userMessageId,
       input.assistantMessageId,
       queryHash,
-      JSON.stringify(context),
-      JSON.stringify(recommended),
-      JSON.stringify(actual),
-      JSON.stringify(matchedActual),
-      JSON.stringify(notSelected),
-      JSON.stringify(blocked),
+      contextJson,
+      recommendedJson,
+      actualJson,
+      matchedActualJson,
+      notSelectedJson,
+      blockedJson,
       JSON.stringify([]),
       at,
       at,
@@ -168,6 +234,12 @@ export class AgentLoadoutObservationService {
   }
 
   markSkillUsed(taskId: string, assistantMessageId: string, skillId: string, at = Date.now()): void {
+    if (this.db.runtimeAuditReader && this.rustRequired) {
+      if (!skillId) return;
+      this.enqueueRustWrite({ kind: "loadoutMarkSkillUsed", taskId, assistantMessageId, skillId, at });
+      return;
+    }
+    if (this.conn.readonly) throw new Error("只读数据库模式下无法更新 agent_loadout_observations");
     const current = this.getByTurn(taskId, assistantMessageId);
     if (!current) return;
     const next = [...new Set([...current.usedSkillIds, skillId].filter(Boolean))];
@@ -182,6 +254,11 @@ export class AgentLoadoutObservationService {
     outcome: Exclude<AgentLoadoutObservationOutcome, "pending">,
     at = Date.now(),
   ): void {
+    if (this.db.runtimeAuditReader && this.rustRequired) {
+      this.enqueueRustWrite({ kind: "loadoutMarkOutcome", taskId, assistantMessageId, outcome, at });
+      return;
+    }
+    if (this.conn.readonly) throw new Error("只读数据库模式下无法更新 agent_loadout_observations");
     this.conn.prepare(
       `UPDATE agent_loadout_observations SET outcome=?,completed_at=?,updated_at=?
        WHERE task_id=? AND assistant_message_id=? AND outcome='pending'`,
@@ -189,6 +266,11 @@ export class AgentLoadoutObservationService {
   }
 
   abortPendingForTask(taskId: string, at = Date.now()): void {
+    if (this.db.runtimeAuditReader && this.rustRequired) {
+      this.enqueueRustWrite({ kind: "loadoutAbortPending", taskId, at });
+      return;
+    }
+    if (this.conn.readonly) throw new Error("只读数据库模式下无法更新 agent_loadout_observations");
     this.conn.prepare(
       `UPDATE agent_loadout_observations SET outcome='aborted',completed_at=?,updated_at=?
        WHERE task_id=? AND outcome='pending'`,
@@ -211,6 +293,14 @@ export class AgentLoadoutObservationService {
   }
 
   clear(taskId?: string): number {
+    const count = (taskId
+      ? this.conn.prepare("SELECT COUNT(*) AS n FROM agent_loadout_observations WHERE task_id=?").get(taskId)
+      : this.conn.prepare("SELECT COUNT(*) AS n FROM agent_loadout_observations").get()) as { n: number };
+    if (this.db.runtimeAuditReader && this.rustRequired) {
+      this.enqueueRustWrite({ kind: "loadoutClear", taskId: taskId ?? null });
+      return count.n;
+    }
+    if (this.conn.readonly) throw new Error("只读数据库模式下无法清理 agent_loadout_observations");
     const result = taskId
       ? this.conn.prepare("DELETE FROM agent_loadout_observations WHERE task_id=?").run(taskId)
       : this.conn.prepare("DELETE FROM agent_loadout_observations").run();

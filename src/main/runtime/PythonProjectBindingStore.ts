@@ -28,6 +28,7 @@ import { currentNodePlatform } from "../platform/runtime";
  * 传入 `db.connection` 即可满足这个结构化类型。
  */
 export interface PythonBindingConnection {
+  readonly readonly?: boolean;
   prepare(sql: string): {
     run(...args: unknown[]): { changes: number };
     get(...args: unknown[]): unknown;
@@ -48,10 +49,16 @@ export class PythonProjectBindingStore {
   constructor(
     private readonly connection: PythonBindingConnection,
     private readonly platform: NodeJS.Platform = currentNodePlatform,
+    private readonly reader?: import("../platform/runtime-audit").RuntimeAuditReader,
   ) {}
+
+  private get rustRequired(): boolean {
+    return Boolean(this.connection.readonly || this.reader?.supervised);
+  }
 
   /** 幂等 upsert：同一目录改绑到另一个解释器时覆盖，不留下两行互相打架。 */
   save(binding: PythonProjectBinding): void {
+    if (this.connection.readonly) throw new Error("只读数据库模式下请使用 saveAsync");
     this.connection
       .prepare(
         `INSERT INTO python_project_bindings
@@ -74,13 +81,42 @@ export class PythonProjectBindingStore {
       );
   }
 
+  async saveAsync(binding: PythonProjectBinding): Promise<void> {
+    if (!this.reader) return this.save(binding);
+    const res = await this.reader.batch1Write<{ saved?: boolean }>({
+      kind: "savePythonBinding",
+      dirKey: binding.dirKey,
+      projectDir: binding.projectDir,
+      pythonPath: binding.pythonPath,
+      pythonVersion: binding.pythonVersion ?? null,
+      manifestPath: binding.manifestPath ?? null,
+      boundAt: binding.boundAt,
+    });
+    if (res?.saved) return;
+    if (!this.rustRequired) return this.save(binding);
+    throw new Error("Python 项目绑定写入未获 Rust 核心确认");
+  }
+
   /** 解绑一个目录（含其精确键）。幂等：未绑定时返回 false。 */
   remove(projectDir: string): boolean {
+    if (this.connection.readonly) throw new Error("只读数据库模式下请使用 removeAsync");
     const key = pythonProjectDirKey(projectDir, this.platform);
     const result = this.connection
       .prepare(`DELETE FROM python_project_bindings WHERE dir_key = ?`)
       .run(key);
     return result.changes > 0;
+  }
+
+  async removeAsync(projectDir: string): Promise<boolean> {
+    if (!this.reader) return this.remove(projectDir);
+    const key = pythonProjectDirKey(projectDir, this.platform);
+    const res = await this.reader.batch1Write<{ deleted?: boolean }>({
+      kind: "removePythonBinding",
+      dirKey: key,
+    });
+    if (typeof res?.deleted === "boolean") return res.deleted;
+    if (!this.rustRequired) return this.remove(projectDir);
+    throw new Error("Python 项目解绑未获 Rust 核心确认");
   }
 
   /** UI 用：全部绑定，最近绑定的在前。 */

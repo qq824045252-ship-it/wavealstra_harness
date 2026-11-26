@@ -138,33 +138,37 @@ export class TaskDiagnosticsRepository {
   private unavailable: string | undefined;
   constructor(private readonly db: Database.Database, reader?: RuntimeAuditReader) {
     try {
-    db.exec(`CREATE TABLE IF NOT EXISTS task_request_diagnostics (
-      request_id TEXT PRIMARY KEY, task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
-      started_at INTEGER NOT NULL, record_json TEXT NOT NULL CHECK(json_valid(record_json)));
-      CREATE INDEX IF NOT EXISTS idx_task_request_diagnostics ON task_request_diagnostics(task_id, started_at);
-      CREATE TABLE IF NOT EXISTS task_tool_diagnostics (
-      id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-      started_at INTEGER NOT NULL, record_json TEXT NOT NULL CHECK(json_valid(record_json)));
-      CREATE INDEX IF NOT EXISTS idx_task_tool_diagnostics ON task_tool_diagnostics(task_id, started_at);
-      CREATE TABLE IF NOT EXISTS scope_tool_diagnostics (id TEXT PRIMARY KEY,task_id TEXT NOT NULL,started_at INTEGER NOT NULL,record_json TEXT NOT NULL CHECK(json_valid(record_json)));
-      CREATE INDEX IF NOT EXISTS idx_scope_tool_diagnostics ON scope_tool_diagnostics(task_id,started_at);
-      CREATE INDEX IF NOT EXISTS idx_task_request_scope ON task_request_diagnostics(json_extract(record_json,'$.executionScope'),started_at);
-      CREATE INDEX IF NOT EXISTS idx_task_diagnostic_waits ON conversation_interactions(task_id, execution_id);`);
-    this.writes = db.transaction(() => {
-      let writes: TaskDiagnosticWrites | undefined;
-      if (reader) {
-        try { writes = new TaskDiagnosticWrites(db, reader, write => this.writeOnHost(write)); }
-        catch { /* Synchronous persistence remains available. */ }
+      if (db.readonly) {
+        if (reader) this.writes = new TaskDiagnosticWrites(db, reader, write => this.writeOnHost(write));
+        return;
       }
-      // Fence out the previous process before marking its observation intervals interrupted.
-      db.prepare(`UPDATE task_request_diagnostics SET record_json=json_set(record_json,'$.status','interrupted')
-        WHERE json_extract(record_json,'$.status')='running'`).run();
-      db.prepare(`UPDATE task_tool_diagnostics SET record_json=json_set(record_json,'$.status','interrupted','$.complete',json('false'),'$.segmentStartedAt',NULL)
-        WHERE json_extract(record_json,'$.status')='running'`).run();
-      db.prepare(`UPDATE scope_tool_diagnostics SET record_json=json_set(record_json,'$.status','interrupted','$.complete',json('false'),'$.segmentStartedAt',NULL)
-        WHERE json_extract(record_json,'$.status')='running'`).run();
-      return writes;
-    }).immediate();
+      db.exec(`CREATE TABLE IF NOT EXISTS task_request_diagnostics (
+        request_id TEXT PRIMARY KEY, task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+        started_at INTEGER NOT NULL, record_json TEXT NOT NULL CHECK(json_valid(record_json)));
+        CREATE INDEX IF NOT EXISTS idx_task_request_diagnostics ON task_request_diagnostics(task_id, started_at);
+        CREATE TABLE IF NOT EXISTS task_tool_diagnostics (
+        id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        started_at INTEGER NOT NULL, record_json TEXT NOT NULL CHECK(json_valid(record_json)));
+        CREATE INDEX IF NOT EXISTS idx_task_tool_diagnostics ON task_tool_diagnostics(task_id, started_at);
+        CREATE TABLE IF NOT EXISTS scope_tool_diagnostics (id TEXT PRIMARY KEY,task_id TEXT NOT NULL,started_at INTEGER NOT NULL,record_json TEXT NOT NULL CHECK(json_valid(record_json)));
+        CREATE INDEX IF NOT EXISTS idx_scope_tool_diagnostics ON scope_tool_diagnostics(task_id,started_at);
+        CREATE INDEX IF NOT EXISTS idx_task_request_scope ON task_request_diagnostics(json_extract(record_json,'$.executionScope'),started_at);
+        CREATE INDEX IF NOT EXISTS idx_task_diagnostic_waits ON conversation_interactions(task_id, execution_id);`);
+      this.writes = db.transaction(() => {
+        let writes: TaskDiagnosticWrites | undefined;
+        if (reader) {
+          try { writes = new TaskDiagnosticWrites(db, reader, write => this.writeOnHost(write)); }
+          catch { /* Synchronous persistence remains available. */ }
+        }
+        // Fence out the previous process before marking its observation intervals interrupted.
+        db.prepare(`UPDATE task_request_diagnostics SET record_json=json_set(record_json,'$.status','interrupted')
+          WHERE json_extract(record_json,'$.status')='running'`).run();
+        db.prepare(`UPDATE task_tool_diagnostics SET record_json=json_set(record_json,'$.status','interrupted','$.complete',json('false'),'$.segmentStartedAt',NULL)
+          WHERE json_extract(record_json,'$.status')='running'`).run();
+        db.prepare(`UPDATE scope_tool_diagnostics SET record_json=json_set(record_json,'$.status','interrupted','$.complete',json('false'),'$.segmentStartedAt',NULL)
+          WHERE json_extract(record_json,'$.status')='running'`).run();
+        return writes;
+      }).immediate();
     } catch { this.unavailable = "本次启动未能打开诊断存储，执行功能仍可使用"; }
   }
 

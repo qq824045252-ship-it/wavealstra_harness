@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import type { WorkDto } from "../../../shared/bot-work";
 import { newId } from "./WorkRepository";
+import { enqueueWorkOp, overlayFindAll, overlayMutate, overlayReadOne, overlaySet, requiresWorkRustWrites } from "./WorkDomainRuntime";
 import type { WorkService } from "./WorkService";
 
 export type CausalDecision = "admitted" | "blocked-loop" | "blocked-depth" | "blocked-hops" | "unknown-attribution";
@@ -125,10 +126,15 @@ export class WorkCausalGuard {
       if (existing) return this.toResult(existing);
 
       // Same chain, same business state, new operation identity is a loop, regardless of ids.
-      const repeated = this.db.prepare(`SELECT * FROM work_causal_chains WHERE root_event_id=? AND target_work_id=?
+      const dbRepeated = this.db.prepare(`SELECT * FROM work_causal_chains WHERE root_event_id=? AND target_work_id=?
         AND COALESCE(target_subscription_id,'')=COALESCE(?,'') AND COALESCE(input_snapshot_id,'')=COALESCE(?,'')
-        AND target_state_hash=? AND decision='admitted' LIMIT 1`)
-        .get(root, work.workId, input.subscriptionId ?? null, work.inputSnapshotId, stateHash) as ChainRow | undefined;
+        AND target_state_hash=? AND decision='admitted'`)
+        .all(root, work.workId, input.subscriptionId ?? null, work.inputSnapshotId, stateHash) as Array<ChainRow & Record<string, unknown>>;
+      const repeated = overlayFindAll(this.db, "work_causal_chains", dbRepeated, r => String(r.chain_id), r =>
+        r.root_event_id === root && r.target_work_id === work.workId
+        && (r.target_subscription_id ?? null) === (input.subscriptionId ?? null)
+        && (r.input_snapshot_id ?? null) === (work.inputSnapshotId ?? null)
+        && r.target_state_hash === stateHash && r.decision === "admitted")[0];
       let decision: CausalDecision = "admitted";
       let reasonCode: CausalAdmission["reasonCode"];
       let message: string | undefined;
@@ -153,24 +159,47 @@ export class WorkCausalGuard {
         message = `同一因果根的全链派发 ${dispatchCount} 次超过上限 ${policy.maxDispatches}`;
       }
       const chainId = newId("chain");
-      this.db.prepare(`INSERT INTO work_causal_chains
-        (chain_id,root_event_id,parent_chain_id,parent_causal_event_id,origin_work_id,origin_bot_id,
-         target_work_id,target_subscription_id,source,source_event_id,input_snapshot_id,target_state_hash,
-         depth,hops,dispatch_count,admission_key,decision,reason_code,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        chainId, root, parent?.chain_id ?? null, input.causalEventId ?? null,
-        input.originWorkId ?? parent?.origin_work_id ?? work.workId, input.originBotId ?? parent?.origin_bot_id ?? null,
-        work.workId, input.subscriptionId ?? null, input.source, input.sourceEventId,
-        work.inputSnapshotId, stateHash, depth, hops, dispatchCount, admissionKey, decision,
-        reasonCode ?? null, now,
-      );
+      const parentChainId = parent?.chain_id ?? null;
+      const parentCausalEventId = input.causalEventId ?? null;
+      const originWorkId = input.originWorkId ?? parent?.origin_work_id ?? work.workId;
+      const originBotId = input.originBotId ?? parent?.origin_bot_id ?? null;
+      const targetSubscriptionId = input.subscriptionId ?? null;
+      if (requiresWorkRustWrites(this.db)) {
+        overlaySet(this.db, "work_causal_chains", chainId, {
+          chain_id: chainId, root_event_id: root, parent_chain_id: parentChainId,
+          parent_causal_event_id: parentCausalEventId, origin_work_id: originWorkId,
+          origin_bot_id: originBotId, target_work_id: work.workId,
+          target_subscription_id: targetSubscriptionId, source: input.source,
+          source_event_id: input.sourceEventId, input_snapshot_id: work.inputSnapshotId,
+          target_state_hash: stateHash, depth, hops, dispatch_count: dispatchCount,
+          admission_key: admissionKey, decision, reason_code: reasonCode ?? null, created_at: now,
+        });
+        enqueueWorkOp(this.db, {
+          op: "workCausalChainInsert", chainId, rootEventId: root, parentChainId, parentCausalEventId,
+          originWorkId, originBotId, targetWorkId: work.workId, targetSubscriptionId,
+          source: input.source, sourceEventId: input.sourceEventId, inputSnapshotId: work.inputSnapshotId,
+          targetStateHash: stateHash, depth, hops, dispatchCount, admissionKey, decision,
+          reasonCode: reasonCode ?? null, createdAt: now,
+        });
+      } else {
+        this.db.prepare(`INSERT INTO work_causal_chains
+          (chain_id,root_event_id,parent_chain_id,parent_causal_event_id,origin_work_id,origin_bot_id,
+           target_work_id,target_subscription_id,source,source_event_id,input_snapshot_id,target_state_hash,
+           depth,hops,dispatch_count,admission_key,decision,reason_code,created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          chainId, root, parentChainId, parentCausalEventId, originWorkId, originBotId,
+          work.workId, targetSubscriptionId, input.source, input.sourceEventId,
+          work.inputSnapshotId, stateHash, depth, hops, dispatchCount, admissionKey, decision,
+          reasonCode ?? null, now,
+        );
+      }
       if (decision !== "admitted") this.block(work, decision, reasonCode ?? "causal-loop-guard", message ?? decision, chainId, now);
       return { allowed: decision === "admitted", chainId, decision, reasonCode, message, rootEventId: root,
         depth, hops, dispatchCount, targetStateHash: stateHash };
     });
   }
 
-  private resolveParent(input: CausalAdmissionInput, work: WorkDto): ChainRow | "unknown" | undefined {
+  private resolveParent(input: CausalAdmissionInput, _work: WorkDto): ChainRow | "unknown" | undefined {
     if (input.parentChainId) {
       const row = this.byChainId(input.parentChainId);
       if (!row) return "unknown";
@@ -178,9 +207,13 @@ export class WorkCausalGuard {
       return row;
     }
     if (input.causalEventId) {
-      const row = this.db.prepare(`SELECT * FROM work_causal_chains WHERE chain_id=? OR root_event_id=?
-        OR parent_causal_event_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1`)
-        .get(input.causalEventId, input.causalEventId, input.causalEventId) as ChainRow | undefined;
+      const dbRows = this.db.prepare(`SELECT * FROM work_causal_chains WHERE chain_id=? OR root_event_id=?
+        OR parent_causal_event_id=? ORDER BY created_at DESC,rowid DESC`)
+        .all(input.causalEventId, input.causalEventId, input.causalEventId) as Array<ChainRow & Record<string, unknown>>;
+      const row = overlayFindAll(this.db, "work_causal_chains", dbRows, r => String(r.chain_id), r =>
+        r.chain_id === input.causalEventId || r.root_event_id === input.causalEventId
+        || r.parent_causal_event_id === input.causalEventId,
+      (a, b) => Number(b.created_at) - Number(a.created_at))[0];
       if (!row) return "unknown";
       return row;
     }
@@ -202,16 +235,21 @@ export class WorkCausalGuard {
   }
 
   list(workId: string, limit = 20): ChainRow[] {
-    return this.db.prepare("SELECT * FROM work_causal_chains WHERE target_work_id=? AND decision!='blocked-budget' ORDER BY created_at DESC,rowid DESC LIMIT ?")
-      .all(workId, limit) as ChainRow[];
+    const dbRows = this.db.prepare("SELECT * FROM work_causal_chains WHERE target_work_id=? AND decision!='blocked-budget' ORDER BY created_at DESC,rowid DESC")
+      .all(workId) as Array<ChainRow & Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_causal_chains", dbRows, r => String(r.chain_id),
+      r => r.target_work_id === workId && (r.decision as string) !== "blocked-budget",
+      (a, b) => Number(b.created_at) - Number(a.created_at)).slice(0, limit);
   }
 
   private byChainId(chainId: string): ChainRow | undefined {
-    return this.db.prepare("SELECT * FROM work_causal_chains WHERE chain_id=?").get(chainId) as ChainRow | undefined;
+    return overlayReadOne<ChainRow & Record<string, unknown>>(this.db, "work_causal_chains", chainId, () =>
+      this.db.prepare("SELECT * FROM work_causal_chains WHERE chain_id=?").get(chainId) as (ChainRow & Record<string, unknown>) | undefined);
   }
 
   private byAdmissionKey(key: string): ChainRow | undefined {
-    return this.db.prepare("SELECT * FROM work_causal_chains WHERE admission_key=?").get(key) as ChainRow | undefined;
+    const dbRows = this.db.prepare("SELECT * FROM work_causal_chains WHERE admission_key=?").all(key) as Array<ChainRow & Record<string, unknown>>;
+    return overlayFindAll(this.db, "work_causal_chains", dbRows, r => String(r.chain_id), r => r.admission_key === key)[0];
   }
 
   private toResult(row: ChainRow): CausalAdmission {
@@ -229,6 +267,15 @@ export class WorkCausalGuard {
     if (!existing) {
       this.works.repo.insertBlocker({ blockerId, workId: work.workId, kind: "operational", reasonCode,
         reason: message, details, causalChainId: chainId, waitingForUserInput: false, status: "open", createdAt: now });
+    } else if (requiresWorkRustWrites(this.db)) {
+      const detailsJson = JSON.stringify(details);
+      overlayMutate(this.db, "work_blockers", blockerId, () =>
+        this.db.prepare("SELECT * FROM work_blockers WHERE blocker_id=?").get(blockerId) as Record<string, unknown> | undefined,
+      cur => cur ? { ...cur, reason: message, details_json: detailsJson, causal_chain_id: chainId, status: "open", cleared_at: null } : cur);
+      enqueueWorkOp(this.db, {
+        op: "workBlockerUpdate", blockerId, workId: work.workId, mode: "causalReopen",
+        reason: message, detailsJson, sourceRef: null, subscriptionId: null, causalChainId: chainId, clearedAt: null,
+      });
     } else {
       this.db.prepare("UPDATE work_blockers SET reason=?,details_json=?,causal_chain_id=?,status='open',cleared_at=NULL WHERE blocker_id=?")
         .run(message, JSON.stringify(details), chainId, blockerId);
