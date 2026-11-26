@@ -6,6 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::{HashMap, HashSet},
     path::Path,
     sync::atomic::{AtomicI64, AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -17,6 +18,11 @@ const MAX_EXECUTION_QUEUE: i64 = 256;
 const MAX_EXECUTION_SLOTS: i64 = 8;
 
 static EVENT_ID_SEQ: AtomicU64 = AtomicU64::new(1);
+static EPHEMERAL_PROGRESS_EMITTED: AtomicU64 = AtomicU64::new(0);
+
+pub fn ephemeral_progress_emitted() -> u64 {
+    EPHEMERAL_PROGRESS_EMITTED.load(Ordering::Relaxed)
+}
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -56,6 +62,8 @@ pub struct ExecutorTracker {
     epoch: AtomicU64,
     client_id: std::sync::Mutex<String>,
     slots_limit: AtomicI64,
+    capabilities: std::sync::Mutex<Option<HashSet<String>>>,
+    active_executions: std::sync::Mutex<HashMap<String, (i64, u64, String)>>,
 }
 
 impl ExecutorTracker {
@@ -65,6 +73,44 @@ impl ExecutorTracker {
             epoch: AtomicU64::new(0),
             client_id: std::sync::Mutex::new(String::new()),
             slots_limit: AtomicI64::new(MAX_EXECUTION_SLOTS),
+            capabilities: std::sync::Mutex::new(None),
+            active_executions: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn register_active_execution(
+        &self,
+        execution_id: &str,
+        attempt: i64,
+        epoch: u64,
+        owner_generation: &str,
+    ) {
+        if let Ok(mut map) = self.active_executions.lock() {
+            map.insert(
+                execution_id.to_owned(),
+                (attempt, epoch, owner_generation.to_owned()),
+            );
+        }
+    }
+
+    pub fn clear_active_execution(&self, execution_id: &str) {
+        if let Ok(mut map) = self.active_executions.lock() {
+            map.remove(execution_id);
+        }
+    }
+
+    pub fn verify_active_execution(
+        &self,
+        execution_id: &str,
+        attempt: i64,
+        epoch: u64,
+    ) -> Option<String> {
+        let map = self.active_executions.lock().ok()?;
+        let (exp_attempt, exp_epoch, owner_gen) = map.get(execution_id)?;
+        if *exp_attempt == attempt && *exp_epoch == epoch {
+            Some(owner_gen.clone())
+        } else {
+            None
         }
     }
 
@@ -73,10 +119,39 @@ impl ExecutorTracker {
             if let Ok(mut guard) = self.client_id.lock() {
                 *guard = client_id;
             }
+            if let Ok(mut caps) = self.capabilities.lock() {
+                *caps = None;
+            }
             self.epoch.store(epoch, Ordering::Release);
             self.online.store(true, Ordering::Release);
         } else if self.epoch.load(Ordering::Acquire) == epoch || epoch == 0 {
             self.online.store(false, Ordering::Release);
+            if let Ok(mut caps) = self.capabilities.lock() {
+                *caps = None;
+            }
+            if let Ok(mut active) = self.active_executions.lock() {
+                if epoch == 0 {
+                    active.clear();
+                } else {
+                    active.retain(|_, (_, e, _)| *e != epoch);
+                }
+            }
+        }
+    }
+
+    pub fn set_capabilities(&self, capabilities: Option<HashSet<String>>) {
+        if let Ok(mut guard) = self.capabilities.lock() {
+            *guard = capabilities;
+        }
+    }
+
+    pub fn supports_kind(&self, kind: &str) -> bool {
+        let Ok(guard) = self.capabilities.lock() else {
+            return true;
+        };
+        match guard.as_ref() {
+            Some(caps) => caps.contains(kind),
+            None => true,
         }
     }
 
@@ -160,11 +235,25 @@ pub(crate) fn ensure_tables(conn: &Connection, core_generation: &str) -> crate::
            attempt INTEGER NOT NULL DEFAULT 0,
            result_json TEXT,
            error_message TEXT,
+           wait_reason TEXT,
            created_at_ms INTEGER NOT NULL,
            updated_at_ms INTEGER NOT NULL
          );
          CREATE INDEX IF NOT EXISTS idx_core_execution_status ON core_execution_runs(status, created_at_ms);",
     )?;
+    let has_wait_reason: bool = {
+        let mut stmt = conn.prepare("PRAGMA table_info(core_execution_runs)")?;
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        cols.iter().any(|c| c == "wait_reason")
+    };
+    if !has_wait_reason {
+        conn.execute(
+            "ALTER TABLE core_execution_runs ADD COLUMN wait_reason TEXT",
+            [],
+        )?;
+    }
     let existing: Option<(String, i64, i64)> = conn
         .query_row(
             "SELECT core_generation, min_available_seq, retention_limit FROM core_event_meta WHERE id = 1",
@@ -345,7 +434,7 @@ pub fn execute_command(
                 [],
                 |row| row.get(0),
             )?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: json!({ "status": "ok", "retentionLimit": clamped, "minAvailableSeq": min_available_seq }),
                 events: vec![],
@@ -472,7 +561,7 @@ pub fn execute_command(
                 "INSERT INTO core_command_receipts (command_id, command_name, result_json, created_at_ms) VALUES (?, 'upsertNote', ?, ?)",
                 params![command_id, serde_json::to_string(&reply)?, updated_at_ms],
             )?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: reply,
                 events: vec![event],
@@ -570,7 +659,7 @@ pub fn execute_command(
                 "INSERT INTO core_command_receipts (command_id, command_name, result_json, created_at_ms) VALUES (?, 'deleteNote', ?, ?)",
                 params![command_id, serde_json::to_string(&reply)?, updated_at_ms],
             )?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: reply,
                 events: vec![event],
@@ -629,6 +718,8 @@ pub enum ExecutionRequest {
         owner_generation: Option<String>,
         #[serde(default)]
         host_generation: Option<String>,
+        #[serde(default)]
+        ephemeral: bool,
     },
     ExecutorSettled {
         execution_id: String,
@@ -665,6 +756,7 @@ pub(crate) struct ExecutionRow {
     pub(crate) attempt: i64,
     pub(crate) result: Option<Value>,
     pub(crate) error_message: Option<String>,
+    pub(crate) wait_reason: Option<String>,
     pub(crate) created_at_ms: i64,
     pub(crate) updated_at_ms: i64,
 }
@@ -681,7 +773,7 @@ fn fetch_execution(conn: &Connection, execution_id: &str) -> crate::Result<Optio
     conn.query_row(
         "SELECT execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
                 task_id, kind, payload_json, status, revision, executor_client_id, executor_epoch, attempt,
-                result_json, error_message, created_at_ms, updated_at_ms
+                result_json, error_message, wait_reason, created_at_ms, updated_at_ms
          FROM core_execution_runs WHERE execution_id = ?",
         params![execution_id],
         row_to_execution,
@@ -694,7 +786,7 @@ fn fetch_execution_by_key(conn: &Connection, idempotency_key: &str) -> crate::Re
     conn.query_row(
         "SELECT execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
                 task_id, kind, payload_json, status, revision, executor_client_id, executor_epoch, attempt,
-                result_json, error_message, created_at_ms, updated_at_ms
+                result_json, error_message, wait_reason, created_at_ms, updated_at_ms
          FROM core_execution_runs WHERE idempotency_key = ?",
         params![idempotency_key],
         row_to_execution,
@@ -723,8 +815,9 @@ fn row_to_execution(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionRow> {
         attempt: row.get(13)?,
         result: result_str.and_then(|s| serde_json::from_str(&s).ok()),
         error_message: row.get(15)?,
-        created_at_ms: row.get(16)?,
-        updated_at_ms: row.get(17)?,
+        wait_reason: row.get(16)?,
+        created_at_ms: row.get(17)?,
+        updated_at_ms: row.get(18)?,
     })
 }
 
@@ -748,6 +841,44 @@ pub fn execute_execution_read(db: &Connection, execution_id: &str) -> crate::Res
         Some(row) => Ok(json!({ "status": "ok", "coreGeneration": core_gen, "execution": row })),
         None => Ok(json!({ "status": "not_found", "coreGeneration": core_gen, "execution": Value::Null })),
     }
+}
+
+pub fn execute_ephemeral_progress(
+    tracker: &ExecutorTracker,
+    client: &ClientContext,
+    execution_id: &str,
+    attempt: i64,
+    progress: Value,
+    owner_generation: Option<&str>,
+) -> crate::Result<Value> {
+    let core_gen = current_core_generation();
+    if let Some(rejection) = verify_executor_identity(client, &core_gen, owner_generation) {
+        return Ok(rejection.data);
+    }
+    let Some(owner_gen) = tracker.verify_active_execution(execution_id, attempt, client.epoch) else {
+        return Ok(json!({ "status": "rejected", "code": "STALE_EXECUTOR_OWNER" }));
+    };
+    let seq = EVENT_ID_SEQ.fetch_add(1, Ordering::AcqRel);
+    let event = json!({
+        "seq": 0,
+        "ephemeral": true,
+        "eventId": format!("stream-{}-{seq}", &core_gen[..core_gen.len().min(8)]),
+        "coreGeneration": core_gen,
+        "ownerGeneration": owner_gen,
+        "domain": "execution",
+        "kind": "execution.progress",
+        "entityId": execution_id,
+        "revision": 0,
+        "payload": {
+            "executionId": execution_id,
+            "attempt": attempt,
+            "progress": progress,
+        },
+        "createdAtMs": now_ms(),
+    });
+    EPHEMERAL_PROGRESS_EMITTED.fetch_add(1, Ordering::Relaxed);
+    let _ = crate::request_control::emit(&json!({ "coreStreamEvent": event }));
+    Ok(json!({ "status": "ok", "ephemeral": true, "coreGeneration": core_gen }))
 }
 
 pub fn execute_execution(
@@ -814,7 +945,7 @@ pub fn execute_execution(
             let now = now_ms();
             let owner_gen = owner_generation.unwrap_or_else(|| client.generation.clone());
             let payload_val = payload.unwrap_or_else(|| json!({}));
-            let initial_status = if tracker.is_online().is_some() {
+            let initial_status = if tracker.is_online().is_some() && tracker.supports_kind(&kind) {
                 "queued"
             } else {
                 "waiting_executor"
@@ -864,7 +995,7 @@ pub fn execute_execution(
             let mut dispatches = vec![];
             dispatch_waiting_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
             let final_row = fetch_execution(&tx, &execution_id)?.unwrap();
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: json!({
                     "status": "ok",
@@ -946,7 +1077,7 @@ pub fn execute_execution(
             };
             let now = now_ms();
             tx.execute(
-                "UPDATE core_execution_runs SET status = ?, revision = ?, updated_at_ms = ? WHERE execution_id = ?",
+                "UPDATE core_execution_runs SET status = ?, revision = ?, wait_reason = NULL, updated_at_ms = ? WHERE execution_id = ?",
                 params![next_status, next_rev, now, execution_id],
             )?;
             let mut events = vec![append_event(
@@ -963,7 +1094,7 @@ pub fn execute_execution(
             let mut dispatches = vec![];
             dispatch_waiting_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
             let updated = fetch_execution(&tx, &execution_id)?.unwrap();
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: json!({ "status": "ok", "coreGeneration": core_gen, "execution": updated }),
                 events,
@@ -1019,7 +1150,7 @@ pub fn execute_execution(
             let next_rev = row.revision + 1;
             let now = now_ms();
             tx.execute(
-                "UPDATE core_execution_runs SET status = ?, revision = ?, updated_at_ms = ? WHERE execution_id = ?",
+                "UPDATE core_execution_runs SET status = ?, revision = ?, wait_reason = NULL, updated_at_ms = ? WHERE execution_id = ?",
                 params![next_status, next_rev, now, execution_id],
             )?;
             let mut events = vec![append_event(
@@ -1044,7 +1175,7 @@ pub fn execute_execution(
                 &mut events,
             )?;
             let updated = fetch_execution(&tx, &execution_id)?.unwrap();
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: json!({ "status": "ok", "coreGeneration": core_gen, "execution": updated }),
                 events,
@@ -1058,11 +1189,28 @@ pub fn execute_execution(
             progress,
             owner_generation,
             host_generation,
+            ephemeral,
         } => {
-            if let Some(rejection) = verify_executor_identity(client, &core_gen, owner_generation.as_deref()) {
+            if let Some(rejection) = verify_host_generation(db, host_generation.as_deref()) {
                 return Ok(rejection);
             }
-            if let Some(rejection) = verify_host_generation(db, host_generation.as_deref()) {
+            if ephemeral {
+                let data = execute_ephemeral_progress(
+                    tracker,
+                    client,
+                    &execution_id,
+                    attempt,
+                    progress,
+                    owner_generation.as_deref(),
+                )?;
+                return Ok(WriteSideEffects {
+                    data,
+                    events: vec![],
+                    dispatches: vec![],
+                    shutdown_after_reply: false,
+                });
+            }
+            if let Some(rejection) = verify_executor_identity(client, &core_gen, owner_generation.as_deref()) {
                 return Ok(rejection);
             }
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1100,7 +1248,7 @@ pub fn execute_execution(
                 &json!({ "executionId": execution_id, "attempt": attempt, "progress": progress }),
             )?;
             let updated = fetch_execution(&tx, &execution_id)?.unwrap();
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: json!({ "status": "ok", "coreGeneration": core_gen, "execution": updated }),
                 events: vec![ev],
@@ -1153,10 +1301,11 @@ pub fn execute_execution(
             let result_json = result.as_ref().map(serde_json::to_string).transpose()?;
             tx.execute(
                 "UPDATE core_execution_runs
-                 SET status = ?, revision = ?, result_json = ?, error_message = ?, updated_at_ms = ?
+                 SET status = ?, revision = ?, result_json = ?, error_message = ?, wait_reason = NULL, updated_at_ms = ?
                  WHERE execution_id = ?",
                 params![status, next_rev, result_json, error_message, now, execution_id],
             )?;
+            tracker.clear_active_execution(&execution_id);
             let mut events = vec![append_event(
                 &tx,
                 &core_gen,
@@ -1213,10 +1362,20 @@ pub fn execute_execution(
                 now,
                 &mut events,
             )?;
+            crate::maintenance_scheduler::on_core_execution_state_change(
+                &tx,
+                &core_gen,
+                &row.owner_generation,
+                &execution_id,
+                &status,
+                error_message.as_deref(),
+                now,
+                &mut events,
+            )?;
             let mut dispatches = vec![];
             dispatch_waiting_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
             let updated = fetch_execution(&tx, &execution_id)?.unwrap();
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: json!({ "status": "ok", "coreGeneration": core_gen, "execution": updated }),
                 events,
@@ -1294,7 +1453,7 @@ pub fn execute_execution(
                 dispatch_waiting_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
             }
             let updated = fetch_execution(&tx, &execution_id)?.unwrap();
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: json!({ "status": "ok", "coreGeneration": core_gen, "execution": updated }),
                 events,
@@ -1395,9 +1554,12 @@ fn transition_control_execution(
     };
     let next_rev = row.revision + 1;
     tx.execute(
-        "UPDATE core_execution_runs SET status = ?, revision = ?, updated_at_ms = ? WHERE execution_id = ?",
+        "UPDATE core_execution_runs SET status = ?, revision = ?, wait_reason = NULL, updated_at_ms = ? WHERE execution_id = ?",
         params![next_status, next_rev, now, execution_id],
     )?;
+    if matches!(next_status, "cancelled" | "paused") {
+        tracker.clear_active_execution(execution_id);
+    }
     let mut events = vec![append_event(
         &tx,
         core_gen,
@@ -1425,7 +1587,7 @@ fn transition_control_execution(
         dispatch_waiting_executions(&tx, core_gen, tracker, &mut events, &mut dispatches)?;
     }
     let updated = fetch_execution(&tx, execution_id)?.unwrap();
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
     Ok(WriteSideEffects {
         data: json!({ "status": "ok", "coreGeneration": core_gen, "execution": updated }),
         events,
@@ -1524,11 +1686,21 @@ pub fn handle_executor_presence(
                 now,
                 &mut events,
             )?;
+            crate::maintenance_scheduler::on_core_execution_state_change(
+                &tx,
+                &core_gen,
+                &owner_gen,
+                &execution_id,
+                "unknown",
+                Some("executor disconnected while in flight"),
+                now,
+                &mut events,
+            )?;
         }
     } else {
         dispatch_waiting_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
     }
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
     Ok(WriteSideEffects {
         data: json!({ "status": "ok", "online": online }),
         events,
@@ -1588,7 +1760,7 @@ pub fn events_snapshot(db: &Connection, domain_filter: Option<&str>) -> crate::R
         let mut stmt = db.prepare(
             "SELECT execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
                     task_id, kind, payload_json, status, revision, executor_client_id, executor_epoch, attempt,
-                    result_json, error_message, created_at_ms, updated_at_ms
+                    result_json, error_message, wait_reason, created_at_ms, updated_at_ms
              FROM core_execution_runs ORDER BY created_at_ms DESC LIMIT 512",
         )?;
         stmt.query_map([], row_to_execution)?
@@ -1807,7 +1979,7 @@ pub fn handle_lifecycle(
             "reason": current.reason,
         }),
     )?;
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
     Ok(WriteSideEffects {
         data: json!({
             "status": "ok",
@@ -2001,5 +2173,127 @@ mod tests {
         let replay_valid = events_replay(&db, 3, &current_core_generation(), None).unwrap();
         assert_eq!(replay_valid["gap"], false);
         assert_eq!(replay_valid["events"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn ephemeral_progress_validates_active_execution_without_writing_sqlite_events() {
+        let mut db = setup_db();
+        let tracker = ExecutorTracker::new();
+        let core_gen = current_core_generation();
+        let exec = ClientContext {
+            epoch: 10,
+            role: "execution-host".into(),
+            client_id: "pi-eph".into(),
+            generation: core_gen.clone(),
+        };
+        handle_executor_presence(&mut db, &tracker, true, 10, "pi-eph".into(), core_gen.clone())
+            .unwrap();
+        let ui = ClientContext {
+            epoch: 11,
+            role: "ui".into(),
+            client_id: "ui-eph".into(),
+            generation: core_gen.clone(),
+        };
+        execute_execution(
+            &mut db,
+            &tracker,
+            &ui,
+            ExecutionRequest::Submit {
+                execution_id: "exec-eph-1".into(),
+                idempotency_key: "key-eph-1".into(),
+                task_id: "task-eph".into(),
+                kind: "pi_turn".into(),
+                payload: None,
+                owner_generation: None,
+            },
+        )
+        .unwrap();
+        let ack = execute_execution(
+            &mut db,
+            &tracker,
+            &exec,
+            ExecutionRequest::ExecutorAck {
+                execution_id: "exec-eph-1".into(),
+                attempt: 1,
+                owner_generation: None,
+                host_generation: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(ack.data["execution"]["status"], "running");
+
+        let count_events = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM core_domain_events", [], |r| r.get(0))
+                .unwrap()
+        };
+        let events_before = count_events(&db);
+        let emitted_before = ephemeral_progress_emitted();
+
+        let ok = execute_ephemeral_progress(
+            &tracker,
+            &exec,
+            "exec-eph-1",
+            1,
+            json!({ "delta": "hi" }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(ok["status"], "ok");
+        assert_eq!(ok["ephemeral"], true);
+        assert_eq!(ephemeral_progress_emitted(), emitted_before + 1);
+        assert_eq!(count_events(&db), events_before);
+
+        let wrong_attempt = execute_ephemeral_progress(
+            &tracker,
+            &exec,
+            "exec-eph-1",
+            2,
+            json!({ "delta": "stale" }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(wrong_attempt["code"], "STALE_EXECUTOR_OWNER");
+
+        let wrong_epoch = execute_ephemeral_progress(
+            &tracker,
+            &ClientContext {
+                epoch: 99,
+                role: "execution-host".into(),
+                client_id: "pi-eph".into(),
+                generation: core_gen.clone(),
+            },
+            "exec-eph-1",
+            1,
+            json!({ "delta": "stale-epoch" }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(wrong_epoch["code"], "STALE_EXECUTOR_OWNER");
+
+        execute_execution(
+            &mut db,
+            &tracker,
+            &exec,
+            ExecutionRequest::ExecutorSettled {
+                execution_id: "exec-eph-1".into(),
+                attempt: 1,
+                status: "completed".into(),
+                result: Some(json!({ "ok": true })),
+                error_message: None,
+                owner_generation: None,
+                host_generation: None,
+            },
+        )
+        .unwrap();
+        let after_settled = execute_ephemeral_progress(
+            &tracker,
+            &exec,
+            "exec-eph-1",
+            1,
+            json!({ "delta": "late" }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(after_settled["code"], "STALE_EXECUTOR_OWNER");
     }
 }

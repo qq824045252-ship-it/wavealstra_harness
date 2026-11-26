@@ -58,6 +58,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { DurableBotRuntime, DurableBotOptions } from "./durable/DurableBotRuntime";
 import type { DurableBotSnapshot } from "../../shared/durable-bot";
 import { setSubagentIpcBackend } from "./subagent-ipc-host";
+import type { PlatformRpcClient } from "../host/PlatformRpcClient";
 import { createDurableToolPolicy } from "./durable/DurableToolPolicy";
 import { WorkCollaborationContext } from "./work/WorkCollaborationContext";
 import { createDurableConsultSession, createDurableConsultToolHooks, runDurableMultiModelConsult } from "./durable/DurableConsultSession";
@@ -819,6 +820,8 @@ export class AgentService {
   private loginInFlight = false;
   /** 整次 /login 的取消信号（OAuth device-code / 回调轮询依赖它，不能只拒 prompt waiter） */
   private loginAbort: AbortController | null = null;
+  private platformRpcClient?: PlatformRpcClient;
+  private authEventForwarder?: (kind: "auth_prompt" | "auth_event", data: unknown) => void;
 
   /**
    * 「加入聊天」selection → 格式化 Prompt Context 文本（装配处注入；
@@ -1652,6 +1655,25 @@ export class AgentService {
     this.coreClientProvider = provider;
   }
 
+  setPlatformRpcClient(client: PlatformRpcClient | undefined): void {
+    this.platformRpcClient = client;
+  }
+
+  getPlatformRpcClient(): PlatformRpcClient | undefined {
+    return this.platformRpcClient;
+  }
+
+  setAuthEventForwarder(forwarder: ((kind: "auth_prompt" | "auth_event", data: unknown) => void) | undefined): void {
+    this.authEventForwarder = forwarder;
+  }
+
+  async executePlatformBrowser(
+    input: import("../capabilities/BrowserAutomationService").BrowserExecInput,
+    signal?: AbortSignal,
+  ) {
+    return await this.browserAutomation.execute(input, signal);
+  }
+
   handleCoreExecutionEvent(ev: CoreDomainEvent): void {
     if (ev.domain !== "execution") return;
     const executionId = ev.entityId;
@@ -1669,7 +1691,12 @@ export class AgentService {
       }
     }
     if (ev.kind === "execution.progress" && payload.progress && typeof payload.progress === "object") {
-      const progress = payload.progress as { kind?: string; patch?: AgentUiPatch; event?: AgentTaskLifecycleEvent };
+      const progress = payload.progress as {
+        kind?: string;
+        patch?: AgentUiPatch;
+        event?: AgentTaskLifecycleEvent;
+        data?: unknown;
+      };
       if (progress.kind === "ui_patch" && progress.patch) {
         if (progress.patch.type === "assistant_start" && "taskId" in progress.patch) {
           this.activeRemoteTasks.set(progress.patch.taskId, executionId);
@@ -1681,6 +1708,10 @@ export class AgentService {
         this.emitPatch(progress.patch);
       } else if (progress.kind === "task_lifecycle" && progress.event) {
         this.emitTaskLifecycle(progress.event);
+      } else if (progress.kind === "auth_prompt" && progress.data) {
+        broadcast(AgentIpc.authPrompt, progress.data as AuthPromptRequestDto);
+      } else if (progress.kind === "auth_event" && progress.data) {
+        broadcast(AgentIpc.authEvent, progress.data as AuthEventDto);
       }
     }
     const listeners = this.remoteExecutionListeners.get(executionId);
@@ -1707,6 +1738,8 @@ export class AgentService {
     taskId: string;
     kind: "pi_turn" | "pi_compact" | "pi_control";
     payload: Record<string, unknown>;
+    timeoutMs?: number;
+    onProgress?: (progress: Record<string, unknown>) => void;
     resolveOnProgress?: (progress: Record<string, unknown>) => T | undefined;
   }): Promise<T> {
     const client = this.coreClientProvider?.();
@@ -1727,7 +1760,7 @@ export class AgentService {
         settled = true;
         cleanup();
         rejectPromise(new Error(`Core Pi execution timed out (${input.executionId})`));
-      }, 120_000);
+      }, input.timeoutMs ?? 120_000);
       timer.unref?.();
       const finish = (value: T) => {
         if (settled) return;
@@ -1743,11 +1776,15 @@ export class AgentService {
       };
       const onEvent = (ev: CoreDomainEvent) => {
         const p = (ev.payload ?? {}) as Record<string, unknown>;
-        if (ev.kind === "execution.progress" && p.progress && typeof p.progress === "object" && input.resolveOnProgress) {
-          const hit = input.resolveOnProgress(p.progress as Record<string, unknown>);
-          if (hit !== undefined) {
-            finish(hit);
-            return;
+        if (ev.kind === "execution.progress" && p.progress && typeof p.progress === "object") {
+          const prog = p.progress as Record<string, unknown>;
+          input.onProgress?.(prog);
+          if (input.resolveOnProgress) {
+            const hit = input.resolveOnProgress(prog);
+            if (hit !== undefined) {
+              finish(hit);
+              return;
+            }
           }
         }
         if (ev.kind === "execution.completed") {
@@ -2886,6 +2923,15 @@ export class AgentService {
   }
 
   async reloadModels(providerId?: string): Promise<ModelReloadResultDto> {
+    if (this.executionMode === "isolated-client" && !this.modelRuntime && this.coreClientProvider?.()) {
+      return await this.submitCorePiExecution<ModelReloadResultDto>({
+        executionId: `pi-ctrl-reload:${randomUUID()}`,
+        idempotencyKey: `reload:${randomUUID()}`,
+        taskId: "__models__",
+        kind: "pi_control",
+        payload: { controlAction: "reloadModels", providerId },
+      });
+    }
     if (!this.modelRuntime) throw new Error("ModelRuntime 未初始化");
     await this.refreshExternalModelConfig();
 
@@ -3121,6 +3167,15 @@ export class AgentService {
 
   /** Pi 原生可登录 Provider；模型目录直接来自 ModelRuntime/listModels。 */
   async listLoginProviders(): Promise<LoginProviderDto[]> {
+    if (this.executionMode === "isolated-client" && !this.modelRuntime && this.coreClientProvider?.()) {
+      return await this.submitCorePiExecution<LoginProviderDto[]>({
+        executionId: `pi-ctrl-providers:${randomUUID()}`,
+        idempotencyKey: `providers:${randomUUID()}`,
+        taskId: "__models__",
+        kind: "pi_control",
+        payload: { controlAction: "listLoginProviders" },
+      });
+    }
     if (!this.modelRuntime) return [];
     const creds = await this.modelRuntime.listCredentials();
     const modelCatalog = await this.listModels();
@@ -3184,6 +3239,15 @@ export class AgentService {
   }
 
   async setProviderEnabled(providerId: string, enabled: boolean): Promise<ModelInfoDto[]> {
+    if (this.executionMode === "isolated-client" && !this.modelRuntime && this.coreClientProvider?.()) {
+      return await this.submitCorePiExecution<ModelInfoDto[]>({
+        executionId: `pi-ctrl-enable:${providerId}:${randomUUID()}`,
+        idempotencyKey: `enable:${providerId}:${randomUUID()}`,
+        taskId: "__models__",
+        kind: "pi_control",
+        payload: { controlAction: "setProviderEnabled", providerId, enabled },
+      });
+    }
     if (!this.modelRuntime) throw new Error("Pi ModelRuntime 尚未初始化");
     if (typeof providerId !== "string" || !providerId.trim() || typeof enabled !== "boolean") {
       throw new Error("Provider 启停参数无效");
@@ -3249,6 +3313,15 @@ export class AgentService {
   }
 
   async listCredentials(): Promise<CredentialInfoDto[]> {
+    if (this.executionMode === "isolated-client" && !this.modelRuntime && this.coreClientProvider?.()) {
+      return await this.submitCorePiExecution<CredentialInfoDto[]>({
+        executionId: `pi-ctrl-creds:${randomUUID()}`,
+        idempotencyKey: `creds:${randomUUID()}`,
+        taskId: "__models__",
+        kind: "pi_control",
+        payload: { controlAction: "listCredentials" },
+      });
+    }
     if (!this.modelRuntime) return [];
     const creds = await this.modelRuntime.listCredentials();
     return creds.map((c) => ({
@@ -3263,6 +3336,16 @@ export class AgentService {
    * 成功后按 pi completeProviderAuthentication 选用该 provider 的默认模型。
    */
   async login(req: AuthLoginRequest): Promise<AuthLoginResult> {
+    if (this.executionMode === "isolated-client" && !this.modelRuntime && this.coreClientProvider?.()) {
+      return await this.submitCorePiExecution<AuthLoginResult>({
+        executionId: `pi-ctrl-login:${req.providerId}:${randomUUID()}`,
+        idempotencyKey: `login:${req.providerId}:${randomUUID()}`,
+        taskId: "__models__",
+        kind: "pi_control",
+        timeoutMs: 300_000,
+        payload: { controlAction: "login", request: req },
+      });
+    }
     if (!this.modelRuntime) return { ok: false, error: "ModelRuntime 未初始化" };
     if (this.loginInFlight) return { ok: false, error: "已有登录流程进行中" };
     this.loginInFlight = true;
@@ -3298,6 +3381,7 @@ export class AgentService {
                 };
           const payload: AuthPromptRequestDto = { requestId, prompt: dto };
           broadcast(AgentIpc.authPrompt, payload);
+          this.authEventForwarder?.("auth_prompt", payload);
           return await new Promise<string>((resolve, reject) => {
             const fail = (err: Error): void => {
               if (!this.authPromptWaiters.has(requestId)) return;
@@ -3323,6 +3407,7 @@ export class AgentService {
           if (abort.signal.aborted) return;
           // The provider dialog displays links and device codes; only its explicit user action opens a browser.
           broadcast(AgentIpc.authEvent, event as AuthEventDto);
+          this.authEventForwarder?.("auth_event", event);
         },
       };
       // ModelRuntime.login 已把该 Provider 的本地目录/可用性快照写好（不等远程 freshness）。
@@ -3367,7 +3452,16 @@ export class AgentService {
     return selectedModelId;
   }
 
-  authRespond(requestId: string, value: string): boolean {
+  async authRespond(requestId: string, value: string): Promise<boolean> {
+    if (this.executionMode === "isolated-client" && !this.modelRuntime && this.coreClientProvider?.()) {
+      return await this.submitCorePiExecution<boolean>({
+        executionId: `pi-ctrl-auth-resp:${randomUUID()}`,
+        idempotencyKey: `auth-resp:${requestId}:${randomUUID()}`,
+        taskId: "__models__",
+        kind: "pi_control",
+        payload: { controlAction: "authRespond", requestId, value },
+      });
+    }
     const waiter = this.authPromptWaiters.get(requestId);
     if (!waiter) return false;
     this.authPromptWaiters.delete(requestId);
@@ -3375,7 +3469,17 @@ export class AgentService {
     return true;
   }
 
-  authCancel(requestId?: string): void {
+  async authCancel(requestId?: string): Promise<void> {
+    if (this.executionMode === "isolated-client" && !this.modelRuntime && this.coreClientProvider?.()) {
+      await this.submitCorePiExecution({
+        executionId: `pi-ctrl-auth-cancel:${randomUUID()}`,
+        idempotencyKey: `auth-cancel:${requestId ?? "all"}:${randomUUID()}`,
+        taskId: "__models__",
+        kind: "pi_control",
+        payload: { controlAction: "authCancel", requestId },
+      });
+      return;
+    }
     this.loginAbort?.abort();
     if (requestId) {
       const waiter = this.authPromptWaiters.get(requestId);
@@ -3392,6 +3496,15 @@ export class AgentService {
   }
 
   async logout(providerId: string): Promise<AuthLogoutResult> {
+    if (this.executionMode === "isolated-client" && !this.modelRuntime && this.coreClientProvider?.()) {
+      return await this.submitCorePiExecution<AuthLogoutResult>({
+        executionId: `pi-ctrl-logout:${providerId}:${randomUUID()}`,
+        idempotencyKey: `logout:${providerId}:${randomUUID()}`,
+        taskId: "__models__",
+        kind: "pi_control",
+        payload: { controlAction: "logout", providerId },
+      });
+    }
     if (!this.modelRuntime) return { models: await this.listModels() };
     try {
       await this.modelRuntime.logout(providerId, { signal: AbortSignal.timeout(15_000) });
@@ -5782,7 +5895,21 @@ export class AgentService {
   private readonly auxiliaryRuntimes = new Set<DurableBotRuntime>();
   private readonly auxiliaryTextResults = new Map<string, { parentTaskId?: string; result: Promise<string> }>();
 
-  generateDotsReport(prompt: string, signal: AbortSignal, onText: (text: string) => void): Promise<string> {
+  async generateDotsReport(prompt: string, signal: AbortSignal, onText: (text: string) => void): Promise<string> {
+    if (this.executionMode === "isolated-client" && !this.modelRuntime && this.coreClientProvider?.()) {
+      return await this.submitCorePiExecution<string>({
+        executionId: `pi-ctrl-dots-report:${randomUUID()}`,
+        idempotencyKey: `dots-report:${randomUUID()}`,
+        taskId: DOTS_TASK_ID,
+        kind: "pi_control",
+        payload: { controlAction: "generateDotsReport", prompt },
+        onProgress: prog => {
+          if (prog.kind === "dots_report_delta" && typeof prog.text === "string") {
+            onText(prog.text);
+          }
+        },
+      });
+    }
     return this.runAuxiliaryText({
       id: `dots-report:${randomUUID()}`, kind: "dots-report", parentTaskId: DOTS_TASK_ID, cwd: getMyBuddyDir(),
       modelId: this.configuredDotsModelId(), prompt, signal, thinking: "off",
@@ -5798,7 +5925,16 @@ export class AgentService {
     });
   }
 
-  generateDotsDream(prompt: string, signal: AbortSignal): Promise<string> {
+  async generateDotsDream(prompt: string, signal: AbortSignal): Promise<string> {
+    if (this.executionMode === "isolated-client" && !this.modelRuntime && this.coreClientProvider?.()) {
+      return await this.submitCorePiExecution<string>({
+        executionId: `pi-ctrl-dots-dream:${randomUUID()}`,
+        idempotencyKey: `dots-dream:${randomUUID()}`,
+        taskId: DOTS_TASK_ID,
+        kind: "pi_control",
+        payload: { controlAction: "generateDotsDream", prompt },
+      });
+    }
     return this.runAuxiliaryText({
       id: `dots-dream:${randomUUID()}`, kind: "dots-report", cwd: getMyBuddyDir(),
       modelId: this.configuredDotsModelId(), prompt, signal, thinking: "off",

@@ -98,6 +98,7 @@ fn control_frame(control: &Control, value: &Value, id: &str) -> io::Result<()> {
     let data = match value.get("action").and_then(Value::as_str) {
         Some("cancel") if target.is_some() => control.cancel(target.unwrap()),
         Some("status") if target.is_some() => control.status(target.unwrap()),
+        Some("metrics") => crate::runtime_metrics_json(),
         Some("revokeGadget") => {
             let generation = value
                 .get("generation")

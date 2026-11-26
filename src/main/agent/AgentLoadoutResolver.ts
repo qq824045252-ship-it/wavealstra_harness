@@ -157,7 +157,7 @@ function evaluateCandidate(
 }
 
 export function resolveAgentLoadout(input: ResolveAgentLoadoutInput): AgentLoadoutRecommendationDto {
-  const query = input.query.trim().slice(0, 2000);
+  const query = (input.query ?? "").trim().slice(0, 2000);
   const memoryIds = new Set(input.memoryContext?.items.map((item) => item.id) ?? []);
   const evaluated = input.candidates.map((candidate) => {
     const result = evaluateCandidate(candidate, query, memoryIds);

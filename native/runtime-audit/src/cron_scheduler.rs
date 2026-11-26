@@ -2155,7 +2155,7 @@ pub fn execute_write(
         }
     };
 
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
     Ok(WriteSideEffects {
         data,
         events,

@@ -76,9 +76,19 @@ struct StaticHostInstance {
     started_at: i64,
     active: Arc<AtomicBool>,
     logs: Arc<Mutex<VecDeque<LogEntry>>>,
-    store: Arc<Mutex<Store>>,
+    store: Arc<Store>,
     control: Arc<Control>,
     req_seq: Arc<AtomicU64>,
+}
+
+struct WorkerPermit {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for WorkerPermit {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[derive(Default)]
@@ -86,11 +96,43 @@ struct SharedHostRegistry {
     static_hosts: HashMap<String, Arc<StaticHostInstance>>,
     backends: HashMap<String, BackendRegistration>,
     active_workers: Arc<AtomicUsize>,
+    max_active_workers: Arc<AtomicUsize>,
+    spawn_failures: Arc<AtomicU64>,
 }
 
 fn registry() -> &'static Mutex<SharedHostRegistry> {
     static REGISTRY: OnceLock<Mutex<SharedHostRegistry>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(SharedHostRegistry::default()))
+}
+
+fn spawn_fail_once_armed() -> &'static AtomicBool {
+    static ARMED: OnceLock<AtomicBool> = OnceLock::new();
+    ARMED.get_or_init(|| {
+        AtomicBool::new(
+            std::env::var("MYBUDDY_TEST_GADGET_SPAWN_FAIL_ONCE")
+                .ok()
+                .as_deref()
+                == Some("1"),
+        )
+    })
+}
+
+pub fn metrics_json() -> Value {
+    if let Ok(reg) = registry().lock() {
+        json!({
+            "activeWorkers": reg.active_workers.load(Ordering::Acquire),
+            "maxActiveWorkers": reg.max_active_workers.load(Ordering::Acquire),
+            "spawnFailures": reg.spawn_failures.load(Ordering::Acquire),
+            "maxWorkers": MAX_ACTIVE_HTTP_WORKERS,
+        })
+    } else {
+        json!({
+            "activeWorkers": 0,
+            "maxActiveWorkers": 0,
+            "spawnFailures": 0,
+            "maxWorkers": MAX_ACTIVE_HTTP_WORKERS,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -135,6 +177,12 @@ pub enum Command {
         #[serde(default)]
         reason: Option<String>,
     },
+}
+
+impl Command {
+    pub fn is_read_only(&self) -> bool {
+        matches!(self, Self::Supported | Self::List | Self::Health { .. })
+    }
 }
 
 fn push_log(logs: &Mutex<VecDeque<LogEntry>>, level: &'static str, message: impl Into<String>) {
@@ -350,6 +398,8 @@ fn send_error_json(stream: &mut TcpStream, status: u16, code: &str, message: &st
             "Unauthorized"
         } else if status == 409 {
             "Conflict"
+        } else if status == 429 {
+            "Too Many Requests"
         } else if status == 503 {
             "Service Unavailable"
         } else {
@@ -360,6 +410,15 @@ fn send_error_json(stream: &mut TcpStream, status: u16, code: &str, message: &st
         &payload,
         true,
     );
+}
+
+fn send_fast_error(mut stream: TcpStream, status: u16, code: &str, message: &str) {
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
+    let mut discard = [0u8; 4096];
+    let _ = stream.read(&mut discard);
+    send_error_json(&mut stream, status, code, message);
+    let _ = stream.shutdown(Shutdown::Write);
 }
 
 fn send_value_json(stream: &mut TcpStream, value: Value) {
@@ -391,22 +450,16 @@ fn handle_state_request(
         .ok_or((400, "UNKNOWN_OPERATION", "未知的数据操作"))?;
 
     if op == "keys" {
-        let reply = {
-            let mut store = inst
-                .store
-                .lock()
-                .map_err(|_| (500, "STORAGE_IO", "Gadget 持久数据操作失败"))?;
-            store.run_for(
-                gadget_state::Request::Access {
-                    path: inst.data_path.clone(),
-                    canonical_path: inst.canonical_data.clone(),
-                    bucket,
-                    action: Action::Keys,
-                    authorization: None,
-                },
-                None,
-            )
-        };
+        let reply = inst.store.run_for(
+            gadget_state::Request::Access {
+                path: inst.data_path.clone(),
+                canonical_path: inst.canonical_data.clone(),
+                bucket,
+                action: Action::Keys,
+                authorization: None,
+            },
+            None,
+        );
         return match reply {
             Reply::Keys { keys } => {
                 let mut set = std::collections::BTreeSet::new();
@@ -493,22 +546,16 @@ fn handle_state_request(
         return Err((503, "STALE_WRITE", "写入已失效，未提交（Gadget 已停止）"));
     }
 
-    let reply = {
-        let mut store = inst
-            .store
-            .lock()
-            .map_err(|_| (500, "STORAGE_IO", "Gadget 持久数据操作失败"))?;
-        store.run_for(
-            gadget_state::Request::Access {
-                path: inst.data_path.clone(),
-                canonical_path: inst.canonical_data.clone(),
-                bucket,
-                action,
-                authorization: Some(auth),
-            },
-            None,
-        )
-    };
+    let reply = inst.store.run_for(
+        gadget_state::Request::Access {
+            path: inst.data_path.clone(),
+            canonical_path: inst.canonical_data.clone(),
+            bucket,
+            action,
+            authorization: Some(auth),
+        },
+        None,
+    );
 
     match reply {
         Reply::Value { entry } => {
@@ -843,7 +890,7 @@ fn wake_listener(port: u16) {
 }
 
 pub fn handle(
-    store: &Arc<Mutex<Store>>,
+    store: &Arc<Store>,
     control: &Arc<Control>,
     cmd: Command,
 ) -> crate::Result<Value> {
@@ -927,10 +974,7 @@ pub fn handle(
 
             let canonical_source = fs::canonicalize(&source_path)
                 .map_err(|e| format!("Gadget source directory unavailable: {e}"))?;
-            let open_reply = {
-                let mut st = store.lock().map_err(|_| "store lock")?;
-                st.run_for(gadget_state::Request::Open { path: data_path.clone() }, None)
-            };
+            let open_reply = store.run_for(gadget_state::Request::Open { path: data_path.clone() }, None);
             let canonical_data = match open_reply {
                 Reply::Opened { canonical_path } => canonical_path,
                 Reply::Error { error } => {
@@ -989,6 +1033,8 @@ pub fn handle(
             }
 
             let workers = reg.active_workers.clone();
+            let max_workers = reg.max_active_workers.clone();
+            let spawn_failures = reg.spawn_failures.clone();
             let worker_inst = instance.clone();
             let worker_port = port;
             thread::Builder::new()
@@ -1005,21 +1051,38 @@ pub fn handle(
                         if !worker_inst.active.load(Ordering::Acquire) {
                             break;
                         }
-                        if workers.fetch_add(1, Ordering::AcqRel) >= MAX_ACTIVE_HTTP_WORKERS {
+                        let prev = workers.fetch_add(1, Ordering::AcqRel);
+                        if prev >= MAX_ACTIVE_HTTP_WORKERS {
                             workers.fetch_sub(1, Ordering::AcqRel);
-                            let mut s = stream;
-                            send_error_json(&mut s, 429, "BUSY", "Gadget 服务繁忙，请稍后再试");
+                            send_fast_error(stream, 429, "BUSY", "Gadget 服务繁忙，请稍后再试");
+                            continue;
+                        }
+                        let cur = prev + 1;
+                        let _ = max_workers.fetch_max(cur, Ordering::AcqRel);
+                        let permit = WorkerPermit {
+                            active: workers.clone(),
+                        };
+                        if spawn_fail_once_armed().swap(false, Ordering::AcqRel) {
+                            spawn_failures.fetch_add(1, Ordering::AcqRel);
+                            drop(permit);
+                            send_fast_error(stream, 503, "SPAWN_FAILED", "Gadget 工作线程创建失败，请重试");
                             continue;
                         }
                         let inst_c = worker_inst.clone();
-                        let workers_c = workers.clone();
-                        let _ = thread::Builder::new()
+                        match thread::Builder::new()
                             .name(format!("gadget-req-{worker_port}"))
                             .stack_size(256 * 1024)
                             .spawn(move || {
-                                handle_connection(&inst_c, stream);
-                                workers_c.fetch_sub(1, Ordering::AcqRel);
-                            });
+                                let _permit = permit;
+                                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    handle_connection(&inst_c, stream);
+                                }));
+                            }) {
+                            Ok(_) => {}
+                            Err(_) => {
+                                spawn_failures.fetch_add(1, Ordering::AcqRel);
+                            }
+                        }
                     }
                 })
                 .map_err(|e| format!("spawn gadget http thread failed: {e}"))?;
@@ -1140,10 +1203,11 @@ pub fn stop_all() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::request_control;
     use std::fs;
     use std::io::Read;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn http_get(port: u16, path: &str, headers: &[(&str, &str)]) -> (u16, String) {
         let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -1192,6 +1256,7 @@ mod tests {
 
     #[test]
     fn shared_static_host_serves_multiple_gadgets_and_revokes_on_stop() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1207,8 +1272,7 @@ mod tests {
         let db_path = root.join("app.db");
         let _ = rusqlite::Connection::open(&db_path).unwrap();
         let control = Control::open(&db_path).unwrap();
-        request_control::install(control.clone());
-        let store = Arc::new(Mutex::new(Store::default()));
+        let store = Arc::new(Store::with_control(control.clone()));
 
         let gen1 = format!("gen-static-{nonce}");
         let res = handle(
@@ -1272,7 +1336,7 @@ mod tests {
         assert_eq!(stopped["status"], "stopped");
 
         let canon_data = fs::canonicalize(&data).unwrap();
-        let late_reply = store.lock().unwrap().run_for(
+        let late_reply = store.run_for(
             gadget_state::Request::Access {
                 path: data.clone(),
                 canonical_path: canon_data,
@@ -1293,6 +1357,64 @@ mod tests {
         );
         assert!(matches!(late_reply, Reply::Error { error: Fault::StaleWrite }));
 
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn spawn_failure_releases_permit_and_preserves_service() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("mybuddy-gadget-permit-test-{nonce}"));
+        let src = root.join("code");
+        let data = root.join("data");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        fs::write(src.join("index.html"), "<html><head></head><body>ok</body></html>").unwrap();
+
+        let db_path = root.join("app.db");
+        let _ = rusqlite::Connection::open(&db_path).unwrap();
+        let control = Control::open(&db_path).unwrap();
+        let store = Arc::new(Store::with_control(control.clone()));
+
+        let res = handle(
+            &store,
+            &control,
+            Command::StartStatic {
+                gadget_id: "g-permit-1".into(),
+                name: "Permit 1".into(),
+                source_path: src.clone(),
+                data_path: data.clone(),
+                entry: "index.html".into(),
+                default_config: None,
+                sdk_source: "window.__sdk=1;".into(),
+                token: "tok-p".into(),
+                generation: format!("gen-permit-{nonce}"),
+            },
+        )
+        .unwrap();
+        let port = res["port"].as_u64().unwrap() as u16;
+
+        spawn_fail_once_armed().store(true, Ordering::Release);
+        let (st_fail, _) = http_get(port, "/", &[]);
+        assert_eq!(st_fail, 503);
+        let m = metrics_json();
+        assert_eq!(m["activeWorkers"], 0);
+        assert!(m["spawnFailures"].as_u64().unwrap_or(0) >= 1);
+
+        let (st_ok, _) = http_get(port, "/", &[]);
+        assert_eq!(st_ok, 200);
+
+        let _ = handle(
+            &store,
+            &control,
+            Command::StopStatic {
+                gadget_id: "g-permit-1".into(),
+                reason: Some("test_done".into()),
+            },
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }

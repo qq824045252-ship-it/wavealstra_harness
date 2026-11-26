@@ -32,6 +32,13 @@ const MAX_NOTIFY_QUEUED: usize = 64;
 const MAX_DATA_QUEUED: usize = 16;
 const MAX_INPUT_QUEUED: usize = 32;
 
+static EPHEMERAL_DROPPED: AtomicU64 = AtomicU64::new(0);
+
+#[allow(dead_code)]
+pub fn ephemeral_progress_dropped() -> u64 {
+    EPHEMERAL_DROPPED.load(Ordering::Relaxed)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ClientRole {
     LegacyExclusive,
@@ -105,6 +112,25 @@ impl PriorityOutput {
         true
     }
 
+    fn push_ephemeral(&self, bytes: Vec<u8>) -> bool {
+        let Ok(mut guard) = self.state.lock() else {
+            return false;
+        };
+        if guard.closed {
+            return false;
+        }
+        if guard.notify.len() >= MAX_NOTIFY_QUEUED / 2
+            || guard.bytes.saturating_add(bytes.len()) > MAX_QUEUE_BYTES / 2
+        {
+            EPHEMERAL_DROPPED.fetch_add(1, Ordering::Relaxed);
+            return true;
+        }
+        guard.bytes += bytes.len();
+        guard.notify.push_back(bytes);
+        self.ready.notify_one();
+        true
+    }
+
     fn pop(&self) -> Option<Vec<u8>> {
         let mut guard = self.state.lock().ok()?;
         loop {
@@ -148,10 +174,60 @@ struct ActiveClient {
     subscribed: Option<EventSubscription>,
 }
 
+#[derive(Clone, Debug)]
+struct PlatformOwner {
+    epoch: u64,
+    available: bool,
+    ui_online: bool,
+    browser_available: bool,
+    computer_available: bool,
+    capabilities: Vec<String>,
+    generation: String,
+}
+
+impl PlatformOwner {
+    fn availability_payload(&self, reason: Option<&str>) -> Value {
+        json!({
+            "available": self.available,
+            "uiOnline": self.ui_online,
+            "browserAvailable": self.browser_available,
+            "computerAvailable": self.computer_available,
+            "capabilities": self.capabilities,
+            "platformGeneration": self.generation,
+            "ownerEpoch": self.epoch,
+            "reason": reason,
+        })
+    }
+
+    fn supports_domain(&self, domain: &str) -> Result<(), (&'static str, &'static str)> {
+        if !self.available {
+            return Err(("PLATFORM_OFFLINE", "Electron Main platform host is offline"));
+        }
+        match domain {
+            "ui" if !self.ui_online => Err(("UI_OFFLINE", "Electron UI window is offline")),
+            "browser" if !self.browser_available => {
+                Err(("BROWSER_OFFLINE", "Electron embedded browser host is unavailable"))
+            }
+            "computer" | "desktop" if !self.computer_available => {
+                Err(("COMPUTER_OFFLINE", "Desktop computer automation is unavailable"))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+struct PlatformInFlight {
+    caller_epoch: u64,
+    caller_request_id: String,
+    owner_epoch: u64,
+}
+
 #[derive(Default)]
 struct Routing {
     clients: HashMap<u64, ActiveClient>,
     owners: HashMap<String, u64>,
+    platform_owner: Option<PlatformOwner>,
+    platform_requests: HashMap<String, PlatformInFlight>,
 }
 
 struct Relay {
@@ -299,6 +375,85 @@ impl Relay {
                 true,
             );
         }
+        let mut disconnected_platform_callers: Vec<(Arc<PriorityOutput>, String, Value)> = Vec::new();
+        let mut cancelled_platform_calls: Vec<(Arc<PriorityOutput>, Value)> = Vec::new();
+        let mut host_availability_notices: Vec<(Arc<PriorityOutput>, Value)> = Vec::new();
+        if state.platform_owner.as_ref().is_some_and(|o| o.epoch == epoch) {
+            state.platform_owner = None;
+            let orphaned_ids: Vec<String> = state
+                .platform_requests
+                .iter()
+                .filter_map(|(inv_id, req)| (req.owner_epoch == epoch).then_some(inv_id.clone()))
+                .collect();
+            for inv_id in orphaned_ids {
+                if let Some(req) = state.platform_requests.remove(&inv_id)
+                    && let Some(caller) = state.clients.get(&req.caller_epoch)
+                {
+                    disconnected_platform_callers.push((
+                        Arc::clone(&caller.output),
+                        inv_id,
+                        json!({
+                            "replyId": req.caller_request_id,
+                            "status": "ok",
+                            "data": {
+                                "ok": false,
+                                "outcome": {
+                                    "status": "uncertain_platform_disconnect",
+                                    "code": "PLATFORM_DISCONNECTED",
+                                    "message": "Electron Main disconnected while platform action was in flight"
+                                }
+                            }
+                        }),
+                    ));
+                }
+            }
+            let notice = json!({
+                "corePlatformAvailability": {
+                    "available": false,
+                    "uiOnline": false,
+                    "browserAvailable": false,
+                    "computerAvailable": false,
+                    "capabilities": [],
+                    "reason": "platform_disconnected"
+                }
+            });
+            for c in state.clients.values() {
+                if c.role == ClientRole::ExecutionHost {
+                    host_availability_notices.push((Arc::clone(&c.output), notice.clone()));
+                }
+            }
+        }
+        let caller_orphaned: Vec<String> = state
+            .platform_requests
+            .iter()
+            .filter_map(|(inv_id, req)| (req.caller_epoch == epoch).then_some(inv_id.clone()))
+            .collect();
+        for inv_id in caller_orphaned {
+            if let Some(req) = state.platform_requests.remove(&inv_id)
+                && let Some(owner) = state.clients.get(&req.owner_epoch)
+            {
+                cancelled_platform_calls.push((
+                    Arc::clone(&owner.output),
+                    json!({
+                        "corePlatformCancel": {
+                            "invocationId": inv_id,
+                            "callerEpoch": epoch,
+                            "reason": "caller_disconnected"
+                        }
+                    }),
+                ));
+            }
+        }
+        drop(state);
+        for (out, _inv, msg) in disconnected_platform_callers {
+            let _ = out.push(frame(msg), true);
+        }
+        for (out, msg) in host_availability_notices {
+            let _ = out.push(frame(msg), true);
+        }
+        for (out, msg) in cancelled_platform_calls {
+            let _ = out.push(frame(msg), true);
+        }
     }
 
     fn deliver(&self, bytes: Vec<u8>, value: &Value) {
@@ -309,7 +464,20 @@ impl Relay {
         }
         let mut failed_epochs: Vec<u64> = Vec::new();
         if let Ok(mut state) = self.routing.lock() {
-            if let Some(event) = value.get("coreEvent") {
+            if let Some(stream_ev) = value.get("coreStreamEvent") {
+                let event_gen = stream_ev
+                    .get("coreGeneration")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                for client in state.clients.values_mut() {
+                    if let Some(sub) = client.subscribed.as_ref()
+                        && sub.core_generation == event_gen
+                        && !client.output.push_ephemeral(bytes.clone())
+                    {
+                        failed_epochs.push(client.epoch);
+                    }
+                }
+            } else if let Some(event) = value.get("coreEvent") {
                 let seq = event.get("seq").and_then(Value::as_i64).unwrap_or(0);
                 let event_gen = event
                     .get("coreGeneration")
@@ -417,6 +585,323 @@ impl Relay {
         if disconnect {
             self.disconnect(epoch);
             return false;
+        }
+        true
+    }
+
+    fn handle_platform_register(&self, epoch: u64, value: &Value) -> bool {
+        let Some(id) = value.get("requestId").and_then(Value::as_str) else {
+            return false;
+        };
+        let available = value.get("available").and_then(Value::as_bool).unwrap_or(true);
+        let ui_online = value.get("uiOnline").and_then(Value::as_bool).unwrap_or(false);
+        let browser_available = value
+            .get("browserAvailable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let computer_available = value
+            .get("computerAvailable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let capabilities: Vec<String> = value
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let generation = value
+            .get("platformGeneration")
+            .and_then(Value::as_str)
+            .unwrap_or("main")
+            .to_owned();
+
+        let mut pushes: Vec<(Arc<PriorityOutput>, Vec<u8>)> = Vec::new();
+        let mut disconnect = false;
+        if let Ok(mut state) = self.routing.lock() {
+            let sender_role = state.clients.get(&epoch).map(|c| c.role.clone());
+            if matches!(sender_role, None | Some(ClientRole::ExecutionHost)) {
+                if let Some(client) = state.clients.get(&epoch) {
+                    let reply = frame(json!({
+                        "replyId": id,
+                        "status": "error",
+                        "error": { "code": "FORBIDDEN", "message": "execution-host cannot register platform owner" }
+                    }));
+                    if !client.output.push(reply, true) {
+                        disconnect = true;
+                    }
+                }
+            } else {
+                let owner_snapshot = PlatformOwner {
+                    epoch,
+                    available,
+                    ui_online,
+                    browser_available,
+                    computer_available,
+                    capabilities,
+                    generation,
+                };
+                if available {
+                    state.platform_owner = Some(owner_snapshot.clone());
+                } else if state
+                    .platform_owner
+                    .as_ref()
+                    .is_some_and(|o| o.epoch == epoch)
+                {
+                    state.platform_owner = None;
+                }
+                let notice = frame(json!({
+                    "corePlatformAvailability": owner_snapshot.availability_payload(if available { None } else { Some("unregistered") })
+                }));
+                for client in state.clients.values() {
+                    if client.role == ClientRole::ExecutionHost {
+                        pushes.push((Arc::clone(&client.output), notice.clone()));
+                    }
+                }
+                if let Some(sender) = state.clients.get(&epoch) {
+                    let reply = frame(json!({
+                        "replyId": id,
+                        "status": "ok",
+                        "data": { "registered": available, "ownerEpoch": epoch }
+                    }));
+                    pushes.push((Arc::clone(&sender.output), reply));
+                }
+            }
+        }
+        for (out, msg) in pushes {
+            let _ = out.push(msg, true);
+        }
+        if disconnect {
+            self.disconnect(epoch);
+            return false;
+        }
+        true
+    }
+
+    fn handle_platform_request(&self, epoch: u64, value: &Value) -> bool {
+        let Some(id) = value.get("requestId").and_then(Value::as_str) else {
+            return false;
+        };
+        let invocation_id = value
+            .get("invocationId")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(id)
+            .to_owned();
+        let domain = value
+            .get("domain")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let action = value
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+        let timeout_ms = value.get("timeoutMs").and_then(Value::as_u64);
+
+        let mut forward: Option<(Arc<PriorityOutput>, Vec<u8>)> = None;
+        let mut immediate_reply: Option<(Arc<PriorityOutput>, Vec<u8>)> = None;
+
+        if let Ok(mut state) = self.routing.lock() {
+            let owner_check = state
+                .platform_owner
+                .as_ref()
+                .ok_or(("PLATFORM_OFFLINE", "Electron Main platform host is not registered"))
+                .and_then(|owner| {
+                    owner.supports_domain(&domain)?;
+                    state
+                        .clients
+                        .get(&owner.epoch)
+                        .map(|c| (owner.epoch, Arc::clone(&c.output)))
+                        .ok_or(("PLATFORM_OFFLINE", "Platform owner socket not connected"))
+                });
+            match owner_check {
+                Ok((owner_epoch, owner_out)) if state.platform_requests.len() < MAX_PENDING => {
+                    state.platform_requests.insert(
+                        invocation_id.clone(),
+                        PlatformInFlight {
+                            caller_epoch: epoch,
+                            caller_request_id: id.to_owned(),
+                            owner_epoch,
+                        },
+                    );
+                    forward = Some((
+                        owner_out,
+                        frame(json!({
+                            "corePlatformInvoke": {
+                                "invocationId": invocation_id,
+                                "callerEpoch": epoch,
+                                "domain": domain,
+                                "action": action,
+                                "payload": payload,
+                                "timeoutMs": timeout_ms,
+                            }
+                        })),
+                    ));
+                }
+                Ok(_) => {
+                    if let Some(caller) = state.clients.get(&epoch) {
+                        immediate_reply = Some((
+                            Arc::clone(&caller.output),
+                            frame(json!({
+                                "replyId": id,
+                                "status": "ok",
+                                "data": {
+                                    "ok": false,
+                                    "outcome": {
+                                        "status": "unavailable",
+                                        "code": "PLATFORM_OVERLOADED",
+                                        "message": "Too many in-flight platform invocations"
+                                    }
+                                }
+                            })),
+                        ));
+                    }
+                }
+                Err((code, msg)) => {
+                    if let Some(caller) = state.clients.get(&epoch) {
+                        immediate_reply = Some((
+                            Arc::clone(&caller.output),
+                            frame(json!({
+                                "replyId": id,
+                                "status": "ok",
+                                "data": {
+                                    "ok": false,
+                                    "outcome": {
+                                        "status": "unavailable",
+                                        "code": code,
+                                        "message": msg
+                                    }
+                                }
+                            })),
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some((owner_out, msg)) = forward
+            && !owner_out.push(msg, true)
+        {
+            if let Ok(mut state) = self.routing.lock()
+                && let Some(req) = state.platform_requests.remove(&invocation_id)
+                && let Some(caller) = state.clients.get(&req.caller_epoch)
+            {
+                let _ = caller.output.push(
+                    frame(json!({
+                        "replyId": req.caller_request_id,
+                        "status": "ok",
+                        "data": {
+                            "ok": false,
+                            "outcome": {
+                                "status": "uncertain_platform_disconnect",
+                                "code": "PLATFORM_DISCONNECTED",
+                                "message": "Failed to deliver invocation to Electron Main"
+                            }
+                        }
+                    })),
+                    true,
+                );
+            }
+        }
+        if let Some((caller_out, msg)) = immediate_reply {
+            let _ = caller_out.push(msg, true);
+        }
+        true
+    }
+
+    fn handle_platform_reply(&self, epoch: u64, value: &Value) -> bool {
+        let Some(id) = value.get("requestId").and_then(Value::as_str) else {
+            return false;
+        };
+        let Some(invocation_id) = value.get("invocationId").and_then(Value::as_str) else {
+            return false;
+        };
+        let outcome = value.get("outcome").cloned().unwrap_or(Value::Null);
+        let mut pushes: Vec<(Arc<PriorityOutput>, Vec<u8>)> = Vec::new();
+        if let Ok(mut state) = self.routing.lock() {
+            let matches_owner = state
+                .platform_requests
+                .get(invocation_id)
+                .is_some_and(|req| req.owner_epoch == epoch);
+            let delivered = if matches_owner {
+                if let Some(req) = state.platform_requests.remove(invocation_id)
+                    && let Some(caller) = state.clients.get(&req.caller_epoch)
+                {
+                    pushes.push((
+                        Arc::clone(&caller.output),
+                        frame(json!({
+                            "replyId": req.caller_request_id,
+                            "status": "ok",
+                            "data": outcome
+                        })),
+                    ));
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if let Some(sender) = state.clients.get(&epoch) {
+                pushes.push((
+                    Arc::clone(&sender.output),
+                    frame(json!({
+                        "replyId": id,
+                        "status": "ok",
+                        "data": { "delivered": delivered }
+                    })),
+                ));
+            }
+        }
+        for (out, msg) in pushes {
+            let _ = out.push(msg, true);
+        }
+        true
+    }
+
+    fn handle_platform_cancel(&self, epoch: u64, value: &Value) -> bool {
+        let Some(id) = value.get("requestId").and_then(Value::as_str) else {
+            return false;
+        };
+        let Some(invocation_id) = value.get("invocationId").and_then(Value::as_str) else {
+            return false;
+        };
+        let mut pushes: Vec<(Arc<PriorityOutput>, Vec<u8>)> = Vec::new();
+        if let Ok(state) = self.routing.lock() {
+            let mut forwarded = false;
+            if let Some(req) = state.platform_requests.get(invocation_id)
+                && req.caller_epoch == epoch
+                && let Some(owner) = state.clients.get(&req.owner_epoch)
+            {
+                pushes.push((
+                    Arc::clone(&owner.output),
+                    frame(json!({
+                        "corePlatformCancel": {
+                            "invocationId": invocation_id,
+                            "callerEpoch": epoch,
+                            "reason": "caller_cancelled"
+                        }
+                    })),
+                ));
+                forwarded = true;
+            }
+            if let Some(sender) = state.clients.get(&epoch) {
+                pushes.push((
+                    Arc::clone(&sender.output),
+                    frame(json!({
+                        "replyId": id,
+                        "status": "ok",
+                        "data": { "cancelled": forwarded }
+                    })),
+                ));
+            }
+        }
+        for (out, msg) in pushes {
+            let _ = out.push(msg, true);
         }
         true
     }
@@ -696,6 +1181,11 @@ fn accept_client(
                 Ok(value) => value,
                 Err(_) => return,
             };
+            let initial_platform_notice = state
+                .platform_owner
+                .as_ref()
+                .filter(|_| handshake.role == ClientRole::ExecutionHost)
+                .map(|o| frame(json!({ "corePlatformAvailability": o.availability_payload(None) })));
             state.clients.insert(
                 epoch,
                 ActiveClient {
@@ -709,6 +1199,9 @@ fn accept_client(
                     subscribed: None,
                 },
             );
+            if let Some(notice) = initial_platform_notice {
+                let _ = output.push(notice, true);
+            }
         }
         if handshake.role == ClientRole::ExecutionHost {
             let _ = relay.enqueue(
@@ -773,6 +1266,30 @@ fn accept_client(
             }
             if op == Some("coreSubscribe") {
                 if !relay.handle_subscribe(epoch, &value) {
+                    break;
+                }
+                continue;
+            }
+            if op == Some("corePlatformRegister") {
+                if !relay.handle_platform_register(epoch, &value) {
+                    break;
+                }
+                continue;
+            }
+            if op == Some("corePlatformRequest") {
+                if !relay.handle_platform_request(epoch, &value) {
+                    break;
+                }
+                continue;
+            }
+            if op == Some("corePlatformReply") {
+                if !relay.handle_platform_reply(epoch, &value) {
+                    break;
+                }
+                continue;
+            }
+            if op == Some("corePlatformCancel") {
+                if !relay.handle_platform_cancel(epoch, &value) {
                     break;
                 }
                 continue;

@@ -517,12 +517,21 @@ pub(crate) fn on_core_execution_state_change(
     let Some(key) = cycle_key else {
         return Ok(());
     };
-    tx.execute(
-        "UPDATE core_dots_control_cycles
-         SET in_flight = 0, last_completed_at_ms = ?1, updated_at_ms = ?1
-         WHERE cycle_key = ?2",
-        params![now, key],
-    )?;
+    if exec_status == "completed" {
+        tx.execute(
+            "UPDATE core_dots_control_cycles
+             SET in_flight = 0, last_completed_at_ms = ?1, updated_at_ms = ?1
+             WHERE cycle_key = ?2",
+            params![now, key],
+        )?;
+    } else {
+        tx.execute(
+            "UPDATE core_dots_control_cycles
+             SET in_flight = 0, updated_at_ms = ?1
+             WHERE cycle_key = ?2",
+            params![now, key],
+        )?;
+    }
     events.push(append_event(
         tx,
         core_gen,
@@ -743,7 +752,7 @@ pub fn execute_write(
         Command::Status => json!({ "status": "rejected", "code": "READ_ONLY" }),
     };
 
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
     Ok(WriteSideEffects {
         data,
         events,
@@ -866,5 +875,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(run_count, 2); // Only initial Start (1) + 1 coalesced after 600s sleep jump, NOT 40!
+
+        // Failed control cycles must clear in_flight without advancing last_completed_at_ms
+        let mut settle_events = Vec::new();
+        let failed_exec_id: String = conn
+            .query_row(
+                "SELECT execution_id FROM core_execution_runs WHERE kind = 'dots_control' AND json_extract(payload_json, '$.dotsControlCycle') = 'google' ORDER BY created_at_ms DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+            on_core_execution_state_change(
+                &tx,
+                &ctx.generation,
+                &ctx.generation,
+                &failed_exec_id,
+                "failed",
+                t0 + 601_000,
+                &mut settle_events,
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let (in_flight_after_fail, last_completed_after_fail): (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT in_flight, last_completed_at_ms FROM core_dots_control_cycles WHERE cycle_key = 'google'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(in_flight_after_fail, 0);
+        assert_eq!(last_completed_after_fail, None);
     }
 }

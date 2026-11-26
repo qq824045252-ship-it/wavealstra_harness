@@ -125,7 +125,7 @@ async function runRc23UiReconnectCycles(tempRoot: string, runtimeAuditExecutable
         const uniqueKey = `${ev.coreGeneration}:${ev.seq}`;
         assert(!receivedEventKeys.has(uniqueKey), `RC-23: duplicate event delivered to UI listener: ${uniqueKey}`);
         receivedEventKeys.add(uniqueKey);
-        if (ev.domain === "note") notesSeen.add(ev.entityId);
+        if (ev.domain === "domainNote") notesSeen.add(ev.entityId);
       },
     });
 
@@ -203,8 +203,8 @@ async function runRc23UiReconnectCycles(tempRoot: string, runtimeAuditExecutable
         `RC-23: missed offline notification ${cycle} recovered cleanly after 20 close/reopen cycles`,
       );
       assert(
-        notesSeen.has(`note-rc23-${cycle}`) || finalSnap.headSeq >= 20,
-        `RC-23: offline domain event note-rc23-${cycle} replayed or captured cleanly`,
+        notesSeen.has(`note-rc23-${cycle}`),
+        `RC-23: offline domain event note-rc23-${cycle} replayed cleanly`,
       );
     }
 

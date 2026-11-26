@@ -1,8 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { connectCoreWorker, type CoreClientRole, type RuntimeCoreClient } from "./core-client";
+import {
+  RuntimeAuditNotStartedOperationError,
+  RuntimeAuditOperationFailedError,
+  RuntimeAuditUnknownOperationError,
+  type RuntimeOperationReceipt,
+} from "./runtime-audit";
 
 export interface CoreDomainEvent {
   seq: number;
+  ephemeral?: boolean;
   eventId: string;
   coreGeneration: string;
   ownerGeneration: string;
@@ -43,6 +50,7 @@ export interface CoreExecutionRecord {
   attempt: number;
   result?: unknown;
   errorMessage?: string | null;
+  waitReason?: string | null;
   createdAtMs: number;
   updatedAtMs: number;
 }
@@ -111,19 +119,89 @@ export interface CoreBusinessClientOptions {
   timeoutMs?: number;
 }
 
+export interface CorePlatformAvailabilityEvent {
+  available: boolean;
+  uiOnline: boolean;
+  browserAvailable: boolean;
+  computerAvailable?: boolean;
+  capabilities?: string[];
+  platformGeneration?: string;
+  ownerEpoch?: number;
+  reason?: string | null;
+}
+
+export interface CorePlatformInvokeEvent {
+  invocationId: string;
+  callerEpoch: number;
+  domain: string;
+  action: string;
+  payload: unknown;
+  timeoutMs?: number;
+}
+
+export interface CorePlatformCancelEvent {
+  invocationId: string;
+  callerEpoch?: number;
+  reason?: string;
+}
+
 interface PendingRequest {
+  operation: string;
+  mutating: boolean;
   resolve: (data: unknown) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
 }
 
+const READ_ONLY_SCHEDULER_ACTIONS = new Set([
+  "status", "verifyLease", "supported", "list", "health", "get",
+]);
+
+function isMutatingCoreBusinessPayload(payload: Record<string, unknown>): boolean {
+  const op = typeof payload.operation === "string" ? payload.operation : "";
+  if (
+    op === "coreEventsSnapshot"
+    || op === "coreEventsReplay"
+    || op === "coreSubscribe"
+    || op === "control"
+  ) {
+    return false;
+  }
+  if (op === "coreExecution") {
+    const action = typeof payload.action === "string" ? payload.action : "";
+    if (action === "status") return false;
+    if (action === "executorProgress" && payload.ephemeral === true) return false;
+    return true;
+  }
+  if (
+    op === "coreWorkScheduler"
+    || op === "coreCronScheduler"
+    || op === "coreDotsScheduler"
+    || op === "coreGatewayScheduler"
+    || op === "coreRemoteControl"
+    || op === "corePiHost"
+    || op === "coreMaintenanceScheduler"
+    || op === "coreGadgetHost"
+    || op === "assistantLifecycle"
+  ) {
+    const action = typeof payload.action === "string" ? payload.action : "";
+    return !READ_ONLY_SCHEDULER_ACTIONS.has(action);
+  }
+  return true;
+}
+
 /** Role-scoped multiplexed business protocol client for Step 3 (`RC-06`–`RC-08`). */
 export class CoreBusinessClient {
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly unconfirmed = new Map<string, { operation: string; at: number }>();
   private readonly eventListeners = new Set<(event: CoreDomainEvent) => void>();
   private readonly dispatchListeners = new Set<(dispatch: CoreExecutionDispatch) => void>();
+  private readonly platformAvailabilityListeners = new Set<(event: CorePlatformAvailabilityEvent) => void>();
+  private readonly platformInvokeListeners = new Set<(event: CorePlatformInvokeEvent) => void>();
+  private readonly platformCancelListeners = new Set<(event: CorePlatformCancelEvent) => void>();
   private readonly closeListeners = new Set<() => void>();
   private readonly seenEvents = new Set<string>();
+  private lastPlatformAvailability?: CorePlatformAvailabilityEvent;
   private buffered = "";
   private closed = false;
 
@@ -177,17 +255,102 @@ export class CoreBusinessClient {
     return () => { this.closeListeners.delete(listener); };
   }
 
+  onPlatformAvailability(listener: (event: CorePlatformAvailabilityEvent) => void): () => void {
+    this.platformAvailabilityListeners.add(listener);
+    if (this.lastPlatformAvailability) {
+      try { listener(this.lastPlatformAvailability); } catch { /* ignore */ }
+    }
+    return () => { this.platformAvailabilityListeners.delete(listener); };
+  }
+
+  onPlatformInvoke(listener: (event: CorePlatformInvokeEvent) => void): () => void {
+    this.platformInvokeListeners.add(listener);
+    return () => { this.platformInvokeListeners.delete(listener); };
+  }
+
+  onPlatformCancel(listener: (event: CorePlatformCancelEvent) => void): () => void {
+    this.platformCancelListeners.add(listener);
+    return () => { this.platformCancelListeners.delete(listener); };
+  }
+
+  async registerPlatform<T = { registered: boolean; ownerEpoch?: number }>(input: {
+    available: boolean;
+    uiOnline: boolean;
+    browserAvailable: boolean;
+    computerAvailable?: boolean;
+    capabilities?: string[];
+    platformGeneration?: string;
+  }): Promise<T> {
+    return await this.request<T>({
+      operation: "corePlatformRegister",
+      ...input,
+    });
+  }
+
+  async sendPlatformRequest<T = unknown>(input: {
+    invocationId: string;
+    domain: string;
+    action: string;
+    payload?: unknown;
+    timeoutMs?: number;
+  }): Promise<T> {
+    return await this.request<T>(
+      {
+        operation: "corePlatformRequest",
+        ...input,
+      },
+      Math.max(5_000, input.timeoutMs ?? 60_000),
+    );
+  }
+
+  async sendPlatformReply<T = { delivered: boolean }>(invocationId: string, outcome: unknown): Promise<T> {
+    return await this.request<T>({
+      operation: "corePlatformReply",
+      invocationId,
+      outcome,
+    });
+  }
+
+  async sendPlatformCancel<T = { cancelled: boolean }>(invocationId: string): Promise<T> {
+    return await this.request<T>({
+      operation: "corePlatformCancel",
+      invocationId,
+    });
+  }
+
   async request<T = unknown>(payload: Record<string, unknown>, timeoutMs = 5_000): Promise<T> {
     if (this.closed) throw new Error("CoreBusinessClient is closed");
     if (this.pending.size >= 256) throw new Error("CoreBusinessClient pending request limit reached");
     const requestId = randomUUID();
+    const operation = String(payload.operation ?? "unknown");
+    const mutating = isMutatingCoreBusinessPayload(payload);
     const frame = JSON.stringify({ ...payload, requestId, deadlineAt: Date.now() + timeoutMs }) + "\n";
     return await new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
-        reject(new Error(`Core business request timed out: ${String(payload.operation ?? "unknown")}`));
+        if (mutating) {
+          this.noteUnconfirmed(requestId, operation);
+          if (!this.closed) {
+            try {
+              this.transport.stdin.write(JSON.stringify({
+                operation: "control",
+                action: "cancel",
+                targetRequestId: requestId,
+                requestId: randomUUID(),
+                deadlineAt: Date.now() + 2_000,
+              }) + "\n");
+            } catch { /* ignore */ }
+          }
+          reject(new RuntimeAuditUnknownOperationError(requestId, operation));
+        } else {
+          const err = new Error(`Core business request timed out: ${operation}`) as Error & { requestId?: string };
+          err.requestId = requestId;
+          reject(err);
+        }
       }, timeoutMs);
       this.pending.set(requestId, {
+        operation,
+        mutating,
         resolve: data => resolve(data as T),
         reject,
         timer,
@@ -198,9 +361,53 @@ export class CoreBusinessClient {
         if (!entry) return;
         this.pending.delete(requestId);
         clearTimeout(entry.timer);
-        reject(err);
+        if (mutating) {
+          this.noteUnconfirmed(requestId, operation);
+          reject(new RuntimeAuditUnknownOperationError(requestId, operation));
+        } else {
+          reject(err);
+        }
       });
     });
+  }
+
+  private noteUnconfirmed(requestId: string, operation: string): void {
+    this.unconfirmed.set(requestId, { operation, at: Date.now() });
+    if (this.unconfirmed.size > 1_024) {
+      const oldest = this.unconfirmed.keys().next().value;
+      if (oldest) this.unconfirmed.delete(oldest);
+    }
+  }
+
+  getUnconfirmedOperations(): Array<{ requestId: string; operation: string; at: number }> {
+    return [...this.unconfirmed.entries()].map(([requestId, info]) => ({ requestId, ...info }));
+  }
+
+  async queryOperation(targetRequestId: string): Promise<RuntimeOperationReceipt | undefined> {
+    const res = await this.request<RuntimeOperationReceipt>({
+      operation: "control",
+      action: "status",
+      targetRequestId,
+    }).catch(() => undefined);
+    if (res && res.state !== "queued" && res.state !== "running" && res.state !== "unknown") {
+      this.unconfirmed.delete(targetRequestId);
+    }
+    return res;
+  }
+
+  async cancelOperation(targetRequestId: string): Promise<RuntimeOperationReceipt | undefined> {
+    return await this.request<RuntimeOperationReceipt>({
+      operation: "control",
+      action: "cancel",
+      targetRequestId,
+    }).catch(() => undefined);
+  }
+
+  async runtimeMetrics(): Promise<Record<string, unknown> | undefined> {
+    return await this.request<Record<string, unknown>>({
+      operation: "control",
+      action: "metrics",
+    }).catch(() => undefined);
   }
 
   async upsertNote(input: {
@@ -275,6 +482,10 @@ export class CoreBusinessClient {
     return await this.request({ operation: "corePiHost", ...command });
   }
 
+  async maintenanceScheduler<T = Record<string, unknown>>(command: Record<string, unknown> & { action: string }): Promise<T> {
+    return await this.request({ operation: "coreMaintenanceScheduler", ...command });
+  }
+
   async eventsSnapshot(domain?: string): Promise<CoreEventsSnapshot> {
     return await this.request({ operation: "coreEventsSnapshot", ...(domain ? { domain } : {}) });
   }
@@ -314,8 +525,14 @@ export class CoreBusinessClient {
     let lastSeq = snapshot.headSeq;
     options.onSnapshot?.(snapshot);
 
-    const deliver = (event: CoreDomainEvent) => {
-      if (event.coreGeneration !== currentGen || event.seq <= lastSeq) return;
+    const deliver = (event: CoreDomainEvent, fromReplay = false, replayAfterSeq = 0) => {
+      if (event.ephemeral === true) {
+        if (event.coreGeneration !== currentGen) return;
+        options.onEvent?.(event);
+        return;
+      }
+      if (event.coreGeneration !== currentGen) return;
+      if (fromReplay ? event.seq <= replayAfterSeq : event.seq <= lastSeq) return;
       const key = `${event.coreGeneration}:${event.seq}`;
       if (this.seenEvents.has(key)) return;
       this.seenEvents.add(key);
@@ -323,11 +540,11 @@ export class CoreBusinessClient {
         const oldest = this.seenEvents.values().next().value;
         if (oldest) this.seenEvents.delete(oldest);
       }
-      lastSeq = event.seq;
+      lastSeq = Math.max(lastSeq, event.seq);
       options.onEvent?.(event);
     };
 
-    const offLive = this.onCoreEvent(deliver);
+    const offLive = this.onCoreEvent(ev => deliver(ev, false));
     await this.subscribeCursor(currentGen, lastSeq);
 
     const replayFrom = async (afterSeq: number, gen = currentGen): Promise<{ resynced: boolean; events: CoreDomainEvent[] }> => {
@@ -344,7 +561,7 @@ export class CoreBusinessClient {
           return { resynced: true, events: collected };
         }
         for (const ev of page.events) {
-          deliver(ev);
+          deliver(ev, true, afterSeq);
           collected.push(ev);
           cursor = Math.max(cursor, ev.seq);
         }
@@ -420,7 +637,14 @@ export class CoreBusinessClient {
     });
   }
 
-  async executorProgress(executionId: string, attempt: number, progress: unknown, ownerGeneration?: string, hostGeneration?: string): Promise<Record<string, unknown>> {
+  async executorProgress(
+    executionId: string,
+    attempt: number,
+    progress: unknown,
+    ownerGeneration?: string,
+    hostGeneration?: string,
+    options?: { ephemeral?: boolean },
+  ): Promise<Record<string, unknown>> {
     return await this.request({
       operation: "coreExecution",
       action: "executorProgress",
@@ -429,6 +653,7 @@ export class CoreBusinessClient {
       progress,
       ownerGeneration,
       ...(hostGeneration ? { hostGeneration } : {}),
+      ...(options?.ephemeral ? { ephemeral: true } : {}),
     });
   }
 
@@ -475,6 +700,11 @@ export class CoreBusinessClient {
       let frame: Record<string, unknown>;
       try { frame = JSON.parse(line) as Record<string, unknown>; }
       catch { continue; }
+      if (frame.coreStreamEvent && typeof frame.coreStreamEvent === "object") {
+        const ev = frame.coreStreamEvent as CoreDomainEvent;
+        for (const fn of this.eventListeners) fn(ev);
+        continue;
+      }
       if (frame.coreEvent && typeof frame.coreEvent === "object") {
         const ev = frame.coreEvent as CoreDomainEvent;
         for (const fn of this.eventListeners) fn(ev);
@@ -485,23 +715,62 @@ export class CoreBusinessClient {
         for (const fn of this.dispatchListeners) fn(dispatch);
         continue;
       }
+      if (frame.corePlatformAvailability && typeof frame.corePlatformAvailability === "object") {
+        const avail = frame.corePlatformAvailability as CorePlatformAvailabilityEvent;
+        this.lastPlatformAvailability = avail;
+        for (const fn of this.platformAvailabilityListeners) fn(avail);
+        continue;
+      }
+      if (frame.corePlatformInvoke && typeof frame.corePlatformInvoke === "object") {
+        const invoke = frame.corePlatformInvoke as CorePlatformInvokeEvent;
+        for (const fn of this.platformInvokeListeners) fn(invoke);
+        continue;
+      }
+      if (frame.corePlatformCancel && typeof frame.corePlatformCancel === "object") {
+        const cancel = frame.corePlatformCancel as CorePlatformCancelEvent;
+        for (const fn of this.platformCancelListeners) fn(cancel);
+        continue;
+      }
       const replyId = typeof frame.replyId === "string" ? frame.replyId : undefined;
       if (!replyId) continue;
       const entry = this.pending.get(replyId);
       if (!entry) continue;
       this.pending.delete(replyId);
       clearTimeout(entry.timer);
-      if (frame.status === "ok") entry.resolve(frame.data);
-      else entry.reject(new Error(String(frame.error ?? frame.errorCode ?? frame.code ?? "Core business error")));
+      if (frame.status === "ok") {
+        this.unconfirmed.delete(replyId);
+        entry.resolve(frame.data);
+      } else if (entry.mutating && (frame.status === "cancelled" || frame.status === "expired" || frame.neverStarted === true)) {
+        this.unconfirmed.delete(replyId);
+        entry.reject(new RuntimeAuditNotStartedOperationError(
+          replyId,
+          entry.operation,
+          String(frame.errorCode ?? frame.status ?? "not_started"),
+        ));
+      } else if (entry.mutating && frame.errorCode === "FAILED") {
+        this.unconfirmed.delete(replyId);
+        entry.reject(new RuntimeAuditOperationFailedError(
+          replyId,
+          entry.operation,
+          String(frame.error ?? frame.errorCode ?? "FAILED"),
+        ));
+      } else {
+        entry.reject(new Error(String(frame.error ?? frame.errorCode ?? frame.code ?? "Core business error")));
+      }
     }
   }
 
   private handleClose(): void {
     if (this.closed) return;
     this.closed = true;
-    for (const entry of this.pending.values()) {
+    for (const [requestId, entry] of this.pending.entries()) {
       clearTimeout(entry.timer);
-      entry.reject(new Error("CoreBusinessClient connection closed"));
+      if (entry.mutating) {
+        this.noteUnconfirmed(requestId, entry.operation);
+        entry.reject(new RuntimeAuditUnknownOperationError(requestId, entry.operation));
+      } else {
+        entry.reject(new Error("CoreBusinessClient connection closed"));
+      }
     }
     this.pending.clear();
     for (const listener of this.closeListeners) listener();

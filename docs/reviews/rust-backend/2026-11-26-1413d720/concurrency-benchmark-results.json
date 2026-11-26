@@ -1,0 +1,788 @@
+{
+  "generatedAt": "2026-11-26T08:16:30.523Z",
+  "platform": "win32/x64",
+  "node": "v26.13.1",
+  "coreSha256": "b7e08ab98bb0aedc553962e0a48008501e778e9a374508437582a3715e88a18e",
+  "recommendedProductionCaps": {
+    "executionSlotsLimit": 4,
+    "readPoolWorkers": 4,
+    "workspaceIoWorkers": 2,
+    "ortIntraThreads": 2,
+    "ortInterThreads": 1,
+    "rationale": "Fixed-delay independent work scales nearly linearly up to C=4 (slots=4); conflict & SQLite-write heavy workloads plateau due to Amdahl/single-writer serialization; ReadPool=4 & WorkspaceIoPool=2 keep tail latency low without excess thread/RSS overhead."
+  },
+  "workloads": {
+    "w1_independentFixedDelay": [
+      {
+        "concurrency": 1,
+        "tasks": 16,
+        "wallMs": 2294.49,
+        "throughputPerSec": 6.97,
+        "speedupS": 1,
+        "efficiencyE": 1,
+        "maxOverlap": 1,
+        "meanSubmitIpcMs": 34,
+        "meanExecRunMs": 129.14,
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 81014784,
+            "privateBytes": 91942912,
+            "threads": 17
+          },
+          "coreSupervisor": {
+            "pid": 27640,
+            "workingSetBytes": 7159808,
+            "privateBytes": 1437696,
+            "threads": 10
+          },
+          "coreWorker": {
+            "pid": 41312,
+            "workingSetBytes": 25247744,
+            "privateBytes": 18546688,
+            "threads": 11
+          },
+          "sumWorkingSetBytes": 113422336,
+          "sumPrivateBytes": 111927296,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      },
+      {
+        "concurrency": 2,
+        "tasks": 16,
+        "wallMs": 1282.85,
+        "throughputPerSec": 12.47,
+        "speedupS": 1.79,
+        "efficiencyE": 0.89,
+        "maxOverlap": 2,
+        "meanSubmitIpcMs": 39.87,
+        "meanExecRunMs": 124.96,
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 84107264,
+            "privateBytes": 93917184,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 36612,
+            "workingSetBytes": 7159808,
+            "privateBytes": 1437696,
+            "threads": 10
+          },
+          "coreWorker": {
+            "pid": 6264,
+            "workingSetBytes": 22851584,
+            "privateBytes": 16125952,
+            "threads": 11
+          },
+          "sumWorkingSetBytes": 114118656,
+          "sumPrivateBytes": 111480832,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      },
+      {
+        "concurrency": 4,
+        "tasks": 16,
+        "wallMs": 697.36,
+        "throughputPerSec": 22.94,
+        "speedupS": 3.29,
+        "efficiencyE": 0.82,
+        "maxOverlap": 4,
+        "meanSubmitIpcMs": 36.78,
+        "meanExecRunMs": 122.8,
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 81666048,
+            "privateBytes": 91865088,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 28948,
+            "workingSetBytes": 7196672,
+            "privateBytes": 1474560,
+            "threads": 10
+          },
+          "coreWorker": {
+            "pid": 24280,
+            "workingSetBytes": 21536768,
+            "privateBytes": 15233024,
+            "threads": 10
+          },
+          "sumWorkingSetBytes": 110399488,
+          "sumPrivateBytes": 108572672,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      },
+      {
+        "concurrency": 8,
+        "tasks": 16,
+        "wallMs": 544.89,
+        "throughputPerSec": 29.36,
+        "speedupS": 4.21,
+        "efficiencyE": 0.53,
+        "maxOverlap": 8,
+        "meanSubmitIpcMs": 113.95,
+        "meanExecRunMs": 123.34,
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 81932288,
+            "privateBytes": 92094464,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 2160,
+            "workingSetBytes": 7143424,
+            "privateBytes": 1413120,
+            "threads": 10
+          },
+          "coreWorker": {
+            "pid": 42128,
+            "workingSetBytes": 20840448,
+            "privateBytes": 14323712,
+            "threads": 11
+          },
+          "sumWorkingSetBytes": 109916160,
+          "sumPrivateBytes": 107831296,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      }
+    ],
+    "w2_databaseMixed": [
+      {
+        "concurrency": 1,
+        "n": 100,
+        "p50Ms": 0.34,
+        "p95Ms": 0.96,
+        "p99Ms": 11.47,
+        "maxMs": 12.54,
+        "wallMs": 146.04,
+        "throughputPerSec": 684.73,
+        "speedupS": 1,
+        "efficiencyE": 1,
+        "readerMaxInFlight": 1,
+        "coreReadPoolMaxActive": 1,
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 82051072,
+            "privateBytes": 91746304,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 38640,
+            "workingSetBytes": 7077888,
+            "privateBytes": 1372160,
+            "threads": 10
+          },
+          "coreWorker": {
+            "pid": 25416,
+            "workingSetBytes": 17420288,
+            "privateBytes": 11022336,
+            "threads": 10
+          },
+          "sumWorkingSetBytes": 106549248,
+          "sumPrivateBytes": 104140800,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      },
+      {
+        "concurrency": 2,
+        "n": 100,
+        "p50Ms": 0.27,
+        "p95Ms": 0.53,
+        "p99Ms": 1.13,
+        "maxMs": 1.21,
+        "wallMs": 136.59,
+        "throughputPerSec": 732.12,
+        "speedupS": 1.07,
+        "efficiencyE": 0.53,
+        "readerMaxInFlight": 2,
+        "coreReadPoolMaxActive": 2,
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 82284544,
+            "privateBytes": 92495872,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 38640,
+            "workingSetBytes": 7151616,
+            "privateBytes": 1388544,
+            "threads": 10
+          },
+          "coreWorker": {
+            "pid": 25416,
+            "workingSetBytes": 17424384,
+            "privateBytes": 11022336,
+            "threads": 10
+          },
+          "sumWorkingSetBytes": 106860544,
+          "sumPrivateBytes": 104906752,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      },
+      {
+        "concurrency": 4,
+        "n": 100,
+        "p50Ms": 0.35,
+        "p95Ms": 0.64,
+        "p99Ms": 0.97,
+        "maxMs": 1.02,
+        "wallMs": 150.72,
+        "throughputPerSec": 663.49,
+        "speedupS": 0.97,
+        "efficiencyE": 0.24,
+        "readerMaxInFlight": 4,
+        "coreReadPoolMaxActive": 4,
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 82731008,
+            "privateBytes": 93016064,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 38640,
+            "workingSetBytes": 7151616,
+            "privateBytes": 1388544,
+            "threads": 10
+          },
+          "coreWorker": {
+            "pid": 25416,
+            "workingSetBytes": 16908288,
+            "privateBytes": 10510336,
+            "threads": 10
+          },
+          "sumWorkingSetBytes": 106790912,
+          "sumPrivateBytes": 104914944,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      },
+      {
+        "concurrency": 8,
+        "n": 100,
+        "p50Ms": 0.47,
+        "p95Ms": 1.34,
+        "p99Ms": 1.58,
+        "maxMs": 1.58,
+        "wallMs": 157.71,
+        "throughputPerSec": 634.09,
+        "speedupS": 0.93,
+        "efficiencyE": 0.12,
+        "readerMaxInFlight": 8,
+        "coreReadPoolMaxActive": 4,
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 82419712,
+            "privateBytes": 92237824,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 38640,
+            "workingSetBytes": 7155712,
+            "privateBytes": 1392640,
+            "threads": 10
+          },
+          "coreWorker": {
+            "pid": 25416,
+            "workingSetBytes": 17141760,
+            "privateBytes": 10858496,
+            "threads": 10
+          },
+          "sumWorkingSetBytes": 106717184,
+          "sumPrivateBytes": 104488960,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      }
+    ],
+    "w3_conflictVsIndependent": [
+      {
+        "concurrency": 1,
+        "tasks": 16,
+        "conflictingTasks": 4,
+        "independentTasks": 12,
+        "wallMs": 1975.27,
+        "throughputPerSec": 8.1,
+        "speedupS": 1,
+        "efficiencyE": 1,
+        "maxOverlap": 1,
+        "failures": 0
+      },
+      {
+        "concurrency": 2,
+        "tasks": 16,
+        "conflictingTasks": 4,
+        "independentTasks": 12,
+        "wallMs": 1127.42,
+        "throughputPerSec": 14.19,
+        "speedupS": 1.75,
+        "efficiencyE": 0.88,
+        "maxOverlap": 2,
+        "failures": 0
+      },
+      {
+        "concurrency": 4,
+        "tasks": 16,
+        "conflictingTasks": 4,
+        "independentTasks": 12,
+        "wallMs": 609.05,
+        "throughputPerSec": 26.27,
+        "speedupS": 3.24,
+        "efficiencyE": 0.81,
+        "maxOverlap": 4,
+        "failures": 0
+      },
+      {
+        "concurrency": 8,
+        "tasks": 16,
+        "conflictingTasks": 4,
+        "independentTasks": 12,
+        "wallMs": 591.52,
+        "throughputPerSec": 27.05,
+        "speedupS": 3.34,
+        "efficiencyE": 0.42,
+        "maxOverlap": 8,
+        "failures": 0
+      }
+    ],
+    "w4_streamPressureAndControl": [
+      {
+        "concurrency": 1,
+        "streams": 1,
+        "durableDelivered": 3,
+        "durableExpected": 3,
+        "ephemeralEmittedDelta": 1,
+        "ephemeralDroppedDelta": 0,
+        "wallMs": 63.31,
+        "controlLatency": {
+          "n": 100,
+          "p50Ms": 0.27,
+          "p95Ms": 0.6,
+          "p99Ms": 0.98,
+          "maxMs": 1.21
+        },
+        "controlFailures": 0
+      },
+      {
+        "concurrency": 2,
+        "streams": 2,
+        "durableDelivered": 6,
+        "durableExpected": 6,
+        "ephemeralEmittedDelta": 2,
+        "ephemeralDroppedDelta": 0,
+        "wallMs": 83.42,
+        "controlLatency": {
+          "n": 100,
+          "p50Ms": 0.28,
+          "p95Ms": 0.49,
+          "p99Ms": 0.73,
+          "maxMs": 0.75
+        },
+        "controlFailures": 0
+      },
+      {
+        "concurrency": 4,
+        "streams": 4,
+        "durableDelivered": 12,
+        "durableExpected": 12,
+        "ephemeralEmittedDelta": 4,
+        "ephemeralDroppedDelta": 0,
+        "wallMs": 170.39,
+        "controlLatency": {
+          "n": 100,
+          "p50Ms": 0.35,
+          "p95Ms": 0.53,
+          "p99Ms": 0.64,
+          "maxMs": 0.69
+        },
+        "controlFailures": 0
+      },
+      {
+        "concurrency": 8,
+        "streams": 8,
+        "durableDelivered": 24,
+        "durableExpected": 24,
+        "ephemeralEmittedDelta": 8,
+        "ephemeralDroppedDelta": 0,
+        "wallMs": 218.05,
+        "controlLatency": {
+          "n": 100,
+          "p50Ms": 0.23,
+          "p95Ms": 0.38,
+          "p99Ms": 0.46,
+          "maxMs": 0.69
+        },
+        "controlFailures": 0
+      }
+    ],
+    "w5_gadgetHttpAndSchedulers": [
+      {
+        "concurrency": 1,
+        "n": 100,
+        "p50Ms": 6.26,
+        "p95Ms": 9.36,
+        "p99Ms": 10.08,
+        "maxMs": 35,
+        "wallMs": 678.27,
+        "throughputPerSec": 147.43,
+        "speedupS": 1,
+        "efficiencyE": 1,
+        "gadgetHttpMaxActiveWorkers": 1,
+        "gadgetIoMaxActive": 0,
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 91934720,
+            "privateBytes": 97497088,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 15004,
+            "workingSetBytes": 7045120,
+            "privateBytes": 1286144,
+            "threads": 8
+          },
+          "coreWorker": {
+            "pid": 28636,
+            "workingSetBytes": 13271040,
+            "privateBytes": 5914624,
+            "threads": 15
+          },
+          "sumWorkingSetBytes": 112250880,
+          "sumPrivateBytes": 104697856,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      },
+      {
+        "concurrency": 2,
+        "n": 100,
+        "p50Ms": 6.02,
+        "p95Ms": 9.05,
+        "p99Ms": 10.84,
+        "maxMs": 11.24,
+        "wallMs": 324.66,
+        "throughputPerSec": 308.02,
+        "speedupS": 2.09,
+        "efficiencyE": 1.04,
+        "gadgetHttpMaxActiveWorkers": 2,
+        "gadgetIoMaxActive": 0,
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 104427520,
+            "privateBytes": 110391296,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 15004,
+            "workingSetBytes": 7045120,
+            "privateBytes": 1286144,
+            "threads": 8
+          },
+          "coreWorker": {
+            "pid": 28636,
+            "workingSetBytes": 13299712,
+            "privateBytes": 5910528,
+            "threads": 15
+          },
+          "sumWorkingSetBytes": 124772352,
+          "sumPrivateBytes": 117587968,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      },
+      {
+        "concurrency": 4,
+        "n": 100,
+        "p50Ms": 7.38,
+        "p95Ms": 11.99,
+        "p99Ms": 14.01,
+        "maxMs": 15.45,
+        "wallMs": 204.32,
+        "throughputPerSec": 489.43,
+        "speedupS": 3.32,
+        "efficiencyE": 0.83,
+        "gadgetHttpMaxActiveWorkers": 4,
+        "gadgetIoMaxActive": 0,
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 112959488,
+            "privateBytes": 121516032,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 15004,
+            "workingSetBytes": 7045120,
+            "privateBytes": 1286144,
+            "threads": 8
+          },
+          "coreWorker": {
+            "pid": 28636,
+            "workingSetBytes": 13459456,
+            "privateBytes": 6094848,
+            "threads": 15
+          },
+          "sumWorkingSetBytes": 133464064,
+          "sumPrivateBytes": 128897024,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      },
+      {
+        "concurrency": 8,
+        "n": 100,
+        "p50Ms": 11.26,
+        "p95Ms": 15.25,
+        "p99Ms": 19.63,
+        "maxMs": 20.61,
+        "wallMs": 159.42,
+        "throughputPerSec": 627.28,
+        "speedupS": 4.25,
+        "efficiencyE": 0.53,
+        "gadgetHttpMaxActiveWorkers": 8,
+        "gadgetIoMaxActive": 0,
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 113688576,
+            "privateBytes": 120913920,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 15004,
+            "workingSetBytes": 7045120,
+            "privateBytes": 1286144,
+            "threads": 8
+          },
+          "coreWorker": {
+            "pid": 28636,
+            "workingSetBytes": 13910016,
+            "privateBytes": 6610944,
+            "threads": 15
+          },
+          "sumWorkingSetBytes": 134643712,
+          "sumPrivateBytes": 128811008,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      }
+    ],
+    "w6_workspaceScanAndOrt": [
+      {
+        "concurrency": 1,
+        "scanStats": {
+          "n": 16,
+          "p50Ms": 1.35,
+          "p95Ms": 4.76,
+          "p99Ms": "N/A",
+          "maxMs": 4.76
+        },
+        "controlStats": {
+          "n": 100,
+          "p50Ms": 0.24,
+          "p95Ms": 0.86,
+          "p99Ms": 2.09,
+          "maxMs": 2.39
+        },
+        "wallMs": 33.37,
+        "speedupS": 1,
+        "efficiencyE": 1,
+        "workspaceIoWorkers": 2,
+        "workspaceIoMaxActive": 1,
+        "ort": {
+          "interThreads": 1,
+          "intraThreads": 2
+        },
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 115060736,
+            "privateBytes": 121548800,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 14348,
+            "workingSetBytes": 7147520,
+            "privateBytes": 1404928,
+            "threads": 9
+          },
+          "coreWorker": {
+            "pid": 43592,
+            "workingSetBytes": 11067392,
+            "privateBytes": 4771840,
+            "threads": 7
+          },
+          "sumWorkingSetBytes": 133275648,
+          "sumPrivateBytes": 127725568,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      },
+      {
+        "concurrency": 2,
+        "scanStats": {
+          "n": 16,
+          "p50Ms": 1.99,
+          "p95Ms": 3.41,
+          "p99Ms": "N/A",
+          "maxMs": 3.41
+        },
+        "controlStats": {
+          "n": 100,
+          "p50Ms": 0.27,
+          "p95Ms": 0.58,
+          "p99Ms": 0.84,
+          "maxMs": 0.92
+        },
+        "wallMs": 31.14,
+        "speedupS": 1.07,
+        "efficiencyE": 0.54,
+        "workspaceIoWorkers": 2,
+        "workspaceIoMaxActive": 2,
+        "ort": {
+          "interThreads": 1,
+          "intraThreads": 2
+        },
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 115269632,
+            "privateBytes": 121712640,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 14348,
+            "workingSetBytes": 7172096,
+            "privateBytes": 1429504,
+            "threads": 9
+          },
+          "coreWorker": {
+            "pid": 43592,
+            "workingSetBytes": 12214272,
+            "privateBytes": 5881856,
+            "threads": 7
+          },
+          "sumWorkingSetBytes": 134656000,
+          "sumPrivateBytes": 129024000,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      },
+      {
+        "concurrency": 4,
+        "scanStats": {
+          "n": 16,
+          "p50Ms": 1.74,
+          "p95Ms": 2.29,
+          "p99Ms": "N/A",
+          "maxMs": 2.29
+        },
+        "controlStats": {
+          "n": 100,
+          "p50Ms": 0.14,
+          "p95Ms": 0.34,
+          "p99Ms": 0.4,
+          "maxMs": 0.43
+        },
+        "wallMs": 16.55,
+        "speedupS": 2.02,
+        "efficiencyE": 0.5,
+        "workspaceIoWorkers": 2,
+        "workspaceIoMaxActive": 2,
+        "ort": {
+          "interThreads": 1,
+          "intraThreads": 2
+        },
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 115339264,
+            "privateBytes": 121712640,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 14348,
+            "workingSetBytes": 7163904,
+            "privateBytes": 1421312,
+            "threads": 9
+          },
+          "coreWorker": {
+            "pid": 43592,
+            "workingSetBytes": 13631488,
+            "privateBytes": 7335936,
+            "threads": 7
+          },
+          "sumWorkingSetBytes": 136134656,
+          "sumPrivateBytes": 130469888,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      },
+      {
+        "concurrency": 8,
+        "scanStats": {
+          "n": 16,
+          "p50Ms": 3.39,
+          "p95Ms": 4.01,
+          "p99Ms": "N/A",
+          "maxMs": 4.01
+        },
+        "controlStats": {
+          "n": 100,
+          "p50Ms": 0.1,
+          "p95Ms": 0.35,
+          "p99Ms": 0.43,
+          "maxMs": 0.49
+        },
+        "wallMs": 13.67,
+        "speedupS": 2.44,
+        "efficiencyE": 0.31,
+        "workspaceIoWorkers": 2,
+        "workspaceIoMaxActive": 2,
+        "ort": {
+          "interThreads": 1,
+          "intraThreads": 2
+        },
+        "failures": 0,
+        "memory": {
+          "driver": {
+            "pid": 4536,
+            "workingSetBytes": 115474432,
+            "privateBytes": 121851904,
+            "threads": 18
+          },
+          "coreSupervisor": {
+            "pid": 14348,
+            "workingSetBytes": 7184384,
+            "privateBytes": 1445888,
+            "threads": 9
+          },
+          "coreWorker": {
+            "pid": 43592,
+            "workingSetBytes": 14675968,
+            "privateBytes": 8392704,
+            "threads": 7
+          },
+          "sumWorkingSetBytes": 137334784,
+          "sumPrivateBytes": 131690496,
+          "note": "Sum includes per-PID WorkingSet64 (shared OS pages may double-count) and PrivateMemorySize64."
+        }
+      }
+    ]
+  }
+}

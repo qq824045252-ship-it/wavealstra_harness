@@ -897,7 +897,7 @@ pub fn execute_write(
         Command::Status { .. } => json!({ "status": "rejected", "code": "READ_ONLY" }),
     };
 
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
     Ok(WriteSideEffects {
         data,
         events,

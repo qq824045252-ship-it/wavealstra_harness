@@ -9,6 +9,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_LEASE_TTL_MS: i64 = 60_000;
@@ -1013,6 +1014,161 @@ fn insert_outbox(
     Ok(event_id)
 }
 
+struct ActiveConflictSet {
+    active_ids: HashSet<String>,
+    work_ids: HashMap<String, String>,
+    resources: HashMap<String, Vec<(String, String)>>,
+    sessions: HashMap<String, String>,
+}
+
+impl ActiveConflictSet {
+    fn load(tx: &Connection) -> crate::Result<Self> {
+        let mut set = Self {
+            active_ids: HashSet::new(),
+            work_ids: HashMap::new(),
+            resources: HashMap::new(),
+            sessions: HashMap::new(),
+        };
+        let mut stmt = tx.prepare(
+            "SELECT execution_id, task_id, kind, payload_json FROM core_execution_runs
+             WHERE status IN ('dispatching', 'running', 'pause_requested', 'cancel_requested')",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for (exec_id, task_id, kind, payload_str) in rows {
+            let payload: Value = serde_json::from_str(&payload_str).unwrap_or_else(|_| json!({}));
+            set.insert(&exec_id, &task_id, &kind, &payload);
+        }
+        Ok(set)
+    }
+
+    fn effective_session_key<'a>(task_id: &'a str, kind: &str, payload: &'a Value) -> Option<&'a str> {
+        if let Some(sk) = payload
+            .get("sessionKey")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(sk);
+        }
+        if kind == "pi_turn" && !task_id.trim().is_empty() {
+            return Some(task_id);
+        }
+        None
+    }
+
+    fn insert(&mut self, exec_id: &str, task_id: &str, kind: &str, payload: &Value) {
+        self.active_ids.insert(exec_id.to_owned());
+        if let Some(work_id) = payload
+            .get("workId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            self.work_ids
+                .entry(work_id.to_owned())
+                .or_insert_with(|| exec_id.to_owned());
+        }
+        if let Some(rk) = payload
+            .get("resourceKey")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let mode = payload
+                .get("lockMode")
+                .and_then(Value::as_str)
+                .unwrap_or("exclusive")
+                .to_owned();
+            self.resources
+                .entry(rk.to_owned())
+                .or_default()
+                .push((exec_id.to_owned(), mode));
+        }
+        if let Some(sk) = Self::effective_session_key(task_id, kind, payload)
+            && !payload
+                .get("allowConcurrentSameSession")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        {
+            self.sessions
+                .entry(sk.to_owned())
+                .or_insert_with(|| exec_id.to_owned());
+        }
+    }
+
+    fn check(&self, exec_id: &str, task_id: &str, kind: &str, payload: &Value) -> Option<String> {
+        let work_id = payload
+            .get("workId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        let allow_same_work = payload
+            .get("allowConcurrentSameWork")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !work_id.is_empty()
+            && !allow_same_work
+            && let Some(active_id) = self.work_ids.get(work_id)
+            && active_id != exec_id
+        {
+            return Some(format!("work:{work_id}:active:{active_id}"));
+        }
+
+        if let Some(rk) = payload
+            .get("resourceKey")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            && let Some(holders) = self.resources.get(rk)
+        {
+            let lock_mode = payload
+                .get("lockMode")
+                .and_then(Value::as_str)
+                .unwrap_or("exclusive");
+            for (active_id, active_mode) in holders {
+                if active_id != exec_id && (lock_mode != "shared" || active_mode != "shared") {
+                    return Some(format!("resource:{rk}:held_by:{active_id}"));
+                }
+            }
+        }
+
+        if let Some(sk) = Self::effective_session_key(task_id, kind, payload)
+            && !payload
+                .get("allowConcurrentSameSession")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            && let Some(active_id) = self.sessions.get(sk)
+            && active_id != exec_id
+        {
+            return Some(format!("session:{sk}:active:{active_id}"));
+        }
+        None
+    }
+}
+
+fn candidate_priority_tier(kind: &str, payload: &Value) -> i64 {
+    match payload.get("priority").and_then(Value::as_str) {
+        Some("foreground" | "high") => return 0,
+        Some("background" | "low") => return 2,
+        Some("normal") => return 1,
+        _ => {}
+    }
+    match kind {
+        "pi_turn" | "pi_control" | "pi_compact" => 0,
+        "dots_control" | "gateway_control" | "maintenance_control" => 2,
+        _ => 1,
+    }
+}
+
 /// Checks whether a queued execution candidate conflicts with currently dispatching/running
 /// executions on either `workId` (when not `allowConcurrentSameWork`) or `resourceKey` (exclusive lock).
 fn has_active_conflict(
@@ -1077,8 +1233,24 @@ fn has_active_conflict(
     Ok(None)
 }
 
-/// Promotes non-conflicting queued/waiting executions into `core_execution_runs` dispatching state
-/// AND syncs linked `work_dispatch_requests` / `work_execution_bindings`.
+fn update_wait_reason_if_changed(
+    tx: &Connection,
+    exec_id: &str,
+    prev_reason: Option<&str>,
+    next_reason: &str,
+) -> crate::Result<()> {
+    if prev_reason == Some(next_reason) {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE core_execution_runs SET wait_reason = ? WHERE execution_id = ?",
+        params![next_reason, exec_id],
+    )?;
+    Ok(())
+}
+
+/// Promotes non-conflicting queued/waiting executions across ALL queued candidates (no `LIMIT 128`
+/// head-of-line blocking), with foreground priority + bounded aging and explainable `waitReason`.
 pub(crate) fn promote_compatible_executions(
     tx: &Connection,
     core_gen: &str,
@@ -1086,37 +1258,87 @@ pub(crate) fn promote_compatible_executions(
     events: &mut Vec<EmittedEvent>,
     dispatches: &mut Vec<Value>,
 ) -> crate::Result<usize> {
-    let Some((exec_epoch, exec_client_id)) = tracker.is_online() else {
-        return Ok(0);
-    };
-    let active_count: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM core_execution_runs WHERE status IN ('dispatching', 'running', 'pause_requested', 'cancel_requested')",
-        [],
-        |r| r.get(0),
-    )?;
-    let mut available = (tracker.slots_limit() - active_count).max(0);
-    if available == 0 {
+    const PAGE_SIZE: i64 = 128;
+    const MAX_PROMOTE_SCAN: usize = 1024;
+    const AGING_STEP_MS: i64 = 5_000;
+
+    let mut all_candidates: Vec<(String, String, String, String, i64, Option<String>)> = Vec::new();
+    let mut cursor_ts = i64::MIN;
+    let mut cursor_id = String::new();
+    while all_candidates.len() < MAX_PROMOTE_SCAN {
+        let mut stmt = tx.prepare(
+            "SELECT execution_id, task_id, kind, payload_json, created_at_ms, wait_reason
+             FROM core_execution_runs
+             WHERE status IN ('queued', 'waiting_executor')
+               AND (created_at_ms > ?1 OR (created_at_ms = ?1 AND execution_id > ?2))
+             ORDER BY created_at_ms ASC, execution_id ASC
+             LIMIT ?3",
+        )?;
+        let page: Vec<(String, String, String, String, i64, Option<String>)> = stmt
+            .query_map(params![cursor_ts, cursor_id, PAGE_SIZE], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let page_len = page.len();
+        if let Some(last) = page.last() {
+            cursor_ts = last.4;
+            cursor_id = last.0.clone();
+        }
+        all_candidates.extend(page);
+        if (page_len as i64) < PAGE_SIZE {
+            break;
+        }
+    }
+
+    if all_candidates.is_empty() {
         return Ok(0);
     }
 
-    let mut stmt = tx.prepare(
-        "SELECT execution_id, payload_json FROM core_execution_runs
-         WHERE status IN ('queued', 'waiting_executor')
-         ORDER BY created_at_ms ASC, execution_id ASC LIMIT 128",
-    )?;
-    let candidates: Vec<(String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    drop(stmt);
+    let Some((exec_epoch, exec_client_id)) = tracker.is_online() else {
+        for (exec_id, _, _, _, _, prev_reason) in all_candidates {
+            update_wait_reason_if_changed(tx, &exec_id, prev_reason.as_deref(), "executor_offline")?;
+        }
+        return Ok(0);
+    };
+
+    let active_conflicts = ActiveConflictSet::load(tx)?;
+    let active_count = active_conflicts.active_ids.len() as i64;
+    let mut available = (tracker.slots_limit() - active_count).max(0);
+    let mut conflicts = active_conflicts;
+
+    let mut prioritized: Vec<(i64, i64, String, String, String, Value, Option<String>)> = all_candidates
+        .into_iter()
+        .map(|(exec_id, task_id, kind, payload_str, created_at_ms, prev_reason)| {
+            let payload: Value = serde_json::from_str(&payload_str).unwrap_or_else(|_| json!({}));
+            let tier = candidate_priority_tier(&kind, &payload);
+            let effective_key = created_at_ms.saturating_add(tier * AGING_STEP_MS);
+            (effective_key, created_at_ms, exec_id, task_id, kind, payload, prev_reason)
+        })
+        .collect();
+    prioritized.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2)));
 
     let now = now_ms();
     let mut promoted = 0usize;
-    for (exec_id, payload_str) in candidates {
-        if available <= 0 {
-            break;
+    for (_, _, exec_id, task_id, kind, payload, prev_reason) in prioritized {
+        if !tracker.supports_kind(&kind) {
+            let reason = format!("capability_unavailable:{kind}");
+            update_wait_reason_if_changed(tx, &exec_id, prev_reason.as_deref(), &reason)?;
+            continue;
         }
-        let payload: Value = serde_json::from_str(&payload_str).unwrap_or_else(|_| json!({}));
-        if has_active_conflict(tx, &exec_id, &payload)?.is_some() {
+        if let Some(conflict) = conflicts.check(&exec_id, &task_id, &kind, &payload) {
+            let reason = format!("conflict:{conflict}");
+            update_wait_reason_if_changed(tx, &exec_id, prev_reason.as_deref(), &reason)?;
+            continue;
+        }
+        if available <= 0 {
+            update_wait_reason_if_changed(tx, &exec_id, prev_reason.as_deref(), "slots_exhausted")?;
             continue;
         }
         let Some(row) = crate::business_protocol::fetch_execution_tx(tx, &exec_id)? else {
@@ -1126,7 +1348,7 @@ pub(crate) fn promote_compatible_executions(
         let next_attempt = row.attempt + 1;
         tx.execute(
             "UPDATE core_execution_runs
-             SET status = 'dispatching', revision = ?, attempt = ?, executor_client_id = ?, executor_epoch = ?, updated_at_ms = ?
+             SET status = 'dispatching', revision = ?, attempt = ?, executor_client_id = ?, executor_epoch = ?, wait_reason = NULL, updated_at_ms = ?
              WHERE execution_id = ?",
             params![
                 next_rev,
@@ -1137,6 +1359,9 @@ pub(crate) fn promote_compatible_executions(
                 exec_id
             ],
         )?;
+        tracker.register_active_execution(&exec_id, next_attempt, exec_epoch, &row.owner_generation);
+        conflicts.insert(&exec_id, &task_id, &kind, &payload);
+
         if let Some(binding_id) = payload.get("bindingId").and_then(Value::as_str) {
             tx.execute(
                 "UPDATE work_execution_bindings
@@ -2265,7 +2490,7 @@ pub fn execute_write(
                 &json!({ "ownerId": owner_id, "acquiredAt": acquired_at }),
             )?];
             let recovered = scan_recovery_tx(&tx, &core_gen, now, &mut events)?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: json!({
                     "ok": true,
@@ -2296,7 +2521,7 @@ pub fn execute_write(
                 "UPDATE work_host_lease SET heartbeat_at = ? WHERE lease_id = 'singleton' AND authority_id = ?",
                 params![now, owner_id],
             )?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: json!({ "ok": true, "ownerId": owner_id, "heartbeatAt": now }),
                 events: vec![],
@@ -2314,7 +2539,7 @@ pub fn execute_write(
                 "UPDATE work_host_lease SET released_at = ? WHERE lease_id = 'singleton' AND authority_id = ?",
                 params![now, owner_id],
             )?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: json!({ "ok": updated > 0, "ownerId": owner_id, "releasedAt": now }),
                 events: vec![],
@@ -2429,7 +2654,7 @@ pub fn execute_write(
                 Some(&outbox_id),
                 now,
             )?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: reply,
                 events: vec![ev],
@@ -2558,7 +2783,7 @@ pub fn execute_write(
                 Some(&outbox_id),
                 now,
             )?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: reply,
                 events: vec![ev],
@@ -2655,7 +2880,7 @@ pub fn execute_write(
                 Some(&outbox_id),
                 now,
             )?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: reply,
                 events: vec![ev],
@@ -2759,7 +2984,7 @@ pub fn execute_write(
                 Some(&outbox_id),
                 now,
             )?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: reply,
                 events,
@@ -2895,7 +3120,7 @@ pub fn execute_write(
                 None,
                 &json!({ "workId": work_id, "archivedAt": now }),
             )?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: json!({ "ok": true, "workId": work_id, "archivedAt": now }),
                 events: vec![ev],
@@ -3002,7 +3227,7 @@ pub fn execute_write(
                 None,
                 now,
             )?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: reply,
                 events: vec![ev],
@@ -3196,7 +3421,7 @@ pub fn execute_write(
                 None,
                 now,
             )?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: reply,
                 events,
@@ -3243,7 +3468,7 @@ pub fn execute_write(
             if data.get("ok").and_then(Value::as_bool) == Some(true) {
                 promote_compatible_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
             }
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data,
                 events,
@@ -3335,7 +3560,7 @@ pub fn execute_write(
                 None,
                 now,
             )?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: reply,
                 events: vec![ev],
@@ -3363,7 +3588,7 @@ pub fn execute_write(
                 &mut events,
                 &mut dispatches,
             )?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data,
                 events,
@@ -3387,7 +3612,7 @@ pub fn execute_write(
             let mut dispatches = vec![];
             let promoted =
                 promote_compatible_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
-            tx.commit()?;
+            crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
                 data: json!({
                     "ok": true,
@@ -3581,7 +3806,7 @@ fn transition_close_tx(
         Some(&outbox_id),
         now,
     )?;
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
     Ok(WriteSideEffects {
         data: reply,
         events,
@@ -3641,7 +3866,7 @@ pub fn claim_supervised_core_lease(db: &mut Connection) -> crate::Result<bool> {
             params![now],
         )?;
     }
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
     Ok(true)
 }
 
@@ -3778,5 +4003,127 @@ mod tests {
         // And promoted waiting e3 on repo-a!
         assert_eq!(s1.dispatches.len(), 1);
         assert_eq!(s1.dispatches[0]["coreExecutionDispatch"]["execution"]["executionId"], "e3");
+    }
+
+    #[test]
+    fn promote_skips_128_conflicting_candidates_to_start_129th_independent_execution() {
+        let mut db = setup_db();
+        let tracker = ExecutorTracker::new();
+        tracker.set_presence(true, 1, "pi-1".into());
+        tracker.set_slots_limit(4);
+        let core_gen = current_core_generation();
+
+        // Active holder on hot-lock + 128 waiting candidates on hot-lock + 129th independent candidate.
+        db.execute(
+            "INSERT INTO core_execution_runs (
+                execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
+                task_id, kind, payload_json, status, revision, executor_client_id, executor_epoch, attempt, created_at_ms, updated_at_ms
+             ) VALUES ('exec-holder', 'ik-holder', ?1, 'ui', 'c1', 1, 't-holder', 'pi_turn', '{\"resourceKey\":\"hot-lock\"}', 'running', 2, 'pi-1', 1, 1, 1000, 1000)",
+            params![core_gen],
+        )
+        .unwrap();
+        for i in 1..=128 {
+            db.execute(
+                "INSERT INTO core_execution_runs (
+                    execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
+                    task_id, kind, payload_json, status, revision, attempt, created_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, 'ui', 'c1', 1, ?4, 'pi_turn', '{\"resourceKey\":\"hot-lock\"}', 'queued', 1, 0, ?5, ?5)",
+                params![
+                    format!("exec-wait-{i:03}"),
+                    format!("ik-wait-{i:03}"),
+                    core_gen,
+                    format!("t-wait-{i:03}"),
+                    1000 + i as i64
+                ],
+            )
+            .unwrap();
+        }
+        db.execute(
+            "INSERT INTO core_execution_runs (
+                execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
+                task_id, kind, payload_json, status, revision, attempt, created_at_ms, updated_at_ms
+             ) VALUES ('exec-129', 'ik-129', ?1, 'ui', 'c1', 1, 't-129', 'pi_turn', '{\"resourceKey\":\"indep-129\"}', 'queued', 1, 0, 2000, 2000)",
+            params![core_gen],
+        )
+        .unwrap();
+
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        let mut events = Vec::new();
+        let mut dispatches = Vec::new();
+        let promoted = promote_compatible_executions(&tx, &core_gen, &tracker, &mut events, &mut dispatches).unwrap();
+        tx.commit().unwrap();
+
+        assert_eq!(promoted, 1);
+        assert_eq!(dispatches[0]["coreExecutionDispatch"]["execution"]["executionId"], "exec-129");
+        let wait_reason: Option<String> = db
+            .query_row(
+                "SELECT wait_reason FROM core_execution_runs WHERE execution_id = 'exec-wait-001'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(wait_reason.as_deref().unwrap_or("").contains("conflict:resource:hot-lock"));
+    }
+
+    #[test]
+    fn promote_enforces_same_session_and_prioritizes_foreground_with_aging() {
+        let mut db = setup_db();
+        let tracker = ExecutorTracker::new();
+        tracker.set_presence(true, 1, "pi-1".into());
+        tracker.set_slots_limit(2);
+        let core_gen = current_core_generation();
+
+        // Active pi_turn on sess-1 blocks queued pi_turn on sess-1.
+        db.execute(
+            "INSERT INTO core_execution_runs (
+                execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
+                task_id, kind, payload_json, status, revision, executor_client_id, executor_epoch, attempt, created_at_ms, updated_at_ms
+             ) VALUES ('exec-s1-a', 'ik-s1-a', ?1, 'ui', 'c1', 1, 'sess-1', 'pi_turn', '{}', 'running', 2, 'pi-1', 1, 1, 10000, 10000)",
+            params![core_gen],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO core_execution_runs (
+                execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
+                task_id, kind, payload_json, status, revision, attempt, created_at_ms, updated_at_ms
+             ) VALUES ('exec-s1-b', 'ik-s1-b', ?1, 'ui', 'c1', 1, 'sess-1', 'pi_turn', '{}', 'queued', 1, 0, 10001, 10001)",
+            params![core_gen],
+        )
+        .unwrap();
+        // Background task queued slightly earlier (10002) vs Foreground task (10500):
+        // With tier=2 (+10_000ms) vs tier=0 (+0ms), foreground wins!
+        db.execute(
+            "INSERT INTO core_execution_runs (
+                execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
+                task_id, kind, payload_json, status, revision, attempt, created_at_ms, updated_at_ms
+             ) VALUES ('exec-bg-fresh', 'ik-bg-f', ?1, 'service', 'c1', 1, 't-bg-f', 'maintenance_control', '{}', 'queued', 1, 0, 10002, 10002)",
+            params![core_gen],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO core_execution_runs (
+                execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
+                task_id, kind, payload_json, status, revision, attempt, created_at_ms, updated_at_ms
+             ) VALUES ('exec-fg', 'ik-fg', ?1, 'ui', 'c1', 1, 'sess-fg', 'pi_turn', '{}', 'queued', 1, 0, 10500, 10500)",
+            params![core_gen],
+        )
+        .unwrap();
+
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        let mut events = Vec::new();
+        let mut dispatches = Vec::new();
+        let promoted = promote_compatible_executions(&tx, &core_gen, &tracker, &mut events, &mut dispatches).unwrap();
+        tx.commit().unwrap();
+
+        assert_eq!(promoted, 1);
+        assert_eq!(dispatches[0]["coreExecutionDispatch"]["execution"]["executionId"], "exec-fg");
+        let sess_reason: Option<String> = db
+            .query_row(
+                "SELECT wait_reason FROM core_execution_runs WHERE execution_id = 'exec-s1-b'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sess_reason.as_deref(), Some("conflict:session:sess-1:active:exec-s1-a"));
     }
 }

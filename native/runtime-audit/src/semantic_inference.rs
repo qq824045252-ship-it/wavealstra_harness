@@ -2,7 +2,42 @@ use crate::Result;
 use icu_normalizer::ComposingNormalizer;
 use ort::{logging::LogLevel, session::Session, value::Tensor};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs::File, io::BufReader, path::PathBuf, time::Instant};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::BufReader,
+    path::PathBuf,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Instant,
+};
+
+static CONFIGURED_INTRA_THREADS: AtomicUsize = AtomicUsize::new(0);
+static CONFIGURED_INTER_THREADS: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn configured_threads() -> (usize, usize) {
+    let intra = CONFIGURED_INTRA_THREADS.load(Ordering::Acquire);
+    let inter = CONFIGURED_INTER_THREADS.load(Ordering::Acquire);
+    if intra > 0 && inter > 0 {
+        return (intra, inter);
+    }
+    resolve_thread_bounds()
+}
+
+fn resolve_thread_bounds() -> (usize, usize) {
+    let intra = std::env::var("MYBUDDY_ORT_INTRA_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(2)
+        .clamp(1, 4);
+    let inter = std::env::var("MYBUDDY_ORT_INTER_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 2);
+    CONFIGURED_INTRA_THREADS.store(intra, Ordering::Release);
+    CONFIGURED_INTER_THREADS.store(inter, Ordering::Release);
+    (intra, inter)
+}
 
 #[derive(Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -166,9 +201,12 @@ impl Inference {
             self.loaded = None;
             let tokenizer = Tokenizer::load(&model.tokenizer_path)?;
             ort::init_from(&model.library_path)?.commit();
+            let (intra_threads, inter_threads) = resolve_thread_bounds();
             let start = Instant::now();
             let session = Session::builder()?
                 .with_log_level(LogLevel::Error)?
+                .with_intra_threads(intra_threads)?
+                .with_inter_threads(inter_threads)?
                 .commit_from_file(&model.model_path)?;
             self.loaded = Some(LoadedModel {
                 model,

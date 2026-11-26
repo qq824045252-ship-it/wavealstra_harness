@@ -21,6 +21,20 @@ pub fn enter() -> crate::Result<Guard> {
     DEPTH.with(|depth| depth.set(depth.get() + 1));
     Ok(Guard { _held: held })
 }
+
+/// Acquires the shared writer lock without enforcing cancellation/deadline checkpoints.
+/// Reserved strictly for post-side-effect cleanup and intent finalization commits so a
+/// late cancellation cannot leave an orphaned child process or dangling `'launching'` row.
+pub fn enter_unchecked() -> Guard {
+    let nested = DEPTH.with(|depth| depth.get() > 0);
+    let held = if nested {
+        None
+    } else {
+        Some(WRITER.lock().unwrap_or_else(|e| e.into_inner()))
+    };
+    DEPTH.with(|depth| depth.set(depth.get() + 1));
+    Guard { _held: held }
+}
 impl Drop for Guard {
     fn drop(&mut self) {
         DEPTH.with(|depth| depth.set(depth.get() - 1));

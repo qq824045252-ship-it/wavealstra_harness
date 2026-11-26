@@ -56,6 +56,7 @@ mod library_note_changes;
 mod library_restore;
 mod library_text;
 mod library_text_save;
+mod maintenance_scheduler;
 mod material_retrieval_data;
 mod memory_baselines;
 mod memory_capture;
@@ -122,11 +123,15 @@ use rusqlite::{Connection, OpenFlags, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     error::Error,
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        mpsc,
+    },
     thread,
     time::Duration,
 };
@@ -785,6 +790,12 @@ enum Request {
         #[serde(rename = "__client")]
         client: Option<business_protocol::ClientContext>,
     },
+    CoreMaintenanceScheduler {
+        #[serde(flatten)]
+        command: maintenance_scheduler::Command,
+        #[serde(rename = "__client")]
+        client: Option<business_protocol::ClientContext>,
+    },
     CoreEventsSnapshot {
         domain: Option<String>,
     },
@@ -1057,77 +1068,269 @@ enum WorkspaceJob {
     },
 }
 
-type WorkspaceWorker = (
-    mpsc::SyncSender<(RequestId, WorkspaceJob)>,
-    thread::JoinHandle<()>,
-);
+#[derive(Default)]
+struct PoolMetrics {
+    workers: AtomicUsize,
+    active: AtomicUsize,
+    max_active: AtomicUsize,
+    queued: AtomicUsize,
+    max_queued: AtomicUsize,
+    completed: AtomicU64,
+    overloaded: AtomicU64,
+}
 
-fn start_workspace_scans() -> io::Result<WorkspaceWorker> {
-    let (send, jobs) = mpsc::sync_channel::<(RequestId, WorkspaceJob)>(16);
-    let worker = thread::Builder::new()
-        .name("workspace-scan".into())
-        .spawn(move || {
-            for (id, job) in jobs {
-                if !request_control::begin(&id) {
-                    continue;
-                }
-                let result = match job {
-                    WorkspaceJob::Scan(query) => Data::WorkspaceScan(workspace_scan::scan(query)),
-                    WorkspaceJob::FileBackupList(query) => {
-                        Data::FileBackupList(file_backup_list::list(query))
+impl PoolMetrics {
+    fn snapshot(&self) -> Value {
+        serde_json::json!({
+            "workers": self.workers.load(Ordering::Acquire),
+            "active": self.active.load(Ordering::Acquire),
+            "maxActive": self.max_active.load(Ordering::Acquire),
+            "queued": self.queued.load(Ordering::Acquire),
+            "maxQueued": self.max_queued.load(Ordering::Acquire),
+            "completed": self.completed.load(Ordering::Acquire),
+            "overloaded": self.overloaded.load(Ordering::Acquire),
+        })
+    }
+}
+
+static READ_POOL_METRICS: PoolMetrics = PoolMetrics {
+    workers: AtomicUsize::new(0),
+    active: AtomicUsize::new(0),
+    max_active: AtomicUsize::new(0),
+    queued: AtomicUsize::new(0),
+    max_queued: AtomicUsize::new(0),
+    completed: AtomicU64::new(0),
+    overloaded: AtomicU64::new(0),
+};
+static WORKSPACE_IO_METRICS: PoolMetrics = PoolMetrics {
+    workers: AtomicUsize::new(0),
+    active: AtomicUsize::new(0),
+    max_active: AtomicUsize::new(0),
+    queued: AtomicUsize::new(0),
+    max_queued: AtomicUsize::new(0),
+    completed: AtomicU64::new(0),
+    overloaded: AtomicU64::new(0),
+};
+static GADGET_IO_METRICS: PoolMetrics = PoolMetrics {
+    workers: AtomicUsize::new(0),
+    active: AtomicUsize::new(0),
+    max_active: AtomicUsize::new(0),
+    queued: AtomicUsize::new(0),
+    max_queued: AtomicUsize::new(0),
+    completed: AtomicU64::new(0),
+    overloaded: AtomicU64::new(0),
+};
+static DB_WRITER_QUEUED: AtomicUsize = AtomicUsize::new(0);
+static DB_WRITER_MAX_QUEUED: AtomicUsize = AtomicUsize::new(0);
+
+pub fn runtime_metrics_json() -> Value {
+    let (intra, inter) = semantic_inference::configured_threads();
+    serde_json::json!({
+        "readPool": READ_POOL_METRICS.snapshot(),
+        "workspaceIo": WORKSPACE_IO_METRICS.snapshot(),
+        "gadgetIo": GADGET_IO_METRICS.snapshot(),
+        "databaseWriter": {
+            "queued": DB_WRITER_QUEUED.load(Ordering::Acquire),
+            "maxQueued": DB_WRITER_MAX_QUEUED.load(Ordering::Acquire),
+        },
+        "gadgetHttp": gadget_http_host::metrics_json(),
+        "ort": {
+            "intraThreads": intra,
+            "interThreads": inter,
+        },
+        "ephemeralProgress": {
+            "emitted": business_protocol::ephemeral_progress_emitted(),
+            "dropped": core_supervisor::ephemeral_progress_dropped(),
+        },
+    })
+}
+
+fn configured_read_pool_workers() -> usize {
+    std::env::var("MYBUDDY_READ_POOL_WORKERS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(4)
+        .clamp(1, 8)
+}
+
+fn configured_workspace_io_workers() -> usize {
+    std::env::var("MYBUDDY_WORKSPACE_IO_WORKERS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(2)
+        .clamp(1, 4)
+}
+
+struct PoolQueue<J> {
+    items: VecDeque<(RequestId, J)>,
+    closed: bool,
+}
+
+struct WorkerPool<J: Send + 'static> {
+    shared: Arc<(Mutex<PoolQueue<J>>, Condvar)>,
+    capacity: usize,
+    metrics: &'static PoolMetrics,
+    handles: Vec<thread::JoinHandle<()>>,
+}
+
+impl<J: Send + 'static> WorkerPool<J> {
+    fn spawn<S: Send + 'static>(
+        name_prefix: &str,
+        workers: usize,
+        capacity: usize,
+        metrics: &'static PoolMetrics,
+        make_state: impl Fn() -> S,
+        handler: impl Fn(&mut S, RequestId, J) -> bool + Send + Sync + 'static,
+    ) -> io::Result<Self> {
+        metrics.workers.store(workers, Ordering::Release);
+        let shared = Arc::new((
+            Mutex::new(PoolQueue {
+                items: VecDeque::with_capacity(capacity.min(64)),
+                closed: false,
+            }),
+            Condvar::new(),
+        ));
+        let handler = Arc::new(handler);
+        let mut handles = Vec::with_capacity(workers);
+        for index in 0..workers {
+            let shared_c = Arc::clone(&shared);
+            let handler_c = Arc::clone(&handler);
+            let mut state = make_state();
+            let handle = thread::Builder::new()
+                .name(format!("{name_prefix}-{index}"))
+                .spawn(move || {
+                    loop {
+                        let job = {
+                            let (lock, cv) = &*shared_c;
+                            let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+                            while guard.items.is_empty() && !guard.closed {
+                                guard = cv.wait(guard).unwrap_or_else(|e| e.into_inner());
+                            }
+                            let popped = guard.items.pop_front();
+                            metrics.queued.store(guard.items.len(), Ordering::Release);
+                            popped
+                        };
+                        let Some((id, item)) = job else {
+                            break;
+                        };
+                        let active = metrics.active.fetch_add(1, Ordering::AcqRel) + 1;
+                        metrics.max_active.fetch_max(active, Ordering::AcqRel);
+                        let keep_going = handler_c(&mut state, id, item);
+                        metrics.active.fetch_sub(1, Ordering::AcqRel);
+                        metrics.completed.fetch_add(1, Ordering::AcqRel);
+                        if !keep_going {
+                            break;
+                        }
                     }
-                    WorkspaceJob::RestoreFileBackup(request) => {
-                        Data::FileBackupRestore(file_backup_restore::restore(request))
-                    }
-                    WorkspaceJob::SubagentSettings(request) => {
-                        Data::PluginConfig(subagent_settings_data::run(request))
-                    }
-                    WorkspaceJob::WorkGraphIntegrity(path) => work_graph_integrity::scan(&path)
-                        .map(Data::WorkGraphIntegrity)
-                        .unwrap_or(Data::Json(Value::Null)),
-                    WorkspaceJob::FileRevision { root, file } => {
-                        Data::DotsFileRevision(dots_file_revision::read(&root, &file))
-                    }
-                    WorkspaceJob::PluginCatalog(query) => {
-                        Data::Json(plugin_catalog::read(query).unwrap_or(Value::Null))
-                    }
-                    WorkspaceJob::ReadPluginConfig(target) => {
-                        Data::PluginConfig(plugin_config::read(target))
-                    }
-                    WorkspaceJob::ReplacePluginConfig {
-                        target,
-                        version,
-                        text,
-                    } => Data::PluginConfig(plugin_config::replace(target, &version, &text)),
-                    WorkspaceJob::InstallConnector(install) => {
-                        Data::ConnectorInstall(connector_install::install_reply(install))
-                    }
-                    WorkspaceJob::RecoverConnectorInstalls(root) => {
-                        Data::ConnectorInstall(connector_install::recover(&root))
-                    }
-                    WorkspaceJob::MaintainConnectorStorage(task) => {
-                        Data::ConnectorInstall(connector_install::maintain_reply(task))
-                    }
-                    WorkspaceJob::ImportConnectorMarket(request) => {
-                        Data::ConnectorImport(connector_import::import(request))
-                    }
-                    WorkspaceJob::MutateConnectorMarket(action) => {
-                        Data::ConnectorMarket(connector_market::update(action))
-                    }
-                    WorkspaceJob::CheckTrashedDirectories { root, rows } => {
-                        Data::TrashedTasks(task_trash::check_directories(&root, rows))
-                    }
-                };
-                if write_workspace_reply(&id, result).is_err() {
-                    break;
-                }
+                })?;
+            handles.push(handle);
+        }
+        Ok(Self {
+            shared,
+            capacity,
+            metrics,
+            handles,
+        })
+    }
+
+    fn try_send(&self, id: RequestId, item: J) -> std::result::Result<(), (RequestId, &'static str)> {
+        let (lock, cv) = &*self.shared;
+        let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.closed {
+            return Err((id, "UNAVAILABLE"));
+        }
+        if guard.items.len() >= self.capacity {
+            self.metrics.overloaded.fetch_add(1, Ordering::AcqRel);
+            return Err((id, "OVERLOADED"));
+        }
+        guard.items.push_back((id, item));
+        let q = guard.items.len();
+        self.metrics.queued.store(q, Ordering::Release);
+        self.metrics.max_queued.fetch_max(q, Ordering::AcqRel);
+        cv.notify_one();
+        Ok(())
+    }
+
+    fn shutdown(self) -> Result<()> {
+        {
+            let (lock, cv) = &*self.shared;
+            let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+            guard.closed = true;
+            cv.notify_all();
+        }
+        for handle in self.handles {
+            handle.join().map_err(|_| "worker pool thread panicked")?;
+        }
+        Ok(())
+    }
+}
+
+fn start_workspace_scans() -> io::Result<WorkerPool<WorkspaceJob>> {
+    let workers = configured_workspace_io_workers();
+    WorkerPool::spawn(
+        "workspace-scan",
+        workers,
+        32,
+        &WORKSPACE_IO_METRICS,
+        || (),
+        |(), id, job| {
+            if !request_control::begin(&id) {
+                return true;
             }
-        })?;
-    Ok((send, worker))
+            let result = match job {
+                WorkspaceJob::Scan(query) => Data::WorkspaceScan(workspace_scan::scan(query)),
+                WorkspaceJob::FileBackupList(query) => {
+                    Data::FileBackupList(file_backup_list::list(query))
+                }
+                WorkspaceJob::RestoreFileBackup(request) => {
+                    Data::FileBackupRestore(file_backup_restore::restore(request))
+                }
+                WorkspaceJob::SubagentSettings(request) => {
+                    Data::PluginConfig(subagent_settings_data::run(request))
+                }
+                WorkspaceJob::WorkGraphIntegrity(path) => work_graph_integrity::scan(&path)
+                    .map(Data::WorkGraphIntegrity)
+                    .unwrap_or(Data::Json(Value::Null)),
+                WorkspaceJob::FileRevision { root, file } => {
+                    Data::DotsFileRevision(dots_file_revision::read(&root, &file))
+                }
+                WorkspaceJob::PluginCatalog(query) => {
+                    Data::Json(plugin_catalog::read(query).unwrap_or(Value::Null))
+                }
+                WorkspaceJob::ReadPluginConfig(target) => {
+                    Data::PluginConfig(plugin_config::read(target))
+                }
+                WorkspaceJob::ReplacePluginConfig {
+                    target,
+                    version,
+                    text,
+                } => Data::PluginConfig(plugin_config::replace(target, &version, &text)),
+                WorkspaceJob::InstallConnector(install) => {
+                    Data::ConnectorInstall(connector_install::install_reply(install))
+                }
+                WorkspaceJob::RecoverConnectorInstalls(root) => {
+                    Data::ConnectorInstall(connector_install::recover(&root))
+                }
+                WorkspaceJob::MaintainConnectorStorage(task) => {
+                    Data::ConnectorInstall(connector_install::maintain_reply(task))
+                }
+                WorkspaceJob::ImportConnectorMarket(request) => {
+                    Data::ConnectorImport(connector_import::import(request))
+                }
+                WorkspaceJob::MutateConnectorMarket(action) => {
+                    Data::ConnectorMarket(connector_market::update(action))
+                }
+                WorkspaceJob::CheckTrashedDirectories { root, rows } => {
+                    Data::TrashedTasks(task_trash::check_directories(&root, rows))
+                }
+            };
+            write_workspace_reply(&id, result).is_ok()
+        },
+    )
 }
 
 fn dispatch_workspace(
-    worker: &mut Option<WorkspaceWorker>,
+    worker: &mut Option<WorkerPool<WorkspaceJob>>,
     id: RequestId,
     job: WorkspaceJob,
     _fallback: Data,
@@ -1136,18 +1339,76 @@ fn dispatch_workspace(
         *worker = start_workspace_scans().ok();
     }
     match worker {
-        Some((sender, _)) => match sender.try_send((id, job)) {
+        Some(pool) => match pool.try_send(id, job) {
             Ok(()) => Ok(()),
             // The rejected job hands its id back, so even the fallback is correlated.
-            Err(mpsc::TrySendError::Full((id, _))) => {
-                request_control::overload(&id, "OVERLOADED").map_err(Into::into)
-            }
-            Err(mpsc::TrySendError::Disconnected((id, _))) => {
-                request_control::overload(&id, "UNAVAILABLE").map_err(Into::into)
-            }
+            Err((id, code)) => request_control::overload(&id, code).map_err(Into::into),
         },
         None => request_control::overload(&id, "UNAVAILABLE").map_err(Into::into),
     }
+}
+
+fn start_read_pool(
+    db_path: PathBuf,
+    staged: Arc<embedding_index::StagedVectors>,
+    executor_tracker: Arc<business_protocol::ExecutorTracker>,
+) -> io::Result<WorkerPool<Request>> {
+    let workers = configured_read_pool_workers();
+    WorkerPool::spawn(
+        "read-pool",
+        workers,
+        64,
+        &READ_POOL_METRICS,
+        move || {
+            (
+                None::<Connection>,
+                HashMap::<String, Connection>::new(),
+                None::<Connection>,
+                db_path.clone(),
+                Arc::clone(&staged),
+                Arc::clone(&executor_tracker),
+            )
+        },
+        |(conn_opt, durable_sessions, writer_opt, db_path, staged, tracker), id, request| {
+            if !request_control::begin(&id) {
+                return true;
+            }
+            let result = (|| -> Result<Data> {
+                if conn_opt.is_none() {
+                    *conn_opt = Some(read_connection(db_path)?);
+                }
+                let mut side_effects = None;
+                read(
+                    conn_opt.as_mut().unwrap(),
+                    db_path,
+                    durable_sessions,
+                    writer_opt,
+                    staged,
+                    tracker,
+                    &mut side_effects,
+                    request,
+                )
+            })();
+            write_reply(&id, result, false).is_ok()
+        },
+    )
+}
+
+fn start_gadget_io_pool(gadget_state: Arc<gadget_state::Store>) -> io::Result<WorkerPool<gadget_state::Request>> {
+    WorkerPool::spawn(
+        "gadget-io",
+        4,
+        64,
+        &GADGET_IO_METRICS,
+        move || Arc::clone(&gadget_state),
+        |store, id, request| {
+            if !request_control::begin(&id) {
+                return true;
+            }
+            let reply = store.run_for(request, id.as_deref());
+            write_reply(&id, Ok(Data::GadgetState(reply)), false).is_ok()
+        },
+    )
 }
 
 enum InferenceJob {
@@ -1432,6 +1693,41 @@ fn read(
         *side_effects = Some(fx);
         return Ok(Data::Json(data));
     }
+    if let Request::CoreExecution {
+        action:
+            business_protocol::ExecutionRequest::ExecutorProgress {
+                execution_id,
+                attempt,
+                progress,
+                owner_generation,
+                host_generation,
+                ephemeral: true,
+            },
+        client,
+    } = request
+    {
+        if let Some(hg) = host_generation.as_deref()
+            && pi_host_supervisor::is_generation_fenced(db, hg)
+        {
+            return Ok(Data::Json(serde_json::json!({
+                "status": "rejected",
+                "code": "STALE_HOST_GENERATION",
+                "hostGeneration": hg,
+            })));
+        }
+        let ctx = client.unwrap_or_else(|| {
+            business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
+        });
+        return business_protocol::execute_ephemeral_progress(
+            executor_tracker,
+            &ctx,
+            &execution_id,
+            attempt,
+            progress,
+            owner_generation.as_deref(),
+        )
+        .map(Data::Json);
+    }
     if let Request::CoreExecution { action, client } = request {
         if let business_protocol::ExecutionRequest::Status { execution_id } = action {
             return business_protocol::execute_execution_read(db, &execution_id).map(Data::Json);
@@ -1542,6 +1838,24 @@ fn read(
         });
         let fx = pi_host_supervisor::execute_write(
             write_connection(writer, db_path)?,
+            executor_tracker,
+            &ctx,
+            command,
+        )?;
+        let data = fx.data.clone();
+        *side_effects = Some(fx);
+        return Ok(Data::Json(data));
+    }
+    if let Request::CoreMaintenanceScheduler { command, client } = request {
+        if command.is_read_only() {
+            return maintenance_scheduler::execute_read(db, command).map(Data::Json);
+        }
+        let ctx = client.unwrap_or_else(|| {
+            business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
+        });
+        let fx = maintenance_scheduler::execute_write(
+            write_connection(writer, db_path)?,
+            executor_tracker,
             &ctx,
             command,
         )?;
@@ -1711,6 +2025,18 @@ fn read(
     }
     if let Request::PluginCatalog { query } = request {
         return plugin_catalog::read(query).map(Data::Json);
+    }
+    if let Request::WorkspaceFilePreview {
+        root,
+        relative_path,
+        kind,
+    } = request
+    {
+        return Ok(Data::WorkspaceFilePreview(workspace_preview::read(
+            &root,
+            &relative_path,
+            kind,
+        )));
     }
     if let Request::WorkspaceMoveSupported = request {
         return Ok(Data::Json(true.into()));
@@ -2435,7 +2761,8 @@ fn read(
         | Request::CoreCronScheduler { .. }
         | Request::CoreDotsScheduler { .. }
         | Request::CoreGatewayScheduler { .. }
-        | Request::CoreRemoteControl { .. } => unreachable!(),
+        | Request::CoreRemoteControl { .. }
+        | Request::CoreMaintenanceScheduler { .. } => unreachable!(),
     };
     snapshot.commit()?;
     Ok(response)
@@ -2499,20 +2826,195 @@ fn read_connection(path: &Path) -> Result<Connection> {
     Ok(db)
 }
 
-fn database_write(request: &Request) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum ExecutionLane {
+    Control,
+    History,
+    DatabaseWrite,
+    ReadPool,
+    GadgetIo,
+    WorkspaceIo,
+    Maintenance,
+    Inference,
+    InlineFast,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RequestClassification {
+    lane: ExecutionLane,
+    db_write: bool,
+    may_mutate: bool,
+    deferred: bool,
+}
+
+const fn class(
+    lane: ExecutionLane,
+    db_write: bool,
+    may_mutate: bool,
+    deferred: bool,
+) -> RequestClassification {
+    RequestClassification {
+        lane,
+        db_write,
+        may_mutate,
+        deferred,
+    }
+}
+
+fn classify_request(request: &Request) -> RequestClassification {
     match request {
-        Request::CoreExecution { action, .. } => !business_protocol::execution_is_read_only(action),
-        Request::CoreWorkScheduler { command, .. } => !command.is_read_only(),
-        Request::CoreCronScheduler { command, .. } => !command.is_read_only(),
-        Request::CoreDotsScheduler { command, .. } => !command.is_read_only(),
-        Request::CoreGatewayScheduler { command, .. } => !command.is_read_only(),
-        Request::CoreRemoteControl { command, .. } => !command.is_read_only(),
-        Request::ProjectPins { request } => !request.is_read(),
-        Request::ProjectPosts { request } => !request.is_read(),
-        Request::ProjectEventData { request } => !request.is_read(),
-        Request::AnswerRoutingData { request } => !request.is_read(),
-        Request::MaterialRetrievalData { request } => !request.is_read(),
-        Request::SoulProfile { request } => !request.is_read(),
+        Request::HistoryRead { .. } => class(ExecutionLane::History, false, false, false),
+        Request::WorkspaceScan { .. }
+        | Request::FileBackupList { .. }
+        | Request::ScanWorkGraphIntegrity
+        | Request::ListTrashedTasks { .. }
+        | Request::DotsFileRevision { .. }
+        | Request::ScanPluginCatalog { .. }
+        | Request::ReadPluginConfig { .. } => class(ExecutionLane::WorkspaceIo, false, false, true),
+        Request::RestoreFileBackup { .. }
+        | Request::SubagentSettings { .. }
+        | Request::ReplacePluginConfig { .. }
+        | Request::InstallConnector { .. }
+        | Request::RecoverConnectorInstalls { .. }
+        | Request::MaintainConnectorStorage { .. }
+        | Request::ImportConnectorMarket { .. }
+        | Request::MutateConnectorMarket { .. } => class(ExecutionLane::WorkspaceIo, false, true, true),
+        Request::CleanupArtifactFiles { .. }
+        | Request::DeleteLibrary { .. }
+        | Request::DrainLibraryCleanup { .. }
+        | Request::ExportLibraryBackup { .. }
+        | Request::PrepareLibraryRestore { .. }
+        | Request::DiscardLibraryRestore { .. }
+        | Request::RestoreLibraryBackup { .. }
+        | Request::RecoverLibraryRestores { .. }
+        | Request::DeleteProject { .. }
+        | Request::PromoteProjectEventToLibrary { .. } => {
+            class(ExecutionLane::Maintenance, false, true, true)
+        }
+        Request::SemanticInference { .. }
+        | Request::StageEmbedding { .. }
+        | Request::SemanticModelProbe { .. } => class(ExecutionLane::Inference, false, false, true),
+        Request::CoreExecution { action, .. } => {
+            if matches!(action, business_protocol::ExecutionRequest::ExecutorProgress { ephemeral: true, .. }) {
+                class(ExecutionLane::InlineFast, false, false, false)
+            } else if business_protocol::execution_is_read_only(action) {
+                class(ExecutionLane::ReadPool, false, false, true)
+            } else {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            }
+        }
+        Request::CoreWorkScheduler { command, .. } => {
+            if !command.is_read_only() {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            } else {
+                class(ExecutionLane::ReadPool, false, false, true)
+            }
+        }
+        Request::CoreCronScheduler { command, .. } => {
+            if !command.is_read_only() {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            } else {
+                class(ExecutionLane::ReadPool, false, false, true)
+            }
+        }
+        Request::CoreDotsScheduler { command, .. } => {
+            if !command.is_read_only() {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            } else {
+                class(ExecutionLane::ReadPool, false, false, true)
+            }
+        }
+        Request::CoreGatewayScheduler { command, .. } => {
+            if !command.is_read_only() {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            } else {
+                class(ExecutionLane::ReadPool, false, false, true)
+            }
+        }
+        Request::CoreRemoteControl { command, .. } => {
+            if !command.is_read_only() {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            } else {
+                class(ExecutionLane::ReadPool, false, false, true)
+            }
+        }
+        Request::CorePiHost { command, .. } => {
+            if !command.is_read_only() {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            } else {
+                class(ExecutionLane::ReadPool, false, false, true)
+            }
+        }
+        Request::CoreMaintenanceScheduler { command, .. } => {
+            if !command.is_read_only() {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            } else {
+                class(ExecutionLane::ReadPool, false, false, true)
+            }
+        }
+        Request::CoreGadgetHost { command } => {
+            if !command.is_read_only() {
+                class(ExecutionLane::InlineFast, false, true, false)
+            } else {
+                class(ExecutionLane::InlineFast, false, false, false)
+            }
+        }
+        Request::ProjectPins { request } => {
+            if !request.is_read() {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            } else {
+                class(ExecutionLane::ReadPool, false, false, true)
+            }
+        }
+        Request::ProjectPosts { request } => {
+            if !request.is_read() {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            } else {
+                class(ExecutionLane::ReadPool, false, false, true)
+            }
+        }
+        Request::ProjectEventData { request } => {
+            if !request.is_read() {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            } else {
+                class(ExecutionLane::ReadPool, false, false, true)
+            }
+        }
+        Request::AnswerRoutingData { request } => {
+            if !request.is_read() {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            } else {
+                class(ExecutionLane::ReadPool, false, false, true)
+            }
+        }
+        Request::MaterialRetrievalData { request } => {
+            if !request.is_read() {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            } else {
+                class(ExecutionLane::ReadPool, false, false, true)
+            }
+        }
+        Request::SoulProfile { request } => {
+            if !request.is_read() {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            } else {
+                class(ExecutionLane::ReadPool, false, false, true)
+            }
+        }
+        Request::GadgetState { request } => {
+            let mutates = matches!(
+                request,
+                gadget_state::Request::Access {
+                    action: gadget_state::Action::Set { .. } | gadget_state::Action::Delete { .. },
+                    ..
+                }
+            );
+            class(ExecutionLane::GadgetIo, false, mutates, true)
+        }
+        Request::LibraryText { .. } | Request::ExportGadgetFiles { .. } => {
+            class(ExecutionLane::InlineFast, false, true, false)
+        }
         Request::WorkHostLease { .. }
         | Request::PublishEmbeddings { .. }
         | Request::CoreCommand { .. }
@@ -2575,74 +3077,134 @@ fn database_write(request: &Request) -> bool {
         | Request::CaptureMemory { .. }
         | Request::CompactSnapshots { .. }
         | Request::MutateSnapshot { .. }
-        | Request::WriteDiagnostics { .. } => true,
-        _ => false,
+        | Request::WriteDiagnostics { .. } => class(ExecutionLane::DatabaseWrite, true, true, true),
+        Request::Snapshots { .. }
+        | Request::Diagnostics { .. }
+        | Request::TaskList { .. }
+        | Request::WorkspaceData { .. }
+        | Request::WorkspaceBindingSnapshot { .. }
+        | Request::MemoryTurnData { .. }
+        | Request::MemoryRecordsData { .. }
+        | Request::ReadBotHistoryPage { .. }
+        | Request::ReadWorkQueue { .. }
+        | Request::WorkspaceSharedData { .. }
+        | Request::ReadWorkGraph { .. }
+        | Request::NotificationData { .. }
+        | Request::ReadTaskExpertBinding { .. }
+        | Request::MemoryOrganizationLatest
+        | Request::ExecutionFailures { .. }
+        | Request::BranchTitle { .. }
+        | Request::ArchivedTaskCandidates { .. }
+        | Request::DueTrashedTasks { .. }
+        | Request::CodeReviewData { .. }
+        | Request::ReadGatewayMessages { .. }
+        | Request::TaskBoard { .. }
+        | Request::ArtifactSnapshots { .. }
+        | Request::WorkspaceFilePreview { .. }
+        | Request::LibraryMetadata { .. }
+        | Request::ReadScopedNote { .. }
+        | Request::ProjectMetadata { .. }
+        | Request::CronData { .. }
+        | Request::WorkbenchData { .. }
+        | Request::CaptureBlueprintWorkspace { .. }
+        | Request::PluginCatalog { .. }
+        | Request::Semantic { .. }
+        | Request::MemoryLexical { .. }
+        | Request::MemoryLexicalScores { .. }
+        | Request::MemoryBaselines { .. }
+        | Request::UsageReport { .. }
+        | Request::UsageCsv { .. }
+        | Request::CoreEventsSnapshot { .. }
+        | Request::CoreEventsReplay { .. } => class(ExecutionLane::ReadPool, false, false, true),
+        Request::HistoryLaneSupported
+        | Request::WorkspaceScanSupported
+        | Request::FileBackupListSupported
+        | Request::FileBackupRestoreSupported
+        | Request::SubagentSettingsSupported
+        | Request::MaterialRetrievalSupported
+        | Request::TaskTrashRestoreSupported
+        | Request::GatewayMessageWriteSupported
+        | Request::DotsFileRevisionSupported
+        | Request::DotsFileWatchSupported
+        | Request::StartDotsFileWatch { .. }
+        | Request::StopDotsFileWatch { .. }
+        | Request::WorkspaceMoveSupported
+        | Request::SidebarArchiveSupported
+        | Request::WorkspaceLabelsSupported
+        | Request::WorkspacePersistenceSupported
+        | Request::WorkspaceDeleteSupported
+        | Request::WorkspaceBindingSupported
+        | Request::MemoryRecordWriteSupported
+        | Request::ProjectPinsSupported
+        | Request::ProjectPostsSupported
+        | Request::ProjectEventDataSupported
+        | Request::AnswerRoutingDataSupported
+        | Request::WorkQueueSupported
+        | Request::WorkGraphSupported
+        | Request::WorkGraphIntegritySupported
+        | Request::WorkGraphRepairSupported
+        | Request::NotificationDataSupported
+        | Request::DurableTaskProjectionSupported
+        | Request::DurableTaskOriginsSupported
+        | Request::DurableWorkspaceMoveSupported
+        | Request::TaskExpertBindingSupported
+        | Request::SoulProfileSupported
+        | Request::MemoryOrganizationProgressSupported
+        | Request::TaskRecordsSupported
+        | Request::TaskContextUsageSupported
+        | Request::ExecutionFailuresSupported
+        | Request::TaskTrashSupported
+        | Request::TaskTrashPurgeSupported
+        | Request::ManagedArtifactFilesSupported
+        | Request::ReadManagedArtifact { .. }
+        | Request::NextManagedArtifact { .. }
+        | Request::CloseManagedArtifact { .. }
+        | Request::WorkspaceFilePreviewSupported
+        | Request::WorkspaceArtifactStreamSupported
+        | Request::OpenWorkspaceArtifact { .. }
+        | Request::ManagedArtifactImageStreamSupported
+        | Request::OpenManagedArtifactImage { .. }
+        | Request::RemoteArtifactImageSupported
+        | Request::OpenRemoteArtifactImage { .. }
+        | Request::ArtifactCleanupSupported
+        | Request::GadgetFileMutationsSupported
+        | Request::ManagedStorageSupported
+        | Request::PluginCatalogScanSupported
+        | Request::PluginConfigSupported
+        | Request::ConnectorInstallationSupported
+        | Request::ConnectorMaintenanceSupported
+        | Request::ConnectorMarketImportSupported
+        | Request::ConnectorMarketMutationSupported
+        | Request::Durable { .. }
+        | Request::NativeInferenceSupported
+        | Request::NativeEmbeddingIndexSupported
+        | Request::NativeEmbeddingPlannerSupported
+        | Request::NativeModelProbeSupported
+        | Request::EmbeddingIndex { .. }
+        | Request::DiscardEmbeddings { .. } => {
+            class(ExecutionLane::InlineFast, false, false, false)
+        }
     }
 }
-fn deferred(request: &Request) -> bool {
-    database_write(request)
-        || matches!(
-            request,
-            Request::ScanPluginCatalog { .. }
-                | Request::ReadPluginConfig { .. }
-                | Request::ReplacePluginConfig { .. }
-                | Request::InstallConnector { .. }
-                | Request::RecoverConnectorInstalls { .. }
-                | Request::MaintainConnectorStorage { .. }
-                | Request::ImportConnectorMarket { .. }
-                | Request::MutateConnectorMarket { .. }
-                | Request::WorkspaceScan { .. }
-                | Request::FileBackupList { .. }
-                | Request::RestoreFileBackup { .. }
-                | Request::SubagentSettings { .. }
-                | Request::ScanWorkGraphIntegrity
-                | Request::ListTrashedTasks { .. }
-                | Request::DotsFileRevision { .. }
-                | Request::SemanticInference { .. }
-                | Request::StageEmbedding { .. }
-                | Request::SemanticModelProbe { .. }
-                | Request::CleanupArtifactFiles { .. }
-                | Request::DeleteLibrary { .. }
-                | Request::DrainLibraryCleanup { .. }
-                | Request::ExportLibraryBackup { .. }
-                | Request::PrepareLibraryRestore { .. }
-                | Request::DiscardLibraryRestore { .. }
-                | Request::RestoreLibraryBackup { .. }
-                | Request::RecoverLibraryRestores { .. }
-                | Request::DeleteProject { .. }
-                | Request::PromoteProjectEventToLibrary { .. }
-        )
+
+fn database_write(request: &Request) -> bool {
+    classify_request(request).db_write
 }
+
+fn read_pool_op(request: &Request) -> bool {
+    classify_request(request).lane == ExecutionLane::ReadPool
+}
+
+fn gadget_io_op(request: &Request) -> bool {
+    classify_request(request).lane == ExecutionLane::GadgetIo
+}
+
+fn deferred(request: &Request) -> bool {
+    classify_request(request).deferred
+}
+
 fn request_may_mutate(request: &Request) -> bool {
-    database_write(request)
-        || matches!(
-            request,
-            Request::GadgetState {
-                request: gadget_state::Request::Access {
-                    action: gadget_state::Action::Set { .. } | gadget_state::Action::Delete { .. },
-                    ..
-                }
-            } | Request::ReplacePluginConfig { .. }
-                | Request::InstallConnector { .. }
-                | Request::RecoverConnectorInstalls { .. }
-                | Request::MaintainConnectorStorage { .. }
-                | Request::ImportConnectorMarket { .. }
-                | Request::MutateConnectorMarket { .. }
-                | Request::RestoreFileBackup { .. }
-                | Request::SubagentSettings { .. }
-                | Request::LibraryText { .. }
-                | Request::ExportGadgetFiles { .. }
-                | Request::CleanupArtifactFiles { .. }
-                | Request::DeleteLibrary { .. }
-                | Request::DrainLibraryCleanup { .. }
-                | Request::ExportLibraryBackup { .. }
-                | Request::PrepareLibraryRestore { .. }
-                | Request::DiscardLibraryRestore { .. }
-                | Request::RestoreLibraryBackup { .. }
-                | Request::RecoverLibraryRestores { .. }
-                | Request::DeleteProject { .. }
-                | Request::PromoteProjectEventToLibrary { .. }
-        )
+    classify_request(request).may_mutate
 }
 
 fn emit_side_effects(effects: Option<business_protocol::WriteSideEffects>) {
@@ -2677,6 +3239,7 @@ fn start_database_writer(
             let mut writer = None;
             let mut sessions = HashMap::new();
             for (id, request) in jobs {
+                DB_WRITER_QUEUED.fetch_sub(1, Ordering::AcqRel);
                 // Wait outside the reader/input lanes. Admission remains queued until this
                 // shared write boundary is available, then the deadline is checked again.
                 let gate = match write_gate::enter() {
@@ -2689,8 +3252,37 @@ fn start_database_writer(
                 if !request_control::begin(&id) {
                     continue;
                 }
+                let mut gate_opt = Some(gate);
                 let mut side_effects = None;
                 let result = (|| -> Result<Data> {
+                    if let Request::CorePiHost { command, client } = request {
+                        if command.is_read_only() {
+                            if reader.is_none() {
+                                reader = Some(read_connection(&db_path)?);
+                            }
+                            return pi_host_supervisor::execute_read(reader.as_ref().unwrap(), command)
+                                .map(Data::Json);
+                        }
+                        let ctx = client.unwrap_or_else(|| {
+                            business_protocol::ClientContext::synthetic(
+                                &business_protocol::current_core_generation(),
+                            )
+                        });
+                        let fx = pi_host_supervisor::execute_write_with_gate(
+                            write_connection(&mut writer, &db_path)?,
+                            &executor_tracker,
+                            &ctx,
+                            command,
+                            |op| {
+                                drop(gate_opt.take());
+                                op();
+                                gate_opt = Some(write_gate::enter_unchecked());
+                            },
+                        )?;
+                        let data = fx.data.clone();
+                        side_effects = Some(fx);
+                        return Ok(Data::Json(data));
+                    }
                     if reader.is_none() {
                         reader = Some(read_connection(&db_path)?);
                     }
@@ -2705,7 +3297,7 @@ fn start_database_writer(
                         request,
                     )
                 })();
-                drop(gate);
+                drop(gate_opt);
                 let ok = result.is_ok();
                 if write_reply(&id, result, false).is_err() {
                     break;
@@ -2782,20 +3374,28 @@ fn run() -> Result<()> {
     request_control::install(control.clone());
     let host_control = control.clone();
     let mut database_writer = None;
+    let mut read_pool: Option<WorkerPool<Request>> = None;
+    let mut gadget_io_pool: Option<WorkerPool<gadget_state::Request>> = None;
     let mut durable_sessions = HashMap::new();
     let mut writer = None;
     let mut inference = None;
     let mut maintenance = None;
-    let mut workspace_scans = None;
+    let mut workspace_scans: Option<WorkerPool<WorkspaceJob>> = None;
     let mut dots_file_watches = None;
     let staged = Arc::new(embedding_index::StagedVectors::default());
     let executor_tracker = Arc::new(business_protocol::ExecutorTracker::new());
     let mut index_queues = embedding_index::IndexQueues::default();
-    let gadget_state = Arc::new(Mutex::new(gadget_state::Store::default()));
+    let gadget_state = Arc::new(gadget_state::Store::default());
     let mut artifact_reads = artifact_content::Reads::default();
     if std::env::var_os("MYBUDDY_HISTORY_HANDSHAKE").is_some() {
         let mut output = io::stdout().lock();
-        writeln!(output, "{{\"historyReady\":true}}")?;
+        let handshake = serde_json::json!({
+            "historyReady": true,
+            "parallelReads": configured_read_pool_workers(),
+            "parallelWorkspaceIo": configured_workspace_io_workers(),
+        });
+        serde_json::to_writer(&mut output, &handshake)?;
+        writeln!(output)?;
         output.flush()?;
     }
     // The input thread owns stdin so history reads cannot queue behind the main loop. It
@@ -2821,7 +3421,7 @@ fn run() -> Result<()> {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(1_000)
             .clamp(50, 30_000);
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
         let stop_flag = stop.clone();
         let tick_db_path = db_path.clone();
         let tick_tracker = executor_tracker.clone();
@@ -2829,41 +3429,97 @@ fn run() -> Result<()> {
             .name("work-scheduler-tick".into())
             .spawn(move || {
                 let mut writer_conn: Option<rusqlite::Connection> = None;
-                while !stop_flag.load(std::sync::atomic::Ordering::Acquire) {
-                    if let Ok(gate) = write_gate::enter() {
-                        if let Ok(conn) = write_connection(&mut writer_conn, &tick_db_path) {
-                            if work_scheduler::claim_supervised_core_lease(conn).unwrap_or(false) {
-                                let core_gen = business_protocol::current_core_generation();
-                                let ctx = business_protocol::ClientContext::synthetic(&core_gen);
-                                if let Ok(fx) = work_scheduler::execute_write(
-                                    conn,
-                                    &tick_tracker,
-                                    &ctx,
-                                    work_scheduler::Command::Tick {
-                                        owner_id: Some(format!("core:{core_gen}")),
-                                        now_ms: None,
-                                        lease_ttl_ms: None,
-                                    },
-                                ) {
-                                    if !fx.events.is_empty() || !fx.dispatches.is_empty() {
-                                        emit_side_effects(Some(fx));
-                                    }
-                                }
-                                if let Ok(Some(cron_fx)) = cron_scheduler::run_supervised_tick(conn, &tick_tracker) {
-                                    emit_side_effects(Some(cron_fx));
-                                }
-                                if let Ok(Some(dots_fx)) = dots_scheduler::run_supervised_tick(conn, &tick_tracker) {
-                                    emit_side_effects(Some(dots_fx));
-                                }
-                                if let Ok(Some(gw_fx)) = gateway_scheduler::run_supervised_tick(conn, &tick_tracker) {
-                                    emit_side_effects(Some(gw_fx));
-                                }
-                            }
+                while !stop_flag.load(Ordering::Acquire) {
+                    let lease_held = if let Ok(_gate) = write_gate::enter() {
+                        write_connection(&mut writer_conn, &tick_db_path)
+                            .ok()
+                            .and_then(|conn| work_scheduler::claim_supervised_core_lease(conn).ok())
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    };
+                    if lease_held {
+                        let core_gen = business_protocol::current_core_generation();
+                        let ctx = business_protocol::ClientContext::synthetic(&core_gen);
+
+                        let work_fx = write_gate::enter().ok().and_then(|_gate| {
+                            let conn = write_connection(&mut writer_conn, &tick_db_path).ok()?;
+                            work_scheduler::execute_write(
+                                conn,
+                                &tick_tracker,
+                                &ctx,
+                                work_scheduler::Command::Tick {
+                                    owner_id: Some(format!("core:{core_gen}")),
+                                    now_ms: None,
+                                    lease_ttl_ms: None,
+                                },
+                            )
+                            .ok()
+                        });
+                        if work_fx
+                            .as_ref()
+                            .is_some_and(|fx| !fx.events.is_empty() || !fx.dispatches.is_empty())
+                        {
+                            emit_side_effects(work_fx);
                         }
-                        drop(gate);
+
+                        if !stop_flag.load(Ordering::Acquire) {
+                            let pi_fx = write_gate::enter().ok().and_then(|gate| {
+                                let mut gate_opt = Some(gate);
+                                let conn = write_connection(&mut writer_conn, &tick_db_path).ok()?;
+                                pi_host_supervisor::supervise_tick(conn, &tick_tracker, |op| {
+                                    drop(gate_opt.take());
+                                    op();
+                                    gate_opt = Some(write_gate::enter_unchecked());
+                                })
+                                .ok()
+                                .flatten()
+                            });
+                            emit_side_effects(pi_fx);
+                        }
+
+                        if !stop_flag.load(Ordering::Acquire) {
+                            let cron_fx = write_gate::enter().ok().and_then(|_gate| {
+                                let conn = write_connection(&mut writer_conn, &tick_db_path).ok()?;
+                                cron_scheduler::run_supervised_tick(conn, &tick_tracker)
+                                    .ok()
+                                    .flatten()
+                            });
+                            emit_side_effects(cron_fx);
+                        }
+
+                        if !stop_flag.load(Ordering::Acquire) {
+                            let dots_fx = write_gate::enter().ok().and_then(|_gate| {
+                                let conn = write_connection(&mut writer_conn, &tick_db_path).ok()?;
+                                dots_scheduler::run_supervised_tick(conn, &tick_tracker)
+                                    .ok()
+                                    .flatten()
+                            });
+                            emit_side_effects(dots_fx);
+                        }
+
+                        if !stop_flag.load(Ordering::Acquire) {
+                            let gw_fx = write_gate::enter().ok().and_then(|_gate| {
+                                let conn = write_connection(&mut writer_conn, &tick_db_path).ok()?;
+                                gateway_scheduler::run_supervised_tick(conn, &tick_tracker)
+                                    .ok()
+                                    .flatten()
+                            });
+                            emit_side_effects(gw_fx);
+                        }
+
+                        if !stop_flag.load(Ordering::Acquire) {
+                            let maint_fx = write_gate::enter().ok().and_then(|_gate| {
+                                let conn = write_connection(&mut writer_conn, &tick_db_path).ok()?;
+                                maintenance_scheduler::run_supervised_tick(conn, &tick_tracker)
+                                    .ok()
+                                    .flatten()
+                            });
+                            emit_side_effects(maint_fx);
+                        }
                     }
                     let mut slept = 0u64;
-                    while slept < interval_ms && !stop_flag.load(std::sync::atomic::Ordering::Acquire) {
+                    while slept < interval_ms && !stop_flag.load(Ordering::Acquire) {
                         let step = (interval_ms - slept).min(50);
                         thread::sleep(Duration::from_millis(step));
                         slept += step;
@@ -2888,14 +3544,44 @@ fn run() -> Result<()> {
                 )?);
             }
             let request = request.expect("validated write request");
+            let q = DB_WRITER_QUEUED.fetch_add(1, Ordering::AcqRel) + 1;
+            DB_WRITER_MAX_QUEUED.fetch_max(q, Ordering::AcqRel);
             match database_writer.as_ref().unwrap().0.try_send((id, request)) {
                 Ok(()) => {}
                 Err(mpsc::TrySendError::Full((id, _))) => {
+                    DB_WRITER_QUEUED.fetch_sub(1, Ordering::AcqRel);
                     request_control::overload(&id, "OVERLOADED")?
                 }
                 Err(mpsc::TrySendError::Disconnected((id, _))) => {
+                    DB_WRITER_QUEUED.fetch_sub(1, Ordering::AcqRel);
                     request_control::overload(&id, "UNAVAILABLE")?
                 }
+            }
+            continue;
+        }
+        if request.as_ref().is_ok_and(read_pool_op) {
+            if read_pool.is_none() {
+                read_pool = Some(start_read_pool(
+                    db_path.clone(),
+                    staged.clone(),
+                    executor_tracker.clone(),
+                )?);
+            }
+            let request = request.expect("validated read request");
+            if let Err((id, code)) = read_pool.as_ref().unwrap().try_send(id, request) {
+                request_control::overload(&id, code)?;
+            }
+            continue;
+        }
+        if request.as_ref().is_ok_and(gadget_io_op) {
+            if gadget_io_pool.is_none() {
+                gadget_io_pool = Some(start_gadget_io_pool(gadget_state.clone())?);
+            }
+            let Ok(Request::GadgetState { request }) = request else {
+                unreachable!();
+            };
+            if let Err((id, code)) = gadget_io_pool.as_ref().unwrap().try_send(id, request) {
+                request_control::overload(&id, code)?;
             }
             continue;
         }
@@ -3101,14 +3787,7 @@ fn run() -> Result<()> {
             Ok(Request::SemanticInference { request }) => InferenceJob::Embed(request),
             Ok(Request::StageEmbedding { request }) => InferenceJob::Stage(request),
             Ok(Request::SemanticModelProbe { probe }) => InferenceJob::Probe(probe),
-            Ok(Request::GadgetState { request }) => {
-                let reply = gadget_state
-                    .lock()
-                    .map_err(|_| "gadget state lock")?
-                    .run_for(request, id.as_deref());
-                write_reply(&id, Ok(Data::GadgetState(reply)), false)?;
-                continue;
-            }
+            Ok(Request::GadgetState { .. }) => unreachable!(),
             Ok(Request::CoreGadgetHost { command }) => {
                 let reply = gadget_http_host::handle(&gadget_state, &host_control, command);
                 write_reply(&id, reply.map(Data::Json), false)?;
@@ -3390,11 +4069,14 @@ fn run() -> Result<()> {
             .join()
             .map_err(|_| "semantic inference thread panicked")?;
     }
-    if let Some((sender, worker)) = workspace_scans {
-        drop(sender);
-        worker
-            .join()
-            .map_err(|_| "workspace scan thread panicked")?;
+    if let Some(pool) = read_pool {
+        pool.shutdown()?;
+    }
+    if let Some(pool) = gadget_io_pool {
+        pool.shutdown()?;
+    }
+    if let Some(pool) = workspace_scans {
+        pool.shutdown()?;
     }
     if let Some((sender, worker)) = maintenance {
         drop(sender);
@@ -3436,5 +4118,113 @@ mod request_classification_tests {
         control.finish("staging", false, None, Some("copy interrupted".into()));
         assert_eq!(control.status("staging")["state"], "unknown");
         assert_eq!(control.status("staging")["durable"], true);
+    }
+
+    #[test]
+    fn pi_host_and_gadget_host_requests_are_classified_for_writer_and_receipts() {
+        let pi_status: Request = serde_json::from_value(serde_json::json!({
+            "operation": "corePiHost", "action": "status"
+        }))
+        .unwrap();
+        assert!(!database_write(&pi_status));
+        assert!(!request_may_mutate(&pi_status));
+
+        let pi_verify: Request = serde_json::from_value(serde_json::json!({
+            "operation": "corePiHost", "action": "verifyLease", "hostGeneration": "g-1"
+        }))
+        .unwrap();
+        assert!(!database_write(&pi_verify));
+        assert!(!request_may_mutate(&pi_verify));
+
+        for write_payload in [
+            serde_json::json!({
+                "operation": "corePiHost",
+                "action": "launch",
+                "executable": "node",
+                "scriptPath": "host.cjs",
+                "dataDirectory": "/tmp/d",
+                "dbPath": "/tmp/d/app.db",
+                "storageRoot": "/tmp/d/durable",
+                "piVersion": "1.5.0",
+                "expectedPiVersion": "1.5.0"
+            }),
+            serde_json::json!({
+                "operation": "corePiHost",
+                "action": "register",
+                "hostId": "h-1",
+                "pid": 123,
+                "hostGeneration": "g-1",
+                "storageRoot": "/tmp/d/durable",
+                "piVersion": "1.5.0",
+                "expectedPiVersion": "1.5.0"
+            }),
+            serde_json::json!({
+                "operation": "corePiHost",
+                "action": "heartbeat",
+                "hostId": "h-1",
+                "pid": 123,
+                "hostGeneration": "g-1"
+            }),
+            serde_json::json!({
+                "operation": "corePiHost",
+                "action": "stop"
+            }),
+            serde_json::json!({
+                "operation": "corePiHost",
+                "action": "fenceGeneration",
+                "hostGeneration": "g-1"
+            }),
+        ] {
+            let req: Request = serde_json::from_value(write_payload).unwrap();
+            assert!(database_write(&req));
+            assert!(request_may_mutate(&req));
+            assert!(deferred(&req));
+        }
+
+        for read_gadget in [
+            serde_json::json!({ "operation": "coreGadgetHost", "action": "supported" }),
+            serde_json::json!({ "operation": "coreGadgetHost", "action": "list" }),
+            serde_json::json!({ "operation": "coreGadgetHost", "action": "health", "gadgetId": "g-1" }),
+        ] {
+            let req: Request = serde_json::from_value(read_gadget).unwrap();
+            assert!(!database_write(&req));
+            assert!(!request_may_mutate(&req));
+        }
+
+        for mut_gadget in [
+            serde_json::json!({
+                "operation": "coreGadgetHost",
+                "action": "startStatic",
+                "gadgetId": "g-1",
+                "name": "G1",
+                "sourcePath": "/tmp/src",
+                "dataPath": "/tmp/data",
+                "entry": "index.html",
+                "sdkSource": "",
+                "token": "t",
+                "generation": "gen"
+            }),
+            serde_json::json!({ "operation": "coreGadgetHost", "action": "stopStatic", "gadgetId": "g-1" }),
+            serde_json::json!({ "operation": "coreGadgetHost", "action": "stopAll" }),
+            serde_json::json!({ "operation": "coreGadgetHost", "action": "revokeGeneration", "generation": "gen" }),
+            serde_json::json!({
+                "operation": "coreGadgetHost",
+                "action": "registerBackend",
+                "gadgetId": "g-2",
+                "generation": "gen",
+                "pid": 456,
+                "kind": "node"
+            }),
+            serde_json::json!({
+                "operation": "coreGadgetHost",
+                "action": "unregisterBackend",
+                "gadgetId": "g-2",
+                "generation": "gen"
+            }),
+        ] {
+            let req: Request = serde_json::from_value(mut_gadget).unwrap();
+            assert!(!database_write(&req));
+            assert!(request_may_mutate(&req));
+        }
     }
 }

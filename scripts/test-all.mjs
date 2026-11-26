@@ -250,6 +250,9 @@ const DATASET_TESTS = new Set([
   "test:pi-node-host", // Step 8 RC-20..22 Isolated Pi Node Host, crash/restart single-lease recovery, and passive Main reads.
   "test:thin-main", // Step 9 RC-23..24 20 UI close/reopen cycles, WebContents reclaim/restore, platform waiting, and zero Main business timers/fallbacks.
   "test:core-production-lifecycle", // Step 10 §6 End-to-end production lifecycle story across Core, Pi Node Host, offline activity, faults, stop, and upgrade.
+  "test:wave2-capabilities-recovery", // Wave 2 P0-01..05 & P1-06 domain wiring, capability filtering, Platform RPC, unattended recovery, and cursor replay.
+  "test:wave3-thin-main-concurrency", // Wave 3 P1-01..09 Thin Main policy, offline maintenance, multi-in-flight concurrency, fairness, tiered progress, and per-path Gadget locking.
+  "test:wave4-data-process", // Wave 4 T21..T22 readonly/busy/corrupt/SIGKILL DB safety & managed process-tree cleanup.
   "test:runtime-audit-lifecycle", // Real write contention, overload and crash/restart receipts.
   "test:google-workspace-write", // Existing POSIX Python runtime required for isolated SDK subprocess fixtures.
   // node-pty 原生模块 + 真实 pty。

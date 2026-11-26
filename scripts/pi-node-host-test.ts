@@ -450,6 +450,7 @@ async function main() {
       piVersion: expectedPiVersion,
       expectedPiVersion,
       runtimeAuditExecutable,
+      autoRestart: false,
       extraEnv: {
         MYBUDDY_APP_PATH: process.cwd(),
       },
@@ -645,6 +646,7 @@ async function main() {
       piVersion: expectedPiVersion,
       expectedPiVersion,
       runtimeAuditExecutable,
+      autoRestart: false,
       extraEnv: {
         MYBUDDY_APP_PATH: process.cwd(),
       },

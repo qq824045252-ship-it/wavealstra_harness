@@ -54,6 +54,9 @@ const TESTS = [
   "test:pi-node-host",
   "test:thin-main",
   "test:core-production-lifecycle",
+  "test:wave2-capabilities-recovery",
+  "test:wave3-thin-main-concurrency",
+  "test:wave4-data-process",
 ];
 
 function run(command, args, options = {}) {

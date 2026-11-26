@@ -407,7 +407,19 @@ export async function connectCoreWorker(executable: string, dbPath: string, opti
     if (Date.now() >= nextLaunch) {
       const child = spawn(binary.executable, ["--supervise", directory, database], {
         detached: true, stdio: "ignore", windowsHide: true,
-        env: { ...(process.env.SystemRoot && { SystemRoot: process.env.SystemRoot }), ...(process.env.TZ && { TZ: process.env.TZ }) },
+        env: {
+          ...(process.env.SystemRoot && { SystemRoot: process.env.SystemRoot }),
+          ...(process.env.TZ && { TZ: process.env.TZ }),
+          ...(process.env.MYBUDDY_WORK_AUTO_TICK_MS && { MYBUDDY_WORK_AUTO_TICK_MS: process.env.MYBUDDY_WORK_AUTO_TICK_MS }),
+          ...(process.env.MYBUDDY_PI_HOST_STARTUP_GRACE_MS && { MYBUDDY_PI_HOST_STARTUP_GRACE_MS: process.env.MYBUDDY_PI_HOST_STARTUP_GRACE_MS }),
+          ...(process.env.MYBUDDY_PI_HOST_HEARTBEAT_TIMEOUT_MS && { MYBUDDY_PI_HOST_HEARTBEAT_TIMEOUT_MS: process.env.MYBUDDY_PI_HOST_HEARTBEAT_TIMEOUT_MS }),
+          ...(process.env.MYBUDDY_READ_POOL_WORKERS && { MYBUDDY_READ_POOL_WORKERS: process.env.MYBUDDY_READ_POOL_WORKERS }),
+          ...(process.env.MYBUDDY_WORKSPACE_IO_WORKERS && { MYBUDDY_WORKSPACE_IO_WORKERS: process.env.MYBUDDY_WORKSPACE_IO_WORKERS }),
+          ...(process.env.MYBUDDY_ORT_INTRA_THREADS && { MYBUDDY_ORT_INTRA_THREADS: process.env.MYBUDDY_ORT_INTRA_THREADS }),
+          ...(process.env.MYBUDDY_ORT_INTER_THREADS && { MYBUDDY_ORT_INTER_THREADS: process.env.MYBUDDY_ORT_INTER_THREADS }),
+          ...(process.env.MYBUDDY_TEST_GADGET_FSYNC_DELAY_MATCH && { MYBUDDY_TEST_GADGET_FSYNC_DELAY_MATCH: process.env.MYBUDDY_TEST_GADGET_FSYNC_DELAY_MATCH }),
+          ...(process.env.MYBUDDY_TEST_GADGET_SPAWN_FAIL_ONCE && { MYBUDDY_TEST_GADGET_SPAWN_FAIL_ONCE: process.env.MYBUDDY_TEST_GADGET_SPAWN_FAIL_ONCE }),
+        },
       });
       child.on("error", error => { lastError = error; });
       child.unref();

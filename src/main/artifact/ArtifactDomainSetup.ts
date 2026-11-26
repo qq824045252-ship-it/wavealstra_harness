@@ -135,8 +135,9 @@ export function createArtifactDomain(
   db: Database.Database,
   extraSink?: ArtifactEventSink,
   runtimeAuditReader?: RuntimeAuditReader,
+  artifactsDir?: string,
 ): ArtifactDomain {
-  const storage = new ArtifactStorage(join(getMyBuddyDir(), "artifacts"));
+  const storage = new ArtifactStorage(artifactsDir ?? join(getMyBuddyDir(), "artifacts"));
   const repository = new ArtifactRepository(db);
   const registry = new ArtifactRegistry();
   const broadcast = broadcastSink();
@@ -157,7 +158,13 @@ export function createArtifactDomain(
   const coordinator = new ArtifactRefreshCoordinator(service);
 
   // A previous process's write IDs cannot be retried by this host.
-  repository.clearWriteReceipt();
+  if (db.readonly || runtimeAuditReader?.supervised) {
+    void runtimeAuditReader
+      ?.batch3Write({ kind: "artifactClearWriteReceipt" })
+      .catch((e) => console.warn("[ArtifactDomain] startup clearWriteReceipt 失败:", e));
+  } else {
+    repository.clearWriteReceipt();
+  }
 
   // 启动：orphan GC 非阻塞（§14，失败 log，下次启动重试）
   void service

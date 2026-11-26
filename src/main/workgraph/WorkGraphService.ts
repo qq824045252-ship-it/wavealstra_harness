@@ -206,6 +206,16 @@ export class WorkGraphService {
     return this.repo.deleteByNode(type, nid);
   }
 
+  async cleanupByNodeAsync(type: WorkGraphNodeType, id: string): Promise<number> {
+    if (!this.db.runtimeAuditReader) return this.cleanupByNode(type, id);
+    const edges = await this.readEdges("related", type, id);
+    let removed = 0;
+    for (const edge of edges) {
+      if (await this.deleteEdge(edge.id)) removed += 1;
+    }
+    return removed;
+  }
+
   countAll(): number {
     return this.repo.countAll();
   }

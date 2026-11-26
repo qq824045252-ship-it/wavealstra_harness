@@ -17,6 +17,7 @@ import { WindowsNotificationActivation } from "./platform/notification-activatio
 import { SavedArtifactIpc } from "../shared/saved-artifact";
 import { savedArtifactPreviewService } from "./artifact/SavedArtifactPreview";
 import { ResidentLifecycle, RESIDENT_HOST_ARGUMENT } from "./host/ResidentLifecycle";
+import { MainTimerRegistry, resolveMainRolePolicy } from "./host/MainRolePolicy";
 import { UiReconnectController } from "./host/UiReconnectController";
 import { WebContentsReclaimManager } from "./host/WebContentsReclaimManager";
 import { PlatformCapabilityProxy } from "./host/PlatformCapabilityProxy";
@@ -392,7 +393,7 @@ let libraryProtocol: LibraryProtocol | null = null;
 let projectService: ProjectService;
 let projectFolderRelocation: ProjectFolderRelocation;
 let attentionTracker: ProjectAttentionTracker;
-let cadenceEngine: ProjectCadence;
+let cadenceEngine: ProjectCadence | undefined;
 let projectEventIngestor: ProjectEventIngestor;
 let projectEventPromoter: ProjectEventPromoter;
 let projectDocumentImporter: ProjectDocumentImporter;
@@ -452,6 +453,7 @@ let coreUiClient: CoreBusinessClient | undefined;
 let uiReconnect: UiReconnectController | undefined;
 const reclaimManager = new WebContentsReclaimManager();
 const platformProxy = new PlatformCapabilityProxy();
+const mainTimerRegistry = new MainTimerRegistry();
 let runtimeAuditExecutablePath: string | undefined;
 const residentLifecycle = new ResidentLifecycle({
   argv: process.argv, packaged: app.isPackaged, executable: process.execPath, appPath: app.getAppPath(),
@@ -3191,6 +3193,8 @@ app.whenReady().then(async () => {
   const runtimeAuditExecutable = locateRuntimeAudit(app.getAppPath(), app.isPackaged ? process.resourcesPath : undefined);
   runtimeAuditExecutablePath = runtimeAuditExecutable;
   db = await AppDatabase.open(undefined, { runtimeAuditExecutable, runtimeAuditSupervised: true, readonly: true });
+  const supervised = Boolean(db.runtimeAuditReader?.supervised && runtimeAuditExecutablePath && db.connection.name !== ":memory:");
+  const mainRolePolicy = resolveMainRolePolicy(supervised);
   const connectorStorageReady = initializeConnectorStorage(db.runtimeAuditReader);
   notificationService = new NotificationService(db);
   notificationService.setChangedListener((event) => {
@@ -3198,31 +3202,34 @@ app.whenReady().then(async () => {
     remoteAccessController?.publishNotificationChanged(event);
   });
   libraryService = new LibraryService(db);
-  void libraryService.recoverFileDeletes().catch(error => console.warn("[Library] 启动文件清理恢复失败", error));
-  void libraryService.recoverLibraryRestores().catch(error => console.warn("[Library] 启动备份恢复清理失败", error));
   workspaceLibraryBindingService = new WorkspaceLibraryBindingService(db);
   workGraphService = new WorkGraphService(db);
   // Python 项目模式绑定：运行时服务是模块级单例、早于 DB 创建，故在此后注入。
   // 注入前 resolveForExecution 一律走受管环境，绑定读写返回「尚未就绪」。
   getPythonRuntimeService().setProjectBindingStore(new PythonProjectBindingStore(db.connection, undefined, db.runtimeAuditReader));
-  // 启动恢复：中断/重启遗留的 Office/PDF 抽取（pending/error/缺 FTS）异步重新入队
-  void libraryService.recoverPendingExtractions().catch((err) => {
-    console.warn("[Library] 启动抽取恢复失败：", err);
-  });
-  // FTS v2：只异步重建旧版 200–256 KiB 文本覆盖；checkpoint 后以后启动零成本。
-  void libraryService.recoverTextFtsCoverageV2({ batchSize: 20 }).then((result) => {
-    if (result.processed > 0) console.log(`[Library] FTS v2 coverage refresh：${JSON.stringify(result)}`);
-  }).catch((err) => {
-    console.warn("[Library] FTS v2 coverage refresh failed：", err);
-  });
-  // R2 P2：旧数据 chunk backfill（不阻塞启动：DB migration 仅建表，此处异步分批回填 library_chunks）
-  // 恢复边界：extraction 恢复保证 library_fts/extract_status；chunk backfill 保证 library_chunks/FTS，两者互补
-  void libraryService.backfillMissingChunks({ batchSize: 20 }).then((r) => {
-    if (r.processed > 0) console.log(`[Library] chunk backfill 完成：${JSON.stringify(r)}`);
-  }).catch((err) => {
-    console.warn("[Library] chunk backfill 失败：", err);
-  });
-  libraryService.startSemanticIndexing();
+  mainTimerRegistry.mark("library-background", "background-maintenance", mainRolePolicy.ownsLibraryBackgroundRecovery);
+  if (mainRolePolicy.ownsLibraryBackgroundRecovery) {
+    void libraryService.recoverFileDeletes().catch(error => console.warn("[Library] 启动文件清理恢复失败", error));
+    void libraryService.recoverLibraryRestores().catch(error => console.warn("[Library] 启动备份恢复清理失败", error));
+    // 启动恢复：中断/重启遗留的 Office/PDF 抽取（pending/error/缺 FTS）异步重新入队
+    void libraryService.recoverPendingExtractions().catch((err) => {
+      console.warn("[Library] 启动抽取恢复失败：", err);
+    });
+    // FTS v2：只异步重建旧版 200–256 KiB 文本覆盖；checkpoint 后以后启动零成本。
+    void libraryService.recoverTextFtsCoverageV2({ batchSize: 20 }).then((result) => {
+      if (result.processed > 0) console.log(`[Library] FTS v2 coverage refresh：${JSON.stringify(result)}`);
+    }).catch((err) => {
+      console.warn("[Library] FTS v2 coverage refresh failed：", err);
+    });
+    // R2 P2：旧数据 chunk backfill（不阻塞启动：DB migration 仅建表，此处异步分批回填 library_chunks）
+    // 恢复边界：extraction 恢复保证 library_fts/extract_status；chunk backfill 保证 library_chunks/FTS，两者互补
+    void libraryService.backfillMissingChunks({ batchSize: 20 }).then((r) => {
+      if (r.processed > 0) console.log(`[Library] chunk backfill 完成：${JSON.stringify(r)}`);
+    }).catch((err) => {
+      console.warn("[Library] chunk backfill 失败：", err);
+    });
+    libraryService.startSemanticIndexing();
+  }
   libraryProtocol = new LibraryProtocol(libraryService);
   const projectRepository = new ProjectRepository(db.connection, db.runtimeAuditReader);
   const memoryKernel = new MemoryService(db);
@@ -3232,13 +3239,23 @@ app.whenReady().then(async () => {
   projectFolderRelocation = new ProjectFolderRelocation(db, (taskId) => agentService.isTaskBusy(taskId), () => artifactDomainService);
   attentionTracker = new ProjectAttentionTracker(projectService);
   // 时间边界调度：启动从真源重建；边界触发仅重算/收敛（proposal 层 + attention 广播），绝不后台执行
-  cadenceEngine = new ProjectCadence(projectService, {
-    onBoundary: (projectId) => notifyProjectAttention(projectId),
-  });
-  void cadenceEngine.scheduleAllAsync();
+  mainTimerRegistry.mark("project-cadence", "background-maintenance", mainRolePolicy.ownsProjectCadence);
+  if (mainRolePolicy.ownsProjectCadence) {
+    cadenceEngine = new ProjectCadence(projectService, {
+      onBoundary: (projectId) => notifyProjectAttention(projectId),
+    });
+    void cadenceEngine.scheduleAllAsync();
+  }
   // 休眠/系统恢复 catch-up：先按当前时间重算全部项目（指纹去重广播，错过边界不丢），再重建未来边界。
   // 不信任旧 timeout（系统睡眠期间 Node timer 不保证按墙钟推进；时钟跳变同样由此收敛）。
   powerMonitor.on("resume", () => {
+    if (supervised) {
+      const activeClient = uiReconnect?.getClient() ?? coreUiClient;
+      void activeClient?.maintenanceScheduler({ action: "triggerCycle", cycleKey: "project_cadence", trigger: "resume" }).catch(() => undefined);
+      void activeClient?.dotsScheduler({ action: "tick", simulateSleepJump: true }).catch(() => undefined);
+      agentService?.onSystemResume();
+      return;
+    }
     cronService?.resumeDotsTimers();
     dotsGoogleMonitor?.refresh();
     dotsDiscovery?.refresh();
@@ -3279,7 +3296,6 @@ app.whenReady().then(async () => {
   uiAutomationService.setBrowserHost(browserHost);
   bindBrowserBridge(browserHost);
   await connectorStorageReady;
-  const supervised = Boolean(db.runtimeAuditReader?.supervised && runtimeAuditExecutablePath && db.connection.name !== ":memory:");
   agentService = new AgentService(db, undefined, {
     executionMode: supervised ? "isolated-client" : "in-process",
     coreClient: () => uiReconnect?.getClient() ?? coreUiClient,
@@ -3288,6 +3304,30 @@ app.whenReady().then(async () => {
     const dbFile = db.connection.name;
     const dataDir = getMyBuddyDir();
     void (async () => {
+      platformProxy.registerDomainHandler("ui", async (action, payload, signal) => {
+        const req = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+        return await uiAutomationService.execute({
+          ...req,
+          action: (action || req.action) as import("./capabilities/UiAutomationService").UiExecAction,
+        }, signal);
+      });
+      platformProxy.registerDomainHandler("browser", async (action, payload, signal) => {
+        const req = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+        return await agentService.executePlatformBrowser({
+          ...req,
+          action: (action || req.action) as import("./capabilities/BrowserAutomationService").BrowserExecAction,
+        }, signal);
+      });
+      const executeDesktop = async (action: string, payload: unknown, signal: AbortSignal) => {
+        const req = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+        return await computerAutomationService.execute({
+          ...req,
+          ...(action ? { action } : {}),
+        } as import("./capabilities/ComputerAutomationService").ComputerExecInput, signal);
+      };
+      platformProxy.registerDomainHandler("desktop", executeDesktop);
+      platformProxy.registerDomainHandler("computer", executeDesktop);
+
       const controller = new UiReconnectController(runtimeAuditExecutablePath!, dbFile, {
         dataDirectory: dataDir,
         clientId: `main-ui-${process.pid}`,
@@ -3298,21 +3338,33 @@ app.whenReady().then(async () => {
         cronService?.handleCoreEvent(ev);
         dotsDelegations?.handleCoreEvent(ev);
         notificationService?.handleCoreEvent(ev);
+        if (ev.domain === "maintenance" && ev.kind === "maintenance.controlSettled") {
+          broadcastToWindows(DbIpc.projectTaskChanged, { maintenanceCycle: ev.entityId });
+        }
       };
       controller.addHooks({
         onEvent: dispatchEvent,
         onSnapshot: () => {
           coreUiClient = controller.getClient();
+          platformProxy.attachCoreClient(coreUiClient, { platformGeneration: `main-${process.pid}` });
           void notificationService?.catchupFromCore().catch(() => undefined);
         },
         onResync: () => {
           coreUiClient = controller.getClient();
+          platformProxy.attachCoreClient(coreUiClient, { platformGeneration: `main-${process.pid}` });
           void notificationService?.catchupFromCore().catch(() => undefined);
+        },
+        onHydrate: () => {
+          coreUiClient = controller.getClient();
+          platformProxy.attachCoreClient(coreUiClient, { platformGeneration: `main-${process.pid}` });
+          void notificationService?.catchupFromCore().catch(() => undefined);
+          broadcastToWindows(DbIpc.projectTaskChanged, { resynced: true });
         },
       });
       await controller.openUiSession();
       const client = controller.getClient()!;
       coreUiClient = client;
+      platformProxy.attachCoreClient(client, { platformGeneration: `main-${process.pid}` });
       try {
         const scriptPath = await ensurePiNodeHostScript(app.getAppPath());
         const versions = assertExpectedPiVersion(app.getAppPath());
@@ -3326,6 +3378,7 @@ app.whenReady().then(async () => {
           piVersion: versions.actual,
           expectedPiVersion: versions.expected,
           runtimeAuditExecutable: runtimeAuditExecutablePath!,
+          autoRestart: true,
           extraEnv: {
             MYBUDDY_APP_PATH: app.getAppPath(),
             MYBUDDY_APP_VERSION: app.getVersion(),
@@ -3342,6 +3395,12 @@ app.whenReady().then(async () => {
         autostartEnabled: startupSettings.autostartEnabled === true,
         reason: residentLifecycle.resident ? "resident_boot" : "app_ready",
       });
+      await client.cronScheduler({ action: "start" }).catch(() => undefined);
+      await client.dotsScheduler({
+        action: "start",
+        paused: startupSettings.dotsSettings?.followupMode === "paused",
+      }).catch(() => undefined);
+      await client.maintenanceScheduler({ action: "start" }).catch(() => undefined);
       await syncCoreAutostart({
         executable: runtimeAuditExecutablePath!,
         dataDirectory: dataDir,
@@ -3503,7 +3562,7 @@ app.whenReady().then(async () => {
       await cleanup("任务 Gadget", () => gadgetService?.deleteByTask(taskId));
       // 远程上传附件目录（userData/remote-uploads/<taskId>）与任务同寿命
       await cleanup("远程上传附件", () => cleanupRemoteUploads(taskId));
-      await cleanup("任务关联", () => workGraphService.cleanupByNode("task", taskId));
+      await cleanup("任务关联", () => workGraphService.cleanupByNodeAsync("task", taskId));
       if (errors.length) throw new Error(errors.join("；"));
     },
   });
@@ -3545,8 +3604,11 @@ app.whenReady().then(async () => {
       console.warn(`[trash] purgeExpired(${trigger}) 失败`, error);
     }
   };
-  setInterval(() => void purgeExpiredTrash("interval"), 6 * 60 * 60 * 1000).unref();
-  setTimeout(() => void purgeExpiredTrash("startup"), 5_000).unref();
+  mainTimerRegistry.mark("trash-purge", "background-maintenance", mainRolePolicy.ownsTrashPurgeTimer);
+  if (mainRolePolicy.ownsTrashPurgeTimer) {
+    setInterval(() => void purgeExpiredTrash("interval"), 6 * 60 * 60 * 1000).unref();
+    setTimeout(() => void purgeExpiredTrash("startup"), 5_000).unref();
+  }
   professionalToolService = new ProfessionalToolRuntimeService({
     providerEnabled: (providerId) =>
       mcpService
@@ -3961,11 +4023,14 @@ app.whenReady().then(async () => {
     console.log(`[ResidentHost] online pid=${process.pid} storage=${getMyBuddyDir()}`);
   }
 
-  setTimeout(() => {
-    void db.runtimeAuditReader?.compactSnapshots().then(migrated => {
-      if (migrated > 0) console.log(`[RuntimeAudit] Deduplicated ${migrated} saved snapshots`);
-    });
-  }, 2_000).unref();
+  mainTimerRegistry.mark("snapshot-compaction", "background-maintenance", mainRolePolicy.ownsSnapshotCompaction);
+  if (mainRolePolicy.ownsSnapshotCompaction) {
+    setTimeout(() => {
+      void db.runtimeAuditReader?.compactSnapshots().then(migrated => {
+        if (migrated > 0) console.log(`[RuntimeAudit] Deduplicated ${migrated} saved snapshots`);
+      });
+    }, 2_000).unref();
+  }
 
   await agentService.resumePersistedTasks();
   void dotsDelegations?.recover(request => agentService.prompt(request, { durableAdmissionOnly: true }), id => {
@@ -3978,15 +4043,19 @@ app.whenReady().then(async () => {
     .catch(error => console.warn("[Dots] 恢复委派失败", error));
   dotsActions?.startFileWatches();
   startupMark("restoreDelivered");
-  cronService.start();
-  dotsGoogleMonitor.start();
-  dotsProactiveDelivery.restoreNotifications(key => dotsDiscovery.retainedLinks(key));
-  dotsProactiveDelivery.start();
-  dotsDiscovery.start();
-  void db.runtimeAuditReader?.dotsScheduler?.({
-    action: "start",
-    paused: agentService.getAppSettings().dotsSettings?.followupMode === "paused",
-  }).catch(() => undefined);
+  mainTimerRegistry.mark("dots-cron-loops", "background-maintenance", mainRolePolicy.ownsDotsAndCronLoops);
+  if (mainRolePolicy.ownsDotsAndCronLoops) {
+    cronService.start();
+    dotsGoogleMonitor.start();
+    dotsProactiveDelivery.restoreNotifications(key => dotsDiscovery.retainedLinks(key));
+    dotsProactiveDelivery.start();
+    dotsDiscovery.start();
+  } else {
+    void db.runtimeAuditReader?.dotsScheduler?.({
+      action: "start",
+      paused: agentService.getAppSettings().dotsSettings?.followupMode === "paused",
+    }).catch(() => undefined);
+  }
   startupMark("cronReady");
   // 启动时恢复上次已连接的 IM 通道（Telegram 长轮询 / 飞书 / 企微 / 微信）
   void gatewayService.restoreChannels().finally(() => startupMark("gatewayRestored"));
@@ -4067,12 +4136,13 @@ app.on("before-quit", (event) => {
     try { agentService?.dispose(); } catch { /* best effort */ }
     // Gadget 进程必须真正退出后才关闭 DB / 允许 Electron 结束。
     // 退出路径不得因参数列表求值失败产生未处理 rejection（同函数其余 cleanup 均已包 try/catch）。
+    const shouldStopSharedHostGadgets = !db?.runtimeAuditReader?.supervised || residentLifecycle.isStopping();
     try {
       await Promise.allSettled([
         gatewayService?.stop(),
         memoryGatewayController?.stop(),
         remoteAccessController?.dispose(),
-        gadgetService?.disposeAll(),
+        shouldStopSharedHostGadgets ? gadgetService?.disposeAll() : undefined,
         dotsDesktopPreview.close(),
         computerAutomationService.shutdown(),
       ].filter((pending): pending is Promise<void> => Boolean(pending)));
@@ -4105,6 +4175,7 @@ app.on("before-quit", (event) => {
         await stopClient.cronScheduler({ action: "stop" }).catch(() => undefined);
         await stopClient.dotsScheduler({ action: "stop" }).catch(() => undefined);
         await stopClient.gatewayScheduler({ action: "stop" }).catch(() => undefined);
+        await stopClient.maintenanceScheduler({ action: "stop" }).catch(() => undefined);
         await stopClient.piHost({ action: "stop", reason: "tray_stop" }).catch(() => undefined);
         await stopClient.assistantLifecycle("stop", { reason: "tray_stop" });
         await stopClient.close();

@@ -2,12 +2,13 @@ use crate::request_control::Control;
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::value::RawValue;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::SystemTime;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 const FILE_NAME: &str = ".mybuddy-state.json";
 const MAX_BYTES: usize = 20 * 1024 * 1024;
@@ -126,14 +127,14 @@ pub struct Entry {
     pub revision: String,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 struct State {
     storage: BTreeMap<Key, Entry>,
     config: BTreeMap<Key, Entry>,
 }
 
 /// JSON keys retain JS UTF-16 semantics, including escaped, unpaired code units.
-#[derive(Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct Key(Vec<u16>);
 
 impl<'de> Deserialize<'de> for Key {
@@ -212,26 +213,30 @@ impl Key {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 struct FileStamp {
     modified: Option<SystemTime>,
     bytes: u64,
 }
 
-struct CachedState {
-    root: PathBuf,
+#[derive(Default)]
+struct RootState {
+    populated: bool,
     stamp: Option<FileStamp>,
     state: State,
+    last_used: u64,
 }
 
 pub struct Store {
-    cache: VecDeque<CachedState>,
+    roots: Mutex<HashMap<PathBuf, Arc<Mutex<RootState>>>>,
+    use_seq: AtomicU64,
     control: Arc<Control>,
 }
 impl Default for Store {
     fn default() -> Self {
         Self {
-            cache: VecDeque::new(),
+            roots: Mutex::new(HashMap::new()),
+            use_seq: AtomicU64::new(1),
             control: crate::request_control::shared()
                 .cloned()
                 .unwrap_or_else(Control::memory),
@@ -249,13 +254,30 @@ fn now_ms() -> u64 {
 
 impl Store {
     #[cfg(test)]
-    pub fn run(&mut self, request: Request) -> Reply {
+    pub fn with_control(control: Arc<Control>) -> Self {
+        Self {
+            roots: Mutex::new(HashMap::new()),
+            use_seq: AtomicU64::new(1),
+            control,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn run(&self, request: Request) -> Reply {
         self.run_for(request, None)
     }
 
-    pub fn run_for(&mut self, request: Request, request_id: Option<&str>) -> Reply {
+    pub fn run_for(&self, request: Request, request_id: Option<&str>) -> Reply {
         self.execute(request, request_id)
             .unwrap_or_else(|error| Reply::Error { error })
+    }
+
+    fn root_lock(&self, canonical_path: &Path) -> Arc<Mutex<RootState>> {
+        let mut map = self.roots.lock().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(
+            map.entry(canonical_path.to_path_buf())
+                .or_insert_with(|| Arc::new(Mutex::new(RootState::default()))),
+        )
     }
 
     fn write_allowed(
@@ -275,7 +297,7 @@ impl Store {
         Ok(())
     }
 
-    fn revoke(&mut self, generation: String, invocation_id: Option<String>) -> StateResult<Reply> {
+    fn revoke(&self, generation: String, invocation_id: Option<String>) -> StateResult<Reply> {
         if self.control.revoke_gadget(generation, invocation_id) {
             Ok(Reply::Revoked)
         } else {
@@ -283,7 +305,7 @@ impl Store {
         }
     }
 
-    fn execute(&mut self, request: Request, request_id: Option<&str>) -> StateResult<Reply> {
+    fn execute(&self, request: Request, request_id: Option<&str>) -> StateResult<Reply> {
         match request {
             Request::Supported => Ok(Reply::Supported),
             Request::Revoke {
@@ -292,15 +314,18 @@ impl Store {
             } => self.revoke(generation, invocation_id),
             Request::Open { path } => {
                 let canonical_path = checked_directory(&path)?;
-                self.cache.retain(|entry| entry.root != canonical_path);
-                let file = canonical_path.join(FILE_NAME);
-                let stamp = checked_file(&file)?;
-                let state = read_file(&file, stamp.as_ref())?;
-                self.remember(CachedState {
-                    root: canonical_path.clone(),
-                    stamp,
-                    state,
-                });
+                let lock = self.root_lock(&canonical_path);
+                {
+                    let mut root = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    let file = canonical_path.join(FILE_NAME);
+                    let stamp = checked_file(&file)?;
+                    let state = read_file(&file, stamp.as_ref())?;
+                    root.populated = true;
+                    root.stamp = stamp;
+                    root.state = state;
+                    root.last_used = self.use_seq.fetch_add(1, Ordering::Relaxed);
+                }
+                self.trim_cache(&canonical_path);
                 Ok(Reply::Opened { canonical_path })
             }
             Request::Access {
@@ -316,67 +341,93 @@ impl Store {
                     self.write_allowed(authorization.as_ref(), request_id)?;
                 }
                 ensure_directory(&path, &canonical_path)?;
-                let file = canonical_path.join(FILE_NAME);
-                let mut stamp = checked_file(&file)?;
-                let cached = self
-                    .cache
-                    .iter()
-                    .position(|entry| entry.root == canonical_path)
-                    .and_then(|index| self.cache.remove(index));
-                let mut state = match cached {
-                    Some(entry)
-                        if entry.stamp == stamp
-                            && stamp.as_ref().is_none_or(|stamp| stamp.modified.is_some()) =>
+                let lock = self.root_lock(&canonical_path);
+                let reply = {
+                    let mut root = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    let file = canonical_path.join(FILE_NAME);
+                    let mut stamp = checked_file(&file)?;
+                    let mut state = if root.populated
+                        && root.stamp == stamp
+                        && stamp.as_ref().is_none_or(|stamp| stamp.modified.is_some())
                     {
-                        entry.state
+                        root.state.clone()
+                    } else {
+                        read_file(&file, stamp.as_ref())?
+                    };
+                    let (reply, write_id) = state.apply(bucket, action)?;
+                    if let Some(write_id) = write_id {
+                        let authorization = authorization.as_ref().ok_or(Fault::StaleWrite)?;
+                        write_file(
+                            &path,
+                            &canonical_path,
+                            &file,
+                            &write_id,
+                            &state,
+                            |temp, destination| {
+                                self.control
+                                    .gadget_commit(
+                                        request_id,
+                                        &authorization.generation,
+                                        &authorization.invocation_id,
+                                        authorization.expires_at,
+                                        || fs::rename(temp, destination).map_err(|_| Fault::StorageIo),
+                                    )
+                                    .ok_or(Fault::StaleWrite)?
+                            },
+                        )?;
+                        stamp = checked_file(&file)?;
                     }
-                    _ => read_file(&file, stamp.as_ref())?,
+                    root.populated = true;
+                    root.stamp = stamp;
+                    root.state = state;
+                    root.last_used = self.use_seq.fetch_add(1, Ordering::Relaxed);
+                    reply
                 };
-                let (reply, write_id) = state.apply(bucket, action)?;
-                if let Some(write_id) = write_id {
-                    let authorization = authorization.as_ref().ok_or(Fault::StaleWrite)?;
-                    write_file(
-                        &path,
-                        &canonical_path,
-                        &file,
-                        &write_id,
-                        &state,
-                        |temp, destination| {
-                            self.control
-                                .gadget_commit(
-                                    request_id,
-                                    &authorization.generation,
-                                    &authorization.invocation_id,
-                                    authorization.expires_at,
-                                    || fs::rename(temp, destination).map_err(|_| Fault::StorageIo),
-                                )
-                                .ok_or(Fault::StaleWrite)?
-                        },
-                    )?;
-                    stamp = checked_file(&file)?;
-                }
-                self.remember(CachedState {
-                    root: canonical_path,
-                    stamp,
-                    state,
-                });
+                self.trim_cache(&canonical_path);
                 Ok(reply)
             }
         }
     }
 
-    fn remember(&mut self, entry: CachedState) {
-        self.cache.push_back(entry);
-        while self.cache.len() > 8
-            || self
-                .cache
-                .iter()
-                .filter_map(|entry| entry.stamp.as_ref())
-                .map(|stamp| stamp.bytes)
-                .sum::<u64>()
-                > MAX_CACHE_BYTES as u64
+    fn trim_cache(&self, keep: &Path) {
+        let entries: Vec<(PathBuf, Arc<Mutex<RootState>>)> = {
+            let map = self.roots.lock().unwrap_or_else(|e| e.into_inner());
+            if map.len() <= 8 {
+                return;
+            }
+            map.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect()
+        };
+        let mut cached: Vec<(PathBuf, u64, u64)> = Vec::new();
+        for (path, lock) in entries {
+            // Never block waiting on an unrelated gadget performing slow fsync.
+            if let Ok(guard) = lock.try_lock()
+                && guard.populated
+            {
+                let bytes = guard.stamp.as_ref().map_or(0, |s| s.bytes);
+                cached.push((path, guard.last_used, bytes));
+            }
+        }
+        cached.sort_by_key(|entry| entry.1);
+        let mut total_bytes: u64 = cached.iter().map(|entry| entry.2).sum();
+        let mut count = cached.len();
+        let mut evict = Vec::new();
+        for (path, _, bytes) in cached {
+            if count <= 8 && total_bytes <= MAX_CACHE_BYTES as u64 {
+                break;
+            }
+            if path == keep {
+                continue;
+            }
+            count = count.saturating_sub(1);
+            total_bytes = total_bytes.saturating_sub(bytes);
+            evict.push(path);
+        }
+        if !evict.is_empty()
+            && let Ok(mut map) = self.roots.try_lock()
         {
-            self.cache.pop_front();
+            for path in evict {
+                map.remove(&path);
+            }
         }
     }
 }
@@ -621,6 +672,14 @@ fn write_file(
         staged.write_all(&content).map_err(|_| Fault::StorageIo)?;
         staged.sync_all().map_err(|_| Fault::StorageIo)?;
         drop(staged);
+        if let Ok(spec) = std::env::var("MYBUDDY_TEST_GADGET_FSYNC_DELAY_MATCH")
+            && let Some((pattern, ms_str)) = spec.split_once(':')
+            && !pattern.is_empty()
+            && let Ok(ms) = ms_str.parse::<u64>()
+            && root.to_string_lossy().contains(pattern)
+        {
+            std::thread::sleep(Duration::from_millis(ms.min(2_000)));
+        }
         ensure_directory(data_path, root)?;
         checked_file(file)?;
         commit(&temp, file)
@@ -675,7 +734,7 @@ mod tests {
 
     /// The host opens the data directory first and only ever sends its canonical form.
     fn opened(root: &Path) -> (Store, PathBuf) {
-        let mut store = Store::default();
+        let store = Store::default();
         match store.run(Request::Open {
             path: root.to_path_buf(),
         }) {
@@ -696,7 +755,7 @@ mod tests {
     }
 
     fn write(
-        store: &mut Store,
+        store: &Store,
         root: &Path,
         canonical: &Path,
         authorization: Option<Authorization>,
@@ -727,12 +786,12 @@ mod tests {
     #[test]
     fn a_write_needs_a_live_authorization() {
         let fixture = fixture();
-        let (mut store, canonical) = opened(&fixture.0);
+        let (store, canonical) = opened(&fixture.0);
         let file = canonical.join(FILE_NAME);
-        assert!(is_stale(&write(&mut store, &fixture.0, &canonical, None)));
+        assert!(is_stale(&write(&store, &fixture.0, &canonical, None)));
         let expired = authorization("g", "i", now_ms().saturating_sub(1));
         assert!(is_stale(&write(
-            &mut store,
+            &store,
             &fixture.0,
             &canonical,
             Some(expired)
@@ -740,7 +799,7 @@ mod tests {
         assert!(!file.exists(), "a rejected write must not touch the file");
         let live = authorization("g", "i", now_ms() + 60_000);
         assert!(matches!(
-            write(&mut store, &fixture.0, &canonical, Some(live)),
+            write(&store, &fixture.0, &canonical, Some(live)),
             Reply::Value { .. }
         ));
         assert!(file.exists());
@@ -749,7 +808,7 @@ mod tests {
     #[test]
     fn revoked_invocations_and_generations_cannot_write() {
         let fixture = fixture();
-        let (mut store, canonical) = opened(&fixture.0);
+        let (store, canonical) = opened(&fixture.0);
         let generation = "generation-1";
         assert!(matches!(
             store.run(Request::Revoke {
@@ -761,14 +820,14 @@ mod tests {
         // A cancelled action cannot commit, but its sibling and the backend still can.
         let retired = authorization(generation, "invocation-1", 0);
         assert!(is_stale(&write(
-            &mut store,
+            &store,
             &fixture.0,
             &canonical,
             Some(retired)
         )));
         let sibling = authorization(generation, "invocation-2", 0);
         assert!(matches!(
-            write(&mut store, &fixture.0, &canonical, Some(sibling)),
+            write(&store, &fixture.0, &canonical, Some(sibling)),
             Reply::Value { .. }
         ));
         assert!(matches!(
@@ -780,7 +839,7 @@ mod tests {
         ));
         let background = authorization(generation, "runtime", 0);
         assert!(is_stale(&write(
-            &mut store,
+            &store,
             &fixture.0,
             &canonical,
             Some(background)
@@ -856,5 +915,38 @@ mod tests {
         );
         assert!(matches!(result, Err(Fault::StaleWrite)));
         assert!(!destination.exists());
+    }
+
+    #[test]
+    fn two_distinct_gadget_roots_make_concurrent_write_progress() {
+        let fix = fixture();
+        let dir_a = fix.0.join("gadget-a");
+        let dir_b = fix.0.join("gadget-b");
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        let store = Arc::new(Store::default());
+        let can_a = match store.run(Request::Open { path: dir_a.clone() }) {
+            Reply::Opened { canonical_path } => canonical_path,
+            _ => panic!("open a"),
+        };
+        let can_b = match store.run(Request::Open { path: dir_b.clone() }) {
+            Reply::Opened { canonical_path } => canonical_path,
+            _ => panic!("open b"),
+        };
+
+        // Hold lock on root A while thread B writes root B; B must finish without blocking on A.
+        let lock_a = store.root_lock(&can_a);
+        let guard_a = lock_a.lock().unwrap();
+        let store_b = Arc::clone(&store);
+        let dir_b_c = dir_b.clone();
+        let can_b_c = can_b.clone();
+        let handle = std::thread::spawn(move || {
+            let auth = authorization("g-conc", "inv-b", now_ms() + 30_000);
+            write(&store_b, &dir_b_c, &can_b_c, Some(auth))
+        });
+        let reply_b = handle.join().unwrap();
+        drop(guard_a);
+        assert!(matches!(reply_b, Reply::Value { .. }));
+        assert!(can_b.join(FILE_NAME).exists());
     }
 }

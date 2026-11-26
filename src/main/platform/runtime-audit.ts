@@ -162,6 +162,10 @@ export interface RuntimeAuditReaderOptions {
   coreDataDirectory?: string;
   coreRole?: CoreClientRole;
   coreClientId?: string;
+  /** Maximum concurrent read operations in flight on one client (default 4 on supervised/capable workers, 1 on legacy). */
+  maxConcurrentReads?: number;
+  /** Maximum concurrent mutating DB requests queued from one client to Core writer (default 4 when parallel reads enabled, 1 on legacy). */
+  maxConcurrentWrites?: number;
 }
 
 /** One worker per host database for read-only queries and bounded writes. */
@@ -171,7 +175,12 @@ export class RuntimeAuditReader {
   };
   private readonly pumping = new Set<AuditLane>();
   /** A caller may have timed out while the worker still owns this slot. */
-  private readonly executing: Partial<Record<AuditLane, AuditRequest>> = {};
+  private readonly executing: Record<AuditLane, Map<string, AuditRequest>> = {
+    database: new Map(), inference: new Map(), maintenance: new Map(), scan: new Map(),
+  };
+  private readonly maxInFlight: Record<AuditLane, number> = {
+    database: 0, inference: 0, maintenance: 0, scan: 0,
+  };
   private readonly unconfirmed = new Map<string, { operation: string; lane: AuditLane }>();
   private connecting?: Promise<AuditSession | undefined>;
   private recoveryTimer?: ReturnType<typeof setTimeout>;
@@ -341,6 +350,15 @@ export class RuntimeAuditReader {
   piHost<T = Record<string, unknown>>(command: Record<string, unknown> & { action: string }): Promise<T | undefined> {
     if (!this.supervised) return Promise.resolve(undefined);
     return this.read({ operation: "corePiHost", ...command }, "database", false, 20_000);
+  }
+
+  maintenanceScheduler<T = Record<string, unknown>>(command: Record<string, unknown> & { action: string }): Promise<T | undefined> {
+    if (!this.supervised) return Promise.resolve(undefined);
+    return this.read({ operation: "coreMaintenanceScheduler", ...command }, "database", false, 15_000);
+  }
+
+  runtimeMetrics(): Promise<Record<string, unknown> | undefined> {
+    return this.control<Record<string, unknown>>({ action: "metrics" });
   }
 
   async queryOperation(requestId: string): Promise<RuntimeOperationReceipt | undefined> {
@@ -1887,7 +1905,7 @@ export class RuntimeAuditReader {
     if (this.closed || signal?.aborted) return notStarted(this.closed ? "closed" : "cancelled");
     // Include abandoned in-flight work in admission control. Timing out its caller
     // does not make the worker's queue shorter or authorize another write.
-    if (this.queues[lane].length + (this.executing[lane] ? 1 : 0) >= LANE_QUEUE_LIMIT) {
+    if (this.queues[lane].length + this.executing[lane].size >= LANE_QUEUE_LIMIT) {
       this.recordOutcome(lane, operation, "overloaded", { enqueuedAt, finishedAt: enqueuedAt });
       return notStarted("overloaded");
     }
@@ -1967,32 +1985,34 @@ export class RuntimeAuditReader {
 
   private async pump(lane: AuditLane): Promise<void> {
     if (this.closed || this.pumping.has(lane)) return;
-    if (this.executing[lane]) {
-      if (this.executing[lane]?.session !== this.session) this.scheduleRecovery();
-      return;
+    if (this.executing[lane].size > 0) {
+      const hasDetached = [...this.executing[lane].values()].some(e => e.session !== this.session);
+      if (hasDetached) this.scheduleRecovery();
     }
     this.pumping.add(lane);
     try {
-      while (!this.closed && !this.executing[lane] && this.queues[lane].length) {
-        const entry = this.queues[lane][0]!;
-        if (entry.settled) { this.removeQueued(entry); continue; }
-        if (Date.now() >= entry.deadline) { this.expire(entry); continue; }
-        if (entry.expectedSession && this.session !== entry.expectedSession) {
-          this.removeQueued(entry); this.settle(entry, "retired"); continue;
+      while (!this.closed && this.queues[lane].length) {
+        const head = this.queues[lane][0]!;
+        if (head.settled) { this.removeQueued(head); continue; }
+        if (Date.now() >= head.deadline) { this.expire(head); continue; }
+        if (head.expectedSession && this.session !== head.expectedSession) {
+          this.removeQueued(head); this.settle(head, "retired"); continue;
         }
-        if (entry.retired?.()) {
-          this.removeQueued(entry); this.settle(entry, "retired"); continue;
+        if (head.retired?.()) {
+          this.removeQueued(head); this.settle(head, "retired"); continue;
         }
-        if (lane === "inference" && !entry.allowAfterInferenceFailure && this.inferenceBlocked()) {
-          this.removeQueued(entry); this.settle(entry, "blocked"); continue;
+        if (lane === "inference" && !head.allowAfterInferenceFailure && this.inferenceBlocked()) {
+          this.removeQueued(head); this.settle(head, "blocked"); continue;
         }
         const session = await this.obtainSession();
-        // Connection setup is asynchronous and may itself use the whole budget.
-        if (entry.settled || this.closed) continue;
+        if (head.settled || this.closed) continue;
         if (!session) {
           for (const waiting of this.queues[lane].splice(0)) this.settle(waiting, "failed");
           break;
         }
+
+        const entry = this.nextDispatchableEntry(lane, session);
+        if (!entry) break;
         if (Date.now() >= entry.deadline) { this.expire(entry); continue; }
         if ((entry.expectedSession && entry.expectedSession !== session) || entry.retired?.()) {
           this.removeQueued(entry); this.settle(entry, "retired"); continue;
@@ -2000,8 +2020,11 @@ export class RuntimeAuditReader {
         this.removeQueued(entry);
         entry.startedAt = Date.now();
         entry.session = session;
-        this.executing[lane] = entry;
-        session.pending[lane] = entry;
+        this.executing[lane].set(entry.id, entry);
+        if (this.executing[lane].size > this.maxInFlight[lane]) {
+          this.maxInFlight[lane] = this.executing[lane].size;
+        }
+        session.pending.set(entry.id, entry);
         try {
           session.child.stdin.write(JSON.stringify({
             ...entry.request, requestId: entry.id, deadlineAt: entry.deadline, lane,
@@ -2011,15 +2034,66 @@ export class RuntimeAuditReader {
     } finally { this.pumping.delete(lane); }
   }
 
+  private nextDispatchableEntry(lane: AuditLane, session: AuditSession): AuditRequest | undefined {
+    const active = this.executing[lane];
+    const readLimit = lane === "database"
+      ? session.parallelReadLimit
+      : lane === "scan"
+        ? session.parallelWorkspaceIoLimit
+        : 1;
+    const defaultWriteLimit = this.options.coreDataDirectory && this.options.maxConcurrentReads !== 1 ? 4 : 1;
+    const writeLimit = lane === "database"
+      ? Math.max(1, Math.min(4, Math.trunc(this.options.maxConcurrentWrites ?? defaultWriteLimit)))
+      : 1;
+
+    // Preserve strict single-slot behavior when concurrency is pinned to 1 or unadvertised.
+    if (readLimit <= 1 && writeLimit <= 1) {
+      return active.size === 0 ? this.queues[lane][0] : undefined;
+    }
+
+    let activeReads = 0;
+    let activeWrites = 0;
+    let hasAbandonedMutation = false;
+    for (const item of active.values()) {
+      if (item.mutation) {
+        activeWrites += 1;
+        if (item.settled) hasAbandonedMutation = true;
+      } else {
+        activeReads += 1;
+      }
+    }
+    if (active.size >= readLimit + writeLimit) return undefined;
+
+    for (const candidate of this.queues[lane]) {
+      if (candidate.settled || Date.now() >= candidate.deadline || candidate.retired?.()
+        || (candidate.expectedSession && candidate.expectedSession !== session)) {
+        return candidate;
+      }
+      if (candidate.mutation) {
+        if (!hasAbandonedMutation && activeWrites < writeLimit) return candidate;
+      } else if (activeReads < readLimit) {
+        return candidate;
+      }
+    }
+    return undefined;
+  }
+
   private releaseExecution(entry: AuditRequest): void {
-    if (this.executing[entry.lane] === entry) delete this.executing[entry.lane];
-    if (entry.session?.pending[entry.lane] === entry) delete entry.session.pending[entry.lane];
+    this.executing[entry.lane].delete(entry.id);
+    entry.session?.pending.delete(entry.id);
     void this.pump(entry.lane);
   }
 
   private applyReceipt(receipt: RuntimeOperationReceipt): void {
     if (receipt.state === "queued" || receipt.state === "running") return;
-    const entry = AUDIT_LANES.map(lane => this.executing[lane]).find(item => item?.id === receipt.requestId);
+    let entry: AuditRequest | undefined;
+    for (const lane of AUDIT_LANES) {
+      const hit = this.executing[lane].get(receipt.requestId);
+      if (hit) {
+        entry = hit;
+        break;
+      }
+    }
     if (receipt.state !== "unknown") this.unconfirmed.delete(receipt.requestId);
     if (!entry) return;
     if (receipt.state === "committed") {
@@ -2040,11 +2114,17 @@ export class RuntimeAuditReader {
     this.recoveryTimer = setTimeout(() => {
       this.recoveryTimer = undefined;
       void (async () => {
-        const detached = AUDIT_LANES.map(lane => this.executing[lane])
-          .filter((entry): entry is AuditRequest => !!entry && entry.session !== this.session);
+        const detached: AuditRequest[] = [];
+        for (const lane of AUDIT_LANES) {
+          for (const entry of this.executing[lane].values()) {
+            if (entry.session !== this.session) detached.push(entry);
+          }
+        }
         for (const entry of detached) await this.queryOperation(entry.id).catch(() => undefined);
-        if (AUDIT_LANES.some(lane => this.executing[lane]?.session !== undefined
-          && this.executing[lane]?.session !== this.session)) this.scheduleRecovery();
+        if (AUDIT_LANES.some(lane => [...this.executing[lane].values()]
+          .some(entry => entry.session !== undefined && entry.session !== this.session))) {
+          this.scheduleRecovery();
+        }
       })();
     }, 500).unref();
   }
@@ -2106,12 +2186,14 @@ export class RuntimeAuditReader {
 
   /** Queue depth, terminal outcomes and the last few requests, per lane. */
   laneDiagnostics(): { queued: Record<AuditLane, number>; waiting: Record<AuditLane, number>;
-    inFlight: Record<AuditLane, number>; unconfirmed: Array<{ requestId: string; operation: string; lane: AuditLane }>;
+    inFlight: Record<AuditLane, number>; maxInFlight: Record<AuditLane, number>;
+    unconfirmed: Array<{ requestId: string; operation: string; lane: AuditLane }>;
     totals: Record<AuditLane, RuntimeAuditLaneTotals>; recent: RuntimeAuditLaneRecord[] } {
     return {
       queued: { ...this.laneQueued },
       waiting: Object.fromEntries(AUDIT_LANES.map(lane => [lane, this.queues[lane].length])) as Record<AuditLane, number>,
-      inFlight: Object.fromEntries(AUDIT_LANES.map(lane => [lane, this.executing[lane] ? 1 : 0])) as Record<AuditLane, number>,
+      inFlight: Object.fromEntries(AUDIT_LANES.map(lane => [lane, this.executing[lane].size])) as Record<AuditLane, number>,
+      maxInFlight: { ...this.maxInFlight },
       unconfirmed: [...this.unconfirmed].map(([requestId, value]) => ({ requestId, ...value })),
       totals: {
         database: { ...this.laneTotals.database }, inference: { ...this.laneTotals.inference },
@@ -2188,10 +2270,16 @@ export class RuntimeAuditReader {
     if (wasBlocked && !this.inferenceBlocked()) console.info("[RuntimeAudit] Rust restarted; native inference re-armed");
     let advertiseHistory!: () => void;
     const historyReady = new Promise<true>(resolve => { advertiseHistory = () => resolve(true); });
+    const supervised = !!this.options.coreDataDirectory;
+    const readCapOverride = this.options.maxConcurrentReads;
+    const defaultReads = supervised ? Math.max(1, Math.min(16, Math.trunc(readCapOverride ?? 4))) : 1;
+    const defaultWs = supervised && readCapOverride !== 1 ? 2 : 1;
     const session: AuditSession = {
-      child, closed, historyReady, advertiseHistory, pending: {}, controls: new Map(),
+      child, closed, historyReady, advertiseHistory, pending: new Map(), controls: new Map(),
       history: new Map(), chunks: [], bytes: 0, dotsFileWatches: new Map(),
-      supervised: !!this.options.coreDataDirectory,
+      supervised,
+      parallelReadLimit: defaultReads,
+      parallelWorkspaceIoLimit: defaultWs,
     };
     this.session = session;
     child.on("error", () => this.stop(session, "exit"));
@@ -2223,12 +2311,22 @@ export class RuntimeAuditReader {
   private receiveReply(session: AuditSession, line: string): void {
     let reply: {
       historyRequestId?: string; historyLane?: boolean; historyReady?: boolean;
+      parallelReads?: number; parallelWorkspaceIo?: number;
       status?: string; data?: unknown; inference?: boolean; scan?: boolean; maintenance?: boolean; replyId?: unknown;
       neverStarted?: boolean; errorCode?: string;
       dotsFileWatches?: Array<{ id: string; lost: boolean }>;
     };
     try { reply = JSON.parse(line); } catch { this.stop(session, "protocol"); return; }
     if (reply.historyReady === true) {
+      if (typeof reply.parallelReads === "number" && Number.isFinite(reply.parallelReads)) {
+        const cap = this.options.maxConcurrentReads;
+        session.parallelReadLimit = Math.max(1, Math.min(16, Math.trunc(cap ?? reply.parallelReads)));
+      }
+      if (typeof reply.parallelWorkspaceIo === "number" && Number.isFinite(reply.parallelWorkspaceIo)) {
+        session.parallelWorkspaceIoLimit = this.options.maxConcurrentReads === 1
+          ? 1
+          : Math.max(1, Math.min(4, Math.trunc(reply.parallelWorkspaceIo)));
+      }
       session.advertiseHistory();
       session.historySupport ??= session.historyReady;
       return;
@@ -2259,7 +2357,7 @@ export class RuntimeAuditReader {
       control.resolve(reply.status === "ok" ? reply.data : undefined);
       return;
     }
-    const entry = Object.values(session.pending).find(pending => pending.id === reply.replyId);
+    const entry = session.pending.get(reply.replyId);
     // A terminal reply may follow its status receipt. Both carry the same id;
     // neither is allowed to consume a newer operation's slot.
     if (!entry) return;
@@ -2349,8 +2447,15 @@ export class RuntimeAuditReader {
 
   private stop(session: AuditSession, cause: AuditStopCause = "exit"): void {
     if (this.session !== session) return;
-    const inferenceWasOnlyJob = !!session.pending.inference && !session.pending.database
-      && !session.pending.maintenance && !session.pending.scan && session.history.size === 0;
+    let hasInference = false;
+    let hasOtherPending = false;
+    let hasDatabasePending = false;
+    for (const pending of session.pending.values()) {
+      if (pending.lane === "inference") hasInference = true;
+      else hasOtherPending = true;
+      if (pending.lane === "database") hasDatabasePending = true;
+    }
+    const inferenceWasOnlyJob = hasInference && !hasOtherPending && session.history.size === 0;
     this.session = undefined;
     for (const settle of session.history.values()) settle(undefined);
     session.history.clear();
@@ -2362,14 +2467,14 @@ export class RuntimeAuditReader {
     }
     this.stopping = session.closed;
     if (session.child.exitCode === null && session.child.signalCode === null) session.child.kill();
-    for (const pending of Object.values(session.pending)) {
+    for (const pending of [...session.pending.values()]) {
       this.settle(pending, cause === "closed" ? "closed" : "retired", undefined, true);
       if (!session.supervised || this.closed) this.releaseExecution(pending);
     }
     for (const control of session.controls.values()) control.resolve(undefined);
     session.controls.clear();
-    if (session.pending.database) this.unavailable();
-    session.pending = {};
+    if (hasDatabasePending) this.unavailable();
+    session.pending.clear();
     if (!this.closed && session.supervised) this.scheduleRecovery();
     const watches = [...session.dotsFileWatches.values()];
     session.dotsFileWatches.clear();
@@ -3054,7 +3159,9 @@ interface AuditSession {
   chunks: Buffer[];
   bytes: number;
   dotsFileWatches: Map<string, { changed(): void; lost(): void }>;
-  pending: Partial<Record<AuditLane, AuditRequest>>;
+  pending: Map<string, AuditRequest>;
+  parallelReadLimit: number;
+  parallelWorkspaceIoLimit: number;
   controls: Map<string, {
     timer: ReturnType<typeof setTimeout>;
     action?: string;
@@ -3065,7 +3172,7 @@ interface AuditSession {
 /** Conservative classification: an unlisted command may mutate and cannot silently replay. */
 function mutatesPersistentState(request: object, lane: AuditLane): boolean {
   if (lane === "inference") return false;
-  const value = request as { operation?: string; action?: string; request?: { kind?: string; action?: { operation?: string } } };
+  const value = request as { operation?: string; action?: string; ephemeral?: boolean; request?: { kind?: string; action?: { operation?: string } } };
   const operation = value.operation ?? "";
   if (operation.endsWith("Supported") || READ_ONLY_OPERATIONS.has(operation)) return false;
   if (operation === "coreGadgetHost") {
@@ -3073,6 +3180,22 @@ function mutatesPersistentState(request: object, lane: AuditLane): boolean {
   }
   if (operation === "corePiHost") {
     return !["status", "verifyLease"].includes(value.action ?? "");
+  }
+  if (operation === "coreMaintenanceScheduler") {
+    return value.action !== "status";
+  }
+  if (
+    operation === "coreWorkScheduler"
+    || operation === "coreCronScheduler"
+    || operation === "coreDotsScheduler"
+    || operation === "coreGatewayScheduler"
+    || operation === "coreRemoteControl"
+  ) {
+    return value.action !== "status";
+  }
+  if (operation === "coreExecution") {
+    if (value.action === "status") return false;
+    if (value.action === "executorProgress" && value.ephemeral === true) return false;
   }
   if (operation === "gadgetState") {
     return value.request?.kind === "access" && !["read", "keys"].includes(value.request.action?.operation ?? "");
@@ -3097,5 +3220,5 @@ const READ_ONLY_OPERATIONS = new Set([
   "projectMetadata", "cronData", "workbenchData",
   "captureBlueprintWorkspace", "scanPluginCatalog", "pluginCatalog", "readPluginConfig", "usageReport", "usageCsv",
   "diagnostics", "semantic", "embeddingIndex", "memoryLexical", "memoryLexicalScores", "memoryBaselines",
-  "historyRead", "durable",
+  "historyRead", "durable", "coreEventsSnapshot", "coreEventsReplay",
 ]);

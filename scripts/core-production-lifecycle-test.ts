@@ -32,13 +32,14 @@ function sha256File(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function startStoryLlmServer(workspaceDir: string) {
+function startStoryLlmServer() {
   let reqCount = 0;
   let effectCount = 0;
   const seenEffectIds = new Set<string>();
   let slowMode = false;
   let stallOnSlow = false;
   let slowSeen = false;
+  let toolCallReturned = false;
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? "/";
@@ -64,6 +65,10 @@ function startStoryLlmServer(workspaceDir: string) {
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
     const messages = (body.messages ?? []) as Array<{ role?: string }>;
     const lastRole = messages.at(-1)?.role;
+    const toolNames = Array.isArray(body.tools)
+      ? (body.tools as Array<{ function?: { name?: string }; name?: string }>).map(t => t.function?.name ?? t.name).filter(Boolean)
+      : [];
+    const hasWriteTool = toolNames.includes("write");
 
     res.writeHead(200, {
       "content-type": "text/event-stream",
@@ -82,6 +87,14 @@ function startStoryLlmServer(workspaceDir: string) {
       })}\n\n`);
     };
 
+    if (!hasWriteTool && !toolNames.length) {
+      writeChunk({ role: "assistant", content: JSON.stringify({ candidates: [] }) });
+      writeChunk({}, "stop");
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
+
     if (slowMode && lastRole === "user") {
       slowSeen = true;
       await fetch(`http://127.0.0.1:${port}/idempotent-effect?op=story-recover-effect`);
@@ -96,10 +109,31 @@ function startStoryLlmServer(workspaceDir: string) {
       return;
     }
 
-    if (lastRole === "user" && !slowMode) {
+    if (lastRole === "user" && !slowMode && hasWriteTool) {
       await new Promise(resolve => setTimeout(resolve, 180));
-      const targetFile = join(workspaceDir, "story-artifact.txt");
-      writeFileSync(targetFile, "story-step4-offline-output\n", "utf8");
+      toolCallReturned = true;
+      writeChunk({
+        role: "assistant",
+        tool_calls: [{
+          index: 0,
+          id: `call_story_${reqCount}`,
+          type: "function",
+          function: {
+            name: "write",
+            arguments: JSON.stringify({
+              path: "story-artifact.txt",
+              content: "story-step4-offline-output\n",
+            }),
+          },
+        }],
+      });
+      writeChunk({}, "tool_calls");
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
+
+    if (lastRole === "tool" && !slowMode) {
       writeChunk({ role: "assistant" });
       writeChunk({ content: "Completed story-artifact.txt cleanly offline." });
       writeChunk({}, "stop");
@@ -128,6 +162,7 @@ function startStoryLlmServer(workspaceDir: string) {
       slowSeen = false;
     },
     isSlowSeen: () => slowSeen,
+    isToolCallReturned: () => toolCallReturned,
     getEffectCount: () => effectCount,
     async close() {
       await new Promise<void>(resolve => server.close(() => resolve()));
@@ -145,18 +180,22 @@ async function main(): Promise<void> {
   const storageRoot = join(dataDir, "durable-bots");
   const workspaceDir = join(tempRoot, "workspace");
   const gadgetDir = join(tempRoot, "static-gadget");
+  const storyGadgetDataDir = join(tempRoot, "story-gadget-data");
   const upgradeExePath = join(tempRoot, "upgrade-bin", process.platform === "win32" ? "mybuddy-runtime-audit-v2.exe" : "mybuddy-runtime-audit-v2");
   const prevHome = process.env.HOME;
   const prevUserProfile = process.env.USERPROFILE;
+  const prevAutoTick = process.env.MYBUDDY_WORK_AUTO_TICK_MS;
   process.env.HOME = tempRoot;
   process.env.USERPROFILE = tempRoot;
+  process.env.MYBUDDY_WORK_AUTO_TICK_MS = "150";
   mkdirSync(workspaceDir, { recursive: true });
   mkdirSync(gadgetDir, { recursive: true });
+  mkdirSync(storyGadgetDataDir, { recursive: true });
   mkdirSync(join(tempRoot, "upgrade-bin"), { recursive: true });
   writeFileSync(join(gadgetDir, "index.html"), "<html><body><h1>Story Gadget v1</h1></body></html>\n", "utf8");
   copyFileSync(runtimeAuditExecutable, upgradeExePath);
 
-  const llm = startStoryLlmServer(workspaceDir);
+  const llm = startStoryLlmServer();
   const baseUrl = await llm.start();
 
   mkdirSync(dataDir, { recursive: true });
@@ -166,7 +205,7 @@ async function main(): Promise<void> {
         baseUrl,
         api: "openai-completions",
         apiKey: "fixture-key",
-        models: [{ id: "model", name: "Fixture Model", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 64000, maxTokens: 4096 }],
+        models: [{ id: "model", name: "Fixture Model", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }],
       },
     },
   }, null, 2));
@@ -262,10 +301,22 @@ async function main(): Promise<void> {
     // §6 Step 2: Launch Pi Work, Cron, Gateway, Static Gadget, Backend Gadget
     await bgClient.cronScheduler({ action: "start" });
     await bgClient.gatewayScheduler({ action: "start" });
-    await bgClient.gadgetHost({
-      action: "upsertApp",
-      app: { id: "story-static", name: "Story Static Gadget", kind: "static", rootDir: gadgetDir, entryFile: "index.html" },
-    }).catch(() => undefined);
+    const staticGadget = await bgClient.gadgetHost<{ url?: string; port?: number; status?: string }>({
+      action: "startStatic",
+      gadgetId: "story-static",
+      name: "Story Static Gadget",
+      sourcePath: gadgetDir,
+      dataPath: storyGadgetDataDir,
+      entry: "index.html",
+      sdkSource: "window.__MYBUDDY_SDK__=true;",
+      token: "story-tok",
+      generation: "story-gen-1",
+    });
+    assert.equal(staticGadget.status, "running", "Story Step 2: Static Gadget started on Rust Shared Host");
+    assert(staticGadget.url, "Story Step 2: Static Gadget returned URL");
+    const staticHtmlRes = await fetch(staticGadget.url);
+    assert.equal(staticHtmlRes.status, 200, "Story Step 2: Static Gadget HTTP 200");
+    assert.match(await staticHtmlRes.text(), /Story Gadget v1/, "Story Step 2: Static Gadget serves real HTML");
 
     const promptReceipt = await mainAgent.prompt({
       taskId: "task-story-1",
@@ -303,7 +354,12 @@ async function main(): Promise<void> {
     assert.equal(offlineWait.status, "waiting_platform", "Story Step 4: Platform task waits honestly when UI offline");
 
     await until(() => existsSync(join(workspaceDir, "story-artifact.txt")), "Pi Node Host completes work while UI closed");
+    assert.equal(llm.isToolCallReturned(), true, "Story Step 4: story-artifact.txt must be produced via real Agent write tool call");
     assert.equal(readFileSync(join(workspaceDir, "story-artifact.txt"), "utf8"), "story-step4-offline-output\n");
+    await until(() => {
+      const row = db!.connection.prepare("SELECT id, kind, title FROM artifacts WHERE task_id = 'task-story-1' LIMIT 1").get() as { id: string; kind: string; title: string } | undefined;
+      return Boolean(row?.id);
+    }, "Pi Node Host persisted real artifact row to SQLite while UI closed");
 
     // §6 Step 5: Offline domain activity (notification, note, unknown gateway reconciliation)
     await bgClient.upsertNote({
@@ -366,24 +422,23 @@ async function main(): Promise<void> {
     }, { durableAdmissionOnly: true });
     await until(() => llm.isSlowSeen(), "LLM fixture saw slow fault turn");
 
+    // Hard-kill Pi Host without manual fenceGeneration or manual launch: Core supervise_tick must auto-fence & respawn.
     try { process.kill(piPid1, "SIGKILL"); } catch { /* */ }
     await until(() => !alive(piPid1), "Fault-killed Pi Host exited");
-    await ui.getClient()!.piHost({ action: "fenceGeneration", hostGeneration: piGen1, reason: "story_fault_injection" });
 
     llm.setFaultMode(true, false);
-    const relaunch = await db.runtimeAuditReader!.piHost<{ launched?: boolean; pid?: number; hostGeneration?: string }>({
-      action: "launch",
-      executable: process.execPath,
-      scriptPath: piScript,
-      dataDirectory: dataDir,
-      dbPath,
-      storageRoot,
-      piVersion: versions.actual,
-      expectedPiVersion: versions.expected,
-      runtimeAuditExecutable,
-      extraEnv: { MYBUDDY_APP_PATH: process.cwd() },
-    });
-    assert(relaunch?.launched && relaunch.pid && relaunch.pid !== piPid1, "Story Step 7: Replacement Pi Host launched");
+    let recoveredPi: { pid?: number; hostGeneration?: string; status?: string } | undefined;
+    await until(async () => {
+      const st = await db!.runtimeAuditReader!.piHost<{ activeHost?: { pid?: number; hostGeneration?: string; status?: string; alive?: boolean } }>({ action: "status" });
+      if (st?.activeHost?.status === "running" && st.activeHost.alive && st.activeHost.pid && st.activeHost.pid !== piPid1) {
+        recoveredPi = st.activeHost;
+        return true;
+      }
+      return false;
+    }, "Core unattended supervise_tick auto-recovered replacement Pi Host", 25_000);
+    assert(recoveredPi?.pid && recoveredPi.pid !== piPid1, "Story Step 7: Core auto-respawned replacement Pi Host with new PID");
+    assert.notEqual(recoveredPi?.hostGeneration, piGen1, "Story Step 7: Replacement Pi Host received fresh fenced hostGeneration");
+
     await until(async () => {
       const sub = await mainAgent!.findSubmission("task-story-1", "story-u-2");
       return sub?.receipt?.status === "done" || sub?.receipt?.status === "unanswered";
@@ -435,6 +490,11 @@ async function main(): Promise<void> {
     });
     await stopClient.cronScheduler({ action: "stop" }).catch(() => undefined);
     await stopClient.gatewayScheduler({ action: "stop" }).catch(() => undefined);
+    await stopClient.gadgetHost({ action: "stopStatic", gadgetId: "story-static", reason: "story_explicit_stop" });
+    await fetch(staticGadget.url!).then(
+      () => { throw new Error("Stopped static gadget URL must refuse connections"); },
+      () => undefined,
+    );
     await stopClient.piHost({ action: "stop", reason: "story_explicit_stop" }).catch(() => undefined);
     const stopReply = await stopClient.assistantLifecycle("stop", { reason: "tray_stop" });
     assert.equal(stopReply.state.mode, "stopped_explicitly", "Story Step 9: assistantLifecycle mode = stopped_explicitly");
@@ -466,6 +526,10 @@ async function main(): Promise<void> {
     await uiUpgraded.closeUiSession();
 
     console.log(`PASS Step 10 Story (§6 Steps 1-10): coreSha256=${coreHash.slice(0, 12)}, effectCount=${llm.getEffectCount()}, ctrlMs=${ctrlElapsedMs.toFixed(2)}`);
+  } catch (err) {
+    const logPath = join(dataDir, "logs", "pi-node-host.log");
+    if (existsSync(logPath)) console.error("--- pi-node-host.log ---\n" + readFileSync(logPath, "utf8"));
+    throw err;
   } finally {
     await ui?.closeUiSession().catch(() => undefined);
     await bgClient?.close().catch(() => undefined);
