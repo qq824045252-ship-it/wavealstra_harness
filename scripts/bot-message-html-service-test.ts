@@ -1,3 +1,4 @@
+import { seedHistoricalBotTurn, setHistoricalBotReply } from "./fixtures/historical-bot";
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile, link, unlink, access, type FileHandle } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -20,10 +21,10 @@ try {
   bots.registerBot({ botId: 'foreign', userId: 'another-user', displayName: 'Foreign', authorization: DESKTOP_USER_GRANTS });
   // Exercise the production authorization method with real repositories, no model/session side effects.
   const conversations = new HistoricalBotReader(app, bots, new WorkService(db, { bots }));
-  const receipt = messages.accept(LOCAL_USER_ID, { botId: 'a', requestId: 'html', text: 'Make HTML' });
+  const receipt = seedHistoricalBotTurn(db, LOCAL_USER_ID, { botId: 'a', requestId: 'html', text: 'Make HTML' });
   const html = '<!doctype html>\r\n<html><body>' + '真实原文'.repeat(10000) + '</body></html>\r\n';
   const original = '说明\r\n```html\r\n' + html + '```\r\n结束';
-  messages.update(receipt.assistantMessageId, 'completed', original);
+  setHistoricalBotReply(db, receipt.assistantMessageId, 'completed', original);
   const message = messages.message(receipt.assistantMessageId)!;
   const request = { botId: 'a', conversationId: receipt.conversationId, messageId: receipt.assistantMessageId, index: 0, expectedRevision: message.messageRevision };
   const service = new BotMessageHtmlService(root, input => conversations.messageForHtmlExport(input));
@@ -41,10 +42,10 @@ try {
   // Validated existing action accepts the generated immutable snapshot. No external application is launched.
   await actions.openSystem(saved);
   const huge = '<html>' + '汉'.repeat(3 * 1024 * 1024) + '</html>';
-  messages.update(receipt.assistantMessageId, 'completed', huge);
+  setHistoricalBotReply(db, receipt.assistantMessageId, 'completed', huge);
   await assert.rejects(service.save({ ...request, expectedRevision: undefined }), /8 MiB/);
   const retryHtml = '<html>interrupted publication</html>';
-  messages.update(receipt.assistantMessageId, 'completed', retryHtml);
+  setHistoricalBotReply(db, receipt.assistantMessageId, 'completed', retryHtml);
   let interrupt = true;
   class Interrupted extends BotMessageHtmlService {
     protected override async writePending(handle: FileHandle, bytes: Buffer) {
@@ -66,13 +67,13 @@ try {
   await assert.rejects(interrupted.save({ ...request, expectedRevision: undefined }), /未知硬链接/);
   await access(unknownLink);
   await unlink(unknownLink);
-  messages.update(receipt.assistantMessageId, 'completed', original);
+  setHistoricalBotReply(db, receipt.assistantMessageId, 'completed', original);
   db.prepare("UPDATE bot_conversations SET source_kind='peer' WHERE conversation_id=?").run(receipt.conversationId);
   await assert.rejects(service.save({ ...request, expectedRevision: undefined }));
   db.prepare("UPDATE bot_conversations SET source_kind='user' WHERE conversation_id=?").run(receipt.conversationId);
-  messages.update(receipt.assistantMessageId, 'running', original);
+  setHistoricalBotReply(db, receipt.assistantMessageId, 'running', original);
   await assert.rejects(service.save({ ...request, expectedRevision: undefined }));
-  messages.update(receipt.assistantMessageId, 'completed', original);
+  setHistoricalBotReply(db, receipt.assistantMessageId, 'completed', original);
   await writeFile(saved.snapshotPath, 'tampered');
   await assert.rejects(service.save({ ...request, expectedRevision: undefined }), /完整性/);
   assert.equal(await readFile(saved.snapshotPath, 'utf8'), 'tampered', 'never overwrite existing data');

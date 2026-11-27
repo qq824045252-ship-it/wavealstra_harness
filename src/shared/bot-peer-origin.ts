@@ -6,7 +6,7 @@ export const botPeerReviewSchema = z.object({
   evidenceQuote: z.string().min(1).max(4000), gap: z.string().min(1).max(8000),
   work: z.object({ workId: id, intentRevision: z.number().int().positive(), inputSnapshotId: z.string(), ownerEpoch: z.number().int().nonnegative() }).strict().optional(),
 }).strict();
-/** Host provenance, never accepted from botSendSchema or a model tool. */
+/** Provenance supplied by the host. */
 const source = {
   collaborationId: id, exchangeId: id,
   senderBotId: id, senderDisplayName: z.string(),

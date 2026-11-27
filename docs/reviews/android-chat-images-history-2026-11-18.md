@@ -21,22 +21,7 @@
 
 顺带的减法：`RemoteMessageImageScope`（图片归属上下文）、`mentionedImageIds`（正文引用集合）、`RemoteImageChipList`、末尾 `timeline-image-links` 样式全部删除——「正文引用 vs 末尾补列」两套口径合并成一套。
 
-## 安卓端 Bot 入口已删除
-
-`Bot` 胶囊（`WorkPanelLauncher`）不是这两轮加的，它来自更早的 bot-work 提交；电脑端 Bot 场景退役后它留在了手机上。按用户要求现在删除：
-
-| 删除 | 说明 |
-| --- | --- |
-| `app/remote/src/components/WorkPanel.tsx` | 面板本体（列表 / 概览 / 卡片 / 反馈 / 重发 / 诊断） |
-| `app/remote/src/store/remoteWork.ts` | 手机端 Work store（游标、缓存、竞态防护） |
-| `App.tsx` 的 `WorkPanelLauncher` 渲染与 import | 可见入口 |
-| `RemoteClient` 的 `workSync/workSummary/workDiagnostics/workCardRead/workFeedback/workResend` | 只服务于该面板的调用 |
-| `remoteStore` 的 6 处 Work 接线 + `work_projection_snapshot` 分支 | 连接/重连/断连/事件里的唤醒 |
-| `app.css` 的 `.work-*`（71 行） | 面板样式 |
-
-保留（不属于安卓端，未擅自删）：电脑端 `/v1/work/*`、`work-mapper`、Work service 与契约类型。`test:remote-work-sync` 相应从 20 项裁到 11 项，只保留打主机 API 与 HTTP 收条的断言（手机端 store 的行为断言随 store 一起消失）。
-
-真机验收（AAK-AN00，`com.mybuddy.remote`，debug 包重新安装）：首页与聊天页 `document.querySelectorAll('.work-launcher').length === 0`，页面内不再有文案为 `Bot` 的按钮；同一台机器的真实任务里每轮回复恰好一行图片汇总（`2 张图片`、`15 张图片`），末尾图片区 0 个，图廊打开后 15 张全部解码。
+真机验收（AAK-AN00，`com.mybuddy.remote` debug 包）：真实任务每轮回复各显示一行图片汇总（「2 张图片」「15 张图片」）。图廊打开后 15 张图片全部解码。
 
 ## 现场：三个可复现的缺陷
 

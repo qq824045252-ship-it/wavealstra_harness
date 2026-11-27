@@ -1,3 +1,4 @@
+import { seedHistoricalBotTurn } from "./fixtures/historical-bot";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,7 +8,6 @@ import { setTimeout as pause } from "node:timers/promises";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
-import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
 import { SemanticRuntime } from "../src/main/retrieval/SemanticRuntime";
 import { SEMANTIC_DIMENSION, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION } from "../src/main/retrieval/SemanticModelManager";
@@ -28,8 +28,7 @@ const samples: Array<{ path: string; durationMs: number; eventLoopDelayMs: numbe
 const loop = monitorEventLoopDelay({ resolution: 5 });
 try {
   new BotRegistry(db.connection).registerBot({ userId: LOCAL_USER_ID, botId: "scale-owner", displayName: "scale" });
-  const messages = new BotConversationRepository(db.connection);
-  const receipt = messages.accept(LOCAL_USER_ID, { botId: "scale-owner", requestId: "seed", text: "isolated scope fixture" });
+  const receipt = seedHistoricalBotTurn(db.connection, LOCAL_USER_ID, { botId: "scale-owner", requestId: "seed", text: "isolated scope fixture" });
   const space = db.createSpace({ name: "unrelated scope" });
   const lexical = new MemoryService(db, { semantic: false });
   const longText = "unrelated technical reference; stable fixture data and vocabulary without the unique target. ".repeat(100).slice(0, 8192);

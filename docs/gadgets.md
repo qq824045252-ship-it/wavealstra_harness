@@ -208,7 +208,7 @@ Agent 使用 `gadget_read` 查看准确源码和 revision，使用 `gadget_call`
 
 - `pnpm -s test:gadget-backend` 验证真实后台进程、HTTP、页面 SDK、持久数据、命令、取消和故障恢复。
 - `pnpm -s test:gadget-backend-dev` 用隔离配置启动可见的 `pnpm dev`，验证实际 IPC、内置浏览器、SDK、Electron Node 和重启后的持久数据。
-- `pnpm -s test:gadget-blueprint`、`pnpm -s test:gadget-save-copies` 和 `pnpm -s test:gadget-runtime-lifecycle` 检查现有生命周期与复用行为。
+- `pnpm -s test:gadget-save-copies` 和 `pnpm -s test:gadget-runtime-lifecycle` 检查现有生命周期与复用行为。
 
 设计比较了固定宿主动作注册表和可编程后台。注册表要求每接入一种 CLI 就修改 MyBuddy，通用性不足；可编程后台成为实现基础，同时采用统一的状态存储、会话校验、执行管理和 HTTP 文件隔离。共享 BrowserHost 的 Node 设置保持不变。
 

@@ -1,3 +1,4 @@
+import { seedHistoricalBotTurn, setHistoricalBotReply } from "./fixtures/historical-bot";
 import assert from 'node:assert/strict';
 import {existsSync,mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -45,31 +46,31 @@ try {
  assert.equal(totalChanges(),afterRemoval,'successive reads cannot regenerate deleted Bot folders');
  db.upsertSpace({id:legacy,name:`${bot.displayName} · 工作空间`,path:'/unchanged/path'});
  const messages=new BotConversationRepository(db.connection);
- const sent=messages.accept(LOCAL_USER_ID,{botId:bot.botId,requestId:'personal',text:'天气如何'});
- messages.update(sent.assistantMessageId,'completed','晴');
+ const sent=seedHistoricalBotTurn(db.connection, LOCAL_USER_ID,{botId:bot.botId,requestId:'personal',text:'天气如何'});
+ setHistoricalBotReply(db.connection, sent.assistantMessageId,'completed','晴');
  db.connection.prepare('UPDATE bot_conversations SET archived_at=10 WHERE conversation_id=?').run(sent.conversationId);
  db.connection.prepare('INSERT INTO work_team_templates VALUES (?,?,?,?,?,?,?,NULL)').run('team-one',LOCAL_USER_ID,'op','hash','团队一','{}',1);
- const teamSent=messages.accept(LOCAL_USER_ID,{botId:bot.botId,teamId:'team-one',requestId:'team',text:'完成团队任务'});
+ const teamSent=seedHistoricalBotTurn(db.connection, LOCAL_USER_ID,{botId:bot.botId,teamId:'team-one',requestId:'team',text:'完成团队任务'});
  const made=works.createWork({kind:'user',userId:LOCAL_USER_ID,entry:'desktop',grants:DESKTOP_USER_GRANTS},{operationId:'w',title:'团队后台',ownerBotId:bot.botId}); assert(made.ok);
  db.connection.prepare('INSERT INTO work_teams VALUES (?,?,?,?,?,?,?,?)').run(made.work.workId,LOCAL_USER_ID,'op2','hash','{}',1,'snapshot',1);
  db.connection.prepare('INSERT INTO work_team_ownership VALUES (?,?,?)').run(made.work.workId,'team-one','团队一');
  db.upsertTask({id:'native-task',title:'工作',cwd:'/original/running/cwd',spaceId:legacy,updatedAt:1});
  // Actual dispatch schema is initialized by WorkService; use only its required fields.
  db.connection.prepare(`INSERT INTO work_dispatch_requests(work_id,operation_id,task_id,state,created_at,bot_id,intent_revision,input_snapshot_id) VALUES (?,?,?,'pending',?,?,?,?)`).run(made.work.workId,'op-native','native-task',1,bot.botId,1,'snapshot');
- const next=messages.accept(LOCAL_USER_ID,{botId:bot.botId,requestId:'personal-new',text:'新对话\uFEFF\n问题\u0085？'});
+ const next=seedHistoricalBotTurn(db.connection, LOCAL_USER_ID,{botId:bot.botId,requestId:'personal-new',text:'新对话\uFEFF\n问题\u0085？'});
  assert.notEqual(next.conversationId,sent.conversationId);
  db.connection.prepare('UPDATE bot_conversations SET archived_at=11 WHERE conversation_id=?').run(teamSent.conversationId);
- const nextTeam=messages.accept(LOCAL_USER_ID,{botId:bot.botId,teamId:'team-one',requestId:'team-new',text:`${'字'.repeat(119)}📁更多`});
+ const nextTeam=seedHistoricalBotTurn(db.connection, LOCAL_USER_ID,{botId:bot.botId,teamId:'team-one',requestId:'team-new',text:`${'字'.repeat(119)}📁更多`});
  assert.notEqual(nextTeam.conversationId,teamSent.conversationId);
  db.connection.prepare('UPDATE bot_conversations SET archived_at=12 WHERE conversation_id=?').run(next.conversationId);
  db.connection.prepare('INSERT INTO bot_conversations(conversation_id,bot_id,user_id,created_at,updated_at) VALUES (?,?,?,?,?)').run('empty-personal',bot.botId,LOCAL_USER_ID,20,20);
  const secondBot=bots.registerBot({botId:'another-bot',userId:LOCAL_USER_ID,displayName:'另一个Bot'});
- const other=messages.accept(LOCAL_USER_ID,{botId:secondBot.botId,requestId:'other-request',text:'另一Bot的问题'});
+ const other=seedHistoricalBotTurn(db.connection, LOCAL_USER_ID,{botId:secondBot.botId,requestId:'other-request',text:'另一Bot的问题'});
  ensureBotInbox(db.connection,LOCAL_USER_ID,bot.botId);
  // Retired standalone mode still permits reading an archived request without writing any rows.
  const getChanges=()=>Number((db.connection.prepare('SELECT total_changes() n').get() as {n:number}).n);
  const historyChanges=getChanges();
- const readonlyHistory=messages.history(LOCAL_USER_ID,{botId:bot.botId,conversationId:sent.conversationId},{reconcile:false});
+ const readonlyHistory=messages.history(LOCAL_USER_ID,{botId:bot.botId,conversationId:sent.conversationId});
  assert.deepEqual(readonlyHistory.messages.map(m=>m.text),['天气如何','晴']);
  assert.equal(getChanges(),historyChanges);
  const beforeTasks=db.listTasks().length;

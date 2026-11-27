@@ -10,7 +10,7 @@
 - `robotCode`：机器人编码；消息必须来自这个机器人。
 - `allowUsers`：明确允许使用机器人的员工 ID（`senderStaffId`）数组，不能为空。不要填写昵称。
 
-默认通道 ID 为集成层指定的固定 ID。机器人消息只走既有 Gateway 普通任务入口（不是已退役的独立 Bot 产品模式），账号作用域由企业 ID、应用 Client ID 和 Robot Code 共同确定。轮换同一应用的 Secret 不改变公开身份。群消息要求明确 @ 机器人；单聊和群聊支持文本及已实现的图片、文件、音视频和 richText 附件解析。附件通过 downloadCode 下载并校验来源，平台 recognition 文本不等同本机 STT。外部联系人、跨企业消息和不支持的消息类型不会启动任务。
+默认通道 ID 为集成层指定的固定 ID。机器人消息只走既有 Gateway 普通任务入口，账号作用域由企业 ID、应用 Client ID 和 Robot Code 共同确定。轮换同一应用的 Secret 不改变公开身份。群消息要求明确 @ 机器人；单聊和群聊支持文本及已实现的图片、文件、音视频和 richText 附件解析。附件通过 downloadCode 下载并校验来源，平台 recognition 文本不等同本机 STT。外部联系人、跨企业消息和不支持的消息类型不会启动任务。
 
 ## 协议与安全
 
@@ -30,7 +30,7 @@
 
 测试：`pnpm -s test:dingtalk-gateway`。测试不访问钉钉，不创建账号，不需要凭据。发布前还应使用测试企业验证后台配置、真实单聊/@群聊、服务端断线、撤销员工权限、机器人停用以及会话地址过期。
 
-实现依据：`src/main/gateway/DingTalkStreamAdapter.ts` 的 `inboundContent`、`mediaSources`、`sendWorkNotification`；横向限制见 [渠道能力矩阵](hermes-gateway-parity.md)。本页按 v0.1.109 源码核对，不新增真实企业账号验收结论。
+实现依据：`src/main/gateway/DingTalkStreamAdapter.ts` 的 `inboundContent`、`mediaSources`、`sendWorkNotification`。本页按 v0.1.109 源码核对，不新增真实企业账号验收结论。
 
 ## 官方协议依据
 

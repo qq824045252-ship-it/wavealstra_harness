@@ -73,11 +73,11 @@ poteto 本身也可在「技能与原则 → 任务路由」关闭。关闭后�
 
 ## 宿主能力与适配验收
 
-真实模型对照可通过 `pnpm -s pstack:live-case <剧本 ID> <native|original|control> <现有证据目录>` 运行。每次会话使用独立的 MyBuddy 配置、SQLite 数据库和 Git 样本。默认使用设置页选中的模型，子代理读取本机的角色候选。原版组使用个人安装的 pstack 预设和对应剧本；内置组调用编入软件的工具。每组保留原版文件摘要、实际输入、工具调用、子代理回执和完成状态。设置 `PSTACK_LIVE_MODEL` 可选用本机已经配置的候选模型。
+真实模型对照可通过 `pnpm -s pstack:live-case <剧本 ID> <native|original|control> <现有证据目录>` 运行。每次会话使用独立的 MyBuddy 配置、数据目录和 Git 样本。默认使用设置页选中的模型，子代理读取本机的角色候选。原版组使用个人安装的 pstack 预设和对应剧本；内置组调用编入软件的工具。每组保留原版文件摘要、实际输入、工具调用、子代理回执和完成状态。设置 `PSTACK_LIVE_MODEL` 可选用本机已经配置的候选模型。
 
 运行结束后，`node scripts/pstack-live-observe.mjs <证据目录> --save` 汇总阶段、真实模型、触发原因及审查回执，`node scripts/pstack-live-artifacts.mjs <证据目录>` 从工作区重新核对交付。外部写入、尚未收到的人工答复、模型服务报错和测试中断分别保留。PR 监视可以使用真实仓库的只读接口。
 
-改动前先检查了原流程实际调用的能力。真实子会话、模型选择、Git 工作树、定时器、终端和 SQLite 恢复均可复用。原设置只控制标签是否出现，宿主没有记录其阶段、审核独立性或阻止缺证完成。以下为本次原生适配的验证入口。
+改动前先检查了原流程实际调用的能力。真实子会话、模型选择、Git 工作树、定时器、终端和持久恢复均可复用。原设置只控制标签是否出现，宿主没有记录其阶段、审核独立性或阻止缺证完成。以下为本次原生适配的验证入口。
 
 | 能力 | MyBuddy 执行方式 | 验证入口 |
 | --- | --- | --- |
@@ -100,10 +100,6 @@ poteto 本身也可在「技能与原则 → 任务路由」关闭。关闭后�
 GitHub 监视通过已登录的 `gh` 读取 PR、检查和队列。Origin 监视使用已登录的 Origin CLI 及其只读接口。GitHub 已在一个合并完成和一个仍开放的 PR 上对照原版。Origin 已用官方 CLI 实测登录边界，并重放官方响应样例。已认证 Origin 项目的状态仍需相应账户核验。
 
 Windows 设置页用真实 Electron 验证了编辑、保存和重开。工作流回归使用可控制的本地模型服务来重复制造失败。真实模型对照另经 MyBuddy 前台、持久子会话及本机实际配置的模型运行。移植代码的来源与许可见 [第三方声明](third-party/pstack-thermos-LICENSE.txt)。
-
-## Frozen Bot / Work design
-
-[BOT-WORK-1.0](bot-work-design.md) and its [acceptance contract](bot-work-acceptance.md) define the frozen target architecture for persistent bot identities, independent work ownership, foreground/background hosts, and collaboration. They describe target behavior pending implementation and validation. The capability mappings below describe the current execution foundation and do not imply that the frozen product design is already implemented.
 
 ## Subagent model and reasoning selection
 
@@ -249,7 +245,7 @@ These tools are registered conditionally. Their presence depends on the configur
 
 The registration conditions, schemas, and descriptions are in [builtin-capability-extension.ts](../src/main/capabilities/builtin-capability-extension.ts).
 
-`automation_exec` provides local task-owned scheduling with create, list, runs, pause, resume, and cancel. It reuses CronService and SQLite run history. Targets distinguish continuing the current task from creating a new task. The current task keeps its model, permissions, workspace, and conversation. New tasks follow the normal task-workspace resolver. Intervals such as `90s` are elapsed durations, not converted calendar expressions. Busy targets skip a tick without queueing. Quotas and deadlines stop future runs. Restart policy either resumes future ticks without catch-up or pauses the job. Cancellation stops future starts, not a turn already in progress.
+`automation_exec` provides local task-owned scheduling with create, list, runs, pause, resume, and cancel. It uses the Core scheduler and persisted run history. Targets distinguish continuing the current task from creating a new task. The current task keeps its model, permissions, workspace, and conversation. New tasks follow the normal task-workspace resolver. Intervals such as `90s` are elapsed durations, not converted calendar expressions. Busy targets skip a tick without queueing. Quotas and deadlines stop future runs. Restart policy either resumes future ticks without catch-up or pauses the job. Cancellation stops future starts, not a turn already in progress.
 
 `terminal_exec` provides open, list, read, input, resize, and close for model-owned PTYs. Generated terminal IDs and session IDs bind every operation to its source task. Reads return the ANSI-parsed screen, cursor, size, and exit state. A bounded literal wait reports matched, timeout, or exited. Each task can own four active terminals. Stopping the task cleans its model terminals without closing user terminals. The terminal capability flag and permission policy apply.
 
@@ -266,7 +262,7 @@ These scripts define the corresponding checks. This reference does not report an
 - [durable-subagent-test.ts](../scripts/durable-subagent-test.ts) runs Durable child conversations against a local fixture provider. It covers child identity, model, display name, bound cwd, restart reattachment, and completed-effect reuse; the `Parallel:` and `Concurrency:` header lines with per-item status; the rolling pool; dispatch-time isolation preflight, one rejected item among valid ones, and a lone surviving item staying in the supplied directory; blocked-write counting; a provider quota rejection recovered by one deferred retry; the ignored `timeout_ms` diagnostic and an `allow-override` run that ends `timedout`; and `chain` steps, including a rejected step that stops the chain after the steps before it keep their results.
 - [subagent-write-conflict-test.ts](../scripts/subagent-write-conflict-test.ts) covers the write guard directly: path claims, cross-child `write` and `edit` conflicts, repeated writes by the same child, different paths and working directories, and the hook entry that production installs.
 - [subagent-model-ui-test.ts](../scripts/subagent-model-ui-test.ts) covers saved native preferences and CLI transport limits.
-- [cron-scheduling-test.ts](../scripts/cron-scheduling-test.ts) covers real SQLite, timers, cancellation races, quotas, deadlines, restart policy, and task scope with a fixture agent.
+- [cron-scheduling-test.ts](../scripts/cron-scheduling-test.ts) covers persisted execution, timers, cancellation races, quotas, deadlines, restart policy, and task scope with a fixture agent.
 - [local-workflow-integration-test.ts](../scripts/local-workflow-integration-test.ts) executes a real timed AgentService and Pi session against a local HTTP fixture provider. It verifies tool registration, permissions, persisted output, and the authoritative task directory.
 - [task-terminal-live-test.ts](../scripts/task-terminal-live-test.ts) drives a real TUI and checks screen rendering, input, resize, Ctrl-C, exit, active child cleanup, and preservation of a separate user terminal. Windows and Linux require separate executions.
 - [validate-local-workflow-package.cjs](../scripts/validate-local-workflow-package.cjs) starts the actual packaged app with an isolated profile. Its local provider calls the real terminal and scheduling tools, then verifies scheduled continuation and the Automation page.

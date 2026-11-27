@@ -10,7 +10,7 @@
 
 `pnpm -s test:discord-gateway` 使用 mock HTTP/WebSocket，不需要真实凭据。上线前仍需在测试应用验证 DM、服务器 @ 提及、撤销权限、断线续传及真实限流。没有真实账号验收时，不能将单元测试通过称为生产连接验证通过。
 
-实现依据：`src/main/gateway/DiscordGatewayAdapter.ts` 的入站附件处理和 `sendWorkNotification`。横向限制见 [渠道能力矩阵](hermes-gateway-parity.md)。本页按 v0.1.109 源码核对，不代表真实账号验收。
+实现依据：`src/main/gateway/DiscordGatewayAdapter.ts` 的入站附件处理和 `sendWorkNotification`。本页按 v0.1.109 源码核对，不代表真实账号验收。
 
 官方文档：
 - https://docs.discord.com/developers/events/gateway

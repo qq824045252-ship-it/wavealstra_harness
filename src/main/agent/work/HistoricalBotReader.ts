@@ -44,7 +44,7 @@ export class HistoricalBotReader {
     const native = this.db.runtimeAuditReader;
     this.assertHistoryAccess(input);
     const conversations = new BotConversationRepository(db);
-    const host = () => conversations.history(LOCAL_USER_ID, input, { reconcile: false });
+    const host = () => conversations.history(LOCAL_USER_ID, input);
     if (!native || db.inTransaction) return host();
 
     const totalChanges = db.prepare("SELECT total_changes()").pluck();

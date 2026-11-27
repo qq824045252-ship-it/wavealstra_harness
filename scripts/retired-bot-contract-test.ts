@@ -1,3 +1,4 @@
+import { seedHistoricalBotTurn, setHistoricalBotReply } from "./fixtures/historical-bot";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -5,7 +6,6 @@ import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
-import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { HistoricalBotReader } from "../src/main/agent/work/HistoricalBotReader";
 import { BotWorkspaceNavigationService } from "../src/main/agent/work/BotWorkspaceNavigationService";
 import { WorkService } from "../src/main/agent/work/WorkService";
@@ -33,11 +33,10 @@ try {
   const bots = new BotRegistry(db.connection), bot = bots.ensureDefaultBot(LOCAL_USER_ID);
   bots.registerBot({botId: "foreign", userId: "foreign-user", displayName: "Foreign"});
   const works = new WorkService(db.connection, {bots});
-  const messages = new BotConversationRepository(db.connection);
   const attachments = [{ name: "旧材料.txt", path: join(root, "旧材料.txt") }];
-  const receipt = messages.accept(LOCAL_USER_ID, {botId: bot.botId, requestId: "historical", text: "旧问题", attachments});
+  const receipt = seedHistoricalBotTurn(db.connection, LOCAL_USER_ID, {botId: bot.botId, requestId: "historical", text: "旧问题", attachments});
   const segments = [{id: "answer", kind: "answer" as const, text: "旧答案", createdAt: 1, updatedAt: 2}];
-  messages.update(receipt.assistantMessageId, "completed", "旧答案", undefined, undefined, segments);
+  setHistoricalBotReply(db.connection, receipt.assistantMessageId, "completed", "旧答案", segments);
   const reader = new HistoricalBotReader(db, bots, works);
   const navigation = new BotWorkspaceNavigationService(db, LOCAL_USER_ID);
   const changes = () => Number((db.connection.prepare("SELECT total_changes() n").get() as {n: number}).n);
@@ -96,7 +95,7 @@ try {
   assert.equal((await reader.history({botId: bot.botId, conversationId: receipt.conversationId})).messages.length, 2);
   const scope = { botId: bot.botId, conversationId: receipt.conversationId };
   for (let i = 0; i < 59; i++) {
-    messages.accept(LOCAL_USER_ID, { ...scope, requestId: `later-${i}`, text: `新问题 ${i}` });
+    seedHistoricalBotTurn(db.connection, LOCAL_USER_ID, { ...scope, requestId: `later-${i}`, text: `新问题 ${i}` });
   }
   const recent = await reader.history(scope);
   assert.equal(recent.messages.length, 100);
@@ -110,7 +109,7 @@ try {
   assert.equal(older.before, undefined);
   const caughtUp = await reader.history({ ...scope, after: older.messages.at(-1)!.ordinal, before: recent.messages[2]!.ordinal });
   assert.deepEqual(caughtUp.messages.map(message => message.text), ["新问题 9", ""]);
-  const team = messages.accept(LOCAL_USER_ID, { botId: bot.botId, teamId: "team-only", requestId: "team", text: "团队消息" });
+  const team = seedHistoricalBotTurn(db.connection, LOCAL_USER_ID, { botId: bot.botId, teamId: "team-only", requestId: "team", text: "团队消息" });
   await assert.rejects(reader.history({ botId: bot.botId, conversationId: team.conversationId }), /不属于当前团队或个人空间/);
   console.log("PASS retired Bot API/state/team writers absent; historical reads are unchanged and read-only; Goal evidence and completion remain live");
 } finally {await db.runtimeAuditReader?.close(); db.close(); rmSync(root, {recursive: true, force: true});}

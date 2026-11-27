@@ -1,3 +1,4 @@
+import { seedHistoricalBotTurn } from "./fixtures/historical-bot";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -5,7 +6,6 @@ import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { ArtifactRepository } from "../src/main/artifact/ArtifactRepository";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
-import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { botWorkspaceSpaceId } from "../src/main/agent/work/BotWorkspaceNavigationService";
 import { LOCAL_USER_ID, DEFAULT_BOT_ID } from "../src/shared/bot-work";
 import { fixtureTaskBoard } from "./fixtures/legacy-task-board-store";
@@ -26,9 +26,8 @@ function day(offset: number) {
 try {
   new ArtifactRepository(db.connection);
   new BotRegistry(db.connection).ensureDefaultBot(LOCAL_USER_ID);
-  const bot = new BotConversationRepository(db.connection);
   db.upsertSpace({ id: botWorkspaceSpaceId(DEFAULT_BOT_ID), name: "历史工作空间" });
-  const prior = bot.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "older", text: "历史对话" });
+  const prior = seedHistoricalBotTurn(db.connection, LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "older", text: "历史对话" });
   let board = fixtureTaskBoard(db.connection);
   const ids = async (view: Parameters<typeof board.page>[0]) => (await board.page(view, now)).rows.map((r) => r.id);
   const act = (...args: Parameters<typeof board.action>) => board.action(...args);

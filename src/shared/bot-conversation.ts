@@ -26,29 +26,6 @@ export const isBotConversationMessageId = (value: string): boolean => value.star
 const id = z.string().trim().min(1).max(200);
 export const botAttachmentSchema = z.object({ name: z.string().trim().min(1).max(255), path: z.string().min(1).max(8192) }).strict();
 export type BotAttachmentDto = z.infer<typeof botAttachmentSchema>;
-export const botReferenceFileSchema = z.object({
-  id, name: z.string().min(1).max(255), path: z.string().max(8192).optional(),
-  content: z.string().max(128000).optional(), source: z.enum(["artifact", "attachment", "change"]),
-}).strict();
-export const botReferenceTaskSchema = z.object({
-  id, title: z.string().max(2000), spaceName: z.string().max(2000).optional(), cwd: z.string().max(8192).optional(),
-  messages: z.array(z.object({ role: z.enum(["user", "assistant"]), text: z.string().max(128000) }).strict()).max(100).optional(),
-  files: z.array(botReferenceFileSchema).max(100).optional(),
-}).strict();
-export const botComposerSelectionSchema = z.object({
-  consultRequested: z.boolean().optional(), externalAgentId: id.optional(),
-  refTasks: z.array(botReferenceTaskSchema).max(20).optional(), refFiles: z.array(botReferenceFileSchema).max(100).optional(),
-  reasoningPreference: z.object({enabled:z.boolean().optional(),effort:z.string().max(40).optional(),budgetTokens:z.number().int().nonnegative().optional()}).strict().optional(),
-  modelId: z.string().trim().max(500), expertId: z.string().trim().max(240),
-  skillIds: z.array(id).max(100), mcpIds: z.array(id).max(100), connectorIds: z.array(id).max(100),
-}).strict();
-export type BotComposerSelection = z.infer<typeof botComposerSelectionSchema>;
-export const botSendSchema = z.object({
-  botId: id, teamId: id.optional(), requestId: id, text: z.string().trim().max(32000), attachments: z.array(botAttachmentSchema).max(10).optional(),
-  selection: botComposerSelectionSchema.optional(), clarificationGoalId: id.optional(),
-  conversationId: id.optional(), selectedWorkId: id.optional(), selectedCollaborationId: id.optional(), referenceMessageId: id.optional(),
-}).strict().refine(input => input.text.length > 0 || (input.attachments?.length ?? 0) > 0, "请输入消息或添加附件");
-export type BotSendRequest = z.infer<typeof botSendSchema>;
 export const botHistorySchema = z.object({ inbox: z.boolean().optional(), botId: id, teamId: id.optional(), conversationId: id.optional(), before: z.number().int().positive().optional(), after: z.number().int().nonnegative().optional(), messageIds: z.array(id).min(1).max(100).optional() }).strict();
 export type BotHistoryRequest = z.infer<typeof botHistorySchema>;
 /** One host-observed activity, separate from the model's answer. Never tool input/output. */
@@ -123,7 +100,6 @@ export type BotMessageDto = z.infer<typeof botMessageSchema> & { reportImages?: 
 export interface BotHistoryDto { conversationId: string; botId: string; teamId?: string; revision: number; archived: boolean; messages: BotMessageDto[]; before?: number }
 export interface BotMessageEvent { botId: string; teamId?: string; conversationId: string; revision: number; message: BotMessageDto }
 
-export interface BotSendReceipt { conversationId: string; botId: string; teamId?: string; requestId: string; userMessageId: string; assistantMessageId: string; replayed: boolean }
 
 export interface WorkListCursor { epoch: string; sequence: number; scope: "open" | "all" }
 export type WorkListEvent = { sequence: number } & (
@@ -140,4 +116,3 @@ export const workListRequestSchema = z.object({ includeClosed: z.boolean(), curs
 export type WorkListRequest = z.infer<typeof workListRequestSchema>;
 
 /** Unfinished foreground requests, including archived conversations; read-only. */
-export interface BotActiveRequestDto { message: BotMessageDto; prompt?: BotMessageDto; archived: boolean }

@@ -26,7 +26,7 @@
 
 被动回复必须包含原消息 msg_id 和单调 msg_seq。C2C 自原消息时间起 60 分钟，群聊 5 分钟，每条消息最多 5 次；并发发送先占用额度，失败/不确定回执不自动重试。超过 4000 字符不发送，避免静默截断或占用不可预期次数。过期、超限不降级为任意主动消息。当前另有 `sendWorkNotification` 路径，仍绑定原群/C2C 目标及原消息有效期；支持文本和受限文件交付，多文件可打包为 ZIP，使用平台媒体上传回执，不等同不限期自主推送。平台权限、消息 URL 白名单、审核与额度仍可能拒绝请求。
 
-实现依据：`src/main/gateway/QQChannelAdapter.ts` 的 `qqMedia`、`sendWorkNotification` 和入站处理；横向限制见 [渠道能力矩阵](hermes-gateway-parity.md)。以下协议参考与初始实现测试记录保留其历史范围；本次 v0.1.109 文档核对未新增真实账号验收。
+实现依据：`src/main/gateway/QQChannelAdapter.ts` 的 `qqMedia`、`sendWorkNotification` 和入站处理。以下协议参考与初始实现测试记录保留其历史范围；本次 v0.1.109 文档核对未新增真实账号验收。
 
 ## 来源、许可及验收
 

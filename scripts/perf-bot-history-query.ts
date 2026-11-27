@@ -1,3 +1,4 @@
+import { ensureBotWorkPhase2Tables } from "../src/main/db/bot-work-phase2-schema";
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { writeFileSync } from 'node:fs';
@@ -11,7 +12,7 @@ const correctnessOnly=process.argv.includes('--correctness-only');
 // Exact pre-optimization history implementation, retained as a differential oracle.
 function baseline(repo: BotConversationRepository, userId: string, request: BotHistoryRequest): BotHistoryDto {
  const conversation=repo.conversation(userId,request.botId,request.inbox?botInboxId(userId,request.botId):request.conversationId,request.teamId);
- repo.assertScope(conversation,request.teamId);
+ if(conversation&&(conversation.team_id??undefined)!==request.teamId)throw new Error("对话不属于当前团队或个人空间");
  if(!conversation)return {conversationId:'',botId:request.botId,teamId:request.teamId,revision:0,archived:false,messages:[]};
  const rows=repo.db.prepare(`SELECT m.* FROM bot_messages m JOIN bot_conversations c ON c.conversation_id=m.conversation_id
  WHERE c.user_id=? AND (m.conversation_id=? OR (m.conversation_id LIKE 'bot-inbox-%' AND EXISTS (
@@ -115,19 +116,18 @@ assert(bounds.some(b=>b.params.before<=101),'ASC must skip later inbox ranges');
 for(const item of bounds){const plan=prepare('EXPLAIN QUERY PLAN '+item.sql).all(item.params) as {detail:string}[];
  assert(plan.some(row=>row.detail.includes('idx_bot_messages_conversation_ordinal')&&row.detail.includes('ordinal>')&&row.detail.includes('ordinal<')),'indexed bounded source range required');}
 const schemaAtReopen=db.pragma('user_version',{simple:true});db.exec('DROP INDEX idx_bot_messages_conversation_ordinal');
-const indexStart=performance.now();new BotConversationRepository(db);const firstIndexBuildMs=performance.now()-indexStart;
+const indexStart=performance.now();ensureBotWorkPhase2Tables(db);const firstIndexBuildMs=performance.now()-indexStart;
 assert.equal(db.pragma('user_version',{simple:true}),schemaAtReopen);
 if(!correctnessOnly){
- results.push({label:'first-constructor-index-build',rows:sequence,firstIndexBuildMs});
+ results.push({label:'first-schema-index-build',rows:sequence,firstIndexBuildMs});
  db.exec('DROP INDEX idx_bot_messages_conversation_ordinal');
  const diskPath=join(process.env.HOME!,'history-first-index.sqlite');
  db.prepare('VACUUM INTO ?').run(diskPath);
- const diskApp=new AppDatabase(diskPath);
- const start=performance.now();new BotConversationRepository(diskApp.connection);
+ const start=performance.now();const diskApp=new AppDatabase(diskPath);
  const firstDiskIndexBuildMs=performance.now()-start;
  assert.equal(diskApp.connection.pragma('user_version',{simple:true}),schemaAtReopen);diskApp.close();
- results.push({label:'first-constructor-disk-index-build',rows:sequence,firstDiskIndexBuildMs});
- new BotConversationRepository(db);
+ results.push({label:'first-reopen-disk-index-build',rows:sequence,firstDiskIndexBuildMs});
+ ensureBotWorkPhase2Tables(db);
 }
 db.exec('DELETE FROM bot_work_feedback');bench('60k-messages-no-feedback');
 console.log(JSON.stringify({assertions,results},null,2));

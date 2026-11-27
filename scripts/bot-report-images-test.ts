@@ -1,3 +1,4 @@
+import { seedHistoricalBotTurn, setHistoricalBotReply } from "./fixtures/historical-bot";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
@@ -31,15 +32,16 @@ try {
   const messages = new BotConversationRepository(db.connection);
   let artifacts = new ArtifactService(new ArtifactStorage(join(root, "artifacts")), new ArtifactRepository(db.connection), new ArtifactRegistry());
   let images = new BotReportImageService(db.connection, LOCAL_USER_ID, works, () => artifacts);
-  const send = messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "origin", text: "report" });
-  messages.update(send.assistantMessageId, "completed", "accepted");
+  const send = seedHistoricalBotTurn(db.connection, LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "origin", text: "report" });
+  setHistoricalBotReply(db.connection, send.assistantMessageId, "completed", "accepted");
   const result = works.createWork({ kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS }, {
     operationId: "create", title: "report", ownerBotId: DEFAULT_BOT_ID, inputSnapshotId: "input",
     authorization: DESKTOP_USER_GRANTS, criteria: [{ id: "criterion", text: "review" }],
     conversationId: send.conversationId, sourceMessageId: send.userMessageId,
   });
   assert(result.ok); const work = result.work;
-  messages.linkWork(messages.receipt(LOCAL_USER_ID, DEFAULT_BOT_ID, "origin")!, work.workId);
+  db.connection.prepare("UPDATE bot_messages SET work_ids_json=? WHERE message_id IN (?,?)")
+    .run(JSON.stringify([work.workId]), send.userMessageId, send.assistantMessageId);
   const binding = { bindingId: "binding", workId: work.workId, operationId: "execute", botId: DEFAULT_BOT_ID,
     taskId: "report-task", durableStoreKey: "store", conversationId: "native", intentRevision: work.intentRevision,
     ownerEpoch: work.ownerEpoch, inputSnapshotId: work.inputSnapshotId, expertSnapshot: bots.activeSnapshot(DEFAULT_BOT_ID)!,
@@ -49,13 +51,18 @@ try {
   const absolute = encodeURI(imagePath.split(sep).join("/")); const file = pathToFileURL(imagePath).href;
   const body = `![relative](<报告 截图.png>)\n![absolute](${absolute})\n![url](${file})\n![outside](../outside.png)\n![bad](invalid.png)\n![missing](missing.png)\n![parens](capture(1).png)\n![reference][proof]\n\n[proof]: capture(1).png`;
   works.repo.insertBinding({ ...binding, settlementNote: body });
-  const originRecord = messages.workOrigin(LOCAL_USER_ID, work.workId)!;
-  const appendReport = (row: typeof binding, text: string, event: string) => messages.appendWorkFeedback(originRecord, work.workId, event, "1", text, {
-    workId: work.workId, eventId: event, kind: "binding", category: "result", executionId: row.bindingId,
-    intentRevision: row.intentRevision, inputSnapshotId: row.inputSnapshotId,
-  });
+  const appendReport = (row: Pick<typeof binding, "bindingId" | "intentRevision" | "inputSnapshotId">, text: string, event: string) => {
+    const messageId = "historical-feedback-" + event;
+    db.connection.prepare(
+      "INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,work_ids_json,created_at,updated_at) VALUES (?,?,?,?,'assistant',?,'completed',?,1,1)",
+    ).run(messageId, send.conversationId, DEFAULT_BOT_ID, event, text, JSON.stringify([work.workId]));
+    db.connection.prepare("INSERT INTO bot_work_feedback(message_id,metadata_json) VALUES (?,?)").run(messageId, JSON.stringify({
+      workId: work.workId, eventId: event, kind: "binding", category: "result", executionId: row.bindingId,
+      intentRevision: row.intentRevision, inputSnapshotId: row.inputSnapshotId,
+    }));
+  };
   appendReport(binding, body, "historical-binding");
-  const history = () => messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }, { reconcile: false });
+  const history = () => messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID });
   const report = history().messages.at(-1)!;
   assert.equal(artifacts.listByTask(binding.taskId).length, 0);
   const first = await images.hydrateHistory(history());
@@ -84,28 +91,26 @@ try {
   // A subsequent report at the same filename captures new bytes, never rewrites history.
   const changed = Buffer.concat([bytes, Buffer.from("new image version")]); writeFileSync(imagePath, changed);
   works.repo.insertBinding({ ...binding, bindingId: "binding-new", operationId: "execute-new", taskId: "new-task", settlementNote: body });
-  appendReport({ ...binding, bindingId: "binding-new", taskId: "new-task" }, body, "historical-new");
+  appendReport({ ...binding, bindingId: "binding-new" }, body, "historical-new");
   const next = (await images.hydrateHistory(history())).messages.at(-1)!.reportImages!;
   assert.notEqual(next.artifacts[0]!.id, descriptor.id);
   assert.deepEqual((await artifacts.readImageVariant(next.artifacts[0]!.id, "full"))?.data, changed);
   assert.deepEqual((await artifacts.readImageVariant(descriptor.id, "full"))?.data, bytes);
   // Metadata cannot switch this Work report into another Work's binding.
   works.repo.insertBinding({ ...binding, bindingId: "mismatched", operationId: "mismatched", intentRevision: work.intentRevision + 1 });
-  const origin = messages.workOrigin(LOCAL_USER_ID, work.workId)!;
-  messages.appendWorkFeedback(origin, work.workId, "fake", "1", body, { workId: work.workId, eventId: "fake", kind: "binding",
-    category: "result", executionId: "mismatched", intentRevision: work.intentRevision, inputSnapshotId: work.inputSnapshotId });
+  appendReport({ ...binding, bindingId: "mismatched" }, body, "fake");
   assert.equal((await images.hydrateHistory(history())).messages.at(-1)!.reportImages, undefined);
   // Symlink/junction escape is denied on real filesystem paths. Windows directory junctions do not need symlink privileges.
   const escape = join(cwd, "escape");
   symlinkSync(root, escape, "junction");
   works.repo.insertBinding({ ...binding, bindingId: "escape", operationId: "escape", taskId: "escape-task", settlementNote: "![escaped](escape/outside.png)" });
-  appendReport({ ...binding, bindingId: "escape", taskId: "escape-task" }, "![escaped](escape/outside.png)", "historical-escape");
+  appendReport({ ...binding, bindingId: "escape" }, "![escaped](escape/outside.png)", "historical-escape");
   await images.hydrateHistory(history());
   assert.equal(artifacts.listByTask("escape-task").length, 0);
   if (process.platform !== "win32") {
     execFileSync("mkfifo", [join(cwd, "blocked.png")]);
     works.repo.insertBinding({ ...binding, bindingId: "fifo", operationId: "fifo", taskId: "fifo-task", settlementNote: "![fifo](blocked.png)" });
-    appendReport({ ...binding, bindingId: "fifo", taskId: "fifo-task" }, "![fifo](blocked.png)", "historical-fifo");
+    appendReport({ ...binding, bindingId: "fifo" }, "![fifo](blocked.png)", "historical-fifo");
     await images.hydrateHistory(history());
     assert.equal(artifacts.listByTask("fifo-task").length, 0, "nonregular files cannot block main-thread open");
   }
@@ -124,7 +129,7 @@ try {
   const emptyScope = (await images.hydrateHistory(stale)).messages[0].reportImages!;
   assert.equal(emptyScope.taskId, binding.taskId, "valid feedback without an image still returns its scope");
   assert.equal(emptyScope.artifacts.length, 0);
-  messages.update(ordinary.messageId, "completed", body);
+  setHistoricalBotReply(db.connection, ordinary.messageId, "completed", body);
   const backfilled = (await images.hydrateHistory(stale)).messages[0];
   assert.equal(backfilled.text, ordinary.text, "hydration must not rewrite the supplied history body");
   assert.equal(backfilled.reportImages?.artifacts.length, 2, "fresh DB text/feedback wins over stale DTO metadata");

@@ -65,32 +65,6 @@ export function ensurePersonalConversation(db: Database.Database, userId: string
   return id;
 }
 
-/** Stable team scope survives changes to the executing leader. */
-export function ensureTeamConversation(db: Database.Database, userId: string, botId: string, teamId: string): string {
-  const dbRows = db.prepare("SELECT * FROM bot_conversations WHERE user_id=? AND team_id=? AND archived_at IS NULL")
-    .all(userId, teamId) as Array<Record<string, unknown>>;
-  const prior = overlayFindAll(db, "bot_conversations", dbRows, r => String(r.conversation_id), r =>
-    r.user_id === userId && r.team_id === teamId && (r.archived_at ?? null) === null)[0];
-  if (prior) return String(prior.conversation_id);
-  const id = `bot-conversation-${randomUUID()}`, now = Date.now();
-  if (requiresWorkRustWrites(db)) {
-    overlaySet(db, "bot_conversations", id, {
-      conversation_id: id, bot_id: botId, user_id: userId, revision: 0,
-      current_request_id: null, archived_at: null, created_at: now, updated_at: now,
-      team_id: teamId, ingress_kind: "desktop", source_kind: "user",
-    });
-    enqueueWorkOp(db, {
-      op: "botConvInsert", conversationId: id, botId, userId, teamId,
-      ingressKind: "desktop", sourceKind: "user", archivedAt: null,
-      createdAt: now, updatedAt: now, orIgnore: false,
-    });
-    return id;
-  }
-  db.prepare("INSERT INTO bot_conversations(conversation_id,bot_id,user_id,team_id,created_at,updated_at) VALUES (?,?,?,?,?,?)")
-    .run(id, botId, userId, teamId, now, now);
-  return id;
-}
-
 /** Called inside Work creation: UI/native/Gateway Work without a Bot chat gets
  * an explicit owner conversation. This does not replace Gateway delivery targets. */
 export function recordWorkDelivery(db: Database.Database, work: { workId: string; userId: string; ownerBotId: string },

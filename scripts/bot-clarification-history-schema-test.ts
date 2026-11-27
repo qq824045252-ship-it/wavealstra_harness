@@ -1,3 +1,4 @@
+import { seedHistoricalBotTurn, setHistoricalBotReply } from "./fixtures/historical-bot";
 import assert from 'node:assert/strict';
 import {AppDatabase} from '../src/main/db/AppDatabase';
 import {BotRegistry} from '../src/main/agent/work/BotRegistry';
@@ -7,8 +8,8 @@ const app=new AppDatabase(':memory:'),db=app.connection;
 try {
  const bots=new BotRegistry(db);bots.registerBot({botId:'owner',userId:LOCAL_USER_ID,displayName:'Owner'});
  const messages=new BotConversationRepository(db);
- const receipt=messages.accept(LOCAL_USER_ID,{botId:'owner',teamId:'team',requestId:'r',text:'Question'});
- messages.update(receipt.assistantMessageId,'completed','Answer');
+ const receipt=seedHistoricalBotTurn(db, LOCAL_USER_ID,{botId:'owner',teamId:'team',requestId:'r',text:'Question'});
+ setHistoricalBotReply(db, receipt.assistantMessageId,'completed','Answer');
  assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE name='work_team_templates'").get(),undefined);
  assert.equal(messages.message(receipt.assistantMessageId)?.text,'Answer','ordinary team history works without team service schema');
  db.prepare('INSERT INTO bot_request_runs(message_id,runtime_key,context_json,created_at) VALUES (?,?,?,?)').run(receipt.assistantMessageId,'fixture','{}',1);

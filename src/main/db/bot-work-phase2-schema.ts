@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { ensureBotTurnOriginSchema } from "../agent/work/BotTurnOriginSchema";
 
 /** Per-user replay window; older cursors recover through an authoritative snapshot. */
 export const WORK_PROJECTION_EVENT_RETENTION = 10_000;
@@ -21,6 +22,38 @@ export function ensureBotWorkPhase2Tables(db: Database.Database): void {
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
       UNIQUE(conversation_id,request_id,role)
     );
+    CREATE TABLE IF NOT EXISTS bot_message_segments (
+      message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
+      segments_json TEXT NOT NULL CHECK(json_valid(segments_json))
+    );
+    CREATE TABLE IF NOT EXISTS bot_message_tools (
+      message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL,
+      tools_json TEXT NOT NULL CHECK(json_valid(tools_json))
+    );
+    CREATE TABLE IF NOT EXISTS bot_clarification_answers (
+      question_message_id TEXT NOT NULL REFERENCES bot_messages(message_id) ON DELETE CASCADE,
+      goal_id TEXT NOT NULL, answer_message_id TEXT NOT NULL REFERENCES bot_messages(message_id) ON DELETE CASCADE,
+      PRIMARY KEY(question_message_id,goal_id));
+    CREATE INDEX IF NOT EXISTS idx_bot_messages_conversation_ordinal ON bot_messages(conversation_id,ordinal);
+    CREATE INDEX IF NOT EXISTS idx_bot_messages_conversation_request ON bot_messages(conversation_id,request_id);
+    CREATE TABLE IF NOT EXISTS bot_peer_inputs (
+      user_message_id TEXT PRIMARY KEY, assistant_message_id TEXT NOT NULL UNIQUE,
+      origin_json TEXT NOT NULL CHECK(json_valid(origin_json))
+    );
+    CREATE TABLE IF NOT EXISTS bot_peer_deliveries (
+      operation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, origin_json TEXT NOT NULL CHECK(json_valid(origin_json)),
+      text TEXT NOT NULL, target_bot_id TEXT NOT NULL, conversation_id TEXT, request_id TEXT NOT NULL UNIQUE,
+      accepted_message_id TEXT, cancelled_at INTEGER, error TEXT,
+      journal_message_id TEXT, observed_status TEXT, returned_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_bot_peer_inputs_assistant ON bot_peer_inputs(assistant_message_id);
+    CREATE INDEX IF NOT EXISTS idx_bot_peer_pending ON bot_peer_deliveries(user_id) WHERE accepted_message_id IS NULL AND cancelled_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_bot_peer_journal ON bot_peer_deliveries(journal_message_id);
+    CREATE INDEX IF NOT EXISTS idx_bot_peer_collaboration ON bot_peer_deliveries(user_id,json_extract(origin_json,'$.collaborationId'),json_extract(origin_json,'$.kind'));
+    CREATE INDEX IF NOT EXISTS idx_bot_peer_assistant ON bot_peer_deliveries(accepted_message_id);
+    CREATE INDEX IF NOT EXISTS idx_bot_peer_input_source ON bot_peer_inputs(json_extract(origin_json,'$.sourceConversationId'),json_extract(origin_json,'$.kind'));
+
     -- Additive metadata only: never reset existing Work or rewrite message history.
     CREATE TABLE IF NOT EXISTS bot_message_revisions (
       message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
@@ -130,6 +163,7 @@ export function ensureBotWorkPhase2Tables(db: Database.Database): void {
   db.exec(`DROP INDEX IF EXISTS uq_bot_live_conversation;
     CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_personal_live ON bot_conversations(user_id,bot_id) WHERE archived_at IS NULL AND team_id IS NULL AND ingress_kind='desktop' AND source_kind='user';
     CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_team_live ON bot_conversations(user_id,team_id) WHERE archived_at IS NULL AND team_id IS NOT NULL;`);
+  ensureBotTurnOriginSchema(db);
   // Run at startup as well, including when there are no connected readers or new writes.
   // Keep the stream epoch/sequence: pruning must never reuse a tombstone's sequence.
   db.prepare(`DELETE FROM work_projection_events WHERE sequence <= (

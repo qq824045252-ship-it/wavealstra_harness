@@ -367,7 +367,6 @@ const HEADLESS_TESTS = new Set([
   "test:durable-delete-stop",
   "test:gadget-save-copies",
   "test:bot-task-reply-presentation",
-  "test:bot-active-requests",
   "test:durable-artifact-registration",
   "test:web-access-extract-runtime", // Default fixture is local; real weather request is opt-in.
   "test:chat-composer-ui", // React DOM behavior using linkedom; no Electron/display dependency.

@@ -1,7 +1,3 @@
-> 2026-11-17：`test:durable-context-dev:live` 已改走普通任务入口；第七项验证普通任务调用 `acp_status`。该入口不再依赖 Bot 导航、Bot composer 或独立 Bot 测试框架。
-
-> Latest closure audit and actual long-history limits: [Issue #26 matrix](issue26-closure-matrix-20261112.md). A successful automatic-compression story is not proof that every closure requirement is complete.
-
 # 自动上下文管理（billion-context / acp-kernel 原生接入）
 
 对应 Issue #26。本文说明 Durable 主执行路径如何自动管理模型上下文、如何回查原文、如何持久化/恢复，以及当前已验证与未验证的边界。
@@ -14,11 +10,7 @@
 - 摘要中的工具调用和结果携带工具名称、调用 ID、参数、结果正文及成功或错误标志。原始消息与附件继续保存在 Durable entries。
 - 新摘要必须比当前摘要投影更小。比较基线使用当前可见消息，不能因新摘要比完整原始历史小就接受一次实际增大的重写。
 
-专项验证为 `test:durable-context-safety` 和 `test:durable-context-operations`。前者覆盖真实内核的二三级计划、并行工具批次和超窗失败降级；后者使用真实 SQLite 验证二级摘要提交、关闭重开、原文回查与连续失败后的投影。模型响应使用本地夹具，这些用例不代表真实模型或桌面验收。
-
-## 后续安全复核（2026-11-12）
-
-原实现复核发现 assistant ref 解析、持久提交失败、单条超长摘要输入、跨 head ref 重用和原文分页边界问题。修复、专项命令与验收状态见 [Issue #26 安全修复验收](issue26-safety-verification-20261112.md)。下文 Windows 数字是先前 fixture 记录，不代表最新 SHA 的真实模型/桌面或完整 issue 验收。1K/10K/100K 的测试仅模拟 refs 元数据，不能当作真实归档条目冷存储、RSS 或完整内核热态有界的证据。
+专项验证为 `test:durable-context-safety` 和 `test:durable-context-operations`。前者覆盖真实内核的二三级计划、并行工具批次和超窗失败降级；后者验证二级摘要提交、关闭重开、原文回查与连续失败后的投影。模型响应使用本地夹具，这些用例不代表真实模型或桌面验收。
 
 ## 1. 行为概览
 
@@ -52,7 +44,7 @@
 4. **压力口径**：`max(最近 assistant usage, 逐条消息独立估算) + 工具 schema 估算`，避免复制历史里过期 usage 低估出站体积（分支首次请求已验证）。
 5. **持久化节流**：摘要/边界变化立即落盘；普通保存调用采用节流，最多连续跳过 8 次，随后一次保存，关闭前强制 flush（崩溃后 refs 可由消息顺序确定性重建）。refs 保留摘要覆盖 entry + 最近 2000 条，超过 20K 时裁剪。
 6. **分支**：会话 fork/regenerate 通过 `asOf` 文档拿到锚点时的状态，不复制“现在”的摘要；独立新任务分支按复制后的可见历史确定性重建。
-7. **覆盖范围**：主会话、Bot/Work、Gateway、辅助运行时、子代理、会诊各自持有独立 state；Code Mode 私有 conversation 不接管。
+7. **覆盖范围**：执行上下文按会话隔离；Code Mode 私有 conversation 不接管。
 
 ## 3.1 摘要大小契约（2026-11-18）
 
@@ -71,7 +63,7 @@
 - **原生（Pi）压缩**：没有内核门禁，摘要按窗口尽量完整，只有单次请求输入受 24K token 成本上限约束。
 
 验证：`pnpm -s test:durable-summary-budget`（契约数学、CJK 输出预算、拆块、condense）与
-`pnpm -s test:durable-context-summary-limit`（真实内核 + SQLite：超长摘要 condense 后提交；持续拒收时停在宿主侧且
+`pnpm -s test:durable-context-summary-limit`（真实内核：超长摘要 condense 后提交；持续拒收时停在宿主侧且
 不提交任何块；连续多轮每块 ≤ 上限）。
 
 ## 4. 命令
@@ -91,7 +83,7 @@ pnpm -s test:durable-bot
 pnpm -s test:all
 ```
 
-## 5. 已验证（本机，Windows）
+## 5. 历史实测（Windows）
 
 - 自动整理：`90007 → 30204 tokens`，摘要标记出现、旧 marker 消失，后续轮次持续投影。
 - 原文回查：真实执行 `acp_retrieve`，toolResult 逐字包含种子原句与细节，标注来源 entry；摘要不含这些细节。
@@ -111,7 +103,7 @@ pnpm -s test:all
 - 性能（headless fixture）：归档 1K/10K/100K 时请求准备 p50 = 1.62/1.82/1.36 ms（不随归档增长，`conversation.entries` 扫描 0 次）；活动视图 200/800/2000 条 p50 = 1.62/6.58/12.14 ms；100K refs 裁剪到 1899，state 文档 114KB。
 - `pnpm -s test:all`：435 通过；15 个失败全部在 HEAD `7b11a2bd` 复现（Windows symlink/缺外部 CLI/既有断言/子进程 SIGABRT），非本次引入。
 
-## 6. 未验证 / 已知限制
+## 6. 当时未验证的项目与已知限制
 
 - **真实模型与 `pnpm dev` 桌面故事未执行**（连续长会话 → 自动压缩 → 原文回查 → 重启 → 继续）。真实 provider 的 overflow/usage 行为仍需实测。
 - 请求准备仍是 O(活动视图)：每轮重建 CoreMessage 并跑内核完整管线（归档不影响，但活动视图 >2K 条时成本线性增长）；incremental/checkpoint 读取尚未实现。

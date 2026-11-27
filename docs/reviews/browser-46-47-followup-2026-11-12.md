@@ -20,7 +20,7 @@ JSON evidence: [Electron](evidence/browser-46-47-followup/electron-results.json)
 2. Closed tab, replaced node, ambiguity and document lifetime: supplemental groups 1, 4 and 15 plus existing document/nav contract tests.
 3. Unrelated clock changes and real readonly/disabled/occlusion: supplemental groups 2, 3, 6 and 7.
 4. Sequential multi-field edits: groups 2, 6 and 7 verify final submitted data.
-5. Independent tab navigation, same-tab latest-wins and Gadget restoration: existing browser contract/Gadget tests in the original review; integrated contract rerun is recorded in [the integration review](browser-46-50-2026-11-12.md).
+5. Independent tab navigation, same-tab latest-wins and Gadget restoration: existing browser contract/Gadget tests in the original review; integrated contract rerun is recorded in [the integration review](https://github.com/qq824045252-ship-it/wavealstra_harness/blob/3e4dea4a10e621b85080c3403f276d2cffefcad8/docs/reviews/browser-46-50-2026-11-12.md).
 6. Full real-window-state input matrix: groups 2, 3, 6 and 7 now cover the previously missing foreground/minimized cases.
 7. Existing tabs/popup/session/page preservation: previous dedicated suite evidence in the integration review; browser production file hashes were independently checked to match the preintegration evidence (allowing LF/CRLF normalization). This is preserved evidence, not a newly rerun popup/provider suite.
 

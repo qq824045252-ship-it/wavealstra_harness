@@ -1,3 +1,4 @@
+import { seedHistoricalBotTurn } from "./fixtures/historical-bot";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -5,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
-import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { ensureWorkTeamSchema } from "../src/main/agent/work/WorkTeamService";
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
@@ -37,8 +37,7 @@ for (const scopeType of scopes) for (const layout of ["same-message", "different
     for (const id of ["project-owner", "project-outsider"]) db.connection.prepare(
       "INSERT INTO projects(id,name,created_at,updated_at,archived,resource_budget_chars) VALUES(?,?,1,1,0,128000)").run(id, id);
     const space = db.createSpace({ name: "owner workspace" }), otherSpace = db.createSpace({ name: "other workspace" });
-    const messages = new BotConversationRepository(db.connection);
-    const conversation = (botId: string, teamId?: string) => messages.accept(LOCAL_USER_ID,
+    const conversation = (botId: string, teamId?: string) => seedHistoricalBotTurn(db.connection, LOCAL_USER_ID,
       { botId, teamId, requestId: randomUUID(), text: "准备独立的记忆验收来源" }).conversationId;
     const c1 = conversation("owner", scopeType === "team" ? "team-owner" : undefined);
     const c2 = conversation("owner", scopeType === "team" ? "team-owner" : undefined);

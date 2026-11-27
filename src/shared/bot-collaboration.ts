@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { workFeedbackSchema } from "./bot-work-feedback";
-import type { BotSendReceipt, BotMessageDto } from "./bot-conversation";
+import type { BotMessageDto } from "./bot-conversation";
 
 const id = z.string().trim().min(1).max(500);
 const time = z.number().int().nonnegative();
@@ -77,9 +77,14 @@ export interface BotCollaborationHistoryPage {
   nextCursor: string | null;
   receivers?: BotCollaborationReceiver[];
 }
-export type BotCollaborationReceiver = Omit<BotSendReceipt, "teamId" | "replayed"> & {
+export interface BotCollaborationReceiver {
+  conversationId: string;
+  botId: string;
+  requestId: string;
+  userMessageId: string;
+  assistantMessageId: string;
   exchangeId: string; status: BotMessageDto["status"]; acceptedAt: number; startedAt: number | null; endedAt: number | null;
-};
+}
 
 export const botIncomingMessagesQuerySchema = z.object({ botId:id, before:z.string().max(4000).optional(), after:z.string().max(4000).optional(), limit:z.number().int().min(1).max(100).optional(), refreshIds:z.array(id).max(100).optional(), retrySummaryIds:z.array(id).max(100).optional() }).strict().refine(q=>!(q.before && q.after) && !(q.refreshIds && (q.before || q.after)), 'Choose one pagination direction');
 export type BotIncomingMessagesQuery = z.infer<typeof botIncomingMessagesQuerySchema>;

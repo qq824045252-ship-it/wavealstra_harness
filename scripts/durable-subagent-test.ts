@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
-import { cp, mkdtemp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { AgentDoc, configure, createRegistry, defineExtension, defineTool, GenerationTask, Harness, hook, ToolTask, type ToolExecutionApi, type ConversationId, type Storage } from "@earendil-works/pi-durable";
-import { openDurableStorage } from "../src/main/agent/durable/DurableStorage";
+import { openDurableStorage, setDefaultPiStorageClient } from "../src/main/agent/durable/DurableStorage";
+import { shutdownCoreWorker } from "../src/main/platform/core-client";
+import { locateRuntimeAudit, RuntimeAuditReader } from "../src/main/platform/runtime-audit";
 import { readDurableSteerReceipts } from "../src/main/agent/durable/DurableSteerReceipts";
 import { freshHistory, scanImprovementHistory, type Observation } from "../src/main/agent/hooks/ImprovementHistory";
 import { reflectionEvidence } from "../src/main/agent/hooks/ImprovementReflection";
@@ -25,7 +27,11 @@ import { findDurableUserEntry, forkDurableConversation, resolveActiveDurableConv
 import { guardSubagentWriteCall } from "../src/main/capabilities/subagent/write-conflict";
 import { ListParams, SubagentParams } from "../src/main/capabilities/subagent/shared";
 
-const root = await mkdtemp(join(tmpdir(), "mybuddy-durable-child-"));
+const executable = process.env.RUNTIME_AUDIT_BINARY ?? locateRuntimeAudit(process.cwd());
+assert(executable, "Durable child receipt verification requires the Core worker");
+const root = await mkdtemp(join(await realpath(tmpdir()), "mybuddy-durable-child-"));
+const database = join(root, "app.duckdb");
+const core = new RuntimeAuditReader(executable, database, { coreDataDirectory: root });
 const agentDir = join(root, "agent"), cwd = join(root, "workspace"), directory = join(root, "state");
 const previousDir = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -258,6 +264,7 @@ const server = createServer(async (request, response) => {
 });
 let harness: Harness | undefined;
 try {
+  setDefaultPiStorageClient(core);
   await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
   const address = server.address(); assert(address && typeof address !== "string");
   const models = ["parent", "child"].map(id => ({ id, name: id, reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 2048, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }));
@@ -518,7 +525,7 @@ try {
       handle.lease.release();
     }
   }
-  console.log("PASS native child steer admission, one-at-a-time provider entry, idempotent retry, immediate cancel, afterRun race and SQLite reopen");
+  console.log("PASS native child steer admission, one-at-a-time provider entry, idempotent retry, immediate cancel, afterRun race and DuckDB reopen");
   harness = await open(directory);
   let conversation = await harness.root(ctx, { agent: { cwd, model: { provider: "fixture", modelId: "parent" } } });
   const submitted = await conversation.submit({ type: "input", content: "Delegate", requestId: "stable-root-input" }, ctx);
@@ -991,4 +998,8 @@ try {
   server.closeAllConnections();
   await new Promise<void>(done => server.close(() => done()));
   if (previousDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousDir;
+  setDefaultPiStorageClient(undefined);
+  await core.close();
+  await shutdownCoreWorker(root, database);
+  await rm(root, { recursive: true, force: true });
 }

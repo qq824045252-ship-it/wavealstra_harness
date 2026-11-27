@@ -45,15 +45,7 @@ function open() {
   }
   peer('accepted', 'request');
   for(let n=0;n<4;n++) peer('return'+n, 'return');
-  function feedback(id, extra={}) {
-    const value = { workId:'w',eventId:id,kind:'binding',category:'progress',executionId:'execution',intentRevision:1,inputSnapshotId:'snapshot',...extra };
-    db.prepare("INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,created_at,updated_at) VALUES(?,'receiver','b',?,'assistant','PRIVATE_TOOL_LOG','completed',2,2)").run(id, 'raw-'+id);
-    db.prepare('INSERT INTO bot_work_feedback VALUES(?,?)').run(id, JSON.stringify(value)); return value;
-  }
-  const parse = value => { assert(['binding','result','blocker','closure'].includes(value.kind)); assert.equal(typeof value.workId,'string'); return value; };
-  const reconcile = () => helper.reconcileDelegatedFeedback(db,'u','source',parse);
-  const sourceFeedback = () => db.prepare("SELECT m.*,f.metadata_json FROM bot_messages m JOIN bot_work_feedback f ON m.message_id=f.message_id WHERE m.conversation_id='source' ORDER BY m.ordinal").all();
-  return {raw,db,turn,peer,feedback,parse,reconcile,sourceFeedback};
+  return {raw,db,turn};
 }
 const f=open();
 const ids=message=>helper.delegatedReplyWorkIds(f.db,'u',message);
@@ -78,45 +70,8 @@ check('a forged return source/receipt cannot borrow another task',()=>{
   f.db.prepare("UPDATE bot_peer_inputs SET origin_json=? WHERE assistant_message_id='return0a'").run(prior);
 });
 const report={title:'Python 学习计划',summary:'已完成学习计划。',artifactRefs:['/saved/plan.html'],files:[{ref:'/saved/plan.html',name:'plan.html',openPath:'/saved/plan.html',previewManifestPath:'/saved/plan.web.json'}],reviewStatus:'accepted',current:true,notices:[]};
-const binding=f.feedback('binding'); const result=f.feedback('result',{kind:'result',category:'result',report});
-check('two persisted execution feedbacks become two public source records without raw logs',()=>{
-  assert.equal(f.reconcile(),2);const rows=f.sourceFeedback();assert.equal(rows.length,2);
-  assert(rows.every(row=>!row.text.includes('PRIVATE_TOOL_LOG')));
-  assert.deepEqual(JSON.parse(rows[1].metadata_json),result);
-  assert.equal(f.db.prepare("SELECT text FROM bot_messages WHERE message_id='result'").get().text,'PRIVATE_TOOL_LOG');
-});
-check('reload, delivery retry and file metadata refresh preserve exact message identity',()=>{
-  const before=f.sourceFeedback().map(row=>row.message_id);
-  for(let i=0;i<5;i++) assert.equal(f.reconcile(),0);
-  const upgraded={...result,report:{...report,files:[{...report.files[0],name:'年度计划.html'}]}};
-  f.db.prepare("UPDATE bot_work_feedback SET metadata_json=? WHERE message_id='result'").run(JSON.stringify(upgraded));
-  assert.equal(f.reconcile(),1); assert.deepEqual(f.sourceFeedback().map(row=>row.message_id),before);
-  f.db.prepare("UPDATE bot_work_feedback SET metadata_json=? WHERE message_id='result'").run(JSON.stringify(result));f.reconcile();
-});
-check('missing pre-fix projection is repaired on read, not by replaying business',()=>{
-  const row=f.sourceFeedback()[0], receipts=f.db.prepare('SELECT COUNT(*) n FROM bot_send_receipts').get().n;
-  f.db.prepare('DELETE FROM bot_work_feedback WHERE message_id=?').run(row.message_id);f.db.prepare('DELETE FROM bot_messages WHERE message_id=?').run(row.message_id);
-  assert.equal(f.reconcile(),1); assert(f.sourceFeedback().some(item=>item.message_id===row.message_id));
-  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM bot_send_receipts').get().n,receipts);
-  assert.equal(f.db.prepare("SELECT lifecycle FROM works WHERE work_id='w'").get().lifecycle,'closed');
-});
-check('source deletion or another active conversation never redirects delivery',()=>{
-  assert.equal(helper.reconcileDelegatedFeedback(f.db,'u','other',f.parse),0);
-  assert.equal(helper.reconcileDelegatedFeedback(f.db,'foreign','source',f.parse),0);
-  f.db.prepare("DELETE FROM bot_conversations WHERE conversation_id='source'").run(); assert.equal(f.reconcile(),0);
-  f.db.prepare("INSERT INTO bot_conversations(conversation_id,bot_id,user_id) VALUES('source','a','u')").run();
-});
-check('failure after message insertion rolls back the public record and revision',()=>{
-  f.feedback('rollback');const before=f.sourceFeedback().length, rev=f.db.prepare("SELECT revision FROM bot_conversations WHERE conversation_id='source'").get().revision;
-  f.raw.exec("CREATE TRIGGER fail_projection BEFORE INSERT ON bot_work_feedback WHEN NEW.message_id LIKE 'work-feedback-%' BEGIN SELECT RAISE(ABORT,'injected projection failure'); END;");
-  assert.throws(f.reconcile,/injected projection failure/); assert.equal(f.sourceFeedback().length,before);
-  assert.equal(f.db.prepare("SELECT revision FROM bot_conversations WHERE conversation_id='source'").get().revision,rev);
-  f.raw.exec('DROP TRIGGER fail_projection');assert.equal(f.reconcile(),1);
-});
-check('recovery batch is bounded to 100 and converges without duplicates',()=>{
-  for(let i=0;i<103;i++) f.feedback('batch'+i);
-  assert.equal(f.reconcile(),100);assert.equal(f.reconcile(),3);assert.equal(f.reconcile(),0);
-});
+const binding={workId:'w',eventId:'binding',kind:'binding',category:'progress',executionId:'execution',intentRevision:1,inputSnapshotId:'snapshot'};
+const result={...binding,eventId:'result',kind:'result',category:'result',report};
 const message=(id, extra={})=>({messageId:id,conversationId:'source',botId:'a',requestId:id,ordinal:1,role:'assistant',text:'answer',status:'completed',workIds:['w'],createdAt:1,updatedAt:1,...extra});
 const fallback=message('public',{requestId:'delegated-feedback:result',workFeedback:result});
 const returned=message('returned',{collaborationResult:result,peerOrigin:{kind:'return',sourceBotId:'a',sourceConversationId:'source',sourceAssistantMessageId:'original',sourceRequestId:'original'}});

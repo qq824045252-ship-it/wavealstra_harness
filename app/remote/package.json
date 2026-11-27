@@ -15,7 +15,6 @@
     "@capacitor/app": "8.1.1",
     "@capacitor/core": "8.5.2",
     "@mybuddy/shared": "workspace:*",
-    "lucide-react": "1.49.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-markdown": "10.1.0",

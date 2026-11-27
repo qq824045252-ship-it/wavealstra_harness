@@ -83,7 +83,7 @@
 | --- | --- |
 | 旧库保留数据、归属惰性且幂等、写入默认位置正确 | `test:library-owner-scope` |
 | 自有/引用/继承展示和祖先资料范围正确 | `test:workspace-materials-view` |
-| 直接传条目 ID、空间 ID 不能绕过当前任务范围 | `test:library-extension`、`test:project-knowledge` |
+| 直接传条目 ID、空间 ID 不能绕过当前任务范围 | `test:library-extension` |
 | 单条引用和文件夹引用不扩大范围；先过滤后限额 | `test:workspace-resource-locator`、`test:workspace-chunk-r2` |
 | 目录、附件和上下文投影一致；改绑和取消引用立即生效 | `test:library-workspace-context` |
 | 原文件、版本、来源和引用生命周期保留 | `test:library-domain`、三个 Library transaction suites、`test:knowledge-lifecycle` |
