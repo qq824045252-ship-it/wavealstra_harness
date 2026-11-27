@@ -22,6 +22,7 @@ import type { Task } from "../src/renderer/src/types";
 import type { AppContext } from "../src/renderer/src/store/app/context";
 import type { AppState } from "../src/renderer/src/store/app/types";
 import { createInitRuntimeActions } from "../src/renderer/src/store/app/runtime/initRuntime";
+import { createAgentProjectionActions } from "../src/renderer/src/store/app/runtime/agentProjection";
 import { createAppRuntimeState } from "../src/renderer/src/store/app/runtime/state";
 import { hydrateExternalAgentHistory } from "../src/renderer/src/store/app/runtime/taskHydration";
 import {
@@ -437,6 +438,23 @@ function externalEvent(patch: AgentUiPatch): ExternalAgentUiEvent {
   };
 }
 
+function testCoreDeltasImmediatelyReachStore(): void {
+  const harness = createRuntimeHarness();
+  harness.store.setState(createAgentProjectionActions(harness.context));
+  const dispose = startRuntime(harness);
+  const message = () => harness.store.getState().tasks[0].messages[0];
+  harness.channels.agent.emit(thinking("想"));
+  harness.channels.agent.emit(text("你好🌊"));
+  assert.deepEqual(message().blocks, [{ type: "thinking", text: "想" }, { type: "text", text: "你好🌊" }]);
+  harness.channels.agent.emit(text("完成", { final: true }));
+  assert.deepEqual(message().finalBlocks, [{ type: "text", text: "完成" }]);
+  harness.scheduler.assertIdle();
+  dispose();
+  const settled = message();
+  harness.channels.agent.registrations[0].listener(text("过期"));
+  assert.equal(message(), settled);
+}
+
 function testRuntimeReplacementOwnsAllSubscriptions(): void {
   const harness = createRuntimeHarness();
   const disposeOld = startRuntime(harness);
@@ -821,6 +839,7 @@ async function testExternalTaskDiscoveryKeepsApprovals(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  testCoreDeltasImmediatelyReachStore();
   testAdjacentDeltaBoundaries();
   testBackgroundFallbackAndFlushOrder();
   testDisposeDrainsOnceAndRejectsLateEvents();

@@ -23,15 +23,8 @@ interface ActiveExecution {
 }
 
 const MAX_PENDING_DURABLE_PROGRESS = 192;
-const MAX_COALESCED_DELTA_CHARS = 64 * 1024;
-const EPHEMERAL_COALESCE_MS = 16;
+const MAX_IN_FLIGHT_DELTAS = 192;
 const DURABLE_RETRY_DELAYS_MS = [0, 50, 150];
-
-interface BufferedDelta {
-  progress: Record<string, unknown>;
-  key: string;
-  text: string;
-}
 
 export class DurableProgressDeliveryError extends Error {
   constructor(message: string, readonly causeError?: unknown) {
@@ -40,52 +33,57 @@ export class DurableProgressDeliveryError extends Error {
   }
 }
 
-/**
- * Tiered per-execution progress pipeline (`P1-05`, `IN-10`, `IN-11`):
- * - Ephemeral deltas (`text_delta` / `thinking_delta`) coalesce within 16ms and cap at 1 in-flight RPC.
- * - Durable control/tool/lifecycle events queue in order with bounded backpressure and
- *   block settlement until their delivery is confirmed.
- */
+/** The host supplies source sequence numbers. Core orders live deltas and fences completion.
+ * Durable events remain barriers so tools and lifecycle changes cannot overtake earlier text. */
 class ExecutionProgressStream {
-  private timer?: ReturnType<typeof setTimeout>;
-  private buffered?: BufferedDelta;
-  private ephemeralInFlight?: Promise<void>;
-  private durableTail: Promise<void> = Promise.resolve();
+  private readonly inFlight = new Set<Promise<void>>();
+  private durableTail?: Promise<void>;
   private durableQueued = 0;
-  private durableFailure?: DurableProgressDeliveryError;
+  private failure?: Error;
   private sealed = false;
   private closed = false;
+  private sequence = 0;
 
-  constructor(
-    private readonly send: (progress: unknown, progressId?: string) => Promise<void>,
-  ) {}
+  constructor(private readonly send: (progress: unknown, progressId?: string, streamSeq?: number) => Promise<void>) {}
+
+  get lastStreamSeq(): number { return this.sequence; }
 
   report(progress: unknown, ephemeral = false): Promise<void> {
+    if (this.closed || this.sealed) return Promise.reject(new DurableProgressDeliveryError("Execution progress stream is closed"));
+    if (this.failure) return Promise.reject(this.failure);
     if (ephemeral) {
-      if (!this.sealed && !this.closed) this.enqueueEphemeral(progress);
+      if (this.inFlight.size >= MAX_IN_FLIGHT_DELTAS) return this.overloaded("Live");
+      const seq = ++this.sequence;
+      const dispatch = () => this.send(progress, undefined, seq);
+      const sent = this.durableTail ? this.durableTail.then(dispatch) : dispatch();
+      this.inFlight.add(sent);
+      void sent.then(() => this.inFlight.delete(sent), error => {
+        this.inFlight.delete(sent);
+        this.failure ??= error;
+      });
+      // Admission of the next delta does not depend on this transport reply.
       return Promise.resolve();
     }
-    if (this.closed || this.sealed) {
-      return Promise.reject(new DurableProgressDeliveryError("Cannot enqueue required durable progress on closed stream"));
-    }
-    if (this.durableFailure) {
-      return Promise.reject(this.durableFailure);
-    }
-    if (this.durableQueued >= MAX_PENDING_DURABLE_PROGRESS) {
-      this.durableFailure = new DurableProgressDeliveryError(
-        `Durable progress queue overloaded (capacity=${MAX_PENDING_DURABLE_PROGRESS})`,
-      );
-      return Promise.reject(this.durableFailure);
-    }
-    this.durableQueued += 1;
-    const progressId = randomUUID();
-    void this.flushEphemeralNow();
-    const task = this.durableTail
-      .then(() => this.sendDurableWithRetry(progress, progressId))
-      .finally(() => { this.durableQueued -= 1; });
+
+    if (this.durableQueued >= MAX_PENDING_DURABLE_PROGRESS) return this.overloaded("Durable");
+    this.durableQueued++;
+    const id = randomUUID();
+    const barrier = Promise.all([...this.inFlight, this.durableTail]);
+    const task = barrier.then(() => this.sendDurableWithRetry(progress, id));
     this.durableTail = task;
-    void task.catch((error: DurableProgressDeliveryError) => { this.durableFailure ??= error; });
+    void task.then(() => {
+      this.durableQueued--;
+      if (this.durableTail === task) this.durableTail = undefined;
+    }, error => {
+      this.durableQueued--;
+      this.failure ??= error;
+    });
     return task;
+  }
+
+  private overloaded(kind: string): Promise<never> {
+    this.failure = new DurableProgressDeliveryError(kind + " progress overloaded");
+    return Promise.reject(this.failure);
   }
 
   private async sendDurableWithRetry(progress: unknown, progressId: string): Promise<void> {
@@ -114,95 +112,18 @@ class ExecutionProgressStream {
     );
   }
 
-  private enqueueEphemeral(progress: unknown): void {
-    const obj = progress && typeof progress === "object" ? (progress as Record<string, unknown>) : undefined;
-    const patch = obj?.patch && typeof obj.patch === "object" ? (obj.patch as Record<string, unknown>) : undefined;
-    const patchType = typeof patch?.type === "string" ? patch.type : "";
-    const taskId = typeof patch?.taskId === "string" ? patch.taskId : "";
-    const messageId = typeof patch?.messageId === "string" ? patch.messageId : "";
-    const delta = typeof patch?.delta === "string" ? patch.delta : "";
-
-    if (patch && (patchType === "text_delta" || patchType === "thinking_delta") && delta) {
-      const key = `${taskId}:${messageId}:${patchType}`;
-      if (this.buffered && this.buffered.key === key && this.buffered.text.length + delta.length <= MAX_COALESCED_DELTA_CHARS) {
-        this.buffered.text += delta;
-        const nextPatch = { ...patch, delta: this.buffered.text };
-        this.buffered.progress = { ...obj, patch: nextPatch };
-      } else {
-        if (this.buffered) {
-          void this.flushEphemeralNow();
-        }
-        this.buffered = {
-          key,
-          text: delta,
-          progress: { ...obj, patch: { ...patch } },
-        };
-      }
-    } else {
-      this.buffered = {
-        key: "__raw__",
-        text: "",
-        progress: obj ?? { value: progress },
-      };
-    }
-
-    if (!this.timer) {
-      this.timer = setTimeout(() => {
-        this.timer = undefined;
-        void this.flushEphemeralNow();
-      }, EPHEMERAL_COALESCE_MS);
-      this.timer.unref?.();
-    }
-  }
-
-  private flushEphemeralNow(): Promise<void> {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-    }
-    if (this.ephemeralInFlight) {
-      return this.ephemeralInFlight;
-    }
-    const batch = this.buffered;
-    if (!batch) return Promise.resolve();
-    this.buffered = undefined;
-    const flight = this.send(batch.progress)
-      .catch(error => {
-        console.warn("[ExecutionProgressStream] ephemeral progress delivery error:", error instanceof Error ? error.message : String(error));
-      })
-      .finally(() => {
-        if (this.ephemeralInFlight === flight) {
-          this.ephemeralInFlight = undefined;
-        }
-        if (this.buffered && !this.closed && !this.sealed) {
-          void this.flushEphemeralNow();
-        }
-      });
-    this.ephemeralInFlight = flight;
-    return flight;
-  }
-
-  async flush(): Promise<void> {
+  async seal(): Promise<void> {
     this.sealed = true;
-    this.clearEphemeral();
     await this.durableTail;
-    if (this.durableFailure) {
-      throw this.durableFailure;
-    }
+    if (this.failure) throw this.failure;
   }
 
-  close(): void {
-    this.closed = true;
-    this.clearEphemeral();
+  async confirmPending(): Promise<void> {
+    await Promise.all(this.inFlight);
+    if (this.failure) throw this.failure;
   }
 
-  private clearEphemeral(): void {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-    }
-    this.buffered = undefined;
-  }
+  close(): void { this.closed = true; }
 }
 
 export interface DurableExecutionTarget {
@@ -446,11 +367,11 @@ export class ExecutionHostBridge {
       return;
     }
     if (current) return;
-    const progressStream = new ExecutionProgressStream(async (progress, progressId) => {
+    const progressStream = new ExecutionProgressStream(async (progress, progressId, streamSeq) => {
       if (client.isClosed) throw new DurableProgressDeliveryError("Core disconnected before progress confirmation");
       const reply = await client.executorProgress(
         exec.executionId, exec.attempt, progress, exec.ownerGeneration, this.hostGeneration,
-        progressId ? { progressId } : { ephemeral: true },
+        progressId ? { progressId } : { ephemeral: true, streamSeq },
       );
       if (reply.status !== "ok") {
         throw new DurableProgressDeliveryError(`Core rejected execution progress: ${String(reply.code ?? reply.status)}`);
@@ -462,19 +383,36 @@ export class ExecutionHostBridge {
       settle: async result => {
         const control = active.control;
         try {
-          await progressStream.flush();
+          await progressStream.seal();
+          if (result.status !== "completed") await progressStream.confirmPending();
         } catch (error) {
           result = { status: "unknown", errorMessage: error instanceof Error ? error.message : String(error) };
         }
         if (client.isClosed || active.control !== control || this.active.get(exec.executionId) !== active) return;
         try {
-          const reply = await client.executorSettled({
+          const settle = (outcome: ExecutionSettlement) => client.executorSettled({
             executionId: exec.executionId,
             attempt: exec.attempt,
-            ...result,
+            ...outcome,
+            lastStreamSeq: progressStream.lastStreamSeq,
             ownerGeneration: exec.ownerGeneration,
             hostGeneration: this.hostGeneration,
           });
+          let reply = await settle(result);
+          if (reply.code === "STREAM_SEQUENCE_GAP") {
+            // A settlement can reach Core before the last frame. Only a Core-confirmed
+            // gap requires waiting for outstanding sends and retrying the boundary.
+            try {
+              await progressStream.confirmPending();
+              if (active.control !== control || client.isClosed) return;
+              reply = await settle(result);
+            } catch (error) {
+              result = { status: "unknown", errorMessage: String(error) };
+            }
+            if (reply.code === "STREAM_SEQUENCE_GAP" && active.control === control && !client.isClosed) {
+              reply = await settle({ status: "unknown", errorMessage: result.errorMessage ?? "Core could not confirm the complete execution stream" });
+            }
+          }
           if (reply.status !== "ok") {
             console.warn("[ExecutionHostBridge] Core rejected settlement:", reply.code ?? reply.status);
             return;

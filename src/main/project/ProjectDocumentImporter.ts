@@ -60,6 +60,13 @@ export class ProjectDocumentImporter {
   ) {}
 
   async importFile(projectId: string, sourcePath: string): Promise<ProjectDocumentImportResult> {
+    if (this.library.importsThroughCore) {
+      const result = await this.library.importProjectDocument(projectId,sourcePath);
+      const event = result.eventId && await this.projects.readProjectEvent(result.eventId);
+      if (!event) throw new Error("Core 未确认项目文档事件");
+      if (!result.reused) this.ingestor.notifyIngested(projectId,event);
+      return {event, item:result.item, reused:result.reused};
+    }
     const project = this.projects.get(projectId);
     if (!project) throw new Error(`项目不存在：${projectId}`);
     if (project.archived) throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);

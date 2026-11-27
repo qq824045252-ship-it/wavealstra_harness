@@ -30,6 +30,9 @@ function recoveryDirs(): Set<string> {
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-session-history-recovery-test-"));
 try {
+  const missing = join(root, "missing.jsonl");
+  assert.ok(loadTaskHistoryFromSession(missing, root).historyError);
+  assert.equal(existsSync(missing), false);
   // 1) Malformed tail: Pi can read the valid records, MyBuddy must surface the warning.
   {
     const session = makeSession(root, "tail", 2);

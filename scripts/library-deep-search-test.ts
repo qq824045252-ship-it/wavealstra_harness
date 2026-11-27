@@ -42,7 +42,7 @@ async function main() {
     let calls = 0;
     const judge: LibraryEvidenceJudge = async ({ previousEvidence, candidates }, signal, validate) => {
       assert.equal(signal.aborted, false);
-      validate();
+      await validate();
       assert.equal(previousEvidence.length, calls);
       const expected = ["Index", "Routing", "Policy"][calls++];
       assert.deepEqual(candidates.map((passage) => passage.title), [expected]);
@@ -86,7 +86,7 @@ async function main() {
     await assert.rejects(library.deepSearchInTaskScope(request.query, undefined, taskScope, async () =>
       async (_input, _signal, validate) => {
         db.connection.prepare("UPDATE tasks SET project_id = 'foreign' WHERE id = 'task'").run();
-        validate();
+        await validate();
         assert.fail("must stop before dispatch");
       }), /资料范围或索引已变化/);
     library.writeContent({ id: final, content: "The policy has changed." });

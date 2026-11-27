@@ -28,6 +28,8 @@ const GATEWAY_CHANNELS: [&str; 9] = [
 pub(super) struct Stamp {
     pub release_version: String,
     pub database_generation: String,
+    #[serde(default)]
+    pub sqlite_cutover_recorded: bool,
 }
 
 pub(super) struct DatabaseRelease {
@@ -60,9 +62,6 @@ impl DatabaseRelease {
             "core.lease",
             "app.duckdb",
             "app.duckdb.wal",
-            "app.duckdb-wal",
-            "app.duckdb-shm",
-            "app.duckdb-journal",
         ] {
             regular_metadata(&root.join(name))?;
         }
@@ -94,17 +93,19 @@ impl DatabaseRelease {
     }
 
     pub fn matches(&self, stamp: Option<&Stamp>) -> bool {
-        stamp.is_some_and(|stamp| stamp.release_version == self.version)
+        stamp.is_some_and(|stamp| stamp.release_version == self.version && stamp.sqlite_cutover_recorded)
     }
 
-    pub fn verify_current_database(&self) -> Result<()> {
+    pub fn verify_current_database(&self, required: bool) -> Result<()> {
         self.verify_root()?;
         let path = self.root.join("app.duckdb");
-        let Some(meta) = regular_metadata(&path)? else {
-            return Ok(());
-        };
-        if meta.len() == 0 {
-            return Ok(());
+        let usable = regular_metadata(&path)?.is_some_and(|meta| meta.len() != 0);
+        if !usable {
+            return if required {
+                Err("Previously initialized MyBuddy DuckDB is missing or empty; refusing to replace it".into())
+            } else {
+                Ok(())
+            };
         }
         let mut header = [0; 12];
         File::open(path)?.read_exact(&mut header)?;
@@ -114,46 +115,61 @@ impl DatabaseRelease {
         Ok(())
     }
 
-    pub fn remove_old_databases(&self) -> Result<Vec<String>> {
+    /// Only open a positively identified DuckDB. A pre-cutover SQLite file can
+    /// occupy the same path and is validated separately before cleanup.
+    pub fn has_cutover_receipt(&self) -> Result<bool> {
+        use duckdb::{AccessMode, Config, Connection};
+        let path = self.root.join("app.duckdb");
+        if !regular_metadata(&path)?.is_some_and(|m| m.len() >= 12) {
+            return Ok(false);
+        }
+        let mut header = [0; 12];
+        File::open(&path)?.read_exact(&mut header)?;
+        if &header[8..] != b"DUCK" {
+            return Ok(false);
+        }
+        let conn = Connection::open_with_flags(path, Config::default().access_mode(AccessMode::ReadOnly)?)?;
+        if !crate::database::table_exists(&conn, "packaged_sqlite_cutover")? {
+            return Ok(false);
+        }
+        Ok(conn.query_row("SELECT EXISTS (SELECT 1 FROM packaged_sqlite_cutover c JOIN database_meta d ON d.database_generation=c.database_generation WHERE d.id=1)", [], |r| r.get(0))?)
+    }
+
+    pub fn remove_legacy_sqlite_databases(&self) -> Result<Vec<String>> {
         self.verify_root()?;
         writable_file(&self.root.join(STAMP))?;
         writable_file(&self.root.join(STAGED_STAMP))?;
         let mut files = Vec::new();
-        let mut spill = None;
         for base in [
             "app.db",
             "native-hooks.sqlite",
             "native-improvement.sqlite",
             ".mybuddy-writer-lock.sqlite",
         ] {
-            collect_database(&self.root, base, false, &mut files)?;
+            collect_database(&self.root, base, &mut files)?;
         }
-        // The canonical name may contain the old SQLite file on a pre-policy installation.
-        collect_file(self.root.join("app.duckdb.wal"), &mut files)?;
-        let spill_path = self.root.join("app.duckdb.tmp");
-        if let Some(meta) = metadata(&spill_path)? {
-            reject_link(&spill_path, &meta)?;
-            if meta.is_dir() {
-                for entry in fs::read_dir(&spill_path)? {
-                    let entry = entry?;
-                    let name = entry.file_name();
-                    if !name.to_str().is_some_and(|name| {
-                        name.starts_with("duckdb_temp_storage") && name.ends_with(".tmp")
-                    }) {
-                        return Err(format!(
-                            "Unexpected file in DuckDB spill directory: {}",
-                            entry.path().display()
-                        )
-                        .into());
-                    }
-                    collect_file(entry.path(), &mut files)?;
-                }
-                spill = Some((Handle::from_path(&spill_path)?, spill_path));
-            } else {
-                collect_file(spill_path, &mut files)?;
+        // A pre-cutover installation can use the canonical filename for SQLite.
+        // Prove that format before collecting it or any SQLite-style companions.
+        // DuckDB's .wal and .tmp are never cleanup targets.
+        let canonical = self.root.join("app.duckdb");
+        let size = regular_metadata(&canonical)?.map_or(0, |meta| meta.len());
+        let mut magic = [0; 16];
+        if size >= magic.len() as u64 {
+            File::open(&canonical)?.read_exact(&mut magic)?;
+        }
+        let legacy_canonical = &magic == b"SQLite format 3\0";
+        if size == 0 || legacy_canonical {
+            if metadata(&self.root.join("app.duckdb.wal"))?.is_some()
+                || metadata(&self.root.join("app.duckdb.tmp"))?.is_some()
+            {
+                return Err("Cannot create DuckDB while its recovery files remain without a valid database".into());
             }
         }
-        collect_database(&self.root, "app.duckdb", true, &mut files)?;
+        if legacy_canonical {
+            collect_database(&self.root, "app.duckdb", &mut files)?;
+        } else {
+            self.verify_current_database(false)?;
+        }
         for dir in [self.root.join("durable"), self.root.join("durable-bots")] {
             collect_stores(&dir, &mut files)?;
         }
@@ -167,7 +183,7 @@ impl DatabaseRelease {
             }
         }
 
-        let mut deleted = Vec::with_capacity(files.len() + usize::from(spill.is_some()));
+        let mut deleted = Vec::with_capacity(files.len());
         for (identity, path) in files {
             verify_directory(path.parent().ok_or("Missing reset file parent")?)?;
             if regular_metadata(&path)?.is_none() || Handle::from_path(&path)? != identity {
@@ -175,14 +191,6 @@ impl DatabaseRelease {
             }
             fs::remove_file(&path)?;
             drop(identity);
-            deleted.push(path.display().to_string());
-        }
-        if let Some((identity, path)) = spill {
-            verify_directory(&path)?;
-            if Handle::from_path(&path)? != identity {
-                return Err(format!("DuckDB spill directory changed: {}", path.display()).into());
-            }
-            fs::remove_dir(&path)?;
             deleted.push(path.display().to_string());
         }
         Ok(deleted)
@@ -199,6 +207,7 @@ impl DatabaseRelease {
         let stamp = Stamp {
             release_version: self.version.clone(),
             database_generation,
+            sqlite_cutover_recorded: true,
         };
         let mut options = OpenOptions::new();
         options.create_new(true).write(true);
@@ -345,7 +354,6 @@ fn collect_file(path: PathBuf, files: &mut Vec<(Handle, PathBuf)>) -> Result<()>
 fn collect_database(
     directory: &Path,
     base: &str,
-    duckdb: bool,
     files: &mut Vec<(Handle, PathBuf)>,
 ) -> Result<()> {
     for suffix in SQLITE_SIDECARS {
@@ -371,7 +379,7 @@ fn collect_database(
                 && matches!(header[18], 1 | 2)
                 && matches!(header[19], 1 | 2)
                 && header[21..24] == [64, 32, 32];
-            if !sqlite && !(duckdb && &header[8..12] == b"DUCK" && len >= 4096) {
+            if !sqlite {
                 return Err(format!("Unrecognized database reset file: {}", path.display()).into());
             }
         }
@@ -404,7 +412,7 @@ fn collect_stores(directory: &Path, files: &mut Vec<(Handle, PathBuf)>) -> Resul
             .into());
         }
         for base in ["durable.sqlite", ".mybuddy-writer-lock.sqlite"] {
-            collect_database(&store, base, false, files)?;
+            collect_database(&store, base, files)?;
         }
     }
     Ok(())

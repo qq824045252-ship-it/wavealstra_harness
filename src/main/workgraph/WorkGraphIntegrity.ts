@@ -53,7 +53,9 @@ function hasEntity(db: AppDatabase, type: string, id: string): boolean {
 
 export async function scanIntegrity(db: AppDatabase): Promise<IntegrityReport> {
   const report = await db.runtimeAuditReader?.scanWorkGraphIntegrity();
-  return report ?? checkIntegrity(db);
+  if (report) return report;
+  if (!db.fixtureConnection) throw new Error("Core 未确认关联图完整性检查");
+  return checkIntegrity(db);
 }
 
 function checkIntegrity(db: AppDatabase): IntegrityReport {
@@ -207,13 +209,16 @@ export function previewRepair(db: AppDatabase, report: IntegrityReport): RepairP
 }
 
 export async function applyRepair(db: AppDatabase, preview: RepairPreview): Promise<RepairCounts> {
-  if (!db.runtimeAuditReader) return applyRepairOnHost(db, preview);
+  if (!db.runtimeAuditReader) {
+    if (!db.fixtureConnection) throw new Error("Core 关联图修复服务未连接");
+    return applyRepairOnHost(db, preview);
+  }
   const result = await db.runtimeAuditReader.applyWorkGraphRepair(preview);
-  if (result?.status === "needsHost") return applyRepairOnHost(db, preview);
+  if (result?.status === "needsHost" && db.fixtureConnection) return applyRepairOnHost(db, preview);
   if (result?.status === "applied") {
     return { deletedEdges: result.deletedEdges, deletedBindings: result.deletedBindings };
   }
-  throw new Error(result?.message ?? "无法确认工作关系图修复结果，请重新扫描");
+  throw new Error((result?.status === "rejected" && result.message) || "无法确认工作关系图修复结果，请重新扫描");
 }
 
 function applyRepairOnHost(db: AppDatabase, preview: RepairPreview): RepairCounts {

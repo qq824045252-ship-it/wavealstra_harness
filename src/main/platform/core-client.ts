@@ -137,8 +137,11 @@ export class RuntimeCoreClient extends EventEmitter {
   signalCode: NodeJS.Signals | null = null;
   private ended = false;
 
-  constructor(private readonly socket: Socket, endpoint: CoreEndpoint, initial: Buffer, identity?: { role?: CoreClientRole; clientId?: string; connectionEpoch?: number }) {
+  private readonly socket: Socket;
+
+  constructor(socket: Socket, endpoint: CoreEndpoint, initial: Buffer, identity?: { role?: CoreClientRole; clientId?: string; connectionEpoch?: number }) {
     super();
+    this.socket = socket;
     this.pid = endpoint.workerPid;
     this.generation = endpoint.generation;
     this.binaryHash = endpoint.binaryHash;
@@ -416,12 +419,13 @@ async function isCurrentDatabaseRelease(directory: string, database: string, rel
   const [databaseFile, stampFile] = await Promise.all([optionalRegularFile(database), optionalRegularFile(stamp)]);
   if (!stampFile) return false;
   if (stampFile.size > 4096) throw new Error("数据库版本记录过大，无法确认升级");
-  const saved = JSON.parse(await readFile(stamp, "utf8")) as { releaseVersion?: unknown; databaseGeneration?: unknown } | null;
+  const saved = JSON.parse(await readFile(stamp, "utf8")) as { releaseVersion?: unknown; databaseGeneration?: unknown; sqliteCutoverRecorded?: unknown } | null;
   if (typeof saved?.releaseVersion !== "string" || !RELEASE_VERSION.test(saved.releaseVersion) ||
-      typeof saved.databaseGeneration !== "string" || !saved.databaseGeneration.trim() || Object.keys(saved).length !== 2) {
+      typeof saved.databaseGeneration !== "string" || !saved.databaseGeneration.trim() || Object.keys(saved).some(key => !["releaseVersion", "databaseGeneration", "sqliteCutoverRecorded"].includes(key)) ||
+      (saved.sqliteCutoverRecorded !== undefined && typeof saved.sqliteCutoverRecorded !== "boolean")) {
     throw new Error("数据库版本记录无效，无法确认升级");
   }
-  return Boolean(databaseFile) && saved.releaseVersion === releaseVersion;
+  return Boolean(databaseFile?.size) && saved.sqliteCutoverRecorded === true && saved.releaseVersion === releaseVersion;
 }
 
 async function stopPriorCoreForUpgrade(endpoint: CoreEndpoint, executable: string, directory: string): Promise<void> {
@@ -479,8 +483,8 @@ async function stopPriorCoreForUpgrade(endpoint: CoreEndpoint, executable: strin
   }
 }
 
-/** A packaged version change starts with a clean database. The guarded Rust
- * initializer is the sole authority for deleting or stamping the database. */
+/** The guarded Rust initializer clears legacy SQLite once and preserves DuckDB
+ * when the packaged release changes. It alone writes the release stamp. */
 export async function preparePackagedCoreDatabase(executable: string, dataDirectory: string, expectedVersion: number,
   releaseVersion: string): Promise<void> {
   if (!RELEASE_VERSION.test(releaseVersion)) throw new Error("MyBuddy 应用版本无效，无法确认升级");

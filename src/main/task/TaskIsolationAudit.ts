@@ -8,7 +8,7 @@
  *
  * 不依赖 Renderer；workspacesRoot / db 路径可注入（测试用临时目录）。
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { AppDatabase } from "../db/AppDatabase";
@@ -184,7 +184,7 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
   const workspacesRoot = resolve(options.workspacesRoot);
   const workspace = new TaskExecutionWorkspace(workspacesRoot);
   const ownDb = !options.db;
-  const appDb = options.db ?? new AppDatabase(options.dbPath);
+  const appDb = options.db ?? new AppDatabase(options.dbPath, { existingLegacyAudit: true, readonly: !options.repairSafeMetadata });
   const workspaceFor = (id: string) => currentTaskWorkspace(appDb, workspace, id);
   const mode: TaskIsolationAuditReport["mode"] = options.repairSafeMetadata
     ? "repair-safe-metadata"
@@ -447,7 +447,7 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       dbBackupPath = `${options.dbPath}.audit-backup-${stamp}`;
       mkdirSync(dirname(dbBackupPath), { recursive: true });
-      copyFileSync(options.dbPath, dbBackupPath);
+      appDb.connection.prepare("VACUUM INTO ?").run(dbBackupPath);
 
       const repairable = taskFindings.filter(
         (f) =>

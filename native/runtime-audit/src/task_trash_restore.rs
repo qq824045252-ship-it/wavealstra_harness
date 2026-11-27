@@ -11,7 +11,17 @@ pub struct Restore {
     expected_trashed_at: Option<f64>,
     expected_trash_path: Option<String>,
     cwd: Option<String>,
+    gateway: Option<Gateway>,
     at: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Gateway {
+    channel: String,
+    version: String,
+    destination: String,
+    move_from: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -32,19 +42,28 @@ pub fn restore(db: &mut Connection, request: Restore) -> Reply {
 
 fn apply(db: &mut Connection, request: Restore) -> Result<()> {
     let id = &request.task_id;
-    if id.trim().is_empty()
-        || id == crate::DOTS_TASK_ID
-        || id.strip_prefix("gateway-chat-").is_some_and(|suffix| {
-            suffix.len() == 64
-                && suffix
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        })
-    {
-        return Err("任务不支持普通回收恢复".into());
+    let gateway_id = id.strip_prefix("gateway-chat-").is_some_and(|suffix| {
+        suffix.len() == 64 && suffix.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    });
+    if id.trim().is_empty() || id == crate::DOTS_TASK_ID || gateway_id != request.gateway.is_some() {
+        return Err("任务恢复类型错误".into());
     }
-
     let tx = db.transaction()?;
+    if let Some(gateway) = &request.gateway {
+        let owned: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks t JOIN gateway_sidebar_conversations g ON g.task_id=t.id
+             WHERE t.id=? AND t.space_id=? AND g.channel_id=?)",
+            params![id, format!("sp-gw-{}", gateway.channel), gateway.channel], |r| r.get(0))?;
+        if !owned || !crate::task_workspace_authority::matches_version(&tx, id, &gateway.version)? {
+            return Err("渠道任务归属或工作目录绑定已变化".into());
+        }
+        if let Some(from) = &gateway.move_from {
+            tx.execute("INSERT INTO durable_bot_workspace_moves(task_id,from_cwd,to_cwd) VALUES (?,?,?)",
+                params![id, from, gateway.destination])?;
+        } else {
+            tx.execute("UPDATE tasks SET cwd=? WHERE id=?", params![gateway.destination, id])?;
+        }
+    }
     let restored = tx.execute(
         "UPDATE task_execution_workspace_state SET directory_name=?2,state='active',updated_at=?6,
              trashed_at=NULL,purge_after=NULL,trash_path=NULL

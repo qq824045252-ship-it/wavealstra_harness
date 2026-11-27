@@ -110,8 +110,8 @@ export function resolveTaskWorkspaceCwd(db: AppDatabase, workspace: TaskExecutio
   return cwd;
 }
 
-function verifySpaceChain(authority: TaskWorkspaceAuthority): void {
-  if (authority.archived || authority.trashed) throw new Error("任务已归档或在回收站中，请先恢复任务");
+function verifySpaceChain(authority: TaskWorkspaceAuthority, allowInactiveTask = false): void {
+  if (!allowInactiveTask && (authority.archived || authority.trashed)) throw new Error("任务已归档或在回收站中，请先恢复任务");
   const seen = new Set<string>();
   let cursor = authority.spaceId;
   for (const space of authority.spaceChain) {
@@ -166,6 +166,20 @@ function coreGatewayOwner(ordinary: TaskExecutionWorkspace, gateway: Awaited<Ret
     return new TaskExecutionWorkspace(dirname(cwd));
   }
   throw new Error("渠道任务的工作目录不属于该会话");
+}
+
+/** Resolve existing and canonical directories without creating or repairing files. */
+export async function coreGatewayLifecyclePaths(db: AppDatabase, ordinary: TaskExecutionWorkspace, id: string) {
+  const authority = await db.runtimeAuditReader?.readTaskWorkspaceAuthority(id);
+  if (!authority) throw new Error("Core 未确认渠道任务工作目录");
+  verifySpaceChain(authority, true);
+  const gateway = await coreGatewayWorkspace(db, id, authority);
+  const destination = gateway.workspace.resolveTaskExecutionWorkspaceDir(id);
+  const legacy = authority.cwd ? coreGatewayOwner(ordinary, gateway, id, authority.cwd).resolveTaskExecutionWorkspaceDir(id) : destination;
+  if (authority.workspaceMove || (authority.binding && !sameWorkspacePath(authority.binding.cwd, legacy)
+      && !sameWorkspacePath(authority.binding.cwd, destination))) throw new Error("渠道任务已有冲突的工作目录绑定");
+  const moveFrom = authority.binding && !sameWorkspacePath(authority.binding.cwd, destination) ? authority.binding.cwd : undefined;
+  return { legacy, destination, channel: gateway.channel, version: authority.version, moveFrom };
 }
 
 function verifyWorkspaceMove(authority: TaskWorkspaceAuthority, cwd: string): void {

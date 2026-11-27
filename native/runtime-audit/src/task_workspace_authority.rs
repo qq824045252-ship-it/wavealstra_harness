@@ -115,6 +115,12 @@ fn authority(db: &Connection, task_id: &str) -> Result<Option<Authority>> {
     Ok(Some(task))
 }
 
+pub fn matches_version(db: &Connection, task_id: &str, expected: &str) -> Result<bool> {
+    let Some(current) = authority(db, task_id)? else { return Ok(false); };
+    Ok(current.complete_chain && !current.space_chain.iter().any(|space| space.archived)
+        && current.version(task_id)? == expected)
+}
+
 pub fn read(db: &Connection, task_id: &str) -> Result<Value> {
     let snapshot = db.unchecked_transaction()?;
     authority(&snapshot, task_id)?.map_or(Ok(Value::Null), |state| state.view(task_id))

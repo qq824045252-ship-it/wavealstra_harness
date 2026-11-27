@@ -157,12 +157,16 @@ export class ProjectEventIngestor {
       createdAt: this.now(),
     };
     this.projects.insertProjectEvent(event);
+    this.notifyIngested(projectId,event);
+    return event;
+  }
+
+  notifyIngested(projectId: string,event: ProjectEventDto): void {
     try {
       this.opts.onIngested?.(projectId, event);
     } catch (err) {
       console.warn(`[ProjectEventIngestor] onIngested 失败 ${projectId}：`, err);
     }
-    return event;
   }
 
   /**
@@ -172,6 +176,20 @@ export class ProjectEventIngestor {
    * 归档项目拒绝追加（归档 = 服务层只读）；不触发 promotion，不写任何业务真源。
    */
   ingestDocument(projectId: string, input: { title: string; body: string; ref?: string }): ProjectEventDto {
+    return this.ingest(projectId, this.documentInput(input));
+  }
+
+  async ingestDocumentAsync(projectId: string, input: {title: string; body: string; ref?: string}): Promise<ProjectEventDto> {
+    const document = this.documentInput(input);
+    const event = await this.projects.writeDocumentEvent({
+      projectId, ...document, eventId: `pevt_${randomUUID()}`, createdAt: this.now(),
+    });
+    if (!event) return this.ingest(projectId, document);
+    if (event.created) this.notifyIngested(projectId,event.value);
+    return event.value;
+  }
+
+  private documentInput(input: {title: string; body: string; ref?: string}) {
     const title = input.title?.trim() ?? "";
     const body = input.body?.trim() ?? "";
     if (!title) throw new Error("文档标题不能为空");
@@ -179,7 +197,10 @@ export class ProjectEventIngestor {
     const ref =
       input.ref?.trim() ||
       createHash("sha256").update(title).update("\0").update(body).digest("hex");
-    return this.ingest(projectId, { source: "document", kind: "note", title, body, ref });
+    if (title.length > PROJECT_EVENT_TITLE_MAX_CHARS) throw new Error(`事件标题不能超过 ${PROJECT_EVENT_TITLE_MAX_CHARS} 字符`);
+    if (body.length > PROJECT_EVENT_BODY_MAX_CHARS) throw new Error(`事件正文不能超过 ${PROJECT_EVENT_BODY_MAX_CHARS} 字符`);
+    if (ref.length > PROJECT_EVENT_REF_MAX_CHARS) throw new Error(`事件来源引用不能超过 ${PROJECT_EVENT_REF_MAX_CHARS} 字符`);
+    return { source: "document", kind: "note", title, body, ref } as const;
   }
 
   /** 事件列表（created_at DESC；limit 有界） */

@@ -17,7 +17,7 @@ export interface ArtifactFolderChange {
 }
 
 /** Read-only plan, rebuilt at commit. Managed storage remains owned by ArtifactStorage. */
-export function inspectArtifactFolderRelocation(repository: ArtifactRepository, oldRoot: string, newRoot: string, taskIds: ReadonlySet<string>): ArtifactFolderChange[] {
+export function inspectArtifactFolderRelocation(repository: Pick<ArtifactRepository, "listAll" | "listFileDependencies">, oldRoot: string, newRoot: string, taskIds: ReadonlySet<string>): ArtifactFolderChange[] {
   const map = (path: string) => within(oldRoot, path) ? resolve(newRoot, relative(oldRoot, path)) : path;
   const changes: ArtifactFolderChange[] = [];
   const evidenceCache = new Map<string, ArtifactFolderChange["evidence"][number]>();

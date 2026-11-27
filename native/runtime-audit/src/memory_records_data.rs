@@ -36,6 +36,7 @@ pub enum Query {
     ForgetSource {
         id: String,
     },
+    DotsRevisionSource { id: String, revision: Option<i64>, now: i64 },
     ScopeMutationSupport,
     CandidateList {
         status: Option<String>,
@@ -119,6 +120,7 @@ pub fn read(db: &Connection, query: Query) -> Result<Json> {
                 None => Json::Null,
             })
         }
+        Query::DotsRevisionSource { id, revision, now } => dots_revision_source(db, &id, revision, now),
         Query::Stats => read_stats(db),
         Query::History { id } => read_history(db, &id),
         Query::ForgetSource { id } => crate::memory_record_write::forget::snapshot(db, &id),
@@ -411,4 +413,65 @@ fn read_stats(db: &Connection) -> Result<Json> {
             "readySkillRevisionCandidates": ready_skill_revision_candidates,
         }
     }))
+}
+
+// Only return evidence attached to the requested revision of a currently visible Dots record.
+// Direct tool saves retain the verified message excerpt. Extracted memories must point back
+// to the original user turn, including its private admission for channel-origin turns.
+fn dots_revision_source(db: &Connection, id: &str, revision: Option<i64>, now: i64) -> Result<Json> {
+    let empty = json!({"kind":"dotsRevisionSource","source":null});
+    let mut stmt = db.prepare("WITH rev AS (
+        SELECT r.*,try_cast(substr(r.change_reason,16) AS JSON) AS ptr FROM memory_revisions r
+        WHERE r.memory_id=?1 AND r.revision=coalesce(?2,(SELECT max(revision) FROM memory_revisions WHERE memory_id=?1))
+          AND starts_with(r.change_reason,'dots-source-v1 ')
+    ) SELECT r.revision,r.change_reason,e.excerpt,t.user_text,t.captured_at,t.task_id
+      FROM rev r JOIN memory_records m ON m.id=r.memory_id
+      JOIN memory_evidence e ON e.memory_id=m.id
+      LEFT JOIN memory_turns t ON t.id=json_extract_string(r.ptr,'$.turnId')
+      WHERE m.status<>'invalid' AND (m.valid_from IS NULL OR m.valid_from<=?3)
+        AND (m.valid_until IS NULL OR m.valid_until>?3) AND r.status<>'invalid'
+        AND NOT starts_with(m.id,'mem_weekly_')
+        AND EXISTS (SELECT 1 FROM memory_scopes s WHERE s.memory_id=m.id AND
+           ((s.scope_type='task' AND s.scope_id='mybuddy-dots') OR s.scope_type='global'))
+        AND ((json_extract_string(r.ptr,'$.turnId') IS NULL AND m.source_task_id='mybuddy-dots'
+              AND e.evidence_kind='message' AND e.ref_id=json_extract_string(r.ptr,'$.messageId'))
+          OR (e.evidence_kind='conversation' AND e.ref_id=t.id AND t.user_message_id=json_extract_string(r.ptr,'$.messageId')
+              AND (t.task_id='mybuddy-dots' AND m.source_task_id='mybuddy-dots'
+                OR (m.source_task_id=t.task_id AND m.kind IN ('identity','preference','constraint')
+                  AND json_extract_string(m.metadata_json,'$.dotsPrivateGateway')='true'
+                  AND NOT EXISTS (SELECT 1 FROM memory_scopes s WHERE s.memory_id=m.id AND
+                    (s.scope_type<>'task' OR s.scope_id IS DISTINCT FROM 'mybuddy-dots'))
+                  AND json_extract_string(t.metadata_json,'$.gatewayOrigin.audience')='private'
+                  AND EXISTS (SELECT 1 FROM gateway_dots_tasks g JOIN gateway_dots_admissions a ON a.binding_id=g.binding_id
+                    WHERE g.task_id=t.task_id AND g.binding_id=json_extract_string(t.metadata_json,'$.gatewayOrigin.personalMemoryBindingId')
+                      AND a.channel_id IN ('qq-default','weixin-default','feishu-default')
+                      AND a.channel_id=json_extract_string(t.metadata_json,'$.gatewayOrigin.channelId')
+                      AND a.connection_key=json_extract_string(t.metadata_json,'$.gatewayOrigin.connectionKey')
+                      AND a.chat_id=json_extract_string(t.metadata_json,'$.gatewayOrigin.chatId')
+                      AND a.message_id=json_extract_string(t.metadata_json,'$.gatewayOrigin.messageId'))))))
+        ORDER BY e.created_at DESC,e.id LIMIT 1")?;
+    let mut rows=stmt.query(duckdb::params![id,revision,now])?;
+    let Some(row)=rows.next()? else { return Ok(empty); };
+    let revision:i64=row.get(0)?;
+    let reason:String=row.get(1)?;
+    let excerpt:Option<String>=row.get(2)?;
+    let user_text:Option<String>=row.get(3)?;
+    let turn_at:Option<i64>=row.get(4)?;
+    let task:Option<String>=row.get(5)?;
+    let Some(pointer)=reason.strip_prefix("dots-source-v1 ").and_then(|s| serde_json::from_str::<Json>(s).ok()) else {return Ok(empty)};
+    let (Some(at),Some(message))=(pointer["capturedAt"].as_i64(),pointer["messageId"].as_str()) else {return Ok(empty)};
+    if turn_at.is_some_and(|time| time!=at) {return Ok(empty);}
+    // Compare durable message order on an equal timestamp, exactly as fixture sourceFilter does.
+    let predicate="(scope_type='global' AND scope_id='' OR scope_type='task' AND scope_id IN ('mybuddy-dots',?1))
+        AND (cutoff_at>?2 OR cutoff_at=?2 AND (allowed_message_id IS NULL OR allowed_message_id=?3 OR
+          ((SELECT ordinal FROM bot_messages WHERE message_id=?3) >
+           (SELECT ordinal FROM bot_messages WHERE message_id=allowed_message_id)) IS NOT TRUE))";
+    let args=duckdb::params![task.as_deref().unwrap_or("mybuddy-dots"),at,message];
+    let coarse:bool=db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM memory_forget_watermarks WHERE {predicate})"),args,|r|r.get(0))?;
+    if coarse {return Ok(empty);}
+    let mut stmt=db.prepare(&format!("SELECT fingerprint,text_length,value_fingerprint,guard_fingerprint,guard_length FROM memory_forget_targets WHERE {predicate}"))?;
+    let targets=stmt.query_map(args,|r| Ok(json!({"fingerprint":r.get::<_,String>(0)?,"text_length":r.get::<_,i64>(1)?,
+        "value_fingerprint":r.get::<_,Option<String>>(2)?,"guard_fingerprint":r.get::<_,Option<String>>(3)?,
+        "guard_length":r.get::<_,Option<i64>>(4)?})))?.collect::<duckdb::Result<Vec<_>>>()?;
+    Ok(json!({"kind":"dotsRevisionSource","source":{"revision":revision,"reason":reason,"excerpt":excerpt,"userText":user_text,"targets":targets}}))
 }

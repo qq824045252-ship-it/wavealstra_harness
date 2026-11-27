@@ -267,6 +267,13 @@ fn apply(db: &Connection, mutation: Mutation) -> duckdb::Result<Status> {
             {
                 return Ok(Status::Missing);
             }
+            if archived {
+                db.execute(
+                    "UPDATE cron_jobs SET enabled=0, updated_at=GREATEST(updated_at+1, ?2)
+                     WHERE project_id=?1 AND enabled<>0",
+                    params![id, updated_at],
+                )?;
+            }
         }
         Mutation::SaveResource {
             resource,

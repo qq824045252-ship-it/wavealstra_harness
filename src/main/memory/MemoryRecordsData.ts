@@ -8,7 +8,7 @@ import type {
   MemoryScopeDto,
   MemorySkillCandidateDto,
 } from "../../shared/memory-kernel";
-import type { MemoryWithdrawalSource } from "./MemoryForgetWatermarks";
+import type { MemoryWithdrawalSource, WithdrawalFingerprint } from "./MemoryForgetWatermarks";
 
 type MemoryListQuery = {
   kind: "list";
@@ -23,6 +23,7 @@ type MemoryListQuery = {
 
 export type RuntimeMemoryRecordsQuery =
   | MemoryListQuery
+  | { kind: "dotsRevisionSource"; id: string; revision?: number; now: number }
   | { kind: "detail"; id: string }
   | { kind: "forTurn"; turnId: string }
   | { kind: "history"; id: string }
@@ -58,6 +59,7 @@ export type WireMemoryRecord = Omit<MemoryRecordDto,
 export type RuntimeMemoryRecordsData =
   | { kind: "list" | "forTurn"; records: WireMemoryRecord[] }
   | { kind: "history"; revisions: WireRevision[] }
+  | { kind: "dotsRevisionSource"; source: null | { revision: number; reason: string; excerpt: string | null; userText: string | null; targets: WithdrawalFingerprint[] } }
   | { kind: "detail"; record: WireMemoryRecord | null; revision?: number }
   | { kind: "forgetSource"; record: MemoryWithdrawalSource | null; signature: string }
   | { kind: "scopeMutationSupport" }

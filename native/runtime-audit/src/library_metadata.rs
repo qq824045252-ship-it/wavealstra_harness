@@ -35,8 +35,15 @@ pub enum Query {
         workspace_id: Option<String>,
         item_ids: Option<Vec<String>>,
     },
+    DeepCandidates { ids: Vec<String>, terms: Vec<String>, seen: Vec<String>, limit: usize },
+    DeepFrequencies { ids: Vec<String>, terms: Vec<String> },
+    DeepPassage { ids: Vec<String>, item_id: String, offset: i64, hash: String },
+    SearchKeyword { query: String, ids: Vec<String>, prefix: String },
+    SearchChunks { hits: Vec<(String,String)>, ids: Vec<String>, model: String, version: String, dimension: i64 },
+    OwnedItems { owner: crate::library_backup::Owner, ids: Vec<String>, #[serde(default)] include_trash: bool },
     Trash {
-        space_ids: Vec<String>,
+        #[serde(default)] space_ids: Vec<String>,
+        owner: Option<crate::library_backup::Owner>,
     },
     Versions {
         item_id: String,
@@ -55,6 +62,8 @@ pub enum Query {
         after: Option<String>,
         limit: usize,
     },
+    RestoreReceipt { root: String, operation_id: String },
+    TextReceipt { id: String, operation_id: String },
     NoteWritesSupported,
     NoteRestoresSupported,
     TextSavesSupported,
@@ -86,7 +95,84 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
         Query::TaskScope { task_id, project_id, workspace_id, item_ids } => {
             task_scope(db, task_id.as_deref(), project_id, workspace_id, item_ids)
         }
-        Query::Trash { space_ids } => {
+        Query::DeepCandidates {ids,terms,seen,limit} => {
+            if terms.len() > 16 || seen.len() > 36 || limit > 12 { return Err("Invalid evidence query bounds".into()); }
+            let rows=records(db,"WITH terms AS (SELECT lower(unnest(?2::JSON::VARCHAR[])) AS term),
+                candidates AS (SELECT c.id AS chunkId,c.item_id AS itemId,i.space_id AS spaceId,i.title,c.content AS text,
+                 c.char_offset AS startOffset,c.hash AS chunkHash,
+                 (SELECT count(*) FROM terms WHERE length(term)>=3 AND contains(lower(c.content),term)) AS body_hits,
+                 (SELECT count(*) FROM terms WHERE length(term)>=3 AND (contains(lower(i.title),term) OR contains(lower(i.filename),term))) AS title_hits,
+                 (SELECT count(*) FROM terms WHERE length(term)<3 AND contains(lower(c.content),term)) AS short_hits,c.chunk_index
+                 FROM library_chunks c JOIN library_items i ON c.item_id=i.id WHERE i.trashed_at IS NULL
+                  AND i.id IN (SELECT unnest(?1::JSON::VARCHAR[])) AND c.id NOT IN (SELECT unnest(?3::JSON::VARCHAR[]))),
+                ranked AS (SELECT *,CASE WHEN body_hits>0 THEN 0 WHEN title_hits>0 AND chunk_index=0 THEN 1
+                  WHEN short_hits>0 THEN 2 ELSE 3 END AS tier FROM candidates)
+                SELECT chunkId,itemId,spaceId,title,text,startOffset,chunkHash FROM ranked
+                WHERE tier < 3 AND tier=(SELECT min(tier) FROM ranked)
+                ORDER BY body_hits DESC,title_hits DESC,short_hits DESC,chunkId LIMIT ?4",
+                params![serde_json::to_string(&ids)?,serde_json::to_string(&terms)?,serde_json::to_string(&seen)?,limit as i64])?;
+            Ok(json!(rows))
+        }
+        Query::DeepFrequencies {ids,terms} => {
+            if terms.len()>24 {return Err("Too many evidence expansion terms".into());}
+            let rows=records(db,"WITH terms AS (SELECT unnest(?2::JSON::VARCHAR[]) AS term),
+                chunks AS (SELECT c.id,lower(c.content) AS body FROM library_chunks c JOIN library_items i ON i.id=c.item_id
+                   WHERE i.trashed_at IS NULL AND i.id IN (SELECT unnest(?1::JSON::VARCHAR[])))
+                SELECT term,least(64,count(chunks.id)) AS hits FROM terms LEFT JOIN chunks ON contains(chunks.body,term)
+                GROUP BY term",params![serde_json::to_string(&ids)?,serde_json::to_string(&terms)?])?;
+            Ok(json!(rows))
+        }
+        Query::DeepPassage { ids,item_id,offset,hash } => {
+            let rows=records(db,"SELECT c.id AS chunkId,i.id AS itemId,i.space_id AS spaceId,i.title,c.content AS text,
+                c.char_offset AS startOffset,c.hash AS chunkHash FROM library_chunks c JOIN library_items i ON i.id=c.item_id
+                WHERE i.id=?1 AND i.trashed_at IS NULL AND c.char_offset=?2 AND c.hash=?3
+                AND i.id IN (SELECT unnest(?4::JSON::VARCHAR[])) LIMIT 1",
+                params![item_id,offset,hash,serde_json::to_string(&ids)?])?;
+            Ok(rows.into_iter().next().unwrap_or(Value::Null))
+        }
+        Query::SearchKeyword { query, ids, prefix } => {
+            let rows = records(db, "WITH items AS (SELECT i.id,i.title,i.filename,i.updated_at,
+                lower(coalesce(d.body,'')) AS body,d.doc_key FROM library_items i
+                LEFT JOIN search_documents d ON d.doc_key='library:'||i.id
+                WHERE i.trashed_at IS NULL AND i.kind<>'url' AND i.id IN (SELECT unnest(?1::JSON::VARCHAR[]))),
+                matched AS (SELECT *,CASE WHEN lower(title)=lower(?2) THEN 0
+                    WHEN starts_with(lower(title),lower(?2)) THEN 1
+                    WHEN contains(lower(title),lower(?2)) OR contains(lower(filename),lower(?2)) OR contains(body,lower(?2))
+                      OR EXISTS(SELECT 1 FROM library_chunks c WHERE c.item_id=items.id AND contains(lower(c.content),lower(?2))) THEN 2
+                    WHEN doc_key IS NULL OR (?3<>'' AND EXISTS(SELECT 1 FROM library_chunks c WHERE c.item_id=items.id AND contains(lower(c.content),lower(?3)))) THEN 3
+                    ELSE 4 END AS rank FROM items)
+                SELECT id,rank FROM matched WHERE rank<4 ORDER BY rank,
+                    CASE WHEN rank=2 AND length(?2)>2 THEN
+                      (length(body)-length(replace(body,lower(?2),''))) /
+                      (1 + 0.75 * length(body) / greatest(1,avg(length(body)) OVER ())) ELSE 0 END DESC,
+                    updated_at DESC,id",
+                params![serde_json::to_string(&ids)?,query,prefix])?;
+            Ok(json!(rows))
+        }
+        Query::SearchChunks { hits, ids, model, version, dimension } => {
+            let mut out=Vec::new();
+            let allowed=serde_json::to_string(&ids)?;
+            for (id,hash) in hits.into_iter().take(50) {
+                out.extend(records(db,"SELECT c.id AS chunk_id,c.item_id,c.chunk_index,c.char_offset,left(c.content,160) AS content
+                    FROM library_chunks c JOIN library_items i ON i.id=c.item_id JOIN library_chunk_embeddings e ON e.chunk_id=c.id
+                    WHERE c.id=? AND c.hash=? AND e.chunk_hash=c.hash AND i.trashed_at IS NULL AND e.model_id=?
+                    AND e.model_version=? AND e.dimension=? AND octet_length(e.embedding)=? AND i.id IN (SELECT unnest(?::JSON::VARCHAR[]))",
+                    params![id,hash,model,version,dimension,dimension*4,allowed])?);
+            }
+            Ok(json!(out))
+        }
+        Query::OwnedItems { owner, ids, include_trash } => {
+            if ids.is_empty() { return Ok(json!([])); }
+            let spaces = crate::library_backup::spaces(db, &owner)?;
+            if spaces.is_empty() { return Ok(json!([])); }
+            let slots = crate::database::anon_placeholders(ids.len());
+            let scope = crate::database::anon_placeholders(spaces.len());
+            let trash = if include_trash { "" } else { "AND trashed_at IS NULL" };
+            Ok(json!(records(db, &format!("SELECT {ITEMS} FROM library_items WHERE id IN ({slots}) AND space_id IN ({scope}) {trash}"),
+                duckdb::params_from_iter(ids.iter().chain(spaces.iter())))?))
+        }
+        Query::Trash { space_ids, owner } => {
+            let space_ids = match owner { Some(owner) => crate::library_backup::spaces(db, &owner)?, None => space_ids };
             if space_ids.is_empty() {
                 return Ok(Value::Array(Vec::new()));
             }
@@ -134,6 +220,12 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
             root,
             max_chars,
         } => read_text_body(db, &item_id, &root, max_chars),
+        Query::RestoreReceipt { root, operation_id } => {
+            let receipt: Option<String> = db.query_row("SELECT result_json FROM library_restore_receipts WHERE root=? AND operation_id=?",
+                params![root, operation_id], |row| row.get(0)).optional()?;
+            Ok(match receipt { Some(value) => serde_json::from_str(&value)?, None => Value::Null })
+        }
+        Query::TextReceipt { id, operation_id } => Ok(json!(db.query_row("SELECT EXISTS(SELECT 1 FROM library_text_saves WHERE item_id=? AND operation_id=? AND committed=1)", params![id,operation_id], |row| row.get::<_,bool>(0))?)),
         Query::NoteWritesSupported
         | Query::NoteRestoresSupported
         | Query::TextSavesSupported
@@ -169,7 +261,7 @@ fn index_candidates(
     )?.into())
 }
 
-fn task_scope(
+pub(crate) fn task_scope(
     db: &Connection,
     task_id: Option<&str>,
     project_id: Option<String>,
@@ -390,7 +482,7 @@ fn read_text_body(
 fn read_version_body(db: &Connection, item_id: &str, version: i64) -> Result<Value> {
     let row = db
         .prepare(
-            "SELECT v.id, v.content_hash, CASE WHEN length(v.snapshot)<=?3 THEN v.snapshot END
+            "SELECT v.id, v.content_hash, CASE WHEN octet_length(v.snapshot)<=?3 THEN v.snapshot END
          FROM library_items i LEFT JOIN library_versions v ON v.item_id=i.id AND v.version=?2
          WHERE i.id=?1 AND i.trashed_at IS NULL",
         )?

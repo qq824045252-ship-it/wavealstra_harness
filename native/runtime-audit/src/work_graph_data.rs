@@ -14,7 +14,18 @@ enum Direction {
 }
 
 #[derive(Deserialize)]
-pub struct Query {
+#[serde(untagged)]
+pub enum Query {
+    Count { count: Counter },
+    Edges(EdgeQuery),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Counter { Edges, Tasks }
+
+#[derive(Deserialize)]
+pub struct EdgeQuery {
     direction: Direction,
     #[serde(rename = "type")]
     node_type: String,
@@ -57,7 +68,20 @@ fn edge_from_row(row: &Row) -> duckdb::Result<Edge> {
     })
 }
 
-pub fn read(db: &Connection, query: Query) -> Result<Vec<Edge>> {
+pub fn read(db: &Connection, query: Query) -> Result<Value> {
+    match query {
+        Query::Edges(query) => Ok(serde_json::to_value(read_edges(db,query)?)?),
+        Query::Count { count } => {
+            let sql = match count {
+                Counter::Edges => "SELECT count(*) FROM work_graph_edges",
+                Counter::Tasks => "SELECT count(*) FROM tasks WHERE id <> 'mybuddy-dots'",
+            };
+            Ok(json!(db.query_row(sql, [], |r| r.get::<_, i64>(0))?))
+        }
+    }
+}
+
+fn read_edges(db: &Connection, query: EdgeQuery) -> Result<Vec<Edge>> {
     let condition = match query.direction {
         Direction::Outgoing => "from_type=?1 AND from_id=?2",
         Direction::Incoming => "to_type=?1 AND to_id=?2",

@@ -251,6 +251,22 @@ fn lock_guard(path: &Path, label: &str) -> Result<File, String> {
     Ok(guard)
 }
 
+// A predecessor can still be unwinding after its parent's pipe closes. Hold the
+// owner lock and allow it the same grace period as the child handoff.
+fn lock_worker_after_handoff(directory: &Path) -> Result<File, String> {
+    let guard = open_guard(&directory.join(WORKER_LOCK))?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match guard.try_lock() {
+            Ok(()) => return Ok(guard),
+            Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(format!("previous core worker still running or worker lock unavailable: {error}")),
+        }
+    }
+}
+
 fn write_private(path: &Path, content: &str) -> Result<(), String> {
     let mut options = private_options();
     options.truncate(true);
@@ -290,10 +306,7 @@ impl Lease {
             "core already running or owner lock unavailable",
         )?;
         // No metadata may change until both the old parent and its old worker are gone.
-        let worker_handoff = lock_guard(
-            &directory.join(WORKER_LOCK),
-            "previous core worker still running or worker lock unavailable",
-        )?;
+        let worker_handoff = lock_worker_after_handoff(&directory)?;
         let nonce = random_token();
         let record = LeaseRecord {
             pid: std::process::id(),
@@ -403,17 +416,7 @@ impl WorkerLease {
     }
 
     fn acquire(directory: &Path, db_path: &Path, generation: &str) -> Result<Self, String> {
-        let guard = open_guard(&directory.join(WORKER_LOCK))?;
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            match guard.try_lock() {
-                Ok(()) => break,
-                Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
-                    thread::sleep(Duration::from_millis(10))
-                }
-                Err(error) => return Err(format!("worker ownership unavailable: {error}")),
-            }
-        }
+        let guard = lock_worker_after_handoff(directory)?;
         let record: LeaseRecord = serde_json::from_str(
             &fs::read_to_string(directory.join(LEASE_FILE)).map_err(|error| error.to_string())?,
         )

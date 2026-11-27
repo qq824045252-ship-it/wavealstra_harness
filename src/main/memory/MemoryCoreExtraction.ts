@@ -1,3 +1,6 @@
+import { DOTS_TASK_ID } from "../../shared/dots";
+import { isGatewayConversation } from "../../shared/gateway-task";
+import { groundDotsClaim, isDotsSingleUse } from "./DotsRevisionSource";
 import type { AgentSession, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { withModelInvocationSettings } from "../agent/ModelInvocationAdmission";
 import { botMemoryConversationOnly, botMemoryTextEligible, botMemoryWriteEvidenceAllowed } from "./BotMemorySource";
@@ -96,6 +99,16 @@ function planCandidates(candidates: readonly ExtractedCandidate[], basis: CoreMe
     const evidence = findEvidence(candidate, sources);
     const source = evidence && sources.find(item => item.id === evidence.turnId);
     const local = candidate.retention === "temporary" || (source && botMemoryConversationOnly(source.original));
+    if (task.scopeId === DOTS_TASK_ID) {
+      if (!source || !evidence || local || !["identity","preference","constraint"].includes(candidate.kind)
+        || candidate.operationHint !== "create" || isDotsSingleUse(evidence.quote,source.original)
+        || (candidate.applicability && candidate.applicability.kind !== "general")) return [];
+      const grounded = groundDotsClaim(candidate, {messageId:source.id,text:source.original,createdAt:source.capturedAt},
+        evidence.quote,{declaration:candidate.applicability});
+      if (!grounded || grounded.stance !== "statement" || grounded.applicability || grounded.quote !== evidence.quote) return [];
+      return [{...task, kind:candidate.kind, title:evidence.quote.slice(0,240), content:evidence.quote, confidence:candidate.confidence,
+        importance:candidate.importance, explicit:candidate.explicit, operationHint:"create",evidence,action:{kind:"create" as const}}];
+    }
     const scope = local ? task : candidate.scopeType === "global" ? findScope("global")
       : candidate.scopeType === "workspace" || candidate.scopeType === "project" ? bound : task;
     if (!scope) throw new CoreMemoryExtractionUnavailable("Core 未授权候选记忆的全局范围");
@@ -129,7 +142,7 @@ export async function extractCoreMemoryPlan(input: CoreMemoryExtractionInput): P
     await input.assertCurrent();
     checkEnabled();
   };
-  const task = basis.scopes.find(scope => scope.scopeType === "task" && scope.scopeId === taskId);
+  const task = basis.scopes.find(scope => scope.scopeType === "task" && scope.scopeId === (isGatewayConversation(taskId) ? DOTS_TASK_ID : taskId));
   if (!task || !basis.basisStamp || (!basis.turns.length && !(basis.withheldSourceCount > 0))
       || basis.turns.some(turn => turn.taskId !== taskId)) {
     throw new CoreMemoryExtractionUnavailable("Core 未返回当前任务的提炼来源或授权范围");

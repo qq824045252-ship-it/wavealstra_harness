@@ -166,7 +166,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
     if (requested?.trim() && requested.trim() !== bridge.taskId) {
       throw new LibraryToolError("只能修改当前任务的资料引用，不能指定其他任务");
     }
-    if (!taskScope().defaultOwner) throw new LibraryToolError("当前任务没有可写的长期资料归属；独立任务不提供资料引用修改");
+    if (!service.importsThroughCore && !taskScope().defaultOwner) throw new LibraryToolError("当前任务没有可写的长期资料归属；独立任务不提供资料引用修改");
     return bridge.taskId;
   };
 
@@ -263,7 +263,8 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
         }, { additionalProperties: false }),
         execute: async (_toolCallId, params, signal) => {
           try {
-            const result = await service.deepSearchInTaskScope(params.query, params.limit, taskScope, resolveJudge, signal);
+            const result = await service.deepSearchInTaskScope(params.query, params.limit, taskScope, resolveJudge, signal,
+              () => bridge.taskId ? {taskId:bridge.taskId} : {projectId:projectFallback() ?? undefined});
             return textResult(JSON.stringify(result), result);
           } catch (error) {
             return errorResult(error);
@@ -322,9 +323,8 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       execute: async (_toolCallId: string, params: { id: string; taskId?: string }) => {
         try {
           const taskId = targetTaskId(params.taskId);
-          guardWritable();
-          assertItemVisible(params.id);
-          const ref = service.attachToTask({ itemId: params.id, taskId });
+          if (!service.importsThroughCore) { guardWritable(); assertItemVisible(params.id); }
+          const ref = await service.attachToTaskAsync({ itemId: params.id, taskId }, true);
           return textResult(`已把资料（id=${params.id}）附加到任务 ${taskId}。`, { ref });
         } catch (error) {
           return errorResult(error);
@@ -341,9 +341,8 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       execute: async (_toolCallId: string, params: { id: string; taskId?: string }) => {
         try {
           const taskId = targetTaskId(params.taskId);
-          guardWritable();
-          assertItemVisible(params.id);
-          service.detachFromTask({ itemId: params.id, taskId });
+          if (!service.importsThroughCore) { guardWritable(); assertItemVisible(params.id); }
+          await service.detachFromTaskAsync({ itemId: params.id, taskId }, true);
           return textResult(`已从任务 ${taskId} 移除资料引用（id=${params.id}）。`);
         } catch (error) {
           return errorResult(error);
@@ -472,6 +471,10 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
         params: { artifactId: string; spaceId?: string; collectionId?: string },
       ) => {
         try {
+          if (service.importsThroughCore) {
+            const item = await service.saveTaskArtifact(params, bridge.taskId, bridge.taskId ? undefined : projectFallback());
+            return textResult(`已保存产物到资料库：\n${itemSummary(item)}`, {item});
+          }
           const spaceId = params.spaceId?.trim() || defaultSpaceId();
           guardWritableForSpace(spaceId);
           if (params.collectionId) {

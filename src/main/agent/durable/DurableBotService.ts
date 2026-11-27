@@ -269,11 +269,12 @@ export class DurableBotService {
   /** Called only within a Gateway trash restore transaction. Native cwd stays authoritative until migration commits. */
   prepareGatewayTrashRestore(taskId: string, legacy: string, destination: string): void {
     const { db } = this.options;
-    if (!isGatewayConversation(taskId) || db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed"
+    if (!isGatewayConversation(taskId) || (!db.coreIdentity && db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed")
       || this.opened.has(taskId) || this.opening.has(taskId) || this.rebinding.has(taskId)
       || this.invalidations.has(taskId) || this.admissions.get(taskId)?.size) {
       throw new Error("渠道任务未处于可安全恢复的状态");
     }
+    if (db.coreIdentity) return; // Core checks the persistent state and binding in the restore transaction.
     const binding = this.binding(taskId);
     const pending = this.workspaceMoves.read(taskId);
     if (pending || (binding && !sameWorkspacePath(binding.cwd, legacy) && !sameWorkspacePath(binding.cwd, destination))) {

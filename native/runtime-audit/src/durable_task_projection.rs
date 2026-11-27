@@ -10,6 +10,8 @@ use serde_json::{Value, json};
     rename_all_fields = "camelCase"
 )]
 pub enum Query {
+    WorkspaceState { task_id: String },
+    ActiveBindingPaths { excluding: String },
     Binding { task_id: String },
     ResumePage { after: Option<String> },
     OpenState { task_id: String },
@@ -27,6 +29,22 @@ pub enum Query {
 
 pub fn read(db: &Connection, query: Query) -> crate::Result<Value> {
     match query {
+        Query::WorkspaceState { task_id } => Ok(db.query_row(
+            "SELECT directory_name,state,created_at,updated_at,trashed_at,purge_after,trash_path
+             FROM task_execution_workspace_state WHERE task_id=?1", [&task_id], |row| Ok(json!({
+                "taskId": task_id, "directoryName": row.get::<_,String>(0)?, "state": row.get::<_,String>(1)?,
+                "createdAt": row.get::<_,i64>(2)?, "updatedAt": row.get::<_,i64>(3)?,
+                "trashedAt": row.get::<_,Option<i64>>(4)?, "purgeAfter": row.get::<_,Option<i64>>(5)?,
+                "trashPath": row.get::<_,Option<String>>(6)?,
+             })),
+        ).optional()?.unwrap_or(Value::Null)),
+        Query::ActiveBindingPaths { excluding } => {
+            let mut statement = db.prepare("SELECT DISTINCT b.cwd FROM durable_bot_bindings b
+                JOIN tasks t ON t.id=b.task_id LEFT JOIN task_execution_workspace_state s ON s.task_id=t.id
+                WHERE b.task_id<>? AND coalesce(s.state,'active')<>'trashed'")?;
+            Ok(json!(statement.query_map([excluding], |row| row.get::<_,String>(0))?
+                .collect::<duckdb::Result<Vec<_>>>()?))
+        }
         Query::Binding { task_id } => Ok(db.query_row(
             "SELECT b.directory,b.cwd,
                 EXISTS(SELECT 1 FROM task_execution_workspace_state s WHERE s.task_id=b.task_id AND s.state='trashed')

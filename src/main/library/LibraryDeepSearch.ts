@@ -25,12 +25,13 @@ export type LibraryEvidenceJudge = (input: {
   question: string;
   previousEvidence: JudgePassage[];
   candidates: JudgePassage[];
-}, signal: AbortSignal, validateBeforeDispatch: () => void) => Promise<string>;
+}, signal: AbortSignal, validateBeforeDispatch: () => void | Promise<void>) => Promise<string>;
 
+type Awaitable<T> = T | Promise<T>;
 interface EvidenceIndex {
-  candidates(scope: LibraryQueryScope, terms: string[], seen: ReadonlySet<string>, limit: number): LibraryEvidencePassage[];
-  current(scope: LibraryQueryScope, passage: LibraryEvidencePassage): boolean;
-  frequencies(scope: LibraryQueryScope, terms: string[]): Map<string, number>;
+  candidates(scope: LibraryQueryScope, terms: string[], seen: ReadonlySet<string>, limit: number): Awaitable<LibraryEvidencePassage[]>;
+  current(scope: LibraryQueryScope, passage: LibraryEvidencePassage): Awaitable<boolean>;
+  frequencies(scope: LibraryQueryScope, terms: string[]): Awaitable<Map<string, number>>;
 }
 
 const ROUND_LIMIT = 3;
@@ -88,11 +89,11 @@ function parseJudgments(raw: string, passages: LibraryEvidencePassage[]): Judgme
   return passages.map((_passage, id) => judgments.get(id)!);
 }
 
-function expansionTerms(
+async function expansionTerms(
   seeds: Array<Judgment & { passage: LibraryEvidencePassage }>,
   used: ReadonlySet<string>,
-  frequencies: (terms: string[]) => Map<string, number>,
-): string[] {
+  frequencies: (terms: string[]) => Awaitable<Map<string, number>>,
+): Promise<string[]> {
   const priorities = new Map<string, number>();
   for (const { passage, score, terms } of seeds.slice(0, CONTEXT_LIMIT)) {
     const weights = new Map<string, { count: number; bonus: number }>();
@@ -124,7 +125,7 @@ function expansionTerms(
     }
   }
   const shortlist = [...priorities].sort((a, b) => b[1] - a[1]).slice(0, EXPANSION_PROBE_LIMIT);
-  const frequencyByTerm = frequencies(shortlist.map(([term]) => term));
+  const frequencyByTerm = await frequencies(shortlist.map(([term]) => term));
   const maxFrequency = Math.max(1, ...frequencyByTerm.values());
   return shortlist.filter(([term]) => (frequencyByTerm.get(term) ?? 0) > 0)
     .map(([term, weight]) => {
@@ -139,7 +140,7 @@ export async function runLibraryDeepSearch(input: {
   query: string;
   limit?: number;
   signal?: AbortSignal;
-  scope: () => LibraryQueryScope;
+  scope: () => Awaitable<LibraryQueryScope>;
   index: EvidenceIndex;
   resolveJudge: () => Promise<LibraryEvidenceJudge>;
 }): Promise<LibraryDeepSearchResult> {
@@ -158,10 +159,10 @@ export async function runLibraryDeepSearch(input: {
   let terms = initialTerms(question);
   const usedTerms = new Set(terms);
   let rounds = 0;
-  const validate = (scope: LibraryQueryScope) => {
+  const validate = async (scope: LibraryQueryScope) => {
     signal.throwIfAborted();
     for (const passage of seen.values()) {
-      if (!input.index.current(scope, passage)) throw new Error("深搜期间资料范围或索引已变化，请重试");
+      if (!await input.index.current(scope, passage)) throw new Error("深搜期间资料范围或索引已变化，请重试");
     }
   };
   try {
@@ -169,22 +170,22 @@ export async function runLibraryDeepSearch(input: {
     const judge = await input.resolveJudge();
     signal.throwIfAborted();
     for (let round = 1; round <= ROUND_LIMIT && terms.length; round++) {
-      const scope = input.scope();
-      validate(scope);
-      const candidates = input.index.candidates(scope, terms, new Set(seen.keys()), CANDIDATE_LIMIT);
+      const scope = await input.scope();
+      await validate(scope);
+      const candidates = await input.index.candidates(scope, terms, new Set(seen.keys()), CANDIDATE_LIMIT);
       if (candidates.length === 0) break;
       const previousEvidence = evidence.slice(0, CONTEXT_LIMIT).map(({ passage }, id) => ({
         id: -id - 1, title: passage.title, text: passage.text,
       }));
       for (const passage of candidates) seen.set(passage.chunkId, passage);
-      const validateDispatch = () => validate(input.scope());
-      validateDispatch();
+      const validateDispatch = async () => validate(await input.scope());
+      await validateDispatch();
       const raw = await judge({
         question,
         previousEvidence,
         candidates: candidates.map(({ title, text }, id) => ({ id, title, text })),
       }, signal, validateDispatch);
-      validateDispatch();
+      await validateDispatch();
       const judgments = parseJudgments(raw, candidates);
       const selected = candidates.map((passage, i) => ({ passage, ...judgments[i], round }))
         .filter((result) => result.score >= 2)
@@ -193,14 +194,15 @@ export async function runLibraryDeepSearch(input: {
       evidence.sort((a, b) => b.score - a.score);
       rounds = round;
       if (round === ROUND_LIMIT) break;
-      const expansionScope = input.scope();
-      terms = expansionTerms(selected, usedTerms, (proposed) => input.index.frequencies(expansionScope, proposed));
+      const expansionScope = await input.scope();
+      terms = await expansionTerms(selected, usedTerms, (proposed) => input.index.frequencies(expansionScope, proposed));
       for (const term of terms) usedTerms.add(term);
     }
   } catch (error) {
     if (timeout.aborted && !input.signal?.aborted) throw new Error("深搜超时，请缩短问题或稍后重试");
     throw error;
   }
+  await validate(await input.scope());
   const hits: LibraryDeepSearchHit[] = evidence.slice(0, limit).map(({ passage, round, score }) => ({
     itemId: passage.itemId,
     spaceId: passage.spaceId,

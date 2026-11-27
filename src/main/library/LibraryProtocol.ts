@@ -37,7 +37,7 @@ export class LibraryProtocol {
         const revision = url.searchParams.get("rev") ?? "";
         if (!/^\d+$/.test(revision)) return this.text(400, "Bad Request");
         try {
-          const content = this.service.readVersion(itemId, Number(revision));
+          const content = await this.service.readVersionBody(itemId, Number(revision));
           const body = new TextEncoder().encode(content);
           return new Response(request.method === "HEAD" ? null : body, {
             headers: this.headers("text/plain; charset=utf-8", body.byteLength),
@@ -53,7 +53,7 @@ export class LibraryProtocol {
           subPath = decoded;
         }
       }
-      const resolved = this.service.resolvePreview(itemId, subPath);
+      const resolved = await this.service.readPreview(itemId, subPath);
       if (!resolved || !existsSync(resolved.path)) return this.text(404, "Not Found");
       const st = statSync(resolved.path);
       if (!st.isFile()) return this.text(404, "Not Found");

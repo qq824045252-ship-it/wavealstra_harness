@@ -97,6 +97,7 @@ export class EphemeralContextProjection {
   constructor(private readonly options: {
     memory?: MemoryService;
     enabled: () => boolean;
+    privateGatewayInput?: (taskId: string, userId: string) => Promise<boolean>;
     delegatedSources?: (userId: string) => Array<{ id: string; revision: number }>;
     automaticSemanticRecall?: () => boolean;
     dotsMemoryLimits?: () => DotsMemoryLimits;
@@ -224,11 +225,29 @@ export class EphemeralContextProjection {
     });
   }
 
+  private async personalAccess(scope: ProjectionScope, userId?: string) {
+    if (scope.taskId === DOTS_TASK_ID) return true;
+    if (!scope.taskId || !isGatewayConversation(scope.taskId) || !this.options.privateGatewayInput) return false;
+    const latest = userId ?? [...(this.session?.sessionManager.getBranch() ?? [])].reverse()
+      .find(e => e.type === "message" && e.message.role === "user")?.id;
+    return Boolean(latest && await this.options.privateGatewayInput(scope.taskId,latest));
+  }
+
   /** A permanent Dots conversation can cut its provider history at a fresh user input. */
-  requiresFreshDotsHistory(scope: ProjectionScope): boolean {
+  async requiresFreshDotsHistory(scope: ProjectionScope): Promise<boolean> {
     const rows = this.records();
-    if (this.options.memory?.usesCoreRecall) return rows.some(({ record }) => record.additions.some(ref =>
-      ref.sources.length || ref.profileIds.length || ref.scenarioIds.length));
+    if (this.options.memory?.usesCoreRecall) {
+      for (const {record} of rows) for (const ref of record.additions) {
+        if (ref.profileIds.length || ref.scenarioIds.length) return true;
+        if (ref.sources.length && (!await this.personalAccess(scope) || !this.options.enabled()
+          || ref.reference?.renderer !== MEMORY_EVIDENCE_RENDERER)) return true;
+        for (const source of ref.sources) {
+          const snapshot = await this.options.memory.readDotsContextSnapshot(source.id, source.revision);
+          if (!snapshot || !ref.reference || digest(renderMemoryEvidence(snapshot,ref.reference.scopeType)) !== ref.hash) return true;
+        }
+      }
+      return false;
+    }
     const checked = new Set<string>();
     for (const { record } of rows) for (const ref of record.additions) {
       if (ref.reference && ref.reference.renderer !== MEMORY_EVIDENCE_RENDERER && ref.reference.renderer !== DOTS_EVIDENCE_RENDERER) return true;
@@ -284,16 +303,17 @@ export class EphemeralContextProjection {
     }
     if (memory && nativeSources.size) checks.add(async () => {
       const request = { ...scope, includeInherited: true };
-      const authority = await memory.readCoreRecallAuthority(request);
+      const personal = await this.personalAccess(scope);
+      const authority = personal ? undefined : await memory.readCoreRecallAuthority(request);
       const sources = [...nativeSources];
       for (let offset = 0; offset < sources.length; offset += 8) {
         await Promise.all(sources.slice(offset, offset + 8).map(async ([key, source]) => {
-          const snapshot = await memory.readCoreContextSnapshot(source, request, authority);
+          const snapshot = personal ? await memory.readDotsContextSnapshot(source.id, source.revision) : await memory.readCoreContextSnapshot(source, request, authority);
           if (!snapshot) throw new Error(`历史 Memory ${source.id} 已撤销或不可见，请新建任务以移除可能受影响的回复和摘要`);
           verified.set(key, snapshot);
         }));
       }
-      if ((await memory.readCoreRecallAuthority(request)).witness !== authority.witness) throw new Error("验证历史记忆期间任务的可见范围已变化");
+      if (authority && (await memory.readCoreRecallAuthority(request)).witness !== authority.witness) throw new Error("验证历史记忆期间任务的可见范围已变化");
     });
     await Promise.all([...checks].map(async validate => validate()));
     return verified;
@@ -322,12 +342,13 @@ export class EphemeralContextProjection {
     if (!memory || !this.options.enabled()) mode = "disabled";
     else if (input.budgetChars <= 0) mode = "no-budget";
     else if (memory.usesCoreRecall) {
-      // Core's ordinary scope does not authorize Dots or Gateway personal recall.
+      // Personal channels need a fresh Core admission for the current native user entry.
       const hybrid = this.options.automaticSemanticRecall?.() === true;
       mode = hybrid ? (query.trim().length < 4 ? "short-query" : "unavailable") : "off";
-      if (isDots || (scope.taskId && isGatewayConversation(scope.taskId))) mode = "unavailable";
+      const gateway = Boolean(scope.taskId && isGatewayConversation(scope.taskId));
+      if (gateway && !await this.personalAccess(scope, userId)) mode = "unavailable";
       else {
-        resolved = await readCoreMemoryContext(memory, input);
+        resolved = await readCoreMemoryContext(memory, gateway ? {...input,taskId:DOTS_TASK_ID} : input);
         await assertCurrent();
         if (!this.options.enabled()) { mode = "disabled"; resolved = undefined; }
       }

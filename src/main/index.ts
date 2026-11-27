@@ -1939,7 +1939,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     try {
       const project = await cronService.withPlanMaintenance(async () => {
         const saved = await projectService.archiveAsync(id, archived);
-        if (archived) cronService.disableProject(id);
+        if (archived) await cronService.disableProject(id);
         return saved;
       });
       return { ok: true as const, project };
@@ -1959,6 +1959,10 @@ function registerIpc(memoryKernel: MemoryService): void {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   };
+  const libraryAccessResult = async <T,>(fn: () => Promise<T>) => {
+    try { return {ok:true as const, value:await fn()}; }
+    catch (err) { return {ok:false as const, error:err instanceof Error ? err.message : String(err)}; }
+  };
   ipcMain.handle(LibraryIpc.note, async (event, request: LibraryNoteOperation) => {
     const url = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href;
     if (!isMainAppWindowRequest(event, botManagementWindow, url)) return { ok: false, error: "仅 MyBuddy 主界面可用" };
@@ -1970,40 +1974,41 @@ function registerIpc(memoryKernel: MemoryService): void {
     libraryService.readSnapshot(request),
   );
   ipcMain.handle(LibraryIpc.listItems, (_e, req: LibraryListItemsRequest) =>
-    libraryService.listItems(req.spaceId, req.collectionId),
+    libraryService.readItems(req.spaceId, req.collectionId),
   );
-  ipcMain.handle(LibraryIpc.getItem, (_e, id: string) => libraryService.getItem(id));
+  ipcMain.handle(LibraryIpc.getItem, (_e, id: string) => libraryService.readItemAsync(id));
   ipcMain.handle(LibraryIpc.createSpace, (_e, req: LibraryCreateSpaceRequest) =>
-    libraryResult(() => libraryService.createSpace(req)),
+    libraryAccessResult(() => libraryService.createSpaceAsync(req)),
   );
   ipcMain.handle(LibraryIpc.ensureOwnedSpace, (_e, owner: import("../shared/library-ipc").LibraryOwnerScope) =>
-    libraryResult(() => libraryService.ensureOwnedSpace(owner)),
+    libraryAccessResult(() => libraryService.ensureOwnedSpaceAsync(owner)),
   );
   ipcMain.handle(LibraryIpc.renameSpace, (_e, req: LibraryRenameSpaceRequest) =>
-    libraryResult(() => libraryService.renameSpace(req.id, req.name)),
+    libraryAccessResult(() => libraryService.renameSpaceAsync(req.id, req.name)),
   );
   ipcMain.handle(LibraryIpc.deleteSpace, async (_e, id: string) => {
     try { await libraryService.deleteSpaceAsync(id); return { ok: true as const, value: undefined }; }
     catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : String(error) }; }
   });
   ipcMain.handle(LibraryIpc.createCollection, (_e, req: import("../shared/library-ipc").LibraryCreateCollectionRequest) =>
-    libraryResult(() => libraryService.createCollection(req)),
+    libraryAccessResult(() => libraryService.createCollectionAsync(req)),
   );
   ipcMain.handle(LibraryIpc.renameCollection, (_e, req: import("../shared/library-ipc").LibraryRenameCollectionRequest) =>
-    libraryResult(() => libraryService.renameCollection(req)),
+    libraryAccessResult(() => libraryService.renameCollectionAsync(req)),
   );
   ipcMain.handle(LibraryIpc.moveCollection, (_e, req: import("../shared/library-ipc").LibraryMoveCollectionRequest) =>
-    libraryResult(() => libraryService.moveCollection(req)),
+    libraryAccessResult(() => libraryService.moveCollectionAsync(req)),
   );
   ipcMain.handle(LibraryIpc.deleteCollection, async (_e, id: string) => {
     try { await libraryService.deleteCollectionAsync(id); return { ok: true as const, value: undefined }; }
     catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : String(error) }; }
   });
-  ipcMain.handle(LibraryIpc.createItem, (_e, req: LibraryCreateItemRequest) =>
-    libraryResult(() => libraryService.createItem(req)),
-  );
+  ipcMain.handle(LibraryIpc.createItem, async (_e, req: LibraryCreateItemRequest) => {
+    try { return {ok:true, value:await libraryService.createItemAsync(req)}; }
+    catch(error) { return {ok:false,error:error instanceof Error ? error.message : String(error)}; }
+  });
   ipcMain.handle(LibraryIpc.updateItem, (_e, req: LibraryUpdateItemRequest) =>
-    libraryResult(() => libraryService.updateItem(req)),
+    libraryAccessResult(() => libraryService.updateItemAsync(req)),
   );
   ipcMain.handle(LibraryIpc.deleteItem, async (_e, id: string) => {
     try { await libraryService.deleteItemAsync(id); return { ok: true as const, value: undefined }; }
@@ -2042,7 +2047,7 @@ function registerIpc(memoryKernel: MemoryService): void {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
     }
   });
-  ipcMain.handle(LibraryIpc.markVisited, (_e, id: string) => libraryResult(() => libraryService.markVisited(id)));
+  ipcMain.handle(LibraryIpc.markVisited, (_e, id: string) => libraryAccessResult(() => libraryService.visitItem(id)));
   ipcMain.handle(LibraryIpc.search, (_e, req: import("../shared/library-ipc").LibrarySearchRequest) =>
     libraryService.searchAsync(req),
   );
@@ -2052,41 +2057,43 @@ function registerIpc(memoryKernel: MemoryService): void {
       const judge = await agentService.resolveLibraryEvidenceJudge();
       return (input, signal, validate) => judge(input, signal, () => {
         requireMaterialRetrievalWindow(event);
-        validate();
+        return validate();
       });
     });
   });
   ipcMain.handle(LibraryIpc.readScopedEvidence, (event, req: import("../shared/library-ipc").LibraryScopedEvidenceRequest) => {
     requireMaterialRetrievalWindow(event);
-    return libraryService.readOwnedEvidence(req);
+    return libraryService.readScopedEvidence(req);
   });
   ipcMain.handle(LibraryIpc.previewUrl, (_e, id: string) => libraryService.previewUrl(id));
-  ipcMain.handle(LibraryIpc.showInFolder, (_e, id: string) => {
+  ipcMain.handle(LibraryIpc.showInFolder, async (_e, id: string) => {
     try {
-      const path = libraryService.showInFolder(id);
+      const path = await libraryService.readItemLocation(id);
       shell.showItemInFolder(path);
       return { ok: true as const };
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
     }
   });
-  ipcMain.handle(LibraryIpc.createUrl, (_e, req: import("../shared/library-ipc").LibraryCreateUrlRequest) =>
-    libraryResult(() => libraryService.createUrl(req)),
-  );
-  ipcMain.handle(LibraryIpc.saveArtifact, (_e, req: import("../shared/library-ipc").LibrarySaveArtifactRequest) =>
-    libraryResult(() => libraryService.saveArtifact(req)),
-  );
+  ipcMain.handle(LibraryIpc.createUrl, async (_e, req: import("../shared/library-ipc").LibraryCreateUrlRequest) => {
+    try { return { ok: true as const, value: await libraryService.createUrlAsync(req) }; }
+    catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : String(error) }; }
+  });
+  ipcMain.handle(LibraryIpc.saveArtifact, async (_e, req: import("../shared/library-ipc").LibrarySaveArtifactRequest) => {
+    try { return {ok:true as const, value:await libraryService.saveArtifactAsync(req)}; }
+    catch (error) { return {ok:false as const,error:error instanceof Error ? error.message : String(error)}; }
+  });
   ipcMain.handle(LibraryIpc.favorite, (_e, req: import("../shared/library-ipc").LibraryFavoriteRequest) =>
-    libraryResult(() => libraryService.favorite(req)),
+    libraryAccessResult(() => libraryService.setFavorite(req)),
   );
   ipcMain.handle(LibraryIpc.attachToTask, (_e, req: import("../shared/library-ipc").LibraryAttachRequest) =>
-    libraryResult(() => libraryService.attachToTask(req)),
+    libraryAccessResult(() => libraryService.attachToTaskAsync(req)),
   );
   ipcMain.handle(LibraryIpc.detachFromTask, (_e, req: import("../shared/library-ipc").LibraryDetachRequest) =>
-    libraryResult(() => libraryService.detachFromTask(req)),
+    libraryAccessResult(() => libraryService.detachFromTaskAsync(req)),
   );
   ipcMain.handle(LibraryIpc.listTaskReferences, (_e, taskId: string) =>
-    libraryResult(() => libraryService.listTaskReferences(taskId)),
+    libraryAccessResult(() => libraryService.readTaskReferences(taskId)),
   );
 
   /* ---------------- Workspace ↔ Library binding（Space / Collection） ---------------- */
@@ -2102,17 +2109,12 @@ function registerIpc(memoryKernel: MemoryService): void {
     readWorkspaceLibraryBindingView(db, libraryService, workspaceLibraryBindingService, workspaceId),
   );
 
-  ipcMain.handle(WorkspaceLibraryBindingIpc.createFolder, (_e, req: { workspaceId: string; librarySpaceId: string; name: string }) =>
-    libraryResult(() => db.connection.transaction(() => {
-      const workspace = db.getSpace(req.workspaceId);
-      if (!workspace) throw new Error("工作空间不存在");
-      if (workspace.archived || workspace.effectiveArchived) throw new Error("归档工作空间只可读取资料");
-      if (!req.name?.trim()) throw new Error("文件夹名称不能为空");
-      if (libraryService.getSpace(req.librarySpaceId)?.workspaceId !== workspace.id) throw new Error("请在当前工作空间的自有资料中新建文件夹");
-      const folder = libraryService.createCollection({ spaceId: req.librarySpaceId, name: req.name.trim() });
-      workspaceLibraryBindingService.bindCollection(req.workspaceId, req.librarySpaceId, folder.id);
-    }).immediate()),
-  );
+  ipcMain.handle(WorkspaceLibraryBindingIpc.createFolder, async (_e, req: { workspaceId: string; librarySpaceId: string; name: string }) => {
+    try {
+      await libraryService.createWorkspaceFolder(req.workspaceId, req.librarySpaceId, req.name);
+      return { ok: true, value: undefined };
+    } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+  });
 
   const writeWorkspaceLibraryBinding = async (kind: "bind" | "unbind", req: WorkspaceLibraryBindingRequest) => {
     try {
@@ -2190,7 +2192,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     DbIpc.ingestProjectDocument,
     (_e, projectId: string, request: { title: string; body: string; ref?: string }) =>
       // 文档/纪要文本 → 事件（source=document；onIngested 已接线 attention 刷新 + 活动流广播）
-      projectEventIngestor.ingestDocument(projectId, request),
+      projectEventIngestor.ingestDocumentAsync(projectId, request),
   );
   ipcMain.handle(DbIpc.importProjectFile, (_e, projectId: string, sourcePath: string) =>
     // 文件 → 项目资料库真源 + document 事件（幂等按文件内容哈希；onIngested 负责刷新）
@@ -2278,7 +2280,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   const executionFailureRepository = new ExecutionFailureRepository(db.fixtureConnection, db.runtimeAuditReader);
   ipcMain.handle(DbIpc.listExecutionFailures, (_e, taskId: string) => executionFailureRepository.listForDisplay(taskId));
   ipcMain.handle(DbIpc.dismissExecutionFailure, (_e, taskId: string, id: string) => executionFailureRepository.dismissForDisplay(taskId, id));
-  ipcMain.handle(DbIpc.previewProjectFolder, (_e, projectId: string, path: string) => projectFolderRelocation.preview(projectId, path));
+  ipcMain.handle(DbIpc.previewProjectFolder, (_e, projectId: string, path: string) => projectFolderRelocation.previewAsync(projectId, path));
   ipcMain.handle(DbIpc.commitProjectFolder, async (_e, token: string) => {
     await artifactDomainService.runWithArtifactWrites(() => projectFolderRelocation.commit(token));
     return { ok: true };
@@ -2494,37 +2496,8 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(WorkGraphIpc.checkIntegrity, () => scanIntegrity(db));
   ipcMain.handle(WorkGraphIpc.previewRepair, (_e, report: IntegrityReport) => previewRepair(db, report));
   ipcMain.handle(WorkGraphIpc.applyRepair, (_e, preview: RepairPreview) => applyRepair(db, preview));
-  ipcMain.handle(WorkGraphIpc.observability, () => {
-    try {
-      const edges = workGraphService.countAll();
-      const start = Date.now();
-      try { workGraphService.listRelated("task" as unknown as import("../shared/work-graph").WorkGraphNodeType, "non-existent", undefined); } catch {}
-      const resolverMs = Date.now() - start;
-      return { edges, resolverMs };
-    } catch (e) { return { edges: 0, error: String(e) }; }
-  });
-  ipcMain.handle(WorkGraphIpc.benchmark, async () => {
-    const t0 = Date.now();
-    const spaces = db.listSpaces().length;
-    const t1 = Date.now();
-    const tasks = db.listTasks().length;
-    const t2 = Date.now();
-    const edges = workGraphService.countAll();
-    const t3 = Date.now();
-    // Locator timing (if available)
-    let locatorMs: number | undefined;
-    try {
-      const { WorkspaceResourceLocator } = require("./workspace/WorkspaceResourceLocator");
-      const { WorkspaceLibraryBindingService } = require("./workspace/WorkspaceLibraryBindingService");
-      const { LibraryService } = require("./library/LibraryService");
-      const binding = new WorkspaceLibraryBindingService(db);
-      const lib = new LibraryService(db);
-      const loc = new WorkspaceResourceLocator(db, lib, binding);
-      const t = db.listTasks()[0]?.id ?? null;
-      if (t) { const s = Date.now(); loc.search({ query: "test", taskId: t }); locatorMs = Date.now() - s; }
-    } catch {}
-    return { spaces, tasks, edges, timingsMs: { listSpaces: t1 - t0, listTasks: t2 - t1, countEdges: t3 - t2, ...(locatorMs !== undefined ? { locator: locatorMs } : {}) } };
-  });
+  ipcMain.handle(WorkGraphIpc.observability, () => workGraphService.observability());
+  ipcMain.handle(WorkGraphIpc.benchmark, () => workGraphService.benchmark());
 
   ipcMain.handle(WorkspaceIpc.promote, (_e, req: { itemId: string; fromSpaceId: string }) => {
     try {
@@ -3588,6 +3561,7 @@ app.whenReady().then(async () => {
       }
     },
   });
+  await taskLifecycle.recoverGatewayRenames();
   // 回收区超期清理：启动后延迟一次 + 每 6 小时一次。此前 purgeAfter 只写不读（purgeExpired 无调用者），
   // 删除的任务会永久留在磁盘上。保留期见 shared/archive-deletion.ts 的 TRASH_RETENTION_DAYS。
   const purgeExpiredTrash = async (trigger: string): Promise<void> => {

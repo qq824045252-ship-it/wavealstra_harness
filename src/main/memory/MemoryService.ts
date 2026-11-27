@@ -9,7 +9,7 @@ import { searchEpoch } from "./MemorySearchEpoch";
 import { normalizeSearchText } from "./MemorySearchText";
 import { rankMemoryBaselines, rankMemorySearch, rankMemorySearchAsync, tokenSimilarity } from "./MemoryRecallRanking";
 import { botExtractionPolicy } from "./BotMemoryExtractionPolicy";
-import { MemoryForgetWatermarks, memoryWithdrawalTargets } from "./MemoryForgetWatermarks";
+import { MemoryForgetWatermarks, matchesWithdrawalTarget, memoryWithdrawalTargets } from "./MemoryForgetWatermarks";
 import type { MemoryForgetSource, MemoryRemovalIntent } from "./MemoryIntent";
 import {
   MAX_INPUT_CHARS,
@@ -165,6 +165,47 @@ export class MemoryService {
   }
 
   get(id: string): MemoryRecordDto | undefined { return this.repository.get(id); }
+
+  async readDotsRevisionSource(taskId: string, id: string, revision?: number) {
+    if (taskId !== DOTS_TASK_ID) return;
+    if (!this.usesCoreRecall) {
+      const version = revision ?? this.history(id)[0]?.revision;
+      const source = version && this.getDotsRevisionSource(id, version);
+      return source ? { ...source, revision: version } : undefined;
+    }
+    await this.forgetWatermarks.flush();
+    const result = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "dotsRevisionSource", id, revision, now: Date.now() });
+    if (result?.kind !== "dotsRevisionSource") throw new CoreMemoryRecallUnavailable("Core 未确认 Dots 原话核验");
+    const row = result.source;
+    const ref = row && dotsSourcePointer(row.reason);
+    if (!row || !ref) return;
+    const quote = ref.turnId ? row.userText?.slice(ref.start, ref.start + ref.length) : row.excerpt;
+    if (!quote || !matchesDotsQuote(quote, ref.hash) || isSensitive(quote)
+      || matchesWithdrawalTarget(quote, row.targets)) return;
+    return { revision: row.revision, messageId: ref.messageId, turnId: ref.turnId, role: "user" as const, capturedAt: ref.capturedAt,
+      quote, stance: ref.stance, applicability: ref.applicability ?? dotsScopeCondition(quote) };
+  }
+
+  async allowsGatewayPersonalRecall(taskId: string, origin?: import("../agent/durable/DurableHistoryProjection").DurableInputMetadata["gatewayOrigin"]) {
+    if (!isGatewayConversation(taskId) || origin?.audience !== "private" || !origin.personalMemoryBindingId) return false;
+    const native = this.db.runtimeAuditReader;
+    const [assignment, authority] = await Promise.all([native?.readGatewayAssignment(origin), native?.readGatewayExecutionAuthority(taskId)]);
+    if (!assignment || !authority) throw new CoreMemoryRecallUnavailable("Core 未确认私人渠道记忆授权");
+    return authority.status === "allowed" && authority.memory === "active" && authority.bindingId === origin.personalMemoryBindingId &&
+      assignment.status === "assigned" && !assignment.command && assignment.oldTaskAvailable &&
+      assignment.taskId === taskId && assignment.personalMemoryBindingId === origin.personalMemoryBindingId;
+  }
+
+  async readDotsContextSnapshot(id: string, revision?: number) {
+    const source = await this.readDotsRevisionSource(DOTS_TASK_ID, id, revision);
+    if (!source || source.stance !== "statement" || source.applicability) return;
+    const detail = await this.db.runtimeAuditReader?.memoryRecordsData({kind:"detail", id});
+    if (detail?.kind !== "detail") throw new CoreMemoryRecallUnavailable("Core 未确认 Dots 记忆状态");
+    if (!detail.record || detail.revision !== source.revision || detail.record.status !== "active") return;
+    const record = memoryRecordFromWire(detail.record);
+    if (dotsRecordApplicability(record)) return;
+    return {memoryId:id, revision:source.revision, kind:record.kind, title:"用户原话", content:source.quote};
+  }
 
   getDotsRevisionSource(id: string, revision: number): DotsRevisionSource | undefined {
     const ctx = { taskId: DOTS_TASK_ID };

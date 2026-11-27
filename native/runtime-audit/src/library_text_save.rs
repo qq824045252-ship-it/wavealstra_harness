@@ -206,3 +206,158 @@ pub fn write(db: &mut Connection, save: Save) -> Result<Value> {
     tx.commit()?;
     Ok(json!("saved"))
 }
+
+pub fn recover(db: &mut Connection, root: &std::path::Path) -> Result<usize> {
+    recover_pending(db, root, None)
+}
+
+pub(crate) fn recover_one(db: &mut Connection, root: &std::path::Path, id: &str) -> Result<usize> {
+    recover_pending(db, root, Some(id))
+}
+
+fn recover_pending(db: &mut Connection, root: &std::path::Path, item: Option<&str>) -> Result<usize> {
+    let tx = db.transaction()?;
+    let paths = crate::sqlite_rows::records(
+        &tx,
+        "SELECT item_id FROM library_text_saves WHERE root=?1 AND committed=0 AND (?2 IS NULL OR item_id=?2)",
+        params![root.to_str().ok_or("invalid root")?,item],
+    )?;
+    for entry in &paths {
+        let id = entry["item_id"].as_str().ok_or("invalid item id")?;
+        let (op, path, old, old_hash, new_hash, space): (
+            String,
+            String,
+            Option<Vec<u8>>,
+            Option<String>,
+            String,
+            String,
+        ) = tx.query_row(
+            "SELECT s.operation_id,s.path,s.old_content,s.old_hash,s.new_hash,i.space_id
+                FROM library_text_saves s JOIN library_items i ON i.id=s.item_id WHERE s.item_id=?",
+            [id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )?;
+        let path = PathBuf::from(path);
+        if op.len() != 36
+            || !op
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+            || old.as_ref().is_some_and(|bytes| Some(hash(bytes)) != old_hash)
+        {
+            return Err("invalid text save receipt".into());
+        }
+        let current = library_text::open_managed(root, &path, &space, id)?
+            .map(crate::library_artifact_save::file_hash)
+            .transpose()?;
+        let staging = path.with_file_name(format!(".mybuddy-note-{op}.tmp"));
+        if current != old_hash && current.as_ref().is_some_and(|value| value != &new_hash) {
+            return Err("interrupted note was modified externally".into());
+        }
+        match fs::remove_file(&staging) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+        if old.is_none() && old_hash.is_some() {
+            let version = crate::library_artifact_save::resolve_version(&path, &op)?;
+            match fs::symlink_metadata(&version) {
+                Ok(m) if m.is_file() && !library_text::is_link(&m) => {
+                    let backup_hash = crate::library_artifact_save::file_hash(fs::File::open(&version)?)?;
+                    if Some(backup_hash) != old_hash {return Err("中断保存的旧版本已变化".into());}
+                    if current != old_hash {fs::rename(&version,&path)?;}
+                    else {fs::remove_file(&version)?;}
+                }
+                Err(e) if e.kind()==std::io::ErrorKind::NotFound && current==old_hash => {}
+                _ => return Err("中断保存的旧版本不可用".into()),
+            }
+        } else if current != old_hash {
+            if let Some(bytes) = old {
+                let mut file = OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&staging)?;
+                file.write_all(&bytes)?;
+                file.sync_all()?;
+                drop(file);
+                fs::rename(&staging, &path)?;
+            } else if current.is_some() {
+                fs::remove_file(&path)?;
+            }
+        }
+        tx.execute(
+            "DELETE FROM library_text_saves WHERE item_id=? AND operation_id=? AND committed=0",
+            params![id, op],
+        )?;
+    }
+    tx.commit()?;
+    Ok(paths.len())
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[test]
+    fn restore_interrupted_note_without_overwriting_an_external_edit() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "mybuddy-note-recovery-{}",
+            crate::core_lease::random_token()
+        ));
+        fs::create_dir(&root)?;
+        let result = (|| -> Result<()> {
+            let mut db = Connection::open_in_memory()?;
+            db.execute_batch("CREATE TABLE library_items(id VARCHAR,space_id VARCHAR);
+                CREATE TABLE library_text_saves(item_id VARCHAR, operation_id VARCHAR,root VARCHAR,path VARCHAR,
+                    old_content BLOB,old_hash VARCHAR,new_hash VARCHAR,committed BIGINT);
+                INSERT INTO library_items VALUES('note','space');")?;
+            fs::create_dir(root.join("space"))?;
+            let path = root.join("space/note.md");
+            let op = "aaaaaaaa-0000-0000-0000-000000000001";
+            db.execute(
+                "INSERT INTO library_text_saves VALUES('note',?,?,?,?,?,?,0)",
+                params![
+                    op,
+                    root.to_str(),
+                    path.to_str(),
+                    b"before".as_slice(),
+                    hash(b"before"),
+                    hash(b"after")
+                ],
+            )?;
+            fs::write(&path, b"external")?;
+            assert!(recover(&mut db, &root).is_err());
+            assert_eq!(fs::read(&path)?, b"external");
+            fs::write(&path, b"after")?;
+            assert_eq!(recover(&mut db, &root)?, 1);
+            assert_eq!(fs::read(&path)?, b"before");
+            assert_eq!(recover(&mut db, &root)?, 0);
+            // A refreshed artifact keeps its previous binary in an immutable version file.
+            let old = vec![0xff; MAX_BYTES+17];
+            let new = vec![0xfe; MAX_BYTES+31];
+            let backup = crate::library_artifact_save::resolve_version(&path,op)?;
+            fs::create_dir_all(backup.parent().unwrap())?;
+            fs::write(&backup,&old)?;
+            db.execute("INSERT INTO library_text_saves VALUES('note',?,?,?,NULL,?,?,0)",
+                params![op,root.to_str(),path.to_str(),hash(&old),hash(&new)])?;
+            fs::write(&path,b"later edit")?;
+            assert!(recover(&mut db,&root).is_err());
+            assert_eq!(fs::read(&path)?,b"later edit");
+            assert!(backup.exists());
+            fs::write(&path,&new)?;
+            assert_eq!(recover(&mut db,&root)?,1);
+            assert_eq!(fs::read(&path)?,old);
+            assert!(!backup.exists());
+            Ok(())
+        })();
+        fs::remove_dir_all(root)?;
+        result
+    }
+}

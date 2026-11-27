@@ -93,8 +93,9 @@ export function loadTaskHistoryFromSession(
   sessionFile: string,
   cwdOverride?: string,
 ): TaskHistoryDto {
-  if (!sessionFile || !existsSync(sessionFile)) {
-    return { messages: [], sessionFile };
+  if (!sessionFile) return { messages: [] };
+  if (!existsSync(sessionFile)) {
+    return { messages: [], sessionFile, cwd: cwdOverride, historyError: "找不到已记录的会话文件" };
   }
 
   const opened = openSessionForHistory(sessionFile, cwdOverride);

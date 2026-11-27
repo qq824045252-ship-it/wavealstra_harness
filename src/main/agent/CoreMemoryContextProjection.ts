@@ -1,3 +1,4 @@
+import { DOTS_TASK_ID } from "../../shared/dots";
 import {
   MEMORY_CONTEXT_DEFAULT_BUDGET, MEMORY_CONTEXT_HARD_BUDGET,
   type MemoryKind, type MemorySearchHit, type MemorySearchRequest,
@@ -17,6 +18,31 @@ export async function readCoreMemoryContext(memory: MemoryService,
     scenarioIds: [], profileIds: [], blocks: [], sourceRevisions: [], groundingScenarioIds: [],
   };
   if (!budget) return result;
+  if (input.taskId === DOTS_TASK_ID) {
+    const records = await memory.readList({scopeType:"task",scopeId:DOTS_TASK_ID,status:"active",limit:100});
+    const lines: string[] = [];
+    const header = "Dots 个人记忆。以下是已核验的用户原话：";
+    let bytes = Buffer.byteLength(header);
+    for (const record of records) {
+      if (result.blocks.length >= (input.limit ?? 16)) break;
+      const atom = await memory.readDotsContextSnapshot(record.id);
+      if (!atom) continue;
+      const text = renderMemoryEvidence(atom, "task");
+      const length = Buffer.byteLength("\n" + text);
+      if (length + bytes > budget) { result.trimmed = true; continue; }
+      bytes += length;
+      lines.push(text);
+      const source = {id:record.id, revision:atom.revision};
+      result.blocks.push({id:"memory:"+record.id, revision:String(atom.revision), text, sources:[source],
+        scenarioIds:[],profileIds:[],reference:{renderer:MEMORY_EVIDENCE_RENDERER,...source,scopeType:"task"}});
+      result.sourceRevisions.push(source);
+      result.items.push({id:record.id,kind:atom.kind,title:atom.title,content:atom.content,scopeType:"task",scopeId:DOTS_TASK_ID,
+        importance:record.importance,confidence:record.confidence,score:0,reasons:["verified-source"]});
+    }
+    if (lines.length) result.text = [header,...lines].join("\n");
+    result.includedChars = result.text.length;
+    return result;
+  }
   const authority = await memory.readCoreRecallAuthority(input);
   const baseline = (scopeTypes: MemorySearchRequest["scopeTypes"], limit: number, kinds = input.kinds) =>
     memory.searchLexical({ ...input, query: undefined, scopeTypes, statuses: ["active"], kinds, limit });

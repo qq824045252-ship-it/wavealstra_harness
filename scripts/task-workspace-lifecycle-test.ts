@@ -383,7 +383,7 @@ async function main(): Promise<void> {
 
       // 认领 ghost：先补 task 行再 adopt
       env.db.upsertTask({ id: ghostId, title: "ghost", updatedAt: Date.now() });
-      const adopted = env.lifecycle.adoptOrphan(getTaskDirectoryName(ghostId), ghostId);
+      const adopted = await env.lifecycle.adoptOrphan(getTaskDirectoryName(ghostId), ghostId);
       assert.equal(adopted.taskId, ghostId);
       assert.equal(env.db.getTaskExecutionWorkspaceState(ghostId)?.state, "active");
       assert.equal(env.db.getTask(ghostId)?.cwd, env.workspace.resolveTaskExecutionWorkspaceDir(ghostId));

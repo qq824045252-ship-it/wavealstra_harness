@@ -4,11 +4,11 @@
  * 默认 dry-run，不修改 DB / 不移动用户文件。
  *
  * 用法：
- *   pnpm run audit:task-isolation
- *   pnpm run audit:task-isolation -- --db <path> --workspaces-root <path>
- *   pnpm run audit:task-isolation -- --json out.json --markdown out.md
- *   pnpm run audit:task-isolation -- --task-id <id> --include-archived
- *   pnpm run audit:task-isolation -- --repair-safe-metadata
+ *   pnpm run audit:task-isolation --help
+ *   pnpm run audit:task-isolation --db <path> --workspaces-root <path>
+ *   pnpm run audit:task-isolation --db <path> --json out.json --markdown out.md
+ *   pnpm run audit:task-isolation --db <path> --task-id <id> --include-archived
+ *   pnpm run audit:task-isolation --db <path> --repair-safe-metadata
  *
  * 对应《P0-task-project-isolation-fix.md》§13。
  * 禁止无确认的 --fix-all（本 CLI 不提供该开关）。
@@ -21,7 +21,7 @@ import {
   runTaskIsolationAudit,
   type TaskIsolationAuditReport,
 } from "../src/main/task/TaskIsolationAudit";
-import { getDbPath } from "../src/main/paths";
+
 
 interface CliArgs {
   dryRun: boolean;
@@ -39,7 +39,7 @@ function printHelp(): void {
   console.log(`MyBuddy task isolation audit (P0.5)
 
 Usage:
-  pnpm run audit:task-isolation -- [options]
+  pnpm run audit:task-isolation --db <legacy-copy> [options]
 
 Options:
   --dry-run                 Read-only audit (default; always true unless --repair-safe-metadata)
@@ -48,7 +48,7 @@ Options:
   --task-id <id>            Audit a single task
   --include-archived        Include archived tasks
   --repair-safe-metadata    Create canonical dirs, valid manifests, bind tasks.cwd only
-  --db <path>               SQLite path (default: ~/.mybuddy/app.db)
+  --db <path>               Required path to an existing legacy SQLite database copy
   --workspaces-root <path>  Task workspaces root (default: ~/.mybuddy/task-workspaces)
   --help                    Show this help
 
@@ -178,7 +178,12 @@ function main(): void {
     return;
   }
 
-  const dbPath = resolve(args.db ?? getDbPath());
+  if (!args.db) {
+    console.error("请用 --db 指定现有的历史 SQLite 副本。当前 DuckDB 资料不使用该审计工具。");
+    process.exitCode = 2;
+    return;
+  }
+  const dbPath = resolve(args.db);
   // 默认 task-workspaces root：优先新目录，兼容旧目录（不经 getTaskExecutionWorkspacesDir()，避免 dry-run 强制 mkdir）
   const defaultWorkspacesRoot = existsSync(join(homedir(), ".mybuddy", "task-workspaces"))
     ? join(homedir(), ".mybuddy", "task-workspaces")

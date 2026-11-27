@@ -70,6 +70,14 @@ async function verifyMultiRoleIsolationAndDomainCommands(): Promise<void> {
     bg = await within(CoreBusinessClient.connect(executable!, dbPath, { dataDirectory: dataDir, role: "background-service", clientId: "bg-1" }), "bg-1 connect");
     execClient = await within(CoreBusinessClient.connect(executable!, dbPath, { dataDirectory: dataDir, role: "execution-host", clientId: "exec-1" }), "exec-1 connect");
 
+    // Force socket chunks to split both three- and four-byte code points.
+    let streamed: unknown;
+    const stop = ui1.onCoreEvent(event => { streamed = event.payload.text; });
+    const frame = Buffer.from(JSON.stringify({ coreStreamEvent: { payload: { text: "你好🌊" } } }) + "\n");
+    for (const byte of frame) ui1.transport.stdout.write(Buffer.from([byte]));
+    stop();
+    assert.equal(streamed, "你好🌊");
+
     assert.equal(ui1.workerPid, bg.workerPid);
     assert.equal(execClient.workerPid, ui1.workerPid);
     assert.notEqual(ui1.connectionEpoch, ui2.connectionEpoch);
@@ -434,7 +442,15 @@ async function verifyExecutionBridgeAndWatchdogRecovery(): Promise<void> {
   trackedPids.add(ep2.pid); trackedPids.add(ep2.workerPid);
 
   // Kill SUPERVISOR directly -> watchdog relaunches supervisor + worker without UI.
-  process.kill(ep2.pid, "SIGKILL");
+  // The orphan worker may still hold the database while processing EOF after its
+  // supervisor dies. Simulate a descheduled process, then let it finish normally.
+  if (process.platform === "linux") process.kill(ep2.workerPid, "SIGSTOP");
+  try {
+    process.kill(ep2.pid, "SIGKILL");
+    if (process.platform === "linux") await delay(500);
+  } finally {
+    if (process.platform === "linux") process.kill(ep2.workerPid, "SIGCONT");
+  }
   await waitUntil(() => {
     const next = readJson<{ pid?: number; workerPid?: number; generation?: string }>(endpointFile);
     return Boolean(next?.pid && next.pid !== ep2.pid && next.generation !== ep2.generation);
@@ -514,8 +530,29 @@ async function verifyDurableExecutionProgress(): Promise<void> {
   const overflowAdmission = Promise.withResolvers<Promise<unknown>[]>();
   let cancelRequested = false;
   let reports: Promise<unknown>[] = [];
+  let liveSendStarted = false;
+  const firstReply = Promise.withResolvers<void>();
+  const textOnlyReply = Promise.withResolvers<void>();
+  const textOnlyEnd = Promise.withResolvers<void>();
+  const tailSubmitted = Promise.withResolvers<void>();
+  const delivered: string[] = [];
+  const submittedSequences: Array<number | undefined> = [];
   const bridge = new ExecutionHostBridge(executable!, dbPath, dir, {
     async start({ execution }, { reportProgress }) {
+      if (execution.executionId === "text-only") {
+        for (const delta of ["前", "后"]) {
+          await reportProgress({ patch: { type: "text_delta", taskId: "text-only", messageId: "reply", delta } }, { ephemeral: true });
+        }
+        await textOnlyEnd.promise;
+        return { status: "completed" };
+      }
+      if (execution.executionId === "instant-stream") {
+        await reportProgress({ patch: { type: "text_delta", taskId: "instant-stream", messageId: "reply", delta: "即时" } }, { ephemeral: true });
+        await reportProgress({ patch: { type: "thinking_delta", delta: "思考" } }, { ephemeral: true });
+        await reportProgress({ patch: { type: "text_delta", delta: "末尾" } }, { ephemeral: true });
+        tailSubmitted.resolve();
+        assert(liveSendStarted, "idle execution stream must send before the next timer tick");
+      }
       const count = execution.executionId === "overflow" ? 193 : execution.executionId === "buffered" ? 70 : 1;
       reports = Array.from({ length: count }, (_, index) => reportProgress({ index }).catch(error => error));
       if (execution.executionId === "overflow") overflowAdmission.resolve(reports);
@@ -537,6 +574,22 @@ async function verifyDurableExecutionProgress(): Promise<void> {
     const lost: { request?: Parameters<CoreBusinessClient["executorProgress"]> } = {};
     const exhaustedIds: (string | undefined)[] = [];
     executor.executorProgress = async (...args) => {
+      if (args[0] === "text-only" && args[5]?.streamSeq === 1) {
+        const reply = await send(...args);
+        await textOnlyReply.promise;
+        return reply;
+      }
+      if (args[0] === "instant-stream" && args[5]?.ephemeral) {
+        const delta = (args[2] as {patch:{delta:string}}).patch.delta;
+        delivered.push(delta);
+        submittedSequences.push(args[5].streamSeq);
+        if (!liveSendStarted) {
+          liveSendStarted = true;
+          const reply = await send(...args);
+          await firstReply.promise;
+          return reply;
+        }
+      }
       if (args[0] === "buffered") {
         firstBuffered = true;
         await buffered;
@@ -574,6 +627,35 @@ async function verifyDurableExecutionProgress(): Promise<void> {
       return replay.events.filter(ev => ev.entityId === id);
     };
 
+    const received: string[] = [];
+    const textOnlyReceived: string[] = [];
+    const subscription = await ui.openEventSubscription({ onEvent(event) {
+      if (!event.ephemeral || !["instant-stream", "text-only"].includes(event.entityId)) return;
+      if (event.entityId === "text-only") {
+        textOnlyReceived.push((event.payload.progress as {patch: {delta: string}}).patch.delta);
+        return;
+      }
+      const progress = event.payload.progress as { patch: { delta: string } };
+      received.push(progress.patch.delta);
+    } });
+    await submit("instant-stream");
+    await within(tailSubmitted.promise, "tail produced while first RPC waits");
+    await waitUntil(() => received.length === 3, "UI receives the next text before the first RPC acknowledgement is released");
+    assert.deepEqual(submittedSequences, [1, 2, 3]);
+    assert.equal((await status("instant-stream"))?.status, "running");
+    firstReply.resolve();
+    await waitUntil(async () => (await status("instant-stream"))?.status === "completed", "settlement follows confirmed stream delivery");
+    assert.deepEqual(delivered, ["即时", "思考", "末尾"]);
+    assert.deepEqual(received, delivered);
+    await submit("text-only");
+    await waitUntil(() => textOnlyReceived.length === 2, "Core publishes both texts while the first acknowledgement waits");
+    assert.deepEqual(textOnlyReceived, ["前", "后"]);
+    textOnlyEnd.resolve();
+    await waitUntil(async () => (await status("text-only"))?.status === "completed", "Core confirms the full stream before the delayed acknowledgement returns");
+    textOnlyReply.resolve();
+    console.log("PASS text-only completion confirmed by Core while first RPC acknowledgement is still withheld");
+    await subscription.close();
+    console.log("PASS active UI receives text, thinking and final text in order while the first RPC acknowledgement is withheld");
     await submit("buffered");
     await waitUntil(() => firstBuffered, "first durable progress reached the transport");
     assert.equal((await status("buffered"))?.status, "running");
@@ -642,12 +724,73 @@ async function verifyDurableExecutionProgress(): Promise<void> {
     assert((await Promise.all(reports))[0] instanceof Error);
     console.log("PASS IN-11 bounded bursts, ordered settlement/cancel, Core rejection, stable retries, disconnect, and lost-reply replay");
   } finally {
+    textOnlyEnd.resolve();
+    textOnlyReply.resolve();
+    firstReply.resolve();
     releaseBuffered();
     releaseCancelledRun();
     allowCancelProgress();
     releaseDisconnected();
     await bridge.close().catch(() => undefined);
     await ui?.close().catch(() => undefined);
+    await shutdownCoreWorker(dir, dbPath).catch(() => undefined);
+  }
+}
+
+async function verifySequencedStreams(): Promise<void> {
+  const dir = mkdtempSync(join(sandbox, "sequenced-stream-"));
+  const dbPath = join(dir, "app.duckdb");
+  const ui = await CoreBusinessClient.connect(executable!, dbPath, { dataDirectory: dir, role: "ui", clientId: "sequence-ui" });
+  let host: CoreBusinessClient | undefined;
+  try {
+    host = await CoreBusinessClient.connect(executable!, dbPath, { dataDirectory: dir, role: "execution-host", clientId: "sequence-host" });
+    const observed: Array<[string, number, number, string]> = [];
+    const subscription = await ui.openEventSubscription({ onEvent(event) {
+      if (!event.ephemeral || event.kind !== "execution.progress") return;
+      const progress = event.payload.progress as { patch: { delta: string } };
+      observed.push([event.entityId, Number(event.payload.attempt), Number(event.payload.streamSeq), progress.patch.delta]);
+    } });
+    const [a, b] = ["stream-a", "stream-b"];
+    const send = (id: string, attempt: number, seq: number, delta: string) => host!.executorProgress(id, attempt,
+      { patch: { type: "text_delta", taskId: id, messageId: "reply", delta } }, undefined, undefined, { ephemeral: true, streamSeq: seq });
+    const settle = (executionId: string, attempt: number, lastStreamSeq: number, status: "completed" | "paused" = "completed") =>
+      host!.executorSettled({ executionId, attempt, lastStreamSeq, status });
+    try {
+      for (const id of [a, b]) {
+        assert.equal((await ui.submitExecution({ executionId: id, taskId: id, idempotencyKey: id, kind: "pi_turn" })).status, "ok");
+        assert.equal((await host.executorAck(id, 1)).status, "ok");
+      }
+      const initial = await Promise.all([send(a, 1, 2, "二"), send(b, 1, 1, "并行")]);
+      assert(initial.every(reply => reply.status === "ok"));
+      await waitUntil(() => observed.some(([id]) => id === b), "second task bypasses the first task's missing sequence");
+      assert.deepEqual(observed, [[b, 1, 1, "并行"]]);
+      assert.equal((await settle(a, 1, 2)).status, "rejected");
+      assert.equal((await ui.executionStatus(a)).execution?.status, "running");
+      assert.equal((await settle(b, 1, 1)).status, "ok");
+      assert.equal((await send(a, 1, 1, "一")).status, "ok");
+      assert.equal((await send(a, 1, 3, "三")).status, "ok");
+      await waitUntil(() => observed.length === 4, "all three frames replay in order");
+      assert.equal((await settle(a, 1, 3, "paused")).status, "ok");
+      assert.equal((await ui.resumeExecution(a)).execution?.attempt, 2);
+      assert.equal((await host.executorAck(a, 2)).status, "ok");
+      assert.equal((await send(a, 1, 1, "过期")).status, "rejected");
+      assert.equal((await settle(a, 1, 3)).status, "rejected");
+      assert.equal((await settle(a, 2, 1)).status, "rejected");
+      assert.equal((await send(a, 2, 1, "恢复")).status, "ok");
+      assert.equal((await settle(a, 2, 1)).status, "ok");
+      await waitUntil(() => observed.length === 5, "new attempt starts at one");
+      assert.deepEqual(observed, [[b, 1, 1, "并行"], [a, 1, 1, "一"], [a, 1, 2, "二"], [a, 1, 3, "三"], [a, 2, 1, "恢复"]]);
+      assert.equal((await ui.executionStatus(a)).execution?.status, "completed");
+      assert.equal((await ui.executionStatus(b)).execution?.status, "completed");
+      assert(existsSync(dbPath));
+      assert(!existsSync(join(dir, "app.db")));
+      console.log("PASS independent tasks, gap rejection, ordered live delivery and stale-attempt fencing across pause/resume");
+    } finally {
+      await subscription.close();
+    }
+  } finally {
+    await host?.close().catch(() => undefined);
+    await ui.close().catch(() => undefined);
     await shutdownCoreWorker(dir, dbPath).catch(() => undefined);
   }
 }
@@ -734,6 +877,7 @@ try {
   await verifyMultiRoleIsolationAndDomainCommands();
   await verifyEventSnapshotCursorAndGapResync();
   await verifyExecutionBridgeAndWatchdogRecovery();
+  await verifySequencedStreams();
   await verifyDurableExecutionProgress();
   await verifyPiControlsWhenTurnSlotsAreFull();
 } finally {

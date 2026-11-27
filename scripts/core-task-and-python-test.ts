@@ -1,3 +1,6 @@
+import { applyRepair, previewRepair, scanIntegrity } from "../src/main/workgraph/WorkGraphIntegrity";
+import { WorkGraphService } from "../src/main/workgraph/WorkGraphService";
+import { CronService, type CronAgent } from "../src/main/cron/CronService";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1051,9 +1054,48 @@ try {
   writeFileSync(join(deletedFolder, "fixture.txt"), "Project-owned file");
   const deletedPlan = "project-schedule-to-delete";
   assert.equal(await ui.writeCronPlan({ kind: "save", expected: null, row: encodeCronPlan({ id: deletedPlan, name: "Project schedule",
-    prompt: "Fixture", projectId: removedProject, scheduleType: "every", scheduleExpr: "1h", timezone: "UTC", enabled: false,
+    prompt: "Fixture", projectId: removedProject, scheduleType: "every", scheduleExpr: "1h", timezone: "UTC", enabled: true,
     createdAt: at, updatedAt: at }) }), true);
   const projects = new ProjectService(new ProjectRepository(undefined, ui), memory);
+  const graph = new WorkGraphService(application);
+  const initialGraph = await graph.benchmark();
+  const edge = await graph.writeEdge({ fromType: "project", fromId: removedProject, relation: "RELATES_TO",
+    toType: "task", toId: boundTask });
+  assert.equal((await graph.observability()).edges, initialGraph.edges + 1);
+  assert.equal((await graph.benchmark()).tasks, initialGraph.tasks);
+  const graphReport = await scanIntegrity(application);
+  assert(!graphReport.findings.some(row => row.edgeId === edge.edge.id));
+  const preview = previewRepair(application, { ...graphReport, findings: [] });
+  assert.deepEqual(await applyRepair(application, preview), { deletedEdges: 0, deletedBindings: 0 });
+  assert.equal(await graph.deleteEdge(edge.edge.id), true);
+  assert.equal((await graph.benchmark()).edges, initialGraph.edges);
+  console.log("PASS WorkGraph public diagnostics report committed edge counts through Core");
+  const projectCron = new CronService(application, {} as CronAgent);
+  const archive = (archived: boolean) => projectCron.withPlanMaintenance(async () => {
+    const project = await projects.archiveAsync(removedProject, archived);
+    if (archived) await projectCron.disableProject(removedProject);
+    return project;
+  });
+  assert.equal((await archive(true)).archived, true);
+  assert.equal((await application.readCronJobState(deletedPlan))?.job.enabled, false);
+  assert.equal((await archive(false)).archived, false);
+  assert.equal((await application.readCronJobState(deletedPlan))?.job.enabled, false);
+  console.log("PASS project archive pauses its plan through Core and restoration retains the pause");
+  const edited = await projects.createAsync({ name: "Project edit flow" });
+  assert.equal((await projects.updateAsync({ id: edited.id, name: "Updated project" })).name, "Updated project");
+  const resource = await projects.createResourceAsync({ projectId: edited.id, kind: "text", title: "Source", value: "Actual body" });
+  assert.equal((await projects.updateResourceAsync({ id: resource.id, title: "Edited source" })).value, "Actual body");
+  const copy = await projects.duplicateAsync({ sourceId: edited.id });
+  assert.equal((await projects.readDetails(copy.id))?.resources[0].title, "Edited source");
+  const todo = await projects.createTodoAsync({ projectId: edited.id, title: "Draft" });
+  await assert.rejects(projects.updateTodoAsync({ id: todo.id, title: "unauthorized" }, { projectId: edited.id, taskId: boundTask }), /项目归属/);
+  assert.equal((await projects.updateTodoAsync({ id: todo.id, title: "Reviewed" })).title, "Reviewed");
+  await projects.deleteTodoAsync(todo.id);
+  assert.equal(await projects.readTodo(todo.id), undefined);
+  await projects.deleteResourceAsync(resource.id);
+  assert.deepEqual((await projects.readDetails(edited.id))?.resources, []);
+  assert.equal((await projects.readDetails(copy.id))?.resources.length, 1);
+  console.log("PASS project create, edit, resource and todo CRUD, scoped actor rejection and duplicate");
   const publishRemoved: string[] = [];
   const cancelledCadences: string[] = [];
   const requestDeletion = ui.deleteProject.bind(ui);

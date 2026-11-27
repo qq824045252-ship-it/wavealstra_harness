@@ -47,17 +47,9 @@ export async function readDurableReadOnlyHistory(input: PassiveSource & {
   observedUsage?: (conversationId: string) => import("../../../shared/task-diagnostics").ConversationUsageReceipt;
 }): Promise<TaskHistoryDto> {
   if (!(await durableStorageExists(input.directory, input.reader))) return { messages: [], cwd: input.cwd };
-  if (input.reader) {
-    try { return await readHistoryView(input, input.reader); }
-    catch { /* Retry the same passive view with the host SQLite reader. */ }
-  }
-  return readHistoryView(input);
-}
-
-async function readHistoryView(input: Parameters<typeof readDurableReadOnlyHistory>[0], reader?: RuntimeAuditReader): Promise<TaskHistoryDto> {
   const runtime = await DurableBotRuntime.open({ directory: input.directory, cwd: input.cwd,
     models: input.models, observedUsage: input.observedUsage, isDotsWorkerInput: input.isDotsWorkerInput, hasDotsDelegation: input.hasDotsDelegation,
-    readOnly: true, passiveReader: reader, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
+    readOnly: true, passiveReader: input.reader, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
   try {
     const block = input.beforeEntryId === undefined ? undefined : await runtime.loadHistoryWindow(input.beforeEntryId);
     const { epoch: _epoch, revision: _revision, ...archive } = runtime.snapshot;
@@ -92,7 +84,7 @@ export async function readDurableUserQuestions(input: PassiveSource & {
   }
   if (input.live) return input.live();
   const runtime = await DurableBotRuntime.open({ directory: input.directory, cwd: input.cwd,
-    models: input.models, readOnly: true, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
+    models: input.models, readOnly: true, passiveReader: input.reader, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
   try {
     return await runtime.loadUserQuestions(input.query);
   } finally { await runtime.close(); }
@@ -111,7 +103,7 @@ export async function readDurableConversationHead(input: PassiveSource & { maxTo
   }
   if (input.live) return input.live();
   const runtime = await DurableBotRuntime.open({ directory: input.directory, cwd: input.cwd,
-    models: input.models, readOnly: true, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
+    models: input.models, readOnly: true, passiveReader: input.reader, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
   try {
     return await runtime.loadHistoryHead(maxTokens);
   } finally { await runtime.close(); }

@@ -62,15 +62,18 @@ export class WorkGraphService {
 
   async writeEdge(req: WorkGraphAddEdgeRequest): Promise<{ edge: WorkGraphEdgeDto; created: boolean }> {
     const runtime = this.db.runtimeAuditReader;
-    if (!runtime) return this.addEdge(req);
+    if (!runtime) {
+      if (!this.db.fixtureConnection) throw new Error("Core 关联图服务未连接");
+      return this.addEdge(req);
+    }
     const edge = this.validateEdge(req);
     let metadataJson: string | undefined;
     try { metadataJson = JSON.stringify(this.normalizeMetadata(req.metadata)); }
-    catch { return this.addEdge(req); }
-    if (metadataJson === undefined) return this.addEdge(req);
+    catch { throw new Error("关联元数据无法编码为 JSON"); }
+    if (metadataJson === undefined) throw new Error("关联元数据无法编码为 JSON");
     const reply = await runtime.writeWorkGraph({ kind: "add", edge: { ...edge, metadataJson, id: randomUUID(), at: Date.now() } });
     if (reply?.status === "added") return { edge: reply.edge, created: reply.created };
-    if (reply?.status === "needsHost") return this.addEdge(req);
+    if (reply?.status === "needsHost" && this.db.fixtureConnection) return this.addEdge(req);
     if (reply?.status === "rejected") throw new Error(reply.message);
     throw new Error("关联写入未确认，请刷新后再试");
   }
@@ -133,10 +136,13 @@ export class WorkGraphService {
 
   async deleteEdge(id: string): Promise<boolean> {
     const runtime = this.db.runtimeAuditReader;
-    if (!runtime) return this.removeEdge(id);
+    if (!runtime) {
+      if (!this.db.fixtureConnection) throw new Error("Core 关联图服务未连接");
+      return this.removeEdge(id);
+    }
     const reply = await runtime.writeWorkGraph({ kind: "remove", id: this.requireNonEmpty(id, "id") });
     if (reply?.status === "removed") return reply.removed;
-    if (reply?.status === "needsHost") return this.removeEdge(id);
+    if (reply?.status === "needsHost" && this.db.fixtureConnection) return this.removeEdge(id);
     if (reply?.status === "rejected") throw new Error(reply.message);
     throw new Error("关联删除未确认，请刷新后再试");
   }
@@ -154,6 +160,7 @@ export class WorkGraphService {
     if (edges) {
       return direction === "related" ? edges.sort(compareRelatedEdges) : edges;
     }
+    if (!this.db.fixtureConnection) throw new Error("Core 未确认关联图读取");
     switch (direction) {
       case "outgoing": return this.repo.listOutgoing(type, nid, relation);
       case "incoming": return this.repo.listIncoming(type, nid, relation);
@@ -214,6 +221,30 @@ export class WorkGraphService {
       if (await this.deleteEdge(edge.id)) removed += 1;
     }
     return removed;
+  }
+
+  async observability() {
+    const edges = await this.readCount("edges");
+    const start = performance.now();
+    await this.readEdges("related", "task", "non-existent");
+    return { edges, resolverMs: performance.now() - start };
+  }
+
+  async benchmark() {
+    const start = performance.now();
+    const spaces = (await this.db.readSpaces()).length;
+    const afterSpaces = performance.now();
+    const tasks = await this.readCount("tasks");
+    const afterTasks = performance.now();
+    const edges = await this.readCount("edges");
+    return { spaces, tasks, edges, timingsMs: { listSpaces: afterSpaces - start,
+      countTasks: afterTasks - afterSpaces, countEdges: performance.now() - afterTasks } };
+  }
+
+  private async readCount(kind: "edges" | "tasks"): Promise<number> {
+    if (this.db.runtimeAuditReader) return this.db.runtimeAuditReader.readWorkGraphCount(kind);
+    if (!this.db.fixtureConnection) throw new Error("Core 关联图服务未连接");
+    return kind === "edges" ? this.repo.countAll() : this.db.listTasks().length;
   }
 
   countAll(): number {

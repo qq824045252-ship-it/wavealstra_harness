@@ -201,6 +201,7 @@ pub enum Request {
     },
 
     // ---------- Library ----------
+    LibraryCatalogEdit { edit: crate::library_catalog_write::Edit, at: i64 },
     LibrarySetIndexState {
         key: String,
         value: String,
@@ -266,6 +267,8 @@ pub enum Request {
         trashed_at: Option<i64>,
         note_metadata: Option<String>,
     },
+    LibraryVisitItem { id: String, at: i64 },
+    LibraryFavoriteItem { id: String, favorite: bool, at: i64 },
     LibraryUpdateItem {
         id: String,
         collection_id: Option<String>,
@@ -879,6 +882,13 @@ fn uuid_like_id(a: &str, b: &str, c: Option<&str>, ts: i64) -> String {
     format!("mscp_{}", to_hex(&d[..14]))
 }
 
+fn active_library_item(tx: &Transaction<'_>, id: &str) -> Result<Value> {
+    let rows = crate::sqlite_rows::records(tx,&format!("SELECT {} FROM library_items WHERE id=?1 AND trashed_at IS NULL",
+        crate::library_metadata::ITEMS), [id])?;
+    let item = rows.into_iter().next().ok_or("条目不存在")?;
+    Ok(json!({"item":item}))
+}
+
 pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
     if let Request::LibraryMergeChunkStage {
         file,
@@ -942,54 +952,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
     let out = match request {
         Request::LibraryMergeChunkStage { .. } => unreachable!(),
         Request::ArtifactRelocateFolders { changes } => {
-            let mut results = Vec::with_capacity(changes.len());
-            for c in changes {
-                require_artifact(&tx, &c.task_id, &c.id)?;
-                tx.execute(
-                    "UPDATE artifacts
-                     SET source_type = ?1, entry_file = ?2, root_dir = ?3, storage_path = ?4,
-                         version = version + 1, updated_at = ?5
-                     WHERE id = ?6",
-                    params![
-                        c.source_type,
-                        c.entry_file,
-                        c.root_dir,
-                        c.storage_path,
-                        c.updated_at,
-                        c.id
-                    ],
-                )?;
-                tx.execute(
-                    "DELETE FROM artifact_file_dependencies WHERE artifact_id = ?1",
-                    [&c.id],
-                )?;
-                for dep in &c.dependencies {
-                    tx.execute(
-                        "INSERT INTO artifact_file_dependencies (artifact_id, file_path, dependency_kind, created_at)
-                         VALUES (?1, ?2, ?3, ?4)",
-                        params![
-                            c.id,
-                            dep.file_path,
-                            dep.dependency_kind.as_deref().unwrap_or("runtime"),
-                            c.updated_at
-                        ],
-                    )?;
-                }
-                let version: i64 = tx.query_row(
-                    "SELECT version FROM artifacts WHERE id = ?1",
-                    [&c.id],
-                    |r| r.get(0),
-                )?;
-                let revision = bump_artifact_revision_tx(&tx, &c.task_id)?;
-                results.push(json!({
-                    "id": c.id,
-                    "taskId": c.task_id,
-                    "version": version,
-                    "revision": revision,
-                    "updatedAt": c.updated_at,
-                }));
-            }
-            json!({ "updated": results })
+            relocate_artifacts(&tx, changes)?
         }
         Request::ArtifactUpdateMetadata {
             id,
@@ -1064,6 +1027,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             )?;
             json!({ "ok": true })
         }
+        Request::LibraryCatalogEdit { edit, at } => crate::library_catalog_write::apply(&tx,edit,at)?,
         Request::LibrarySetIndexState { key, value, updated_at } => {
             tx.execute(
                 "INSERT INTO library_index_state(key, value, updated_at) VALUES (?1, ?2, ?3)
@@ -1188,6 +1152,23 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                 ],
             )?;
             json!({ "ok": true })
+        }
+        Request::LibraryVisitItem { id, at } => {
+            tx.execute("UPDATE library_items SET last_visited_at=greatest(coalesce(last_visited_at,0),?1)
+                        WHERE id=?2 AND trashed_at IS NULL", params![at,id])?;
+            active_library_item(&tx,&id)?
+        }
+        Request::LibraryFavoriteItem { id, favorite, at } => {
+            let owner: Option<(Option<String>,Option<String>)> = tx.query_row(
+                "SELECT s.project_id,s.workspace_id FROM library_spaces s JOIN library_items i ON i.space_id=s.id
+                 WHERE i.id=?1 AND i.trashed_at IS NULL", [&id], |r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let Some((project,workspace))=owner else { return Err("条目不存在".into()); };
+            if !crate::scoped_notes::library_owner_writable(&tx,project.as_deref(),workspace.as_deref())? {
+                return Err("已归档的资料只可读取".into());
+            }
+            tx.execute("UPDATE library_items SET favorite=?1,updated_at=greatest(updated_at,?2) WHERE id=?3",
+                params![i64::from(favorite),at,id])?;
+            active_library_item(&tx,&id)?
         }
         Request::LibraryUpdateItem {
             id,
@@ -1481,6 +1462,43 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             added_at,
             added_by,
         } => {
+            let agent = matches!(action.as_str(),"attachVisibleToTask" | "detachVisibleFromTask");
+            if agent || action == "attachToTask" || action == "detachFromTask" {
+                let id = item_id.as_deref().ok_or("缺少资料 ID")?;
+                let task: Option<(Option<String>,bool)> = tx.query_row(
+                    "SELECT t.project_id,coalesce(p.archived,0)<>0 FROM tasks t LEFT JOIN projects p ON p.id=t.project_id WHERE t.id=?",
+                    [&task_id], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+                if task.as_ref().is_some_and(|t|t.1) {
+                    return Ok(json!({"ok":false,"error":"项目已归档，仅可读取"}));
+                }
+                if agent {
+                    let scope=crate::library_metadata::task_scope(&tx,Some(&task_id),None,None,Some(vec![id.to_owned()]))?;
+                    if (scope["projectId"].is_null() && scope["workspaceId"].is_null()) || scope["items"].as_array().is_none_or(|rows|rows.is_empty()) {
+                        return Ok(json!({"ok":false,"error":"条目不在当前任务可写归属和可见范围内"}));
+                    }
+                }
+                let result = if action == "detachFromTask" || action == "detachVisibleFromTask" {
+                    tx.execute("DELETE FROM task_library_references WHERE task_id=? AND item_id=?",params![task_id,id])?;
+                    json!({"ok":true})
+                } else {
+                    let Some((project,_))=task else {return Ok(json!({"ok":false,"error":"任务不存在"}))};
+                    let scope:Option<Option<String>>=tx.query_row(
+                        "SELECT l.project_id FROM library_items i JOIN library_spaces l ON l.id=i.space_id
+                         WHERE i.id=? AND i.trashed_at IS NULL AND (l.project_id IS NULL OR l.project_id=?)
+                           AND (l.workspace_id IS NULL OR (l.project_id IS NULL AND EXISTS(SELECT 1 FROM spaces WHERE id=l.workspace_id)))
+                           AND (l.kind<>'personal' OR (l.project_id IS NULL AND l.workspace_id IS NULL))",
+                        params![id,project],|r|r.get(0)).optional()?;
+                    let Some(scope)=scope else {return Ok(json!({"ok":false,"error":"资料不存在或不属于当前项目，不能跨项目附加"}))};
+                    tx.execute("INSERT INTO task_library_references(task_id,item_id,project_id,added_at,added_by)
+                       VALUES(?,?,?,epoch_ms(current_timestamp),coalesce(nullif(trim((SELECT name FROM soul WHERE id=1)),''),'我')) ON CONFLICT DO NOTHING",
+                       params![task_id,id,scope])?;
+                    tx.query_row("SELECT project_id,added_at,added_by FROM task_library_references WHERE task_id=? AND item_id=?",params![task_id,id],|r|
+                      Ok(json!({"ok":true,"reference":{"taskId":task_id,"itemId":id,"projectId":r.get::<_,Option<String>>(0)?,
+                          "addedAt":r.get::<_,i64>(1)?,"addedBy":r.get::<_,String>(2)?}})))?
+                };
+                crate::request_control::commit(tx)?;
+                return Ok(result);
+            }
             match action.as_str() {
                 "add" => {
                     tx.execute(
@@ -2108,12 +2126,12 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             allowed_message_id,
         } => {
             tx.execute(
-                "INSERT INTO memory_forget_watermarks(scope_type,scope_id,cutoff_at,allowed_message_id) VALUES (?1,?2,?3,?4)
-                 ON CONFLICT(scope_type,scope_id) DO UPDATE SET cutoff_at=excluded.cutoff_at,allowed_message_id=excluded.allowed_message_id
-                 WHERE excluded.cutoff_at > cutoff_at OR (excluded.cutoff_at = cutoff_at
-                   AND (excluded.allowed_message_id IS NULL OR (allowed_message_id IS NOT NULL
-                     AND (SELECT ordinal FROM bot_messages WHERE message_id=excluded.allowed_message_id)
-                       >= (SELECT ordinal FROM bot_messages WHERE message_id=allowed_message_id))))",
+                "INSERT INTO memory_forget_watermarks(scope_type,scope_id,cutoff_at,allowed_message_id) SELECT ?1,?2,?3,?4
+                 WHERE NOT EXISTS (SELECT 1 FROM memory_forget_watermarks w WHERE w.scope_type=?1 AND w.scope_id=?2
+                   AND (?3>w.cutoff_at OR (?3=w.cutoff_at AND (?4 IS NULL OR (w.allowed_message_id IS NOT NULL AND
+                        (SELECT ordinal FROM bot_messages WHERE message_id=?4) >=
+                        (SELECT ordinal FROM bot_messages WHERE message_id=w.allowed_message_id))))) IS NOT TRUE)
+                 ON CONFLICT(scope_type,scope_id) DO UPDATE SET cutoff_at=excluded.cutoff_at,allowed_message_id=excluded.allowed_message_id",
                 params![scope_type, scope_id, cutoff_at, allowed_message_id],
             )?;
             json!({ "ok": true })
@@ -2131,12 +2149,13 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
         } => {
             tx.execute(
                 "INSERT INTO memory_forget_targets(scope_type,scope_id,fingerprint,text_length,cutoff_at,allowed_message_id,value_fingerprint,guard_fingerprint,guard_length)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(scope_type,scope_id,fingerprint) DO UPDATE SET
-                 cutoff_at=excluded.cutoff_at,allowed_message_id=excluded.allowed_message_id
-                 WHERE excluded.cutoff_at > cutoff_at OR (excluded.cutoff_at = cutoff_at
-                   AND (excluded.allowed_message_id IS NULL OR (allowed_message_id IS NOT NULL
-                     AND (SELECT ordinal FROM bot_messages WHERE message_id=excluded.allowed_message_id)
-                       >= (SELECT ordinal FROM bot_messages WHERE message_id=allowed_message_id))))",
+                 SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9
+                 WHERE NOT EXISTS (SELECT 1 FROM memory_forget_targets w WHERE w.scope_type=?1 AND w.scope_id=?2 AND w.fingerprint=?3
+                   AND (?5>w.cutoff_at OR (?5=w.cutoff_at AND (?6 IS NULL OR (w.allowed_message_id IS NOT NULL AND
+                        (SELECT ordinal FROM bot_messages WHERE message_id=?6) >=
+                        (SELECT ordinal FROM bot_messages WHERE message_id=w.allowed_message_id))))) IS NOT TRUE)
+                 ON CONFLICT(scope_type,scope_id,fingerprint) DO UPDATE SET
+                 cutoff_at=excluded.cutoff_at,allowed_message_id=excluded.allowed_message_id",
                 params![
                     scope_type,
                     scope_id,
@@ -3292,4 +3311,55 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
     };
     tx.commit()?;
     Ok(out)
+}
+
+pub(crate) fn relocate_artifacts(tx: &Transaction<'_>, changes: Vec<ArtifactRelocationChange>) -> Result<Value> {
+    let mut results = Vec::with_capacity(changes.len());
+    for c in changes {
+        require_artifact(tx, &c.task_id, &c.id)?;
+        tx.execute(
+            "UPDATE artifacts
+             SET source_type = ?1, entry_file = ?2, root_dir = ?3, storage_path = ?4,
+                 version = version + 1, updated_at = ?5
+             WHERE id = ?6",
+            params![
+                c.source_type,
+                c.entry_file,
+                c.root_dir,
+                c.storage_path,
+                c.updated_at,
+                c.id
+            ],
+        )?;
+        tx.execute(
+            "DELETE FROM artifact_file_dependencies WHERE artifact_id = ?1",
+            [&c.id],
+        )?;
+        for dep in &c.dependencies {
+            tx.execute(
+                "INSERT INTO artifact_file_dependencies (artifact_id, file_path, dependency_kind, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    c.id,
+                    dep.file_path,
+                    dep.dependency_kind.as_deref().unwrap_or("runtime"),
+                    c.updated_at
+                ],
+            )?;
+        }
+        let version: i64 = tx.query_row(
+            "SELECT version FROM artifacts WHERE id = ?1",
+            [&c.id],
+            |r| r.get(0),
+        )?;
+        let revision = bump_artifact_revision_tx(tx, &c.task_id)?;
+        results.push(json!({
+            "id": c.id,
+            "taskId": c.task_id,
+            "version": version,
+            "revision": revision,
+            "updatedAt": c.updated_at,
+        }));
+    }
+    Ok(json!({ "updated": results }))
 }

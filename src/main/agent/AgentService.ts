@@ -273,7 +273,7 @@ import { AgentLoadoutService } from "./AgentLoadoutService";
 import { LibraryWorkspaceContextService } from "./LibraryWorkspaceContextService";
 import { SessionExtensionAssembler } from "./SessionExtensionAssembler";
 import { LIBRARY_EVIDENCE_JUDGE_PROMPT, type LibraryEvidenceJudge } from "../library/LibraryDeepSearch";
-import { getMaterialRetrievalSettings } from "../library/MaterialRetrievalSettings";
+import { readMaterialRetrievalSettings } from "../library/MaterialRetrievalSettings";
 import { SessionApprovalBridge } from "./SessionApprovalBridge";
 import { SessionLifecycleManager } from "./SessionLifecycleManager";
 import { SessionEventCoordinator } from "./SessionEventCoordinator";
@@ -6558,7 +6558,8 @@ export class AgentService {
       return history;
     } catch (err) {
       console.warn("[AgentService] loadTaskHistory failed", err);
-      return { messages: [], sessionFile: row.sessionFile, cwd: row.cwd };
+      return { messages: [], sessionFile: row.sessionFile, cwd: row.cwd,
+        historyError: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -7667,7 +7668,7 @@ export class AgentService {
   }
 
   async resolveLibraryEvidenceJudge(): Promise<LibraryEvidenceJudge> {
-    const modelId = getMaterialRetrievalSettings(this.db).decisionModel;
+    const modelId = (await readMaterialRetrievalSettings(this.db)).decisionModel;
     if (!modelId) throw new Error("请先在资料检索设置中选择深搜判断模型");
     const settings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
     const model = await this.resolveEnabledModel(modelId, settings);
@@ -7676,18 +7677,18 @@ export class AgentService {
       candidate.provider === model.provider && candidate.id === model.id);
     if (!model || !runtime || !available) throw new Error(`深搜判断模型不可用：${modelId}`);
     return async (input, signal, validate) => {
-      const guard = () => {
-        validate();
-        if (getMaterialRetrievalSettings(this.db).decisionModel !== modelId) {
+      const guard = async () => {
+        await validate();
+        if ((await readMaterialRetrievalSettings(this.db)).decisionModel !== modelId) {
           throw new Error("深搜期间判断模型已更改，请重试");
         }
       };
-      guard();
+      await guard();
       const response = await withModelInvocationSettings(settings, () => runtime.completeSimple(model, {
         systemPrompt: LIBRARY_EVIDENCE_JUDGE_PROMPT,
         messages: [{ role: "user", content: JSON.stringify(input), timestamp: Date.now() }],
       }, { signal, maxTokens: 1600, cacheRetention: "none" }), guard);
-      guard();
+      await guard();
       if (response.stopReason === "error" || response.stopReason === "aborted") {
         throw new Error(`深搜判断模型调用失败：${modelId}`);
       }

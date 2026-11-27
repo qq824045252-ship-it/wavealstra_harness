@@ -137,11 +137,19 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
       label: "长期记忆 · 读取",
       description: "读取一条当前任务可见的长期记忆完整状态，包括 scope、evidence、relations、来源与生命周期。",
       promptSnippet: "memory_get(id) — 读取单条长期记忆",
-      parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 120 }) }, { additionalProperties: false }),
-      execute: async (_id: string, params: { id: string }) => {
+      parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 120 }),
+        revision: Type.Optional(Type.Integer({ minimum: 1, description: "核对 Dots 指定版本的用户原话" })) }, { additionalProperties: false }),
+      execute: async (_id: string, params: { id: string; revision?: number }) => {
         try {
           readable("memory_get");
           const native = bridge.service.usesCoreRecall;
+          if (native && bridge.taskId === DOTS_TASK_ID) {
+            const source = await bridge.service.readDotsRevisionSource(bridge.taskId, params.id, params.revision);
+            readable("memory_get");
+            if (!source) throw new Error("该记忆没有可核验的可见原话");
+            return textResult(`[L1 ${params.id}@${source.revision}] 本修订出处=${JSON.stringify(source)}`, { id: params.id, revision: source.revision, source });
+          }
+          if (params.revision !== undefined && bridge.taskId !== DOTS_TASK_ID) throw new Error("只有 Dots 可以按修订核对原话");
           const saved = native ? await bridge.service.readCurrentCoreMemory(params.id, context()) : undefined;
           if (native && !saved) throw new Error("记忆不存在或不属于当前任务可见作用域");
           readable("memory_get");

@@ -98,6 +98,31 @@ export function memoryWithdrawalTargets(records: readonly MemoryWithdrawalSource
   return [...targets.values()];
 }
 
+export type WithdrawalFingerprint = Omit<Target, "cutoff_at" | "allowed_message_id">;
+
+export function matchesWithdrawalTarget(text: string, targets: readonly WithdrawalFingerprint[]): boolean {
+  const value = normalize(text);
+  const words = new Map<number, Set<string>>();
+  for (const word of text.normalize("NFKC").toLowerCase().match(/[a-z0-9]+/g) ?? []) {
+    let hashes = words.get(word.length);
+    if (!hashes) { hashes = new Set(); words.set(word.length, hashes); }
+    hashes.add(fingerprint(`word:${word}`));
+  }
+  const spans = new Map<number, Set<string>>();
+  const contains = (hash: string, length: number) => {
+    if (words.get(length)?.has(hash)) return true;
+    let hashes = spans.get(length);
+    if (!hashes) {
+      hashes = new Set();
+      for (let start = 0; start + length <= value.length; start++) hashes.add(fingerprint(`span:${value.slice(start, start + length)}`));
+      spans.set(length, hashes);
+    }
+    return hashes.has(hash);
+  };
+  return targets.some(target => contains(target.value_fingerprint ?? target.fingerprint, target.text_length)
+    && (!target.guard_fingerprint || target.guard_length !== null && contains(target.guard_fingerprint, target.guard_length)));
+}
+
 /** Source invalidation, not a second memory store: no forgotten content or history
  * deletion. Write invalidation in the same transaction as the corresponding removal. */
 export class MemoryForgetWatermarks {
@@ -208,28 +233,9 @@ export class MemoryForgetWatermarks {
   }
 
   private matches(text: string, targets: readonly Target[], createdAt: number, messageId?: string, allowSource = true): boolean {
-    const value = normalize(text);
-    const words = new Map<number, Set<string>>();
-    for (const word of text.normalize("NFKC").toLowerCase().match(/[a-z0-9]+/g) ?? []) {
-      let hashes = words.get(word.length);
-      if (!hashes) { hashes = new Set(); words.set(word.length, hashes); }
-      hashes.add(fingerprint(`word:${word}`));
-    }
-    const spans = new Map<number, Set<string>>();
-    const contains = (hash: string, length: number) => {
-      if (words.get(length)?.has(hash)) return true;
-      let hashes = spans.get(length);
-      if (!hashes) {
-        hashes = new Set();
-        for (let start = 0; start + length <= value.length; start++) hashes.add(fingerprint(`span:${value.slice(start, start + length)}`));
-        spans.set(length, hashes);
-      }
-      return hashes.has(hash);
-    };
-    return targets.some(target => !(allowSource || messageId !== target.allowed_message_id
-      ? this.after(target, createdAt, messageId) : false)
-      && contains(target.value_fingerprint ?? target.fingerprint, target.text_length)
-      && (!target.guard_fingerprint || target.guard_length !== null && contains(target.guard_fingerprint, target.guard_length)));
+    const active = targets.filter(target => !(allowSource || messageId !== target.allowed_message_id
+      ? this.after(target, createdAt, messageId) : false));
+    return matchesWithdrawalTarget(text, active);
   }
 
   private after(boundary: Pick<Target, "cutoff_at" | "allowed_message_id">, createdAt: number, messageId?: string): boolean {

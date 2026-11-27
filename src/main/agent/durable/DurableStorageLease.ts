@@ -14,6 +14,7 @@ export interface DurableStorageOwner {
 }
 
 export class DurableStorageOwnedError extends Error {
+  readonly code = "DURABLE_STORAGE_OWNED";
   readonly owner: DurableStorageOwner;
   readonly lockPath: string;
 
@@ -37,11 +38,20 @@ export interface DurableStorageLease {
   release(): void;
 }
 
-function isProcessAlive(pid: number): boolean {
+export function isProcessAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   if (pid === process.pid) return true;
   try {
     process.kill(pid, 0);
+    if (process.platform === "linux") {
+      // A killed writer can retain a PID until its parent reaps it.
+      try {
+        const status = readFileSync(`/proc/${pid}/status`, "utf8");
+        if (/^State:\s+[ZX]\b/m.test(status)) return false;
+      } catch {
+        // An unavailable procfs cannot prove that the writer exited.
+      }
+    }
     return true;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;

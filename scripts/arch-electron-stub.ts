@@ -44,3 +44,8 @@ export const safeStorage = {
   encryptString: (_value: string): Buffer => { throw new Error("Encryption unavailable in architecture fixture"); },
   decryptString: (_value: Buffer): string => { throw new Error("Encryption unavailable in architecture fixture"); },
 };
+
+// These surfaces are imported by the note operation dispatcher. The headless cases do not use dialogs.
+export const ipcMain = {};
+export const nativeTheme = {};
+export const screen = {};

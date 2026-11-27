@@ -1,3 +1,4 @@
+import { isProcessAlive } from "../src/main/agent/durable/DurableStorageLease";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -28,9 +29,7 @@ async function until(predicate: () => boolean | Promise<boolean>, label: string,
   throw new Error(`Timed out waiting for: ${label}`);
 }
 
-function alive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
+
 
 function sha256File(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -296,7 +295,11 @@ async function main(): Promise<void> {
       piVersion: versions.actual,
       expectedPiVersion: versions.expected,
       runtimeAuditExecutable,
-      extraEnv: { MYBUDDY_APP_PATH: process.cwd(), ...(process.env.MYBUDDY_ADMISSION_TRACE === "1" ? { MYBUDDY_ADMISSION_TRACE: "1" } : {}) },
+      extraEnv: { HOME: tempRoot, USERPROFILE: tempRoot, MYBUDDY_APP_PATH: process.cwd(),
+        ...(process.env.MYBUDDY_SQLITE_ATTEMPTS ? {
+          MYBUDDY_SQLITE_ATTEMPTS: process.env.MYBUDDY_SQLITE_ATTEMPTS,
+          NODE_OPTIONS: '--require=' + JSON.stringify(join(process.cwd(), "scripts", "no-sqlite-open-guard.cjs")),
+        } : {}), ...(process.env.MYBUDDY_ADMISSION_TRACE === "1" ? { MYBUDDY_ADMISSION_TRACE: "1" } : {}) },
     });
     assert(launchRes?.launched && launchRes.pid && launchRes.hostGeneration, "Story Step 1: Detached Pi Node Host started");
     const piPid1 = launchRes.pid!;
@@ -515,7 +518,7 @@ async function main(): Promise<void> {
 
     // Hard-kill Pi Host without manual fenceGeneration or manual launch: Core supervise_tick must auto-fence & respawn.
     try { process.kill(piPid1, "SIGKILL"); } catch { /* */ }
-    await until(() => !alive(piPid1), "Fault-killed Pi Host exited");
+    await until(() => !isProcessAlive(piPid1), "Fault-killed Pi Host exited");
 
     llm.setFaultMode(true, false);
     let recoveredPi: { pid?: number; hostGeneration?: string; status?: string } | undefined;
@@ -614,6 +617,34 @@ async function main(): Promise<void> {
     });
     const taskCheck = await db.readTask("task-story-1");
     assert.equal(taskCheck?.title, "Story Main Work", "Story Step 10: Pre-upgrade task & workspace persisted across stop + binary upgrade");
+    const historyClient = await AgentService.open(db, undefined, {
+      executionMode: "isolated-client", coreClient: () => uiUpgraded.getClient(),
+    });
+    try {
+      const readHistory = () => historyClient.loadTaskHistory("task-story-1", undefined, "current");
+      const reader = db.runtimeAuditReader!;
+      const send = reader.piStorage.bind(reader);
+      let rejected = false;
+      reader.piStorage = (command, signal) => {
+        if (command.action === "openReadOnly" && !rejected) {
+          rejected = true;
+          throw new Error("unconfirmed Core history view");
+        }
+        return send(command, signal);
+      };
+      try {
+        await assert.rejects(readHistory(), /unconfirmed Core history view/);
+      } finally {
+        reader.piStorage = send;
+      }
+      const history = await readHistory();
+      assert.ok(history.messages.some(row => row.role === "user" && row.text.includes("Produce story artifact")));
+      assert.ok(history.messages.some(row => row.role === "assistant" && row.text.includes("Completed story-artifact.txt")));
+      console.log("PASS desktop history reloads user and assistant text after Core restart; failed Core read never rebinds");
+    } finally {
+      historyClient.dispose();
+    }
+    assert.equal(existsSync(join(dataDir, "app.db")), false, "Story completed without creating a SQLite application database");
     await uiUpgraded.closeUiSession();
 
     console.log(`PASS Step 10 Story (§6 Steps 1-10): coreSha256=${coreHash.slice(0, 12)}, effectCount=${llm.getEffectCount()}, ctrlMs=${ctrlElapsedMs.toFixed(2)}`);

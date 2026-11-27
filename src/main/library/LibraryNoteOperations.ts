@@ -8,10 +8,12 @@ import { parseHTML } from "linkedom/worker";
 import TurndownService from "turndown";
 import { gfm } from "turndown-plugin-gfm";
 import JSZip from "jszip";
-import { LIBRARY_INLINE_FILE_MAX_BYTES, type LibraryItemDto, type LibraryNoteOperation, type LibraryNoteOperationResults } from "../../shared/library-ipc";
+import { LIBRARY_INLINE_FILE_MAX_BYTES, type LibraryContentDto, type LibraryItemDto, type LibraryNoteOperation, type LibraryNoteOperationResults } from "../../shared/library-ipc";
 import type { BrowserHost } from "../browser/BrowserHost";
 import type { LibraryService } from "./LibraryService";
 import { rewriteNoteLinks } from "./library-note-links";
+
+import { matchesImageMime } from "./note-image-format";
 
 const IMAGE_LIMIT = 20 * 1024 * 1024;
 const NOTE_IMAGE_TYPES = new Map([
@@ -28,7 +30,8 @@ const Turndown = TurndownService as new (options: { headingStyle: "atx"; codeBlo
 const clipMarkdown = new Turndown({ headingStyle: "atx", codeBlockStyle: "fenced" });
 clipMarkdown.use(gfm);
 
-export async function runLibraryNoteOperation(library: LibraryService, browser: BrowserHost, parent: BrowserWindow | null, request: LibraryNoteOperation) {
+export async function runLibraryNoteOperation(library: LibraryService, browser: BrowserHost, parent: BrowserWindow | null, request: LibraryNoteOperation,
+  saveDialog = showSaveFileDialog, pickImageFiles = showOpenFileDialog) {
   switch (request.type) {
     case "trashList": return library.readTrashedNotes(request.owner);
     case "metadata": return library.writeNoteMetadata(request.owner, request.id, request);
@@ -37,34 +40,35 @@ export async function runLibraryNoteOperation(library: LibraryService, browser: 
     case "move": return library.moveNotes(request.owner, request.ids, request.collectionId);
     case "merge":
       await library.flushPendingTextWrites();
-      return library.mergeNotes(request.owner, request.ids);
+      return library.mergeNotesAsync(request.owner, request.ids);
     case "versions": return library.readVersions(request.id);
     case "readVersion": return library.readVersionBody(request.id, request.version);
-    case "noteImage": return library.noteImageUrl(request.id, request.href, request.version);
+    case "noteImage": return library.noteImageUrlAsync(request.id, request.href, request.version);
     case "restoreVersion": {
-      library.requireOwnedNoteItems(request.owner, [request.id]);
+      await library.readOwnedNoteItems(request.owner, [request.id]);
       const content = await library.readVersionBody(request.id, request.version);
-      library.requireOwnedNoteItems(request.owner, [request.id]);
-      return library.writeContentAsync({ id: request.id, content, expectedContentHash: request.expectedContentHash });
+      const [item] = await library.readOwnedNoteItems(request.owner, [request.id]);
+      return library.writeContentAsync({ id: request.id, content, expectedContentHash: request.expectedContentHash }, item.spaceId);
     }
     case "addImage": {
-      const [note] = library.requireOwnedNoteItems(request.owner, [request.id]);
-      return library.previewUrl(library.addNoteImage(request.owner, note.spaceId, note.collectionId, request.name, request.mime, request.bytes).id);
+      const [note] = await library.readOwnedNoteItems(request.owner, [request.id]);
+      if (note.kind !== "markdown") throw new Error("请选择可编辑的笔记");
+      const image = await library.addNoteImageAsync(request.owner, note.spaceId, note.collectionId, request.name, request.mime, request.bytes, note.id);
+      return library.previewUrl(image.id);
     }
-    case "pickImages": return pickNoteImages(library, parent, request);
+    case "pickImages": return pickNoteImages(library, parent, request, pickImageFiles);
     case "openLink":
       if (!/^https?:$/i.test(new URL(request.url).protocol)) throw new Error("只能打开 HTTP 或 HTTPS 网页");
       await shell.openExternal(request.url);
       return;
     case "attachment": {
-      const item = library.getItem(request.id);
-      const asset = item && ["office", "pdf"].includes(item.kind) ? library.resolvePreview(item.id, "") : null;
+      const asset = await library.readPreview(request.id, "", ["office","pdf"]);
       if (!asset) throw new Error("附件预览不可用");
       if (statSync(asset.path).size > LIBRARY_INLINE_FILE_MAX_BYTES) throw new Error("请通过「打开位置」访问大型附件");
       return "data:" + asset.mime + ";base64," + readFileSync(asset.path).toString("base64");
     }
     case "importFolder": {
-      if (request.spaceId) library.requireOwnedNoteDestination(request.owner, request.spaceId, request.collectionId);
+      if (request.spaceId) await library.checkFolderImportDestination(request.owner, request.spaceId, request.collectionId);
       const options: Electron.OpenDialogOptions = { title: "导入本地文件夹", properties: ["openDirectory"] };
       const selection = await showOpenFileDialog(parent, options);
       if (selection.canceled || !selection.filePaths[0]) return null;
@@ -84,7 +88,7 @@ export async function runLibraryNoteOperation(library: LibraryService, browser: 
       if (result.canceled || !path) return null;
       return library.importNoteBackup(request.owner, path);
     }
-    case "export": return exportNotes(library, parent, request);
+    case "export": return exportNotes(library, parent, request, saveDialog);
     case "clip": return clipPage(library, browser, request);
   }
 }
@@ -93,14 +97,15 @@ async function pickNoteImages(
   library: LibraryService,
   parent: BrowserWindow | null,
   { owner, id }: Extract<LibraryNoteOperation, { type: "pickImages" }>,
+  pick: typeof showOpenFileDialog,
 ): Promise<LibraryNoteOperationResults["pickImages"]> {
-  const getNote = () => {
-    const [note] = library.requireOwnedNoteItems(owner, [id]);
+  const getNote = async () => {
+    const [note] = await library.readOwnedNoteItems(owner, [id]);
     if (note.kind !== "markdown") throw new Error("请选择可编辑的笔记");
     return note;
   };
-  getNote();
-  const selection = await showOpenFileDialog(parent, {
+  await getNote();
+  const selection = await pick(parent, {
     title: "插入图片", buttonLabel: "插入", properties: ["openFile", "multiSelections"],
     filters: [{ name: "图片", extensions: [...NOTE_IMAGE_TYPES.keys()] }],
   });
@@ -114,8 +119,8 @@ async function pickNoteImages(
       if (!mime) throw new Error("请选择 PNG、JPEG、GIF、WebP、AVIF 或 BMP 图片");
       const bytes = await readPickedImage(path);
       if (!matchesImageMime(bytes, mime)) throw new Error("图片内容与文件格式不符");
-      const note = getNote();
-      const image = library.addNoteImage(owner, note.spaceId, note.collectionId, name, mime, bytes);
+      const note = await getNote();
+      const image = await library.addNoteImageAsync(owner, note.spaceId, note.collectionId, name, mime, bytes, note.id);
       images.push({ name, url: library.previewUrl(image.id) });
     } catch (error) {
       errors.push(`${name}：${error instanceof Error ? error.message : "无法导入图片"}`);
@@ -144,29 +149,8 @@ async function readPickedImage(path: string): Promise<Buffer> {
   }
 }
 
-function matchesImageMime(bytes: Buffer, mime: string): boolean {
-  const header = (start: number, end: number) => bytes.toString("latin1", start, end);
-  switch (mime) {
-    case "image/png": return bytes.length >= 24 && header(0, 8) === "\x89PNG\r\n\x1a\n";
-    case "image/jpeg": return bytes.length >= 4 && header(0, 3) === "\xff\xd8\xff";
-    case "image/gif": return bytes.length >= 13 && /^GIF8[79]a$/.test(header(0, 6));
-    case "image/webp": return bytes.length >= 16 && header(0, 4) === "RIFF" && header(8, 12) === "WEBP";
-    case "image/bmp": return bytes.length >= 26 && header(0, 2) === "BM";
-    case "image/avif": {
-      if (bytes.length < 16 || header(4, 8) !== "ftyp") return false;
-      if (/^avi[fs]$/.test(header(8, 12))) return true;
-      const boxLength = Math.min(bytes.readUInt32BE(0), bytes.length);
-      for (let offset = 16; offset + 4 <= boxLength; offset += 4) {
-        if (/^avi[fs]$/.test(header(offset, offset + 4))) return true;
-      }
-      return false;
-    }
-    default: return false;
-  }
-}
-
 async function clipPage(library: LibraryService, browser: BrowserHost, request: Extract<LibraryNoteOperation, { type: "clip" }>) {
-  library.requireOwnedNoteDestination(request.owner, request.spaceId, request.collectionId);
+  await library.checkFolderImportDestination(request.owner, request.spaceId, request.collectionId);
   const host = browser.getTabHost(request.tabId);
   const wc = host?.inspectionWebContents;
   if (!host || !wc || wc.isDestroyed() || browser.activeTabId !== request.tabId || wc.isLoadingMainFrame()) {
@@ -227,14 +211,14 @@ async function clipPage(library: LibraryService, browser: BrowserHost, request: 
       failedImages.add(src);
     }
   }
-  library.requireOwnedNoteDestination(request.owner, request.spaceId, request.collectionId);
+  await library.checkFolderImportDestination(request.owner, request.spaceId, request.collectionId);
   const createdImages: LibraryItemDto[] = [];
   const stored = new Map<string, string>();
   try {
     for (const [src, image] of capturedImages) {
       if (!image) continue;
       try {
-        const item = library.addNoteImage(request.owner, request.spaceId, request.collectionId, basename(new URL(src).pathname), image.mime, image.bytes);
+        const item = await library.addNoteImageAsync(request.owner, request.spaceId, request.collectionId, basename(new URL(src).pathname), image.mime, image.bytes);
         createdImages.push(item);
         stored.set(src, library.previewUrl(item.id));
       } catch { failedImages.add(src); }
@@ -246,10 +230,10 @@ async function clipPage(library: LibraryService, browser: BrowserHost, request: 
       else if (!toWebUrl(src, page.base)) img.replaceWith(content.ownerDocument.createTextNode(img.getAttribute("alt") || "图片未保存"));
     }
     const title = (article?.title || page.title || "网页剪藏").trim().slice(0, 200);
-    const item = library.createItem({ spaceId: request.spaceId, collectionId: request.collectionId, kind: "markdown",
-      title, content: clipMarkdown.turndown(content.innerHTML).trim() || initial }, { url, title: page.title || title, capturedAt,
+    const item = await library.createItemAsync({ spaceId: request.spaceId, collectionId: request.collectionId, kind: "markdown",
+      title, content: clipMarkdown.turndown(content.innerHTML).trim() || initial }, { owner: request.owner, source: { url, title: page.title || title, capturedAt,
       failedImages: failedImages.size ? [...failedImages] : undefined },
-      [...new Set(request.tags.map((tag) => tag.trim()).filter(Boolean))]);
+      tags: [...new Set(request.tags.map((tag) => tag.trim()).filter(Boolean))] });
     return { item, failedImages: [...failedImages] };
   } catch (error) {
     for (const item of createdImages) {
@@ -288,42 +272,48 @@ async function fetchImage(session: Electron.Session, url: string): Promise<{ byt
   return { bytes: Buffer.concat(chunks, size), mime };
 }
 
-async function exportNotes(library: LibraryService, parent: BrowserWindow | null, request: Extract<LibraryNoteOperation, { type: "export" }>) {
+async function exportNotes(library: LibraryService, parent: BrowserWindow | null, request: Extract<LibraryNoteOperation, { type: "export" }>, saveDialog: typeof showSaveFileDialog) {
   await library.flushPendingTextWrites();
-  const content = [...new Set(request.ids)].map((id) => library.readContent(id));
+  const content: LibraryContentDto[] = [];
+  for (const id of new Set(request.ids)) content.push(await library.readContentAsync(id));
   if (!content.length || content.some((entry) => entry.item.kind !== "markdown")) throw new Error("请选择要导出的 Markdown 笔记");
   if (content.some((entry) => entry.contentTooLarge)) throw new Error("请通过「打开位置」复制大型资料原文件");
   const [first] = content;
   const format = request.format;
   const assets = new Map<string, { path: string; mime: string; name: string }>();
-  const findAsset = (id: string, source: LibraryItemDto) => {
-    const item = library.getItem(id);
+  const findAsset = async (id: string, source: LibraryItemDto) => {
+    const item = await library.readItemAsync(id);
     if (!item || item.spaceId !== source.spaceId || item.kind === "markdown") return;
-    const asset = library.resolvePreview(id, "");
+    const asset = await library.readPreview(id, "");
     if (!asset) return;
     const record = { ...asset, name: id + extname(item.filename) };
     assets.set(id, record);
     return record;
   };
-  const portable = (entry: typeof first, directory: string) => rewriteNoteLinks(entry.content, (href) => {
-    const id = NOTE_LINK.exec(href)?.[1];
-    const asset = id && findAsset(id, entry.item);
-    return asset ? directory + "/" + asset.name : undefined;
-  });
+  const portable = async (entry: typeof first, directory: string) => {
+    const links = new Set<string>();
+    rewriteNoteLinks(entry.content, href => { if (NOTE_LINK.test(href)) links.add(href); return undefined; });
+    const replacements = new Map<string, string>();
+    for (const href of links) {
+      const asset = await findAsset(NOTE_LINK.exec(href)![1], entry.item);
+      if (asset) replacements.set(href, directory + "/" + asset.name);
+    }
+    return rewriteNoteLinks(entry.content, href => replacements.get(href));
+  };
   const archive = format === "markdown" && content.length > 1;
   const ext = archive ? "zip" : format === "markdown" ? "md" : format;
   const options = { defaultPath: first.item.title.replace(/[<>:"/\\|?*]/g, "_").slice(0, 120) + "." + ext,
     filters: [{ name: ext.toUpperCase(), extensions: [ext] }] };
-  const result = await showSaveFileDialog(parent, options);
+  const result = await saveDialog(parent, options);
   if (result.canceled || !result.filePath) return false;
   if (archive) {
     const zip = new JSZip();
-    for (const doc of content) zip.file(doc.item.title.replace(/[<>:"/\\|?*]/g, "_").slice(0, 120) + "-" + doc.item.id + ".md", portable(doc, "assets"));
+    for (const doc of content) zip.file(doc.item.title.replace(/[<>:"/\\|?*]/g, "_").slice(0, 120) + "-" + doc.item.id + ".md", await portable(doc, "assets"));
     for (const asset of assets.values()) zip.file("assets/" + asset.name, readFileSync(asset.path));
     await writeFile(result.filePath, await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
   } else if (format === "markdown") {
     const directory = basename(result.filePath, extname(result.filePath)) + ".assets";
-    const markdown = portable(first, encodeURIComponent(directory));
+    const markdown = await portable(first, encodeURIComponent(directory));
     if (assets.size) {
       const path = join(dirname(result.filePath), directory);
       await mkdir(path, { recursive: true });
@@ -343,7 +333,7 @@ async function exportNotes(library: LibraryService, parent: BrowserWindow | null
       const src = node.getAttribute("src");
       if (!src) continue;
       const id = NOTE_LINK.exec(src)?.[1];
-      const asset = id ? findAsset(id, first.item) : !/[:?#\\/]/.test(src) ? library.resolvePreview(first.item.id, decodeURIComponent(src)) : null;
+      const asset = id ? await findAsset(id, first.item) : !/[:?#\\/]/.test(src) ? await library.readPreview(first.item.id, decodeURIComponent(src)) : null;
       if (asset && /^image\/(png|jpeg|gif|webp|avif|bmp)$/.test(asset.mime)) {
         node.setAttribute("src", "data:" + asset.mime + ";base64," + readFileSync(asset.path).toString("base64"));
       } else if (!/^data:image\/(png|jpeg|gif|webp|avif|bmp);base64,/i.test(src)) node.removeAttribute("src");

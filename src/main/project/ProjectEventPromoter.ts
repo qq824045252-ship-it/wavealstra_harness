@@ -83,11 +83,11 @@ export class ProjectEventPromoter {
     promotedBy: "user" | "agent",
     agent?: { taskId?: string },
   ): Promise<ProjectEventPromoteResultDto> {
-    const project = this.projects.get(event.projectId);
+    const project = await this.projects.readDetails(event.projectId);
     if (!project) throw new Error(`项目不存在：${event.projectId}`);
     if (project.archived) throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
-    const existing = this.projects.findProjectEventPromotion(event.projectId, event.id, "library");
-    if (existing) return this.reusedPromotion(existing);
+    const existing = await this.projects.readEventPromotion(event.projectId, event.id, "library");
+    if (existing) return this.reusedLibraryPromotion(existing);
     const document = this.libraryRequest(event, request);
     const status = await this.library.promoteProjectEventDocument({
       ...document, projectId: event.projectId, eventId: event.id, promotedBy,
@@ -95,12 +95,18 @@ export class ProjectEventPromoter {
       createdAt: this.now(), spaceName: `${project.name}·项目资料`,
     });
     if (!status) return this.promote(event.id, request, agent);
-    const promotion = this.projects.findProjectEventPromotion(event.projectId, event.id, "library");
+    const promotion = await this.projects.readEventPromotion(event.projectId, event.id, "library");
     if (!promotion) throw new Error("项目事件与资料的关联已被移除");
-    if (status === "existingPromotion") return this.reusedPromotion(promotion);
+    if (status === "existingPromotion") return this.reusedLibraryPromotion(promotion);
     return {
       promotion, targetKind: "library", targetId: promotion.targetId, targetTitle: promotion.targetTitle, reused: false,
     };
+  }
+
+  private async reusedLibraryPromotion(promotion: ProjectEventPromotionDto): Promise<ProjectEventPromoteResultDto> {
+    const { targetKind, targetId, targetTitle } = promotion;
+    const target = await this.library.readSnapshot({itemId: targetId});
+    return {promotion, targetKind, targetId, targetTitle, reused:true, targetMissing:!target.items.length};
   }
 
   private reusedPromotion(promotion: ProjectEventPromotionDto): ProjectEventPromoteResultDto {

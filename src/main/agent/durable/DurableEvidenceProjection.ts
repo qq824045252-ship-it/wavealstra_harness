@@ -29,6 +29,12 @@ export class DurableEvidenceProjection {
 
   constructor(private readonly options: DurableEvidenceOptions, private readonly conversation: Conversation, private readonly models: Models) {
     this.projection = new EphemeralContextProjection({ ...options, registerRequestGuard: () => {},
+      privateGatewayInput: async (taskId,userId) => {
+        const entry = this.entries.get(Number(userId));
+        if (entry?.kind !== "mybuddy.user" || !options.memory) return false;
+        const input = (entry.data as {mybuddyInput?: import("./DurableHistoryProjection").DurableInputMetadata})?.mybuddyInput;
+        return options.memory.allowsGatewayPersonalRecall(taskId,input?.gatewayOrigin);
+      },
       delegatedSources: userId => {
         const entry = this.entries.get(Number(userId));
         if (entry?.kind !== "mybuddy.user") return [];
@@ -118,7 +124,7 @@ export class DurableEvidenceProjection {
       ? ordered.find(entry => nativeUser(entry) && origin(entry)) : undefined;
     const legacyGatewayHistory = firstIsolatedGatewayInput && ordered.some(entry => entry.id < firstIsolatedGatewayInput.id && nativeUser(entry));
     if (legacyGatewayHistory || personalScope && (withdrawHistory || priorMemoryToolResult
-      || (isDots || cannotRecallPrivateHistory) && this.projection.requiresFreshDotsHistory(scope))) {
+      || (isDots || cannotRecallPrivateHistory) && await this.projection.requiresFreshDotsHistory(scope))) {
       const anchor = [...ordered].reverse().find(nativeUser);
       if (!anchor || !this.newest) throw new Error("Dots 无法确认重建上下文的原始输入");
       const boundary = { anchor: anchor.id, through: this.newest, withdrawal };
@@ -211,7 +217,7 @@ export class DurableEvidenceProjection {
     return async () => {
       const scope = await this.options.scope();
       await guard();
-      if (!this.usesDotsPersonalScope(scope) || this.readDotsWithdrawal() !== withdrawal || this.projection.requiresFreshDotsHistory(scope))
+      if (!this.usesDotsPersonalScope(scope) || this.readDotsWithdrawal() !== withdrawal || await this.projection.requiresFreshDotsHistory(scope))
         throw new Error("Dots 的记忆在本次请求期间已变化，请重新发送");
     };
   }

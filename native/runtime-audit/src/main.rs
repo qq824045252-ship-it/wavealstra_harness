@@ -39,6 +39,7 @@ mod connector_import;
 mod connector_install;
 mod connector_market;
 mod core_lease;
+mod cold_profile;
 mod core_supervisor;
 mod cron_data;
 mod cron_plan;
@@ -87,6 +88,10 @@ mod library_backup;
 mod library_delete;
 mod library_index;
 mod library_metadata;
+mod library_create_document;
+mod library_catalog_write;
+mod library_import;
+mod library_artifact_save;
 mod library_note_changes;
 mod library_restore;
 mod library_text;
@@ -1034,7 +1039,6 @@ enum Data {
     WorkCardRead(work_queue_data::Reply),
     BotHistoryPage(bot_history_data::Page),
     WorkspaceSharedData(workspace_shared_data::WorkspaceSharedData),
-    WorkGraph(Vec<work_graph_data::Edge>),
     WorkGraphWrite(work_graph_data::Reply),
     WorkGraphIntegrity(work_graph_integrity::Report),
     FileBackupList(Option<Vec<file_backup_list::Backup>>),
@@ -1895,7 +1899,9 @@ fn run_maintenance(
         }
         MaintenanceJob::RecoverLibraryRestores { root } => {
             let (_lease, mut writer) = checkout_with_gate("library", None)?;
-            library_restore::recover(writer.conn_mut(), &root, None).map(|count| Data::Json(count.into()))
+            library_text_save::recover(writer.conn_mut(), &root)?;
+            let count = library_restore::recover(writer.conn_mut(), &root, None)?;
+            Ok(Data::Json(count.into()))
         }
         MaintenanceJob::DeleteProject {
             operation_id,
@@ -1952,6 +1958,7 @@ fn read(
                 owner_generation,
                 host_generation,
                 ephemeral: true,
+                stream_seq,
                 ..
             },
         client,
@@ -1976,6 +1983,7 @@ fn read(
             attempt,
             progress,
             owner_generation.as_deref(),
+            stream_seq,
         )
         .map(Data::Json);
     }
@@ -2585,7 +2593,7 @@ fn read(
         .map(Data::WorkspaceSharedData);
     }
     if let Request::ReadWorkGraph { query } = request {
-        return work_graph_data::read(db, query).map(Data::WorkGraph);
+        return work_graph_data::read(db, query).map(Data::Json);
     }
     if let Request::WriteWorkGraph { mutation } = request {
         return Ok(Data::WorkGraphWrite(work_graph_data::write(
@@ -4552,6 +4560,13 @@ fn run() -> Result<()> {
             db_schema::initialize_database(Path::new(data_dir), Path::new(db_path), expected, release)?;
         println!("{}", serde_json::to_string(&report)?);
         return Ok(());
+    }
+    if all.first().is_some_and(|arg| arg == "--verify-cold-profile") {
+        return match all.as_slice() {
+            [_, file] => cold_profile::verify(Path::new(file), None),
+            [_, file, known] => cold_profile::verify(Path::new(file), Some(Path::new(known))),
+            _ => Err("expected --verify-cold-profile <database> [later database]".into()),
+        };
     }
     let mut args = all.into_iter();
     let argument = args.next().ok_or("missing database path")?;

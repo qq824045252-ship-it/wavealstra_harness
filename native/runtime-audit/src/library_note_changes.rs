@@ -26,19 +26,26 @@ pub struct Target {
     rename_all_fields = "camelCase"
 )]
 pub enum Change {
+    SaveArtifact { save: crate::library_artifact_save::Save },
+    Import {batch:crate::library_import::Batch},
+    Create {document:crate::library_create_document::Document},
     Metadata {
+        owner: Option<crate::library_backup::Owner>,
         item: Target,
         tags: Option<Vec<String>>,
         pinned: Option<bool>,
     },
     Move {
+        owner: Option<crate::library_backup::Owner>,
         items: Vec<Target>,
         collection_id: Option<String>,
     },
     Trash {
+        owner: Option<crate::library_backup::Owner>,
         items: Vec<Target>,
     },
     Restore {
+        owner: Option<crate::library_backup::Owner>,
         items: Vec<Target>,
         root: PathBuf,
         chunk_size: usize,
@@ -64,21 +71,31 @@ fn writable(db: &Connection, item: &Target, include_trash: bool) -> Result<bool>
 }
 
 pub fn write(db: &mut Connection, change: Change, updated_at: i64) -> Result<Value> {
+    if let Change::SaveArtifact { save }=change { return crate::library_artifact_save::write(db,save,updated_at); }
+    if let Change::Import {batch}=change {return crate::library_import::apply(db,batch,updated_at);}
+    if let Change::Create {document}=change { return crate::library_create_document::create(db,document,updated_at); }
     let tx = db.transaction()?;
     let items = match &change {
+        Change::SaveArtifact {..} | Change::Import {..} | Change::Create {..} => unreachable!(),
         Change::Metadata { item, .. } => std::slice::from_ref(item),
-        Change::Move { items, .. } | Change::Trash { items } | Change::Restore { items, .. } => {
+        Change::Move { items, .. } | Change::Trash { items, .. } | Change::Restore { items, .. } => {
             items
         }
     };
     let include_trash = matches!(&change, Change::Trash { .. } | Change::Restore { .. });
+    let owner = match &change {
+        Change::Metadata { owner, .. } | Change::Move { owner, .. } | Change::Trash { owner, .. } | Change::Restore { owner, .. } => owner,
+        _ => unreachable!(),
+    };
+    let spaces = owner.as_ref().map(|owner| crate::library_backup::spaces(&tx, owner)).transpose()?;
     for item in items {
-        if !writable(&tx, item, include_trash)? {
+        if spaces.as_ref().is_some_and(|ids| !ids.contains(&item.space_id)) || !writable(&tx, item, include_trash)? {
             return Ok(json!({ "status": "scopeChanged" }));
         }
     }
     let response = match change {
-        Change::Metadata { item, tags, pinned } => {
+        Change::SaveArtifact {..} | Change::Import {..} | Change::Create {..} => unreachable!(),
+        Change::Metadata { item, tags, pinned, .. } => {
             let metadata: Option<String> = tx.query_row(
                 "SELECT note_metadata FROM library_items WHERE id=?1",
                 [&item.id],
@@ -111,7 +128,7 @@ pub fn write(db: &mut Connection, change: Change, updated_at: i64) -> Result<Val
         }
         Change::Move {
             items,
-            collection_id,
+            collection_id, ..
         } => {
             if let Some(id) = &collection_id {
                 let space: Option<String> = tx
@@ -137,7 +154,7 @@ pub fn write(db: &mut Connection, change: Change, updated_at: i64) -> Result<Val
             }
             json!({ "status": "updated" })
         }
-        Change::Trash { items } => {
+        Change::Trash { items, .. } => {
             let mut update = tx.prepare(
                 "UPDATE library_items SET trashed_at=?1,updated_at=?1 WHERE id=?2 AND coalesce(trashed_at,0)=0"
             )?;
@@ -150,7 +167,7 @@ pub fn write(db: &mut Connection, change: Change, updated_at: i64) -> Result<Val
             items,
             root,
             chunk_size,
-            overlap,
+            overlap, ..
         } => {
             if !root.is_absolute() {
                 return Err("invalid library restore root".into());

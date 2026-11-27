@@ -27,6 +27,14 @@ pub enum Request {
     Read {
         event_id: String,
     },
+    Document {
+        project_id: String,
+        event_id: String,
+        title: String,
+        body: String,
+        r#ref: String,
+        created_at: i64,
+    },
     Triage {
         project_id: String,
         event_id: String,
@@ -57,7 +65,7 @@ pub struct EventRow {
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum Reply {
-    Found { event: EventRow },
+    Found { event: EventRow, created: bool },
     MissingProject,
     MissingEvent,
     Archived,
@@ -73,9 +81,59 @@ pub fn run(db: &mut Connection, request: Request) -> Reply {
 fn apply(db: &mut Connection, request: Request) -> duckdb::Result<Reply> {
     match request {
         Request::Read { event_id } => match read_event(db, &event_id)? {
-            Some(event) => Ok(Reply::Found { event }),
+            Some(event) => Ok(Reply::Found {
+                event,
+                created: false,
+            }),
             None => Ok(Reply::MissingEvent),
         },
+        Request::Document {
+            project_id,
+            event_id,
+            title,
+            body,
+            r#ref,
+            created_at,
+        } => {
+            if title.trim().is_empty()
+                || title.encode_utf16().count() > 200
+                || body.trim().is_empty()
+                || body.encode_utf16().count() > 4000
+                || r#ref.trim().is_empty()
+                || r#ref.encode_utf16().count() > 200
+            {
+                return Ok(Reply::Rejected {
+                    message: "文档内容或引用无效".into(),
+                });
+            }
+            let tx = db.transaction()?;
+            match tx
+                .query_row(
+                    "SELECT archived!=0 FROM projects WHERE id=?",
+                    [&project_id],
+                    |r| r.get::<_, bool>(0),
+                )
+                .optional()?
+            {
+                None => return Ok(Reply::MissingProject),
+                Some(true) => return Ok(Reply::Archived),
+                Some(false) => {}
+            }
+            let existing:Option<String>=tx.query_row("SELECT id FROM project_events WHERE project_id=? AND source='document' AND ref=? ORDER BY created_at,id LIMIT 1",
+                params![project_id,r#ref],|r| r.get(0)).optional()?;
+            let created = existing.is_none();
+            let id = existing.unwrap_or(event_id);
+            if created {
+                tx.execute("INSERT INTO project_events(id,project_id,source,kind,title,body,ref,created_at)
+                    VALUES(?,?,'document','note',?,?,?,?)",params![id,project_id,title,body,r#ref,created_at])?;
+                tx.execute("DELETE FROM project_events WHERE project_id=?1 AND id<>?2 AND id NOT IN (
+                    SELECT id FROM project_events WHERE project_id=?1 ORDER BY created_at DESC,id DESC LIMIT 1000)",
+                    params![project_id,id])?;
+            }
+            let event = read_event(&tx, &id)?.ok_or(duckdb::Error::QueryReturnedNoRows)?;
+            tx.commit()?;
+            Ok(Reply::Found { event, created })
+        }
         Request::Triage {
             project_id,
             event_id,
@@ -84,7 +142,7 @@ fn apply(db: &mut Connection, request: Request) -> duckdb::Result<Reply> {
             let tx = db.transaction()?;
             let archived = tx
                 .query_row(
-                    "SELECT archived FROM projects WHERE id = ?1",
+                    "SELECT archived!=0 FROM projects WHERE id = ?1",
                     [&project_id],
                     |row| row.get::<_, bool>(0),
                 )
@@ -105,7 +163,10 @@ fn apply(db: &mut Connection, request: Request) -> duckdb::Result<Reply> {
                 return Ok(Reply::MissingEvent);
             };
             tx.commit()?;
-            Ok(Reply::Found { event })
+            Ok(Reply::Found {
+                event,
+                created: false,
+            })
         }
     }
 }

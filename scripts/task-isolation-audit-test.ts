@@ -20,6 +20,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -222,6 +223,21 @@ db.close();
 /* ------------------------------------------------------------------ */
 
 let dryReport: TaskIsolationAuditReport;
+
+check("dry-run and repair preserve missing and incompatible legacy databases", () => {
+  const missing = join(tempRoot, "absent.db");
+  const old = join(tempRoot, "incompatible.db");
+  const legacy = new DatabaseSync(old);
+  legacy.exec("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES ('keep')");
+  legacy.close();
+  const original = readFileSync(old);
+  for (const repairSafeMetadata of [false, true]) {
+    assert.throws(() => runTaskIsolationAudit({ dbPath: missing, workspacesRoot, repairSafeMetadata }));
+    assert.equal(existsSync(missing), false);
+    assert.throws(() => runTaskIsolationAudit({ dbPath: old, workspacesRoot, repairSafeMetadata }), /不兼容/);
+    assert.deepEqual(readFileSync(old), original);
+  }
+});
 
 check("dry-run：不修改 DB cwd / 不创建缺失任务目录", () => {
   const probeIds = ["task-A", "task-B", "task-C", "task-D", "task-E", "task-F", "task-G"];

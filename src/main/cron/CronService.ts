@@ -904,7 +904,16 @@ export class CronService {
   }
 
   /** 归档项目会暂停全部自动化；恢复项目时不自动恢复，避免后台任务意外重启。 */
-  disableProject(projectId: string): void {
+  async disableProject(projectId: string): Promise<void> {
+    if (this.requiresRustWrites) {
+      // Core pauses these jobs in the same transaction that archives the project.
+      for (const job of await this.db.readCronJobs()) {
+        if (job.projectId !== projectId || job.enabled) continue;
+        this.disarm(job.id);
+        broadcast(CronIpc.event, { type: "upsert", job: withNextRun(job) });
+      }
+      return;
+    }
     for (const job of this.db.listCronJobs().filter((item) => item.projectId === projectId)) {
       if (!job.enabled) continue;
       this.db.setCronEnabled(job.id, false);
@@ -913,9 +922,16 @@ export class CronService {
     }
   }
 
-  disableTask(taskId: string): void {
-    for (const job of this.db.listCronJobs()) {
-      if (job.sourceTaskId === taskId || (job.target?.kind === "task" && job.target.taskId === taskId)) this.setEnabled(job.id, false);
+  async disableTask(taskId: string): Promise<void> {
+    const applies = (job: CronJobDto) => job.sourceTaskId === taskId || (job.target?.kind === "task" && job.target.taskId === taskId);
+    for (const job of await this.db.readCronJobs()) {
+      if (!applies(job)) continue;
+      const state = await this.db.readCronJobState(job.id);
+      if (!state || !applies(state.job) || !state.job.enabled) continue;
+      const next: CronJobDto = { ...state.job, enabled: false, updatedAt: Date.now(),
+        reminder: state.job.reminder && { ...state.job.reminder, state: "paused" } };
+      await this.commitPlan(next, state.expectedJob, {});
+      await this.publishConfirmedPlan(next, false);
     }
   }
 

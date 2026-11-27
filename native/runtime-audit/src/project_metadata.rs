@@ -16,6 +16,11 @@ const PROJECT_COLUMNS: &str =
     rename_all_fields = "camelCase"
 )]
 pub enum Query {
+    FolderRelocation,
+    WriteContext {
+        project_id: Option<String>, resource_id: Option<String>, todo_id: Option<String>,
+        task_id: Option<String>, space_id: Option<String>, #[serde(default)] names: bool,
+    },
     WritesSupported,
     TodoWritesSupported,
     EventTodoPromotionSupported,
@@ -24,6 +29,7 @@ pub enum Query {
     MemoryWritesSupported,
     MemoryEditsSupported,
     ReviewWritesSupported,
+    EventPromotion { project_id: String, event_id: String, target_kind: String },
     WriteReceipt { operation_id: String },
     WithdrawalSnapshot {
         project_id: String,
@@ -66,9 +72,32 @@ pub enum Query {
 
 pub fn read(db: &Connection, query: Query) -> Result<Value> {
     match query {
+        Query::WriteContext { project_id, resource_id, todo_id, task_id, space_id, names } => {
+            let project = if let Some(id) = resource_id {
+                db.query_row("SELECT project_id FROM project_resources WHERE id=?1", [id], |r| r.get(0)).optional()?
+            } else if let Some(id) = &todo_id {
+                db.query_row("SELECT project_id FROM project_todos WHERE id=?1", [id], |r| r.get(0)).optional()?
+            } else { project_id };
+            let details = match &project { Some(id) => details(db,id)?, None => None };
+            let todo = match todo_id { Some(id) => read(db, Query::Todo { id })?, None => Value::Null };
+            let names = if names { records(db, "SELECT id,name FROM projects", [])? } else { Vec::new() };
+            let member = if let (Some(task),Some(project)) = (task_id, &project) {
+                db.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND project_id=?2)", params![task, project], |r| r.get::<_,bool>(0))?
+            } else { false };
+            let space_path: Option<String> = if let Some(id) = space_id
+                && crate::scoped_notes::library_owner_writable(db, None, Some(&id))? {
+                db.query_row("SELECT path FROM spaces WHERE id=?1", [id], |r| r.get(0)).optional()?.flatten()
+            } else { None };
+            Ok(json!({"details":details, "todo":todo, "names":names, "member":member, "spacePath":space_path}))
+        }
+        Query::FolderRelocation => folder_relocation(db),
         Query::WritesSupported | Query::TodoWritesSupported | Query::EventTodoPromotionSupported
         | Query::EventLibraryPromotionSupported | Query::DeletionSupported | Query::MemoryWritesSupported
         | Query::MemoryEditsSupported | Query::ReviewWritesSupported => Ok(true.into()),
+        Query::EventPromotion { project_id, event_id, target_kind } => Ok(records(db,
+            "SELECT id,project_id,event_id,event_title,target_kind,target_id,target_title,promoted_by,note,created_at
+             FROM project_event_promotions WHERE project_id=? AND event_id=? AND target_kind=?",
+            params![project_id,event_id,target_kind])?.pop().unwrap_or(Value::Null)),
         Query::WriteReceipt { operation_id } => Ok(crate::project_write::has_receipt(db, &operation_id)?.into()),
         Query::WithdrawalSnapshot { project_id, memory_id } => crate::project_memory_forget::snapshot(db, &project_id, memory_id.as_deref()),
         Query::List { include_archived } => Ok(records(db, &format!(
@@ -555,4 +584,19 @@ fn status(db: &Connection, id: &str, now: i64) -> Result<Value> {
         },
         "proposalsTotal": proposals_total, "needsConfirmation": needs_confirmation
     }))
+}
+
+pub(crate) fn folder_relocation(db: &Connection) -> Result<Value> {
+    use sha2::{Digest, Sha256};
+    let mut data = json!({
+        "spaces": records(db, "SELECT id,name,path,parent_id,archived FROM spaces ORDER BY id", [])?,
+        "projects": records(db, "SELECT id,name,default_space_id,updated_at,archived FROM projects ORDER BY id", [])?,
+        "tasks": records(db, "SELECT id,title,project_id,space_id FROM tasks ORDER BY id", [])?,
+        "references": records(db, "SELECT id,title,value,project_id FROM project_resources WHERE kind='file' ORDER BY id", [])?,
+        "runs": records(db, "SELECT cwd FROM external_agent_runs WHERE status IN ('starting','working','blocked') ORDER BY id", [])?,
+        "artifacts": records(db, "SELECT * FROM artifacts ORDER BY id", [])?,
+        "dependencies": records(db, "SELECT artifact_id,file_path,dependency_kind,created_at FROM artifact_file_dependencies ORDER BY artifact_id,file_path", [])?,
+    });
+    data["witness"] = json!(format!("{:x}", Sha256::digest(serde_json::to_vec(&data)?)));
+    Ok(data)
 }

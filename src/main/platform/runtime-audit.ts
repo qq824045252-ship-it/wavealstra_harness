@@ -879,7 +879,7 @@ export class RuntimeAuditReader implements PiStorageClient {
     return this.read<RuntimeWorkspaceBindingSnapshot | null>({ operation: "workspaceBindingSnapshot", id });
   }
 
-  async writeWorkspaceBinding(mutation: RuntimeWorkspaceBindingMutation): Promise<RuntimeWriteReply | undefined> {
+  async writeWorkspaceBinding(mutation: RuntimeWorkspaceBindingMutation | { kind: "createFolder"; workspaceId: string; librarySpaceId: string; collectionId: string; name: string; at: number }): Promise<RuntimeWriteReply | undefined> {
     if (!await this.supportsWorkspaceBinding()) return { status: "needsHost" };
     const result = await this.read<RuntimeWriteReply>({ operation: "writeWorkspaceBinding", mutation });
     if (result === undefined) await this.stopping;
@@ -983,6 +983,14 @@ export class RuntimeAuditReader implements PiStorageClient {
     if (!await this.supportsWorkGraph()) return;
     const edges = await this.read<WorkGraphEdgeDto[]>({ operation: "readWorkGraph", query });
     return Array.isArray(edges) ? edges : undefined;
+  }
+
+  async readWorkGraphCount(count: "edges" | "tasks"): Promise<number> {
+    const value = await this.read<number>({ operation: "readWorkGraph", query: { count } });
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      throw new Error("Core 未确认关联图诊断计数");
+    }
+    return value;
   }
 
   async writeWorkGraph(mutation: RuntimeWorkGraphMutation): Promise<RuntimeWorkGraphReply | undefined> {
@@ -1275,6 +1283,14 @@ export class RuntimeAuditReader implements PiStorageClient {
     return result;
   }
 
+  readWorkspaceState(taskId: string): Promise<TaskExecutionWorkspaceStateRow | null | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "workspaceState", taskId } });
+  }
+
+  readActiveBindingPaths(excluding: string): Promise<string[] | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "activeBindingPaths", excluding } });
+  }
+
   async readTaskWorkspaceAuthority(taskId: string): Promise<TaskWorkspaceAuthority | null | undefined> {
     return this.read({ operation: "readDurableTaskProjection", query: { kind: "workspaceAuthority", taskId } });
   }
@@ -1552,7 +1568,7 @@ export class RuntimeAuditReader implements PiStorageClient {
     if (!await capability) return undefined;
     const result = await this.read<RuntimeLibraryNoteWriteReply<Row>>(
       { operation: "writeLibraryNote", change, updatedAt: Date.now() },
-      "database", false, restoring ? 120_000 : undefined,
+      "database", false, restoring || change.kind === "import" ? 120_000 : undefined,
     );
     if (result) {
       if (result.status === "updated") {
@@ -1568,6 +1584,7 @@ export class RuntimeAuditReader implements PiStorageClient {
     }
     await this.stopping;
     // A lost reply does not establish that the write failed. Replaying can overwrite a newer edit.
+    if (change.kind === "import") throw Object.assign(new Error("资料导入回执未获确认"), {code:"RUNTIME_OPERATION_UNKNOWN"});
     throw new Error("无法确认笔记变更是否已保存，请刷新后再试");
   }
 
@@ -2983,20 +3000,40 @@ type RuntimeScopedNoteReply =
   | { status: "missing" | "archived" | "conflict" };
 
 type RuntimeLibraryMetadataQuery =
+  | { kind: "restoreReceipt"; root: string; operationId: string }
+  | { kind: "textReceipt"; id: string; operationId: string }
   | { kind: "catalog"; spaceIds?: string[]; itemId?: string; owner?: LibraryOwnerScope }
   | { kind: "indexCandidates"; work: "documents" | "text" | "chunks"; after?: string; limit: number }
   | { kind: "taskScope"; taskId?: string; projectId?: string; workspaceId?: string; itemIds?: string[] }
-  | { kind: "trash"; spaceIds: string[] }
+  | { kind: "trash"; spaceIds?: string[]; owner?: LibraryOwnerScope }
+  | {kind:"deepCandidates"; ids:string[]; terms:string[]; seen:string[]; limit:number}
+  | {kind:"deepFrequencies"; ids:string[]; terms:string[]}
+  | {kind:"deepPassage"; ids:string[]; itemId:string; offset:number; hash:string}
+  | { kind:"searchKeyword"; ids:string[]; query:string; prefix:string }
+  | { kind:"searchChunks"; hits:[string,string][]; ids:string[]; model:string; version:string; dimension:number }
+  | { kind:"ownedItems"; owner:LibraryOwnerScope; ids:string[]; includeTrash:boolean }
   | { kind: "versions"; itemId: string }
   | { kind: "textBody"; itemId: string; root: string; maxChars?: number }
   | { kind: "versionBody"; itemId: string; version: number };
 
 type RuntimeLibraryNoteTarget = Pick<LibraryItemDto, "id" | "spaceId">;
+export interface RuntimeLibraryImportBatch {
+  operationId: string; root: string; spaceId: string; sourceNoteId?: string; chunkSize: number; overlap: number;
+  files: Array<{ id: string; collectionId?: string | null; filename: string; title: string; kind: string; mimeType: string; originalPath?: string; contentHash: string }>;
+  owner?: LibraryOwnerScope; defaultSpace?: boolean; folders?: Array<{id:string; name:string; parentId?:string|null}>;
+  project?: {id: string; eventId: string; reference: string; body?: string; extractStatus: string; truncated: boolean; originalSize: number};
+}
 export type RuntimeLibraryNoteChange =
-  | { kind: "metadata"; item: RuntimeLibraryNoteTarget; tags?: string[]; pinned?: boolean }
-  | { kind: "move"; items: RuntimeLibraryNoteTarget[]; collectionId: string | null }
-  | { kind: "trash"; items: RuntimeLibraryNoteTarget[] }
-  | { kind: "restore"; items: RuntimeLibraryNoteTarget[]; root: string; chunkSize: number; overlap: number };
+  | { kind:"saveArtifact"; save:{actor?:{taskId?:string;projectId?:string|null}; operationId:string; artifactId:string; version:number; root:string; spaceId:string; collectionId?:string|null; owner?:LibraryOwnerScope; filename:string; kind:string; mime:string; chunkSize:number; overlap:number} }
+  | { kind:"import"; batch:RuntimeLibraryImportBatch }
+  | { kind: "create"; document: {id: string; operationId: string; spaceId: string; collectionId?: string | null;
+      owner?: LibraryOwnerScope; clipSource?: LibraryItemDto["clipSource"]; tags?: string[];
+      documentKind: "markdown" | "html" | "csv" | "url"; title: string; content: string; root: string; chunkSize: number; overlap: number;
+      merge?: { sources: Array<{id: string; updatedAt: number; bodyHash: string}> }} }
+  | { kind: "metadata"; owner?: LibraryOwnerScope; item: RuntimeLibraryNoteTarget; tags?: string[]; pinned?: boolean }
+  | { kind: "move"; owner?: LibraryOwnerScope; items: RuntimeLibraryNoteTarget[]; collectionId: string | null }
+  | { kind: "trash"; owner?: LibraryOwnerScope; items: RuntimeLibraryNoteTarget[] }
+  | { kind: "restore"; owner?: LibraryOwnerScope; items: RuntimeLibraryNoteTarget[]; root: string; chunkSize: number; overlap: number };
 
 export interface RuntimeLibraryTextSave extends RuntimeLibraryNoteTarget {
   filename: string;
@@ -3045,11 +3082,14 @@ type RuntimeLibraryRestoreResult =
   | { status: "restored"; receipt: RuntimeLibraryRestoreReceipt };
 
 type RuntimeLibraryNoteWriteReply<Row> =
-  | { status: "updated"; item?: Row; indexed?: string[] }
+  | { status: "updated"; item?: Row; indexed?: string[]; eventId?: string; reused?: boolean }
   | { status: "scopeChanged" | "folderChanged" | "needsHost" | "sourceUnavailable" };
 
 type RuntimeProjectMetadataQuery =
+  | { kind: "folderRelocation" }
+  | { kind: "writeContext"; projectId?: string; resourceId?: string; todoId?: string; taskId?: string; spaceId?: string; names?: boolean }
   | { kind: "writeReceipt"; operationId: string }
+  | { kind: "eventPromotion"; projectId: string; eventId: string; targetKind: string }
   | { kind: "list"; includeArchived: boolean }
   | { kind: "details"; projectId: string }
   | { kind: "contextSnapshot" | "contextWitness"; projectId: string }

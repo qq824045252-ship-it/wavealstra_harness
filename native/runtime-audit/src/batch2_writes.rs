@@ -36,6 +36,8 @@ pub enum Request {
         folders: Vec<FolderMove>,
         references: Vec<ResourceMove>,
         affected_project_ids: Vec<String>,
+        witness: String,
+        artifacts: Vec<crate::batch3_writes::ArtifactRelocationChange>,
     },
     ExternalAgentRecoverInterrupted {
         now: i64,
@@ -347,8 +349,11 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             now,
             folders,
             references,
-            affected_project_ids,
+            affected_project_ids, witness, artifacts,
         } => {
+            if crate::project_metadata::folder_relocation(&tx)?["witness"].as_str() != Some(witness.as_str()) {
+                return Err("目录、任务或资料已发生变化，请重新预览".into());
+            }
             let mut update_space =
                 tx.prepare("UPDATE spaces SET path = ?1, updated_at = ?2 WHERE id = ?3")?;
             for f in folders {
@@ -369,7 +374,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                 update_proj.execute(params![now, pid])?;
             }
             drop(update_proj);
-            json!({ "ok": true })
+            crate::batch3_writes::relocate_artifacts(&tx, artifacts)?
         }
         Request::ExternalAgentRecoverInterrupted { now } => {
             tx.execute(

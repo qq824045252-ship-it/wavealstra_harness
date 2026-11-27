@@ -58,12 +58,15 @@ type EventRow = {
   created_at: number;
 };
 
+export type DocumentEventInput = {projectId: string; eventId: string; title: string; body: string; ref: string; createdAt: number};
+
 export type RuntimeProjectEventRequest =
+  | ({kind:"document"} & DocumentEventInput)
   | { kind: "read"; eventId: string }
   | { kind: "triage"; projectId: string; eventId: string; triageStatus: ProjectEventTriageStatus };
 
 export type RuntimeProjectEventReply =
-  | { status: "found"; event: EventRow }
+  | { status: "found"; event: EventRow; created?: boolean }
   | { status: "missingProject" | "missingEvent" | "archived" | "needsHost" }
   | { status: "rejected"; message: string };
 
@@ -281,6 +284,18 @@ function mapProjectDetails(data: ProjectDetailsRows): ProjectDetailsDto {
   };
 }
 
+export interface ProjectWriteInputs {
+  projectId?: string;
+  resourceId?: string;
+  todoId?: string;
+  taskId?: string;
+  spaceId?: string;
+  names?: boolean;
+}
+
+export type ProjectWriteReader = Pick<ProjectRepository, "get" | "getSummary" | "getResource" | "getTodo" |
+  "isTaskInProject" | "validatedDefaultSpacePath"> & { findByName(name: string): { id: string } | undefined };
+
 export class ProjectRepository {
   constructor(private readonly fixture: Database.Database | undefined, private readonly runtimeAuditReader?: RuntimeAuditReader) {}
 
@@ -312,6 +327,31 @@ export class ProjectRepository {
       return Promise.resolve(false);
     }
     return this.runtimeAuditReader.supportsProjectWrites(kind);
+  }
+
+  async readWriteContext(input: ProjectWriteInputs): Promise<ProjectWriteReader> {
+    const data = await this.runtimeAuditReader?.projectMetadata<{
+      details: ProjectDetailsRows | null;
+      todo: Parameters<typeof mapTodoRow>[0] | null;
+      names: Array<{ id: string; name: string }>;
+      member: boolean;
+      spacePath: string | null;
+    }>({ kind: "writeContext", ...input });
+    if (!data) throw new Error("Core 未返回项目写入快照");
+    const project = data.details ? mapProjectDetails(data.details) : undefined;
+    const get = (id: string) => id === project?.id ? project : undefined;
+    return {
+      get, getSummary: get,
+      getResource: id => project?.resources.find(row => row.id === id),
+      getTodo: id => data.todo?.id === id ? mapTodoRow(data.todo) : undefined,
+      findByName: name => data.names.find(row => row.name.toLowerCase() === name.toLowerCase()),
+      isTaskInProject: (task, id) => task === input.taskId && id === project?.id && data.member,
+      validatedDefaultSpacePath: id => {
+        if (id !== input.spaceId || !data.spacePath) throw new Error("项目文件夹不存在、已归档或未关联磁盘目录");
+        if (!statSync(data.spacePath, { throwIfNoEntry: false })?.isDirectory()) throw new Error("项目文件夹路径不可用，请重新关联目录");
+        return data.spacePath;
+      },
+    };
   }
 
   readWriteSnapshot<T>(read: () => T): T { return this.db.transaction(read)(); }
@@ -745,6 +785,16 @@ export class ProjectRepository {
     return row && mapEventRow(row);
   }
 
+  async writeDocumentEvent(input: DocumentEventInput) {
+    if (this.fixture && !this.runtimeAuditReader?.supervised) return;
+    const reply = await this.requestProjectEvent({...input,kind:"document"});
+    if (reply?.status === "found") return {value: mapEventRow(reply.event),created:reply.created === true};
+    if (reply?.status === "archived") throw new Error("归档项目只可读取");
+    if (reply?.status === "missingProject") throw new Error("项目不存在");
+    if (reply?.status === "rejected") throw new Error(reply.message);
+    throw new Error("Core 未确认文档事件写入");
+  }
+
   async readProjectEventById(eventId: string): Promise<ProjectEventDto | undefined> {
     const reply = await this.requestProjectEvent({ kind: "read", eventId });
     if (reply?.status === "found") return mapEventRow(reply.event);
@@ -787,6 +837,15 @@ export class ProjectRepository {
   }
 
   /* ---------------- Project Event Promotions（提升审计链接；非业务真源） ---------------- */
+
+  async readEventPromotion(projectId: string, eventId: string, targetKind: ProjectEventPromotionTargetKind) {
+    if (!this.runtimeAuditReader || this.fixture?.inTransaction) return this.findProjectEventPromotion(projectId,eventId,targetKind);
+    const row = await this.runtimeAuditReader.projectMetadata<Parameters<typeof mapPromotionRow>[0] | null>({
+      kind: "eventPromotion", projectId, eventId, targetKind,
+    });
+    if (row === undefined) throw new Error("Core 未确认项目事件关联");
+    return row ? mapPromotionRow(row) : undefined;
+  }
 
   findProjectEventPromotion(
     projectId: string,

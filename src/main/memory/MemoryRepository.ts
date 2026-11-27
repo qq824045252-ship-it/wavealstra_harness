@@ -246,6 +246,7 @@ export class MemoryRepository {
       const data = await this.db.runtimeAuditReader?.memoryRecordsData(query);
       if (data?.kind === "list") return data.records.map(memoryRecordFromWire);
     }
+    if (!this.db.fixtureConnection) throw new Error("Core 未确认记忆列表读取");
     return this.listFiltered(input);
   }
 

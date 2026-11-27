@@ -25,12 +25,12 @@ export function bindAgentEvents(
   addCleanup(
     api.agent.onEvent((patch) => {
       if (!isActive()) return;
+      // Preserve order if the independent ACP channel already delivered text.
+      deltas.flush();
       if (patch.type === "text_delta" || patch.type === "thinking_delta") {
-        deltas.push(patch);
+        get().applyAgentDeltaBatch([patch]);
         return;
       }
-      // Tool and terminal events must follow every previously accepted text delta.
-      deltas.flush();
       get().applyAgentPatch(patch);
     }),
   );

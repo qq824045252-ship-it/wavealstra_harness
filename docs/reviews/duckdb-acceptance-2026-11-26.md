@@ -390,6 +390,8 @@
 
 ## Core 119 发行版数据库重建
 
+> 历史记录：后续切换规则取消了按版本重建。首次启动仅清理已知旧 SQLite 及其 SQLite 伴随文件，不迁移数据。已有 DuckDB 和恢复文件不参与清理；后续升级必须保留原库、任务与数据库代次。
+
 - Windows worker SHA256 为 `77fd676485ec3dd448f9b73e1f8d4959818c8ae79bbe7d1529b5b3dc53b1bb40`。发行版启动用应用版本核对数据库版本记录。同版本启动保留现有库和宿主。首次遇到尚未记录版本的旧安装，或版本变化时，先确认旧 Pi 和 Core 停止，再由 Rust 持有两把所有权锁，删除已确认的 MyBuddy 库和附属文件，创建空库后写入版本记录。 [发行版入口](../../out/duckdb-acceptance-20261126/core-database-release-119-final.log) · [真实宿主切换](../../out/duckdb-acceptance-20261126/packaged-pi-release-cutover-118-to-119.log)
 - 隔离验证覆盖旧 SQLite、当前 DuckDB、Durable 和 Gateway 旧库、升级中途退出，以及 Windows 目录联接。已知升级可继续清理残留文件。源文件损坏、只读、归属异常或旧宿主未退出时，程序拒绝切换。旧项目文件、配置、成果、Gadget 数据和 Blueprint 工作区在多次重建及正常重启后均保留。 [文件与版本保护](../../out/duckdb-acceptance-20261126/database-release-reset-119-final-probe.log) · [成果](../../out/duckdb-acceptance-20261126/core-artifacts-119-asset-retention.log) · [工作台](../../out/duckdb-acceptance-20261126/core-workbench-119-asset-retention.log)
 - 发行版已关闭旧会话、旧成果索引和用量归档的自动回填。Cron 不再重建缺少 Core 回执的旧输入，正常重启仍沿原回执续跑。Gateway 的旧明文凭据需要重新配置，当前凭据仍按原流程使用。旧 Gadget、项目知识和工作区集成的 CommonJS 门禁在 Node 26 加载 Pi 时失败，已退役其入口，保留场景源码。 [会话](../../out/duckdb-acceptance-20261126/pi-core-jsonl-discard-118.log) · [Cron](../../out/duckdb-acceptance-20261126/core-cron-119-recovery.log)

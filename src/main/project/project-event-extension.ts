@@ -230,7 +230,7 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
           if (!bridge.ingestor) {
             throw new ProjectEventToolError("文档事件入口未就绪（ingestor 未注入）。");
           }
-          const event = bridge.ingestor.ingestDocument(projectId, {
+          const event = await bridge.ingestor.ingestDocumentAsync(projectId, {
             title: params.title,
             body: params.body,
             ref: params.ref,

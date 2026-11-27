@@ -207,7 +207,8 @@ export class CoreBusinessClient {
   private closed = false;
 
   private constructor(readonly transport: RuntimeCoreClient) {
-    transport.stdout.on("data", chunk => this.onData(chunk as Buffer));
+    transport.stdout.setEncoding("utf8");
+    transport.stdout.on("data", (chunk: string) => this.onData(chunk));
     transport.once("close", () => this.handleClose());
     transport.on("error", () => this.handleClose());
   }
@@ -697,7 +698,7 @@ export class CoreBusinessClient {
     progress: unknown,
     ownerGeneration?: string,
     hostGeneration?: string,
-    options?: { ephemeral?: boolean; progressId?: string },
+    options?: { ephemeral?: boolean; progressId?: string; streamSeq?: number },
   ): Promise<Record<string, unknown>> {
     return await this.request({
       operation: "coreExecution",
@@ -708,11 +709,13 @@ export class CoreBusinessClient {
       ownerGeneration,
       ...(hostGeneration ? { hostGeneration } : {}),
       ...(options?.ephemeral ? { ephemeral: true } : {}),
+      ...(options?.streamSeq !== undefined ? { streamSeq: options.streamSeq } : {}),
       ...(options?.progressId ? { progressId: options.progressId } : {}),
     });
   }
 
   async executorSettled(input: {
+    lastStreamSeq?: number;
     executionId: string;
     attempt: number;
     status: "completed" | "failed" | "cancelled" | "paused" | "unknown";
@@ -744,8 +747,8 @@ export class CoreBusinessClient {
     this.transport.kill();
   }
 
-  private onData(chunk: Buffer): void {
-    this.buffered += chunk.toString("utf8");
+  private onData(chunk: string): void {
+    this.buffered += chunk;
     for (;;) {
       const nl = this.buffered.indexOf("\n");
       if (nl < 0) break;

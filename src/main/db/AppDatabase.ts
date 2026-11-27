@@ -279,6 +279,8 @@ function needsCoreDatabaseGuard(dbPath: string): boolean {
 }
 
 interface AppDatabaseOptions {
+  /** Offline audit of an existing legacy SQLite file. Never create, rebuild or migrate it. */
+  existingLegacyAudit?: boolean;
   runtimeAuditExecutable?: string;
   runtimeAuditSupervised?: boolean;
   readonly?: boolean;
@@ -417,6 +419,20 @@ export class AppDatabase {
         && needsCoreDatabaseGuard(dbPath))
       throw new Error("数据库创建或重建需要 Core 独占锁，请使用 AppDatabase.open");
     const openReadonly = Boolean(options.readonly && dbPath !== ":memory:");
+    if (options.existingLegacyAudit) {
+      const sqlite = new Database(dbPath, { readonly: openReadonly, fileMustExist: true });
+      try {
+        if (Number(sqlite.pragma("user_version", { simple: true })) !== CURRENT_DATABASE_SCHEMA_VERSION)
+          throw new Error("历史 SQLite 结构与此审计版本不兼容");
+        sqlite.pragma("foreign_keys = ON");
+      } catch (error) {
+        sqlite.close();
+        throw error;
+      }
+      this.sqlite = sqlite;
+      this.databasePath = sqlite.name;
+      return;
+    }
     if (!openReadonly) resetIncompatibleDatabaseFile(dbPath);
     const sqlite = openReadonly ? new Database(dbPath, { readonly: true, fileMustExist: true }) : new Database(dbPath);
     this.sqlite = sqlite;

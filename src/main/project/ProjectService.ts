@@ -57,7 +57,7 @@ import {
   type ProjectResourceUpdateRequest,
   type ProjectUpdateRequest,
 } from "../../shared/project-domain";
-import { ProjectRepository, type ProjectStatusFact } from "./ProjectRepository";
+import { ProjectRepository, type ProjectWriteInputs, type ProjectWriteReader, type ProjectStatusFact } from "./ProjectRepository";
 import type { MemoryService } from "../memory/MemoryService";
 import { memoryWithdrawalTargets } from "../memory/MemoryForgetWatermarks";
 import type { MemoryCreateRequest, MemoryRecordDto, MemorySearchRequest, MemoryUpdateRequest } from "../../shared/memory-kernel";
@@ -296,14 +296,14 @@ export class ProjectService {
     private readonly onPlanChanged?: (projectId: string) => void,
   ) {}
 
-  private requireProject(projectId: string): ProjectDetailsDto {
-    const project = this.repository.get(projectId);
+  private requireProject(projectId: string, reader: ProjectWriteReader = this.repository): ProjectDetailsDto {
+    const project = reader.get(projectId);
     if (!project) throw new Error(`项目不存在：${projectId}`);
     return project;
   }
 
-  private requireWritableProject(projectId: string): ProjectDetailsDto {
-    const project = this.requireProject(projectId);
+  private requireWritableProject(projectId: string, reader: ProjectWriteReader = this.repository): ProjectDetailsDto {
+    const project = this.requireProject(projectId, reader);
     if (project.archived) throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
     return project;
   }
@@ -334,8 +334,8 @@ export class ProjectService {
   }
 
   createAsync(request: ProjectCreateRequest): Promise<ProjectDetailsDto> {
-    return this.commitProjectWrite(() => this.create(request), () => {
-      const { project, policies } = this.prepareCreate(request);
+    return this.commitProjectWrite(() => this.create(request), { names: true }, reader => {
+      const { project, policies } = this.prepareCreate(request, reader);
       return {
         mutation: { kind: "create", project, policiesJson: JSON.stringify(policies), resources: [] },
         result: () => ({ ...project, policies, resources: [] }),
@@ -343,10 +343,10 @@ export class ProjectService {
     });
   }
 
-  private prepareCreate(request: ProjectCreateRequest) {
+  private prepareCreate(request: ProjectCreateRequest, reader: ProjectWriteReader = this.repository) {
     const name = request.name.trim();
     if (!name) throw new Error("项目名称不能为空");
-    if (this.repository.findByName(name)) throw new Error(`项目名称已存在：${name}`);
+    if (reader.findByName(name)) throw new Error(`项目名称已存在：${name}`);
     const now = Date.now();
     const project: ProjectDto = {
       id: `proj_${randomUUID()}`,
@@ -370,8 +370,8 @@ export class ProjectService {
   }
 
   updateAsync(request: ProjectUpdateRequest): Promise<ProjectDetailsDto> {
-    return this.commitProjectWrite(() => this.update(request), () => {
-      const { project, policies, defaultSpacePath, expectedUpdatedAt } = this.prepareUpdate(request);
+    return this.commitProjectWrite(() => this.update(request), { projectId: request.id, spaceId: request.defaultSpaceId ?? undefined, names: true }, reader => {
+      const { project, policies, defaultSpacePath, expectedUpdatedAt } = this.prepareUpdate(request, reader);
       return {
         mutation: { kind: "edit", project, expectedUpdatedAt, defaultSpacePath, policiesJson: policies ? JSON.stringify(policies) : undefined },
         result: () => this.readSavedProject(project.id),
@@ -379,13 +379,13 @@ export class ProjectService {
     });
   }
 
-  private prepareUpdate(request: ProjectUpdateRequest) {
-    const current = this.requireWritableProject(request.id);
+  private prepareUpdate(request: ProjectUpdateRequest, reader: ProjectWriteReader = this.repository) {
+    const current = this.requireWritableProject(request.id, reader);
     const name = request.name === undefined ? current.name : request.name.trim();
     if (!name) throw new Error("项目名称不能为空");
-    const duplicate = this.repository.findByName(name);
+    const duplicate = reader.findByName(name);
     if (duplicate && duplicate.id !== request.id) throw new Error(`项目名称已存在：${name}`);
-    const defaultSpacePath = request.defaultSpaceId == null ? undefined : this.repository.validatedDefaultSpacePath(request.defaultSpaceId);
+    const defaultSpacePath = request.defaultSpaceId == null ? undefined : reader.validatedDefaultSpacePath(request.defaultSpaceId);
     const project: ProjectDto = {
       ...current,
       defaultSpaceId: request.defaultSpaceId === undefined ? current.defaultSpaceId : request.defaultSpaceId ?? undefined,
@@ -410,8 +410,8 @@ export class ProjectService {
   }
 
   duplicateAsync(request: ProjectDuplicateRequest): Promise<ProjectDetailsDto> {
-    return this.commitProjectWrite(() => this.duplicate(request), () => {
-      const { project, policies, resources, source } = this.prepareDuplicate(request);
+    return this.commitProjectWrite(() => this.duplicate(request), { projectId: request.sourceId, names: true }, reader => {
+      const { project, policies, resources, source } = this.prepareDuplicate(request, reader);
       return {
         mutation: { kind: "create", project, policiesJson: JSON.stringify(policies), resources, source },
         result: () => ({ ...project, policies, resources }),
@@ -419,15 +419,15 @@ export class ProjectService {
     });
   }
 
-  private prepareDuplicate(request: ProjectDuplicateRequest) {
-    const source = this.repository.get(request.sourceId);
+  private prepareDuplicate(request: ProjectDuplicateRequest, reader: ProjectWriteReader = this.repository) {
+    const source = reader.get(request.sourceId);
     if (!source) throw new Error(`项目不存在：${request.sourceId}`);
     const requestedName = request.name?.trim();
     let name = requestedName || `${source.name} 副本`;
     if (!requestedName) {
       let suffix = 2;
-      while (this.repository.findByName(name)) name = `${source.name} 副本 ${suffix++}`;
-    } else if (this.repository.findByName(name)) {
+      while (reader.findByName(name)) name = `${source.name} 副本 ${suffix++}`;
+    } else if (reader.findByName(name)) {
       throw new Error(`项目名称已存在：${name}`);
     }
     const now = Date.now();
@@ -467,11 +467,15 @@ export class ProjectService {
     return project;
   }
 
-  archiveAsync(id: string, archived: boolean): Promise<ProjectDetailsDto> {
-    return this.commitProjectWrite(() => this.archive(id, archived), () => {
-      this.requireProject(id);
-      return { mutation: { kind: "archive", id, archived, updatedAt: Date.now() }, result: () => this.readSavedProject(id) };
-    });
+  async archiveAsync(id: string, archived: boolean): Promise<ProjectDetailsDto> {
+    if (!await this.repository.supportsNativeWrites("project")) {
+      if (this.repository.requiresRustWrites) throw new Error("项目数据库当前仅允许 Rust 核心写入");
+      return this.archive(id, archived);
+    }
+    const status = await this.repository.writeProject({ kind: "archive", id, archived, updatedAt: Date.now() });
+    if (status === "missing") throw new Error(`项目不存在：${id}`);
+    if (status !== "changed") throw new Error("Core 未确认归档状态");
+    return this.readSavedProject(id);
   }
 
   delete(id: string): void {
@@ -484,14 +488,14 @@ export class ProjectService {
   }
 
   createResourceAsync(request: ProjectResourceCreateRequest): Promise<ProjectResourceDto> {
-    return this.commitProjectWrite(() => this.createResource(request), () => {
-      const { resource, expectedUpdatedAt } = this.prepareResourceCreate(request);
+    return this.commitProjectWrite(() => this.createResource(request), { projectId: request.projectId }, reader => {
+      const { resource, expectedUpdatedAt } = this.prepareResourceCreate(request, reader);
       return { mutation: { kind: "saveResource", resource, expectedUpdatedAt, create: true }, result: () => resource };
     });
   }
 
-  private prepareResourceCreate(request: ProjectResourceCreateRequest) {
-    const project = this.requireWritableProject(request.projectId);
+  private prepareResourceCreate(request: ProjectResourceCreateRequest, reader: ProjectWriteReader = this.repository) {
+    const project = this.requireWritableProject(request.projectId, reader);
     const { title, value } = validateResourceValue(request.kind, request.title, request.value);
     const parentId = resolveResourceParent(project.resources, request.parentId);
     const now = Math.max(Date.now(), project.updatedAt + 1);
@@ -515,16 +519,16 @@ export class ProjectService {
   }
 
   updateResourceAsync(request: ProjectResourceUpdateRequest): Promise<ProjectResourceDto> {
-    return this.commitProjectWrite(() => this.updateResource(request), () => {
-      const { resource, expectedUpdatedAt } = this.prepareResourceUpdate(request);
+    return this.commitProjectWrite(() => this.updateResource(request), { resourceId: request.id }, reader => {
+      const { resource, expectedUpdatedAt } = this.prepareResourceUpdate(request, reader);
       return { mutation: { kind: "saveResource", resource, expectedUpdatedAt, create: false }, result: () => resource };
     });
   }
 
-  private prepareResourceUpdate(request: ProjectResourceUpdateRequest) {
-    const current = this.repository.getResource(request.id);
+  private prepareResourceUpdate(request: ProjectResourceUpdateRequest, reader: ProjectWriteReader = this.repository) {
+    const current = reader.getResource(request.id);
     if (!current) throw new Error(`项目资源不存在：${request.id}`);
-    const project = this.requireWritableProject(current.projectId);
+    const project = this.requireWritableProject(current.projectId, reader);
     const { title, value } = validateResourceValue(
       current.kind,
       request.title ?? current.title,
@@ -557,10 +561,10 @@ export class ProjectService {
   }
 
   deleteResourceAsync(id: string): Promise<void> {
-    return this.commitProjectWrite(() => this.deleteResource(id), () => {
-      const resource = this.repository.getResource(id);
+    return this.commitProjectWrite(() => this.deleteResource(id), { resourceId: id }, reader => {
+      const resource = reader.getResource(id);
       if (!resource) return { unchanged: undefined };
-      const project = this.requireWritableProject(resource.projectId);
+      const project = this.requireWritableProject(resource.projectId, reader);
       return {
         mutation: { kind: "deleteResource", id, projectId: project.id, expectedUpdatedAt: project.updatedAt,
           updatedAt: Math.max(Date.now(), project.updatedAt + 1) },
@@ -569,14 +573,14 @@ export class ProjectService {
     });
   }
 
-  private async commitProjectWrite<T>(fallback: () => T, prepare: () => PreparedProjectWrite<T>, domain: "project" | "todo" = "project"): Promise<T> {
+  private async commitProjectWrite<T>(fallback: () => T, input: ProjectWriteInputs, prepare: (reader: ProjectWriteReader) => PreparedProjectWrite<T>, domain: "project" | "todo" = "project"): Promise<T> {
     if (!await this.repository.supportsNativeWrites(domain)) {
       if (this.repository.requiresRustWrites) throw new Error("项目数据库当前仅允许 Rust 核心写入");
       return fallback();
     }
     // Rebuild the patch against a fresh project and resources if another write wins first.
     for (let attempt = 0; attempt < 8; attempt++) {
-      const prepared = this.repository.readWriteSnapshot(prepare);
+      const prepared = prepare(await this.repository.readWriteContext(input));
       if ("unchanged" in prepared) return prepared.unchanged;
       const status = await this.repository.writeProject(prepared.mutation);
       switch (status) {
@@ -654,6 +658,10 @@ export class ProjectService {
     return this.repository.getProjectEventById(eventId);
   }
 
+  writeDocumentEvent(input: import("./ProjectRepository").DocumentEventInput) {
+    return this.repository.writeDocumentEvent(input);
+  }
+
   readProjectEvent(eventId: string): Promise<ProjectEventDto | undefined> {
     return this.repository.readProjectEventById(eventId);
   }
@@ -703,6 +711,10 @@ export class ProjectService {
     return this.repository.insertProjectEventPromotion(promotion);
   }
 
+  readEventPromotion(projectId: string, eventId: string, targetKind: ProjectEventPromotionTargetKind) {
+    return this.repository.readEventPromotion(projectId, eventId, targetKind);
+  }
+
   findProjectEventPromotion(
     projectId: string,
     eventId: string,
@@ -739,15 +751,15 @@ export class ProjectService {
     return this.repository.readNextCadenceBoundary(projectId, now);
   }
 
-  private assertProjectActor(projectId: string, actor?: ProjectWriteActor): void {
-    if (actor && (actor.projectId !== projectId || !this.repository.isTaskInProject(actor.taskId, projectId))) {
+  private assertProjectActor(projectId: string, actor?: ProjectWriteActor, reader: ProjectWriteReader = this.repository): void {
+    if (actor && (actor.projectId !== projectId || !reader.isTaskInProject(actor.taskId, projectId))) {
       throw new Error("任务的项目归属已变化，请重新读取");
     }
   }
 
-  private requireWritableProjectSummary(projectId: string, actor?: ProjectWriteActor): ProjectDto {
-    this.assertProjectActor(projectId, actor);
-    const project = this.repository.getSummary(projectId);
+  private requireWritableProjectSummary(projectId: string, actor?: ProjectWriteActor, reader: ProjectWriteReader = this.repository): ProjectDto {
+    this.assertProjectActor(projectId, actor, reader);
+    const project = reader.getSummary(projectId);
     if (!project) throw new Error(`项目不存在：${projectId}`);
     if (project.archived) throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
     return project;
@@ -764,8 +776,8 @@ export class ProjectService {
 
   createTodoAsync(request: ProjectTodoCreateRequest, actor?: ProjectWriteActor): Promise<ProjectTodoDto> {
     const finish = (todo: ProjectTodoDto) => { this.publishPlanChange(todo.projectId); return todo; };
-    return this.commitProjectWrite(() => finish(this.repository.createTodo(this.prepareTodoCreate(request, actor))), () => {
-      const todo = this.prepareTodoCreate(request, actor);
+    return this.commitProjectWrite(() => finish(this.repository.createTodo(this.prepareTodoCreate(request, actor))), { projectId: request.projectId, taskId: actor?.taskId }, reader => {
+      const todo = this.prepareTodoCreate(request, actor, reader);
       return {
         mutation: { kind: "saveTodo", todo: todoWriteValues(todo), sourceTaskId: actor?.taskId },
         result: () => finish(todo),
@@ -773,8 +785,8 @@ export class ProjectService {
     }, "todo");
   }
 
-  private prepareTodoCreate(request: ProjectTodoCreateRequest, actor?: ProjectWriteActor): ProjectTodoDto {
-    const project = this.requireWritableProjectSummary(request.projectId, actor);
+  private prepareTodoCreate(request: ProjectTodoCreateRequest, actor?: ProjectWriteActor, reader: ProjectWriteReader = this.repository): ProjectTodoDto {
+    const project = this.requireWritableProjectSummary(request.projectId, actor, reader);
     const title = normalizeTodoTitle(request.title);
     const now = Date.now();
     return {
@@ -803,8 +815,8 @@ export class ProjectService {
     return this.commitProjectWrite<ProjectTodoDto>(() => {
       const { todo, unchanged } = this.prepareTodoUpdate(request, actor);
       return unchanged ? todo : finish(this.repository.updateTodo(todo));
-    }, () => {
-      const { todo, unchanged, expectedUpdatedAt } = this.prepareTodoUpdate(request, actor);
+    }, { todoId: request.id, taskId: actor?.taskId }, reader => {
+      const { todo, unchanged, expectedUpdatedAt } = this.prepareTodoUpdate(request, actor, reader);
       if (unchanged) return { unchanged: todo };
       return {
         mutation: { kind: "saveTodo", todo: todoWriteValues(todo), expectedUpdatedAt, sourceTaskId: actor?.taskId },
@@ -813,10 +825,10 @@ export class ProjectService {
     }, "todo");
   }
 
-  private prepareTodoUpdate(request: ProjectTodoUpdateRequest, actor?: ProjectWriteActor) {
-    const current = this.repository.getTodo(request.id);
+  private prepareTodoUpdate(request: ProjectTodoUpdateRequest, actor?: ProjectWriteActor, reader: ProjectWriteReader = this.repository) {
+    const current = reader.getTodo(request.id);
     if (!current) throw new Error("待办不存在");
-    this.requireWritableProjectSummary(current.projectId, actor);
+    this.requireWritableProjectSummary(current.projectId, actor, reader);
     const title = request.title === undefined ? current.title : normalizeTodoTitle(request.title);
     // 规范化后的目标值（不设新 updatedAt）：与现值完全一致时判定为 no-op，
     // 不写 DB、不 bump projects.updated_at / ProjectContext version。
@@ -859,10 +871,10 @@ export class ProjectService {
       this.requireWritableProjectSummary(todo.projectId);
       this.repository.deleteTodo(id);
       this.publishPlanChange(todo.projectId);
-    }, () => {
-      const todo = this.repository.getTodo(id);
+    }, { todoId: id }, reader => {
+      const todo = reader.getTodo(id);
       if (!todo) return { unchanged: undefined };
-      this.requireWritableProjectSummary(todo.projectId);
+      this.requireWritableProjectSummary(todo.projectId, undefined, reader);
       return {
         mutation: { kind: "deleteTodo", id, projectId: todo.projectId, updatedAt: Date.now() },
         result: () => this.publishPlanChange(todo.projectId),

@@ -141,6 +141,32 @@ static SENSITIVE: LazyLock<Regex> = LazyLock::new(|| {
     )).expect("valid memory sensitivity patterns")
 });
 
+fn personal_task(db: &Connection, task: &str) -> Result<bool> {
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM tasks t LEFT JOIN task_execution_workspace_state w ON w.task_id=t.id
+        WHERE t.id=?1 AND t.archived=0 AND w.state IS DISTINCT FROM 'trashed' AND (t.id=?2 OR EXISTS(
+          SELECT 1 FROM gateway_dots_tasks g JOIN gateway_dots_bindings b ON b.id=g.binding_id
+          WHERE g.task_id=t.id AND b.active=1 AND b.channel_id IN ('qq-default','weixin-default','feishu-default'))))",
+          params![task, crate::DOTS_TASK_ID], |r| r.get(0))?)
+}
+
+fn admitted_private_turn(db: &Connection, task: &str, origin: &Json, text: &str) -> Result<bool> {
+    if origin["audience"] != "private" || !origin["personalMemoryBindingId"].is_string() {
+        return Ok(false);
+    }
+    let Ok(source) = serde_json::from_value::<crate::gateway_admission::Origin>(origin.clone()) else {
+        return Ok(false);
+    };
+    let assignment = crate::gateway_admission::assignment(db, source.clone())?;
+    if assignment["status"] != "assigned" || assignment["taskId"] != task || assignment["command"] != false
+        || assignment["oldTaskAvailable"] != true || assignment["personalMemoryBindingId"] != origin["personalMemoryBindingId"] {
+        return Ok(false);
+    }
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM gateway_inbox WHERE channel_id=?1 AND account_key=?2 AND chat_id=?3
+        AND message_id=?4 AND json_extract_string(payload_json,'$.audience')='private'
+        AND trim(json_extract_string(payload_json,'$.text'))=?5)",
+        params![source.channel_id, source.connection_key, source.chat_id, source.message_id, text.trim()],|r|r.get(0))?)
+}
+
 fn ordinary_scopes(
     db: &Connection,
     user_id: &str,
@@ -300,10 +326,19 @@ fn basis(
     else {
         return Ok(Availability::Stale);
     };
-    let Some((scopes, workspace_parents)) = ordinary_scopes(db, user_id, &lease.task_id)? else {
+    let personal = user_id == "user-local-primary" && personal_task(db, &lease.task_id)?;
+    let binding = if personal {
+        Some((vec![Scope {scope_type:"task", scope_id:Some(crate::DOTS_TASK_ID.to_owned())}], vec![]))
+    } else { ordinary_scopes(db,user_id,&lease.task_id)? };
+    let Some((scopes, workspace_parents)) = binding else {
         return Ok(Availability::Blocked("unsupportedSourceAuthority"));
     };
-    let cutoff = withdrawal_cutoff(db, &scopes, &workspace_parents)?;
+    let cutoff = if personal {
+        let withdrawal_scopes = [Scope {scope_type:"global",scope_id:None},
+            Scope {scope_type:"task",scope_id:Some(crate::DOTS_TASK_ID.to_owned())},
+            Scope {scope_type:"task",scope_id:Some(lease.task_id.clone())}];
+        withdrawal_cutoff(db,&withdrawal_scopes,&[])?
+    } else { withdrawal_cutoff(db,&scopes,&workspace_parents)? };
     let mut turns = Vec::new();
     let mut withheld = Vec::new();
     for mut turn in captured {
@@ -312,9 +347,13 @@ fn basis(
             Some("withdrawnSourceRequiresRedaction")
         } else if SENSITIVE.is_match(&turn.user_text) {
             Some("sensitiveSourceRequiresRedaction")
+        } else if personal && lease.task_id != crate::DOTS_TASK_ID && !admitted_private_turn(db,&lease.task_id,&metadata["gatewayOrigin"],&turn.user_text)? {
+            Some("privateSourceNotAuthorized")
+        } else if personal && turn.user_message_id.is_none() {
+            Some("missingSourceMessage")
         } else if ["gatewayOrigin", "botId", "workId"]
             .iter()
-            .any(|key| !metadata[*key].is_null())
+            .any(|key| !metadata[*key].is_null() && !(personal && lease.task_id != crate::DOTS_TASK_ID && *key == "gatewayOrigin"))
         {
             Some("unsupportedSourceAuthority")
         } else if turn.user_text.trim().is_empty() {
@@ -330,7 +369,7 @@ fn basis(
         turn.metadata_json = "{}".to_owned();
         turns.push(turn);
     }
-    let records = existing(db, &scopes, cutoff, now)?;
+    let records = if personal { vec![] } else { existing(db, &scopes, cutoff, now)? };
     let stamp = digest(&json!([
         lease.token,
         lease.owner,
@@ -479,14 +518,23 @@ fn record_save(
         .as_ref()
         .ok_or("Missing grounded memory evidence")?;
     let agent = if candidate.explicit { "user" } else { "agent" };
-    let revision = json!({"revisionId":format!("mrev_{candidate_id}"),"changedAt":now,"changedBy":agent,
-        "reason":format!("candidate:{candidate_id}")});
+    let personal = candidate.scope_id.as_deref() == Some(crate::DOTS_TASK_ID);
+    let reason = if personal {
+        let (text, message, at):(String,String,i64) = tx.query_row("SELECT user_text,user_message_id,captured_at FROM memory_turns WHERE id=?1 AND task_id=?2",
+            params![evidence.turn_id,task_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        let offset = text.find(&evidence.quote).ok_or("Missing original quotation")?;
+        format!("dots-source-v1 {}",json!({"turnId":evidence.turn_id,"messageId":message,"capturedAt":at,
+            "start":text[..offset].encode_utf16().count(),"length":evidence.quote.encode_utf16().count(),
+            "hash":format!("{:x}",Sha256::digest(evidence.quote.as_bytes())),"stance":"statement"}))
+    } else { format!("candidate:{candidate_id}") };
+    let metadata = if personal && task_id != crate::DOTS_TASK_ID { r#"{"dotsPrivateGateway":true}"# } else { "{}" };
+    let revision = json!({"revisionId":format!("mrev_{candidate_id}"),"changedAt":now,"changedBy":agent,"reason":reason});
     let request = match &candidate.action {
         Action::Create => json!({"kind":"create","userId":user_id,"revision":revision,
             "scope":{"id":format!("mscope_{candidate_id}"),"scopeType":candidate.scope_type,"scopeId":candidate.scope_id},
             "record":{"id":id,"kind":candidate.kind,"title":candidate.title,"content":candidate.content,
                 "status":"active","importance":candidate.importance,"confidence":candidate.confidence,"explicit":candidate.explicit,
-                "contentHash":candidate.content_hash(),"updatedAt":now,"createdAt":now,"metadataJson":"{}","sourceType":agent,
+                "contentHash":candidate.content_hash(),"updatedAt":now,"createdAt":now,"metadataJson":metadata,"sourceType":agent,
                 "sourceTaskId":task_id,"evidence":[{"id":format!("mev_task_{candidate_id}"),"evidenceKind":"task","refId":task_id,"createdAt":now},
                   {"id":format!("mev_{candidate_id}"),"evidenceKind":"conversation","refId":evidence.turn_id,"excerpt":evidence.quote,"createdAt":now}]}}),
         Action::Update {
@@ -576,6 +624,11 @@ pub(super) fn publish(
     }
     let mut target_ids = HashSet::new();
     for candidate in candidates {
+        let personal = candidate.scope_id.as_deref() == Some(crate::DOTS_TASK_ID);
+        if personal && (!matches!(candidate.action,Action::Create) || !matches!(candidate.kind.as_str(),"preference"|"identity"|"constraint")
+            || !candidate.evidence.as_ref().is_some_and(|e| candidate.content == e.quote && e.quote.encode_utf16().count() <= 1200)) {
+            return Ok(json!({"status":"blocked","reason":"ungroundedPersonalCandidate"}));
+        }
         if !candidate.valid(&basis) {
             return Ok(json!({"status":"blocked","reason":"invalidCandidate"}));
         }

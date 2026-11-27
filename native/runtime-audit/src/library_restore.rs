@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions},
-    io::{BufReader, ErrorKind, Read, Write},
+    io::{BufReader, ErrorKind, Read},
     path::{Path, PathBuf},
 };
 
@@ -475,7 +475,7 @@ pub(crate) fn valid_operation(id: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
 }
 
-pub fn restore(db: &mut Connection, backup: Backup, request: Restore) -> Result<Option<Receipt>> {
+pub fn restore(db: &mut Connection, backup: Backup, mut request: Restore) -> Result<Option<Receipt>> {
     if !request.root.is_absolute() || !valid_operation(&request.operation_id) {
         return Err("备份恢复位置无效".into());
     }
@@ -491,6 +491,26 @@ pub fn restore(db: &mut Connection, backup: Backup, request: Restore) -> Result<
         recover(db, &request.root, None)?;
     }
     let tx = db.transaction()?;
+    if request.default_space_id.is_empty() {
+        use library_backup::Owner;
+        let owned = library_backup::spaces(&tx, &request.owner)?;
+        request.default_space_id = match &request.owner {
+            Owner::Personal => "personal".into(),
+            _ => owned.first().cloned().unwrap_or_else(|| request.operation_id.clone()),
+        };
+        if !owned.contains(&request.default_space_id) {
+            let (project, workspace, kind, name) = match &request.owner {
+                Owner::Personal => (None, None, "personal", String::from("我的文档")),
+                Owner::Project { project_id } => (Some(project_id), None, "team", tx.query_row("SELECT left(name,80)||'资料' FROM projects WHERE id=?", [project_id], |row| row.get(0))?),
+                Owner::Workspace { workspace_id } => (None, Some(workspace_id), "team", tx.query_row("SELECT left(name,80)||'资料' FROM spaces WHERE id=?", [workspace_id], |row| row.get(0))?),
+            };
+            if !scoped_notes::library_owner_writable(&tx, project.map(String::as_str), workspace.map(String::as_str))? {
+                return Err("目标资料位置已归档或不可用".into());
+            }
+            tx.execute("INSERT INTO library_spaces(id,name,kind,project_id,workspace_id,created_at,updated_at)
+                VALUES(?,?,?,?,?,epoch_ms(current_timestamp),epoch_ms(current_timestamp))",params![request.default_space_id,name,kind,project,workspace])?;
+        }
+    }
     let planned = plan(&tx, &backup, &order, &request)?;
     // Reserve exact paths before handing any files to the managed library.
     for destination in &planned.items {
@@ -743,6 +763,10 @@ pub(crate) fn reserve_file(
 /// The staged link stays in place until `commit_staged`, so crash recovery can still
 /// prove which operation owns the destination file.
 pub(crate) fn stage(path: &Path, bytes: &[u8], operation: &str, item: &str) -> Result<PathBuf> {
+    stage_reader(path, &mut &bytes[..], operation, item)
+}
+
+pub(crate) fn stage_reader(path: &Path, reader: &mut dyn std::io::Read, operation: &str, item: &str) -> Result<PathBuf> {
     let parent = path.parent().ok_or("恢复目录不存在")?;
     if let Err(error) = fs::create_dir(parent) {
         if error.kind() != ErrorKind::AlreadyExists {
@@ -758,7 +782,7 @@ pub(crate) fn stage(path: &Path, bytes: &[u8], operation: &str, item: &str) -> R
         .write(true)
         .create_new(true)
         .open(&temp)?;
-    file.write_all(bytes)?;
+    std::io::copy(reader, &mut file)?;
     file.sync_all()?;
     drop(file);
     Ok(temp)

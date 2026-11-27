@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path,
+    sync::{Arc, Mutex},
     sync::atomic::{AtomicI64, AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -64,6 +65,82 @@ pub(crate) struct ExecutionPromotionCursor {
     pub through: (i64, String),
 }
 
+const MAX_STREAM_WINDOW: u64 = 128;
+const MAX_PENDING_STREAM_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Default)]
+struct StreamOrder {
+    delivered: u64,
+    pending: BTreeMap<u64, String>,
+    pending_bytes: usize,
+    closed: bool,
+    legacy: bool,
+}
+
+impl StreamOrder {
+    fn accept(&mut self, seq: Option<u64>, progress: Value,
+        mut emit: impl FnMut(Option<u64>, Value) -> crate::Result<()>,
+    ) -> crate::Result<Option<&'static str>> {
+        if self.closed { return Ok(Some("STALE_EXECUTOR_OWNER")); }
+        let Some(seq) = seq else {
+            if self.delivered != 0 || !self.pending.is_empty() { return Ok(Some("STREAM_SEQUENCE_MODE_CONFLICT")); }
+            emit(None, progress)?;
+            self.legacy = true;
+            return Ok(None);
+        };
+        if self.legacy { return Ok(Some("STREAM_SEQUENCE_MODE_CONFLICT")); }
+        if seq == 0 { return Ok(Some("INVALID_STREAM_SEQUENCE")); }
+        if seq <= self.delivered { return Ok(None); }
+        if seq - self.delivered > MAX_STREAM_WINDOW { return Ok(Some("STREAM_WINDOW_EXCEEDED")); }
+        if seq != self.delivered + 1 {
+            let encoded = serde_json::to_string(&progress)?;
+            if let Some(previous) = self.pending.get(&seq) {
+                return Ok((previous != &encoded).then_some("STREAM_SEQUENCE_CONFLICT"));
+            }
+            if encoded.len() > MAX_PENDING_STREAM_BYTES - self.pending_bytes {
+                return Ok(Some("STREAM_WINDOW_EXCEEDED"));
+            }
+            self.pending_bytes += encoded.len();
+            self.pending.insert(seq, encoded);
+            return Ok(None);
+        }
+        if let Some(buffered) = self.pending.get(&seq)
+            && buffered != &serde_json::to_string(&progress)?
+        {
+            return Ok(Some("STREAM_SEQUENCE_CONFLICT"));
+        }
+        emit(Some(seq), progress)?;
+        if let Some(buffered) = self.pending.remove(&seq) {
+            self.pending_bytes -= buffered.len();
+        }
+        self.delivered = seq;
+        while let Some(next) = self.delivered.checked_add(1)
+            && let Some(encoded) = self.pending.get(&next)
+        {
+            emit(Some(next), serde_json::from_str(encoded)?)?;
+            self.pending_bytes -= encoded.len();
+            self.pending.remove(&next);
+            self.delivered = next;
+        }
+        Ok(None)
+    }
+
+    fn complete(&self, last: Option<u64>) -> bool {
+        if self.legacy { return last.is_none(); }
+        self.pending.is_empty() && match last {
+            Some(end) => end == self.delivered,
+            None => self.delivered == 0,
+        }
+    }
+}
+
+pub(crate) struct ActiveExecution {
+    attempt: i64,
+    epoch: u64,
+    owner: String,
+    stream: Mutex<StreamOrder>,
+}
+
 pub struct ExecutorTracker {
     online: std::sync::atomic::AtomicBool,
     ready: std::sync::atomic::AtomicBool,
@@ -72,7 +149,7 @@ pub struct ExecutorTracker {
     client_id: std::sync::Mutex<String>,
     slots_limit: AtomicI64,
     capabilities: std::sync::Mutex<Option<HashSet<String>>>,
-    active_executions: std::sync::Mutex<HashMap<String, (i64, u64, String)>>,
+    active_executions: std::sync::Mutex<HashMap<String, Arc<ActiveExecution>>>,
     execution_promotion_cursor: std::sync::Mutex<Option<ExecutionPromotionCursor>>,
 }
 
@@ -121,10 +198,12 @@ impl ExecutorTracker {
         owner_generation: &str,
     ) {
         if let Ok(mut map) = self.active_executions.lock() {
-            map.insert(
-                execution_id.to_owned(),
-                (attempt, epoch, owner_generation.to_owned()),
-            );
+            if map.get(execution_id).is_some_and(|old| old.attempt == attempt && old.epoch == epoch && old.owner == owner_generation) {
+                return;
+            }
+            map.insert(execution_id.to_owned(), Arc::new(ActiveExecution {
+                attempt, epoch, owner: owner_generation.to_owned(), stream: Mutex::default(),
+            }));
         }
     }
 
@@ -134,19 +213,15 @@ impl ExecutorTracker {
         }
     }
 
-    pub fn verify_active_execution(
+    pub(crate) fn verify_active_execution(
         &self,
         execution_id: &str,
         attempt: i64,
         epoch: u64,
-    ) -> Option<String> {
+    ) -> Option<Arc<ActiveExecution>> {
         let map = self.active_executions.lock().ok()?;
-        let (exp_attempt, exp_epoch, owner_gen) = map.get(execution_id)?;
-        if *exp_attempt == attempt && *exp_epoch == epoch {
-            Some(owner_gen.clone())
-        } else {
-            None
-        }
+        let active = map.get(execution_id)?;
+        (active.attempt == attempt && active.epoch == epoch).then(|| Arc::clone(active))
     }
 
     pub fn set_presence(&self, online: bool, epoch: u64, client_id: String) {
@@ -168,7 +243,7 @@ impl ExecutorTracker {
                 if epoch == 0 {
                     active.clear();
                 } else {
-                    active.retain(|_, (_, e, _)| *e != epoch);
+                    active.retain(|_, item| item.epoch != epoch);
                 }
             }
         }
@@ -733,10 +808,12 @@ pub enum ExecutionRequest {
         ephemeral: bool,
         #[serde(default)]
         progress_id: Option<String>,
+        stream_seq: Option<u64>,
     },
     ExecutorSettled {
         execution_id: String,
         attempt: i64,
+        last_stream_seq: Option<u64>,
         status: String, // "completed" | "failed" | "cancelled" | "paused" | "unknown"
         result: Option<Value>,
         error_message: Option<String>,
@@ -863,34 +940,47 @@ pub fn execute_ephemeral_progress(
     attempt: i64,
     progress: Value,
     owner_generation: Option<&str>,
+    stream_seq: Option<u64>,
 ) -> crate::Result<Value> {
     let core_gen = current_core_generation();
     if let Some(rejection) = verify_executor_identity(client, &core_gen, owner_generation) {
         return Ok(rejection.data);
     }
-    let Some(owner_gen) = tracker.verify_active_execution(execution_id, attempt, client.epoch) else {
+    let Some(active) = tracker.verify_active_execution(execution_id, attempt, client.epoch) else {
         return Ok(json!({ "status": "rejected", "code": "STALE_EXECUTOR_OWNER" }));
     };
-    let seq = EVENT_ID_SEQ.fetch_add(1, Ordering::AcqRel);
-    let event = json!({
-        "seq": 0,
-        "ephemeral": true,
-        "eventId": format!("stream-{}-{seq}", &core_gen[..core_gen.len().min(8)]),
-        "coreGeneration": core_gen,
-        "ownerGeneration": owner_gen,
-        "domain": "execution",
-        "kind": "execution.progress",
-        "entityId": execution_id,
-        "revision": 0,
-        "payload": {
-            "executionId": execution_id,
-            "attempt": attempt,
-            "progress": progress,
-        },
-        "createdAtMs": now_ms(),
-    });
-    EPHEMERAL_PROGRESS_EMITTED.fetch_add(1, Ordering::Relaxed);
-    let _ = crate::request_control::emit(&json!({ "coreStreamEvent": event }));
+    let mut stream = active.stream.lock().map_err(|_| "execution stream lock poisoned")?;
+    // Revocation or reassignment may have occurred while this sender waited on its stream.
+    if !tracker.verify_active_execution(execution_id, attempt, client.epoch)
+        .is_some_and(|current| Arc::ptr_eq(&current, &active))
+    {
+        return Ok(json!({ "status": "rejected", "code": "STALE_EXECUTOR_OWNER" }));
+    }
+    let rejected = stream.accept(stream_seq, progress, |seq_no, progress| {
+        let seq = EVENT_ID_SEQ.fetch_add(1, Ordering::AcqRel);
+        let mut event = json!({
+            "seq": 0,
+            "ephemeral": true,
+            "eventId": format!("stream-{}-{seq}", &core_gen[..core_gen.len().min(8)]),
+            "coreGeneration": core_gen,
+            "ownerGeneration": active.owner,
+            "domain": "execution",
+            "kind": "execution.progress",
+            "entityId": execution_id,
+            "revision": 0,
+            "payload": {
+                "executionId": execution_id,
+                "attempt": attempt,
+                "progress": progress,
+            },
+            "createdAtMs": now_ms(),
+        });
+        if let Some(seq_no) = seq_no { event["payload"]["streamSeq"] = json!(seq_no); }
+        crate::request_control::emit(&json!({ "coreStreamEvent": event }))?;
+        EPHEMERAL_PROGRESS_EMITTED.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    })?;
+    if let Some(code) = rejected { return Ok(json!({ "status": "rejected", "code": code })); }
     Ok(json!({ "status": "ok", "ephemeral": true, "coreGeneration": core_gen }))
 }
 
@@ -1248,7 +1338,11 @@ pub fn execute_execution(
             host_generation,
             ephemeral,
             progress_id,
+            stream_seq,
         } => {
+            if !ephemeral && stream_seq.is_some() {
+                return Ok(execution_reply(json!({ "status": "rejected", "code": "INVALID_STREAM_SEQUENCE" })));
+            }
             if let Some(rejection) = verify_host_generation(db, host_generation.as_deref()) {
                 return Ok(rejection);
             }
@@ -1260,6 +1354,7 @@ pub fn execute_execution(
                     attempt,
                     progress,
                     owner_generation.as_deref(),
+                    stream_seq,
                 )?;
                 return Ok(WriteSideEffects {
                     data,
@@ -1360,6 +1455,7 @@ pub fn execute_execution(
             error_message,
             owner_generation,
             host_generation,
+            last_stream_seq,
         } => {
             if let Some(rejection) = verify_executor_identity(client, &core_gen, owner_generation.as_deref()) {
                 return Ok(rejection);
@@ -1399,6 +1495,16 @@ pub fn execute_execution(
                     | ("cancel_requested", "cancelled" | "unknown")
             ) {
                 return Ok(execution_reply(json!({ "status": "rejected", "code": "INVALID_STATE", "actualStatus": row.status })));
+            }
+            // Serialize the terminal commit with emission for this attempt only.
+            let active = tracker.verify_active_execution(&execution_id, attempt, client.epoch);
+            let mut order = active.as_ref().map(|a| a.stream.lock()).transpose()
+                .map_err(|_| "execution stream lock poisoned")?;
+            if status == "completed" && !order.as_deref().map_or_else(
+                || last_stream_seq.unwrap_or(0) == 0, |s| s.complete(last_stream_seq),
+            ) {
+                return Ok(execution_reply(json!({ "status": "rejected", "code": "STREAM_SEQUENCE_GAP",
+                    "deliveredStreamSeq": order.as_ref().map_or(0, |s| s.delivered), "lastStreamSeq": last_stream_seq })));
             }
             let next_rev = row.revision + 1;
             let now = now_ms();
@@ -1483,6 +1589,8 @@ pub fn execute_execution(
             dispatch_waiting_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
             let updated = fetch_execution(&tx, &execution_id)?.unwrap();
             crate::request_control::commit(tx)?;
+            if let Some(stream) = order.as_mut() { stream.closed = true; }
+            drop(order);
             tracker.clear_active_execution(&execution_id);
             crate::work_scheduler::apply_committed_promotion_dispatches(tracker, &dispatches);
             Ok(WriteSideEffects {
@@ -2293,6 +2401,36 @@ mod tests {
     }
 
     #[test]
+    fn stream_window_orders_retries_and_bounds_buffered_data() {
+        let mut order = StreamOrder::default();
+        let mut seen = Vec::new();
+        let mut emit = |seq, value| { seen.push((seq, value)); Ok(()) };
+        assert_eq!(order.accept(Some(0), json!("x"), &mut emit).unwrap(), Some("INVALID_STREAM_SEQUENCE"));
+        assert_eq!(order.accept(Some(MAX_STREAM_WINDOW + 1), json!("x"), &mut emit).unwrap(), Some("STREAM_WINDOW_EXCEEDED"));
+        assert_eq!(order.accept(Some(2), json!("x".repeat(MAX_PENDING_STREAM_BYTES)), &mut emit).unwrap(), Some("STREAM_WINDOW_EXCEEDED"));
+        for seq in [3, 2, 2] {
+            assert_eq!(order.accept(Some(seq), json!(seq), &mut emit).unwrap(), None);
+        }
+        assert_eq!(order.accept(Some(2), json!("changed"), &mut emit).unwrap(), Some("STREAM_SEQUENCE_CONFLICT"));
+        assert!(!order.complete(None));
+        for seq in [1, 1, 3] {
+            assert_eq!(order.accept(Some(seq), json!(seq), &mut emit).unwrap(), None);
+        }
+        assert_eq!(seen, vec![(Some(1), json!(1)), (Some(2), json!(2)), (Some(3), json!(3))]);
+        assert_eq!(order.pending_bytes, 0);
+        assert!(order.complete(Some(3)));
+        assert!(!order.complete(None));
+        assert_eq!(order.accept(None, json!("legacy"), |_, _| Ok(())).unwrap(), Some("STREAM_SEQUENCE_MODE_CONFLICT"));
+        let mut legacy = StreamOrder::default();
+        assert_eq!(legacy.accept(None, json!("old client"), |_, _| Ok(())).unwrap(), None);
+        assert!(legacy.complete(None));
+        assert!(!legacy.complete(Some(0)));
+        assert_eq!(legacy.accept(Some(1), json!("mixed"), |_, _| Ok(())).unwrap(), Some("STREAM_SEQUENCE_MODE_CONFLICT"));
+        assert!(!order.complete(Some(2)));
+        assert!(!order.complete(Some(4)));
+    }
+
+    #[test]
     fn ephemeral_progress_validates_active_execution_without_writing_sqlite_events() {
         let mut db = setup_db();
         let tracker = ExecutorTracker::new();
@@ -2354,6 +2492,7 @@ mod tests {
             1,
             json!({ "delta": "hi" }),
             None,
+            Some(1),
         )
         .unwrap();
         assert_eq!(ok["status"], "ok");
@@ -2367,6 +2506,7 @@ mod tests {
             "exec-eph-1",
             2,
             json!({ "delta": "stale" }),
+            None,
             None,
         )
         .unwrap();
@@ -2384,10 +2524,26 @@ mod tests {
             1,
             json!({ "delta": "stale-epoch" }),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(wrong_epoch["code"], "STALE_EXECUTOR_OWNER");
 
+        let second = execute_ephemeral_progress(&tracker, &exec, "exec-eph-1", 1, json!("third"), None, Some(3)).unwrap();
+        assert_eq!(second["status"], "ok");
+        let settled = |last| ExecutionRequest::ExecutorSettled {
+            execution_id: "exec-eph-1".into(), attempt: 1, status: "completed".into(),
+            last_stream_seq: last, result: None, error_message: None, owner_generation: None, host_generation: None,
+        };
+        for last in [None, Some(3)] {
+            let gap = execute_execution(&mut db, &tracker, &exec, settled(last)).unwrap();
+            assert_eq!(gap.data["code"], "STREAM_SEQUENCE_GAP");
+            assert_eq!(count_events(&db), events_before);
+            assert_eq!(fetch_execution(&db, "exec-eph-1").unwrap().unwrap().status, "running");
+        }
+        execute_ephemeral_progress(&tracker, &exec, "exec-eph-1", 1, json!("second"), None, Some(2)).unwrap();
+        assert_eq!(execute_execution(&mut db, &tracker, &exec, settled(Some(4))).unwrap().data["code"], "STREAM_SEQUENCE_GAP");
+        assert_eq!(execute_execution(&mut db, &tracker, &exec, settled(None)).unwrap().data["code"], "STREAM_SEQUENCE_GAP");
         execute_execution(
             &mut db,
             &tracker,
@@ -2396,6 +2552,7 @@ mod tests {
                 execution_id: "exec-eph-1".into(),
                 attempt: 1,
                 status: "completed".into(),
+                last_stream_seq: Some(3),
                 result: Some(json!({ "ok": true })),
                 error_message: None,
                 owner_generation: None,
@@ -2409,6 +2566,7 @@ mod tests {
             "exec-eph-1",
             1,
             json!({ "delta": "late" }),
+            None,
             None,
         )
         .unwrap();

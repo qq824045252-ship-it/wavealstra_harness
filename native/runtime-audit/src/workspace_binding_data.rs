@@ -66,7 +66,7 @@ pub fn read(db: &mut Connection, id: &str) -> Result<Option<Snapshot>> {
              SELECT id,name,parent_id,archived FROM spaces WHERE id=?1 OR id IN (
                  SELECT workspace_id FROM library_spaces WHERE workspace_id IS NOT NULL)
              UNION SELECT s.id,s.name,s.parent_id,s.archived FROM spaces s JOIN involved i ON s.id=i.parent_id
-         ) SELECT id,name,parent_id,archived FROM involved",
+         ) SELECT id,name,parent_id,archived!=0 FROM involved",
         [id],
         |row| {
             Ok(Workspace {
@@ -77,7 +77,7 @@ pub fn read(db: &mut Connection, id: &str) -> Result<Option<Snapshot>> {
             })
         },
     )?;
-    let spaces = all(&tx, "SELECT l.id,l.name,l.kind,l.project_id,l.workspace_id,coalesce(p.archived,0)
+    let spaces = all(&tx, "SELECT l.id,l.name,l.kind,l.project_id,l.workspace_id,coalesce(p.archived,0)!=0
                            FROM library_spaces l LEFT JOIN projects p ON p.id=l.project_id
                            ORDER BY CASE l.kind WHEN 'personal' THEN 0 ELSE 1 END,l.created_at,l.rowid", [], |row| {
         Ok(LibrarySpace { id: row.get(0)?, name: row.get(1)?, kind: row.get(2)?, project_id: row.get(3)?,
@@ -100,7 +100,7 @@ pub fn read(db: &mut Connection, id: &str) -> Result<Option<Snapshot>> {
                                 SELECT id,parent_id FROM spaces WHERE id=?1
                                 UNION SELECT s.id,s.parent_id FROM spaces s JOIN context c ON s.id=c.parent_id
                               ), refs AS (
-                                SELECT w.workspace_id,w.library_space_id,NULL AS collection_id,w.created_at,0 AS kind
+                                SELECT w.workspace_id,w.library_space_id,NULL::VARCHAR AS collection_id,w.created_at,0 AS kind
                                 FROM workspace_library_links w JOIN context c ON c.id=w.workspace_id
                                 UNION ALL
                                 SELECT w.workspace_id,w.library_space_id,w.collection_id,w.created_at,1 AS kind
@@ -111,7 +111,7 @@ pub fn read(db: &mut Connection, id: &str) -> Result<Option<Snapshot>> {
         Ok(Reference { workspace_id: row.get(0)?, library_space_id: row.get(1)?, collection_id: row.get(2)? })
     })?;
     let owned_item_count = tx.query_row(
-        "SELECT count(*) FROM library_items i JOIN library_spaces s ON s.id=i.space_id
+        "SELECT count(*)::UBIGINT FROM library_items i JOIN library_spaces s ON s.id=i.space_id
                                         WHERE s.workspace_id=?1 AND i.trashed_at IS NULL",
         [id],
         |row| row.get(0),
@@ -142,6 +142,7 @@ fn all<T>(
 #[serde(rename_all = "camelCase")]
 pub struct Mutation {
     kind: Kind,
+    name: Option<String>,
     workspace_id: String,
     library_space_id: String,
     collection_id: Option<String>,
@@ -153,6 +154,7 @@ pub struct Mutation {
 enum Kind {
     Bind,
     Unbind,
+    CreateFolder,
 }
 
 #[derive(Serialize)]
@@ -209,6 +211,18 @@ fn apply(db: &mut Connection, mutation: Mutation) -> Result<()> {
         }
     }
     match (mutation.kind, mutation.collection_id) {
+        (Kind::CreateFolder, Some(collection)) => {
+            let name = mutation.name.as_deref().ok_or("文件夹名称不能为空")?;
+            if name.trim().is_empty() || name.encode_utf16().count() > 100 { return Err("文件夹名称无效".into()); }
+            let created = tx.execute("INSERT INTO library_collections(id,space_id,name,owner,created_at,updated_at)
+                SELECT ?1,id,?2,coalesce(nullif(trim((SELECT name FROM soul WHERE id=1)),''),'我'),?3,?3
+                FROM library_spaces WHERE id=?4 AND workspace_id=?5",
+                params![collection, name, mutation.at, library, workspace])?;
+            if created != 1 { return Err("请在当前工作空间的自有资料中新建文件夹".into()); }
+            tx.execute("INSERT INTO workspace_library_collection_links(workspace_id,library_space_id,collection_id,created_at)
+                VALUES(?1,?2,?3,?4)",params![workspace,library,collection,mutation.at])?
+        }
+        (Kind::CreateFolder, None) => return Err("文件夹标识为空".into()),
         (Kind::Bind, Some(collection)) => tx.execute("INSERT INTO workspace_library_collection_links
             (workspace_id,library_space_id,collection_id,created_at) VALUES(?1,?2,?3,?4) ON CONFLICT DO NOTHING",
             params![workspace, library, collection, mutation.at])?,

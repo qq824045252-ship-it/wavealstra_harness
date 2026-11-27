@@ -1,5 +1,5 @@
-//! Rust-owned DuckDB application database initialization, schema verification, incompatible
-//! reset, seed materialization, and startup maintenance (`Step 4`, `DB-01`, `DB-05`, `DB-06`).
+//! Rust-owned DuckDB application database initialization, schema verification, one-time
+//! SQLite cutover, seed materialization, and startup maintenance (`Step 4`, `DB-01`, `DB-05`, `DB-06`).
 
 use crate::core_lease;
 use crate::database::{
@@ -37,8 +37,8 @@ fn now_ms() -> i64 {
 }
 
 /// Validates current DuckDB schema (`expected_version`) under Core's OS guards (`core.lock` +
-/// `core-worker.lock`), resets only confirmed schema mismatch (never I/O, permission, or corrupt files),
-/// and materializes canonical DuckDB schema + startup seeds/repairs.
+/// `core-worker.lock`), performs the first packaged SQLite cutover, and materializes the
+/// canonical schema and startup seeds/repairs without resetting an existing DuckDB.
 pub fn initialize_database(
     data_dir: &Path,
     db_path: &Path,
@@ -52,49 +52,45 @@ pub fn initialize_database(
     let _guards = core_lease::initialization_guards(guard_directory)
         .map_err(|e| format!("Core database ownership guard unavailable: {e}"))?;
     let Some(release) = release else {
-        return initialize_database_unguarded(db_path, expected_version);
+        return open_and_materialize(db_path).map(|(report, _)| report);
     };
+    // The stamp is written only after successful initialization. Older stamps
+    // also prove the old SQLite cleanup already ran; do not run it again.
     let stamp = release.read_stamp()?;
     let changed = !release.matches(stamp.as_ref());
-    let deleted = if changed {
-        release.remove_old_databases()?
+    let deleted = if stamp.is_none() && !release.has_cutover_receipt()? {
+        release.remove_legacy_sqlite_databases()?
     } else {
-        release.verify_current_database()?;
+        release.verify_current_database(true)?;
         Vec::new()
     };
-    let (mut report, generation) = open_and_materialize(&release.root.join("app.duckdb"), false)?;
+    let canonical = release.root.join("app.duckdb");
+    let replaced_sqlite = deleted.iter().any(|path| Path::new(path) == canonical);
+    let (mut report, generation) = open_and_materialize(&canonical)?;
+    {
+        let mut conn = Connection::open(&canonical)?;
+        let tx = conn.transaction()?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS packaged_sqlite_cutover (database_generation VARCHAR PRIMARY KEY)")?;
+        tx.execute("INSERT INTO packaged_sqlite_cutover VALUES (?1) ON CONFLICT DO NOTHING", [&generation])?;
+        tx.commit()?;
+    }
     if changed || stamp.as_ref().is_some_and(|stamp| stamp.database_generation != generation) {
         release.publish(generation)?;
     }
-    if changed {
-        report.rebuilt = stamp.is_some() || !deleted.is_empty();
-        report.materialized = true;
-        report.deleted_files = deleted;
-    }
+    report.rebuilt |= replaced_sqlite;
+    report.materialized |= changed;
+    report.deleted_files = deleted;
     Ok(report)
 }
 
-pub fn initialize_database_unguarded(
-    db_path: &Path,
-    _expected_version: u32,
-) -> crate::Result<InitDatabaseReport> {
-    open_and_materialize(db_path, true).map(|(report, _)| report)
-}
-
-fn open_and_materialize(
-    db_path: &Path,
-    allow_reset_on_mismatch: bool,
-) -> crate::Result<(InitDatabaseReport, String)> {
+fn open_and_materialize(db_path: &Path) -> crate::Result<(InitDatabaseReport, String)> {
     if let Some(parent) = db_path.parent()
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent)?;
     }
-    let cfg = DuckDbPoolConfig {
-        allow_reset_on_mismatch,
-        ..Default::default()
-    };
-    let (engine, open_report) = DuckDbEngine::open_or_initialize(db_path, cfg)?;
+    let (engine, open_report) =
+        DuckDbEngine::open_or_initialize(db_path, DuckDbPoolConfig::default())?;
     let mut writer = engine.checkout_writer(std::time::Duration::from_secs(10))?;
     materialize_seeds_and_repairs(writer.conn_mut())?;
     drop(writer);
@@ -308,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn discards_incompatible_schema_and_sidecars_without_backup_and_preserves_unreadable_bytes() {
+    fn rejects_incompatible_duckdb_and_preserves_unreadable_bytes() {
         let s = Sandbox::new("discard");
         let data_dir = s.0.join("data");
         let db_path = data_dir.join("old.duckdb");
@@ -320,11 +316,10 @@ mod tests {
                  INSERT INTO database_meta VALUES (1, 'legacy-v0', 0, 'old-gen', TRUE, 1, 1);",
             ).unwrap();
         }
-        fs::write(format!("{}.wal", db_path.display()), b"stale-wal").unwrap();
-
-        let report = initialize_database(&data_dir, &db_path, DUCKDB_SCHEMA_VERSION as u32, None).unwrap();
-        assert!(report.rebuilt);
-        assert!(!data_dir.join("old.duckdb.wal").exists());
+        let original = fs::read(&db_path).unwrap();
+        let err = initialize_database(&data_dir, &db_path, DUCKDB_SCHEMA_VERSION as u32, None).unwrap_err();
+        assert!(err.to_string().contains("legacy-v0"));
+        assert_eq!(fs::read(&db_path).unwrap(), original);
 
         // Corrupt bytes must fail without deleting or pretending to be an old schema.
         let bad_path = data_dir.join("corrupt.duckdb");
@@ -344,102 +339,154 @@ mod tests {
     }
 
     #[test]
-    fn release_upgrade_rebuilds_only_owned_databases_and_same_release_keeps_data() {
+    fn first_release_clears_sqlite_once_and_two_upgrades_keep_duckdb() {
         let s = Sandbox::new("release-upgrade");
         let data = s.0.join(".mybuddy");
         fs::create_dir(&data).unwrap();
-        let db_path = data.join("app.duckdb");
-        let init = |version| initialize_database(&data, &db_path, DUCKDB_SCHEMA_VERSION as u32, Some(version)).unwrap();
-        obsolete_sqlite(&db_path);
-        assert!(init("0.1.1").rebuilt);
-
-        let previous_stamp = fs::read(data.join("database-release.json")).unwrap();
-        {
-            let conn = Connection::open(&db_path).unwrap();
-            conn.execute("INSERT INTO tasks (id, title, updated_at) VALUES ('retained', 'Same release', 1)", [])
-                .unwrap();
-        }
-        let store = data.join("durable").join("a".repeat(64));
-        let gateway_store = data.join("gateway/spaces/qq-default").join("b".repeat(64));
-        for path in [
-            data.join("app.db"),
+        let db = data.join("app.duckdb");
+        let legacy = data.join("app.db");
+        let durable = data.join("durable").join("a".repeat(64)).join("durable.sqlite");
+        let retained = data.join("outside-cleanup.sqlite");
+        let gateway = data.join("gateway/spaces/qq-default").join("b".repeat(64)).join("durable.sqlite");
+        let cleanup = [
+            db.clone(),
+            legacy.clone(),
+            durable,
+            gateway,
             data.join("native-hooks.sqlite"),
             data.join("native-improvement.sqlite"),
             data.join(".mybuddy-writer-lock.sqlite"),
-            store.join("durable.sqlite"),
-            store.join(".mybuddy-writer-lock.sqlite"),
-            gateway_store.join("durable.sqlite"),
-            store.join("user-asset.sqlite"),
-        ] {
-            obsolete_sqlite(&path);
+        ];
+        for path in cleanup.iter().chain(std::iter::once(&retained)) {
+            obsolete_sqlite(path);
         }
-        for path in [data.join("app.db-wal"), store.join("durable.sqlite-shm"), gateway_store.join("durable.sqlite-journal")] {
-            fs::write(path, "old companion").unwrap();
-        }
-        for path in [data.join("settings.json"), store.join(".mybuddy-writer-lock.json"), gateway_store.join("asset.txt")] {
-            fs::write(path, "preserve").unwrap();
-        }
-        assert!(!init("0.1.1").rebuilt);
-        assert_eq!(fs::read(data.join("database-release.json")).unwrap(), previous_stamp);
-        assert!(store.join("durable.sqlite").is_file());
-        {
-            let conn = Connection::open(&db_path).unwrap();
-            let count: i64 = conn.query_row("SELECT count(*) FROM tasks WHERE id='retained'", [], |row| row.get(0)).unwrap();
+        let companion = data.join("app.db-wal");
+        fs::write(&companion, "legacy companion").unwrap();
+        let init = |version| initialize_database(&data, &db, DUCKDB_SCHEMA_VERSION as u32, Some(version)).unwrap();
+        let first = init("0.1.1");
+        assert!(first.rebuilt);
+        assert_eq!(first.deleted_files.len(), cleanup.len() + 1);
+        assert!(cleanup[1..].iter().all(|path| !path.exists()));
+        assert!(!companion.exists());
+        assert!(retained.exists());
+        Connection::open(&db).unwrap().execute(
+            "INSERT INTO tasks (id, title, updated_at) VALUES ('retained', 'Keep', 1)", [],
+        ).unwrap();
+        let read_stamp = || -> database_release::Stamp {
+            serde_json::from_slice(&fs::read(data.join("database-release.json")).unwrap()).unwrap()
+        };
+        let first_stamp = read_stamp();
+        obsolete_sqlite(&legacy);
+        let late_legacy = fs::read(&legacy).unwrap();
+        for version in ["0.1.1", "0.1.2", "0.1.3"] {
+            let report = init(version);
+            assert!(!report.rebuilt && report.deleted_files.is_empty());
+            assert_eq!(read_stamp().release_version, version);
+            assert_eq!(read_stamp().database_generation, first_stamp.database_generation);
+            assert_eq!(fs::read(&legacy).unwrap(), late_legacy);
+            let conn = Connection::open(&db).unwrap();
+            let count: i64 = conn.query_row("SELECT count(*) FROM tasks WHERE id='retained'", [], |r| r.get(0)).unwrap();
             assert_eq!(count, 1);
         }
-
-        let report = init("0.1.2");
-        assert!(report.rebuilt);
-        assert_eq!(report.deleted_files.len(), 11);
-        assert!(!data.join("app.db").exists());
-        assert!(!store.join("durable.sqlite").exists());
-        assert!(!gateway_store.join("durable.sqlite").exists());
-        assert!(store.join("user-asset.sqlite").is_file());
-        for path in [data.join("settings.json"), store.join(".mybuddy-writer-lock.json"), gateway_store.join("asset.txt")] {
-            assert_eq!(fs::read_to_string(path).unwrap(), "preserve");
-        }
-        let stamp: database_release::Stamp = serde_json::from_slice(&fs::read(data.join("database-release.json")).unwrap()).unwrap();
-        let previous: database_release::Stamp = serde_json::from_slice(&previous_stamp).unwrap();
-        assert_eq!(stamp.release_version, "0.1.2");
-        assert_ne!(stamp.database_generation, previous.database_generation);
-        {
-            let conn = Connection::open(&db_path).unwrap();
-            let count: i64 = conn.query_row("SELECT count(*) FROM tasks", [], |row| row.get(0)).unwrap();
-            assert_eq!(count, 0);
-        }
-        assert!(!init("0.1.2").rebuilt);
     }
 
     #[test]
-    fn release_upgrade_preflights_all_targets_and_resumes_if_stamp_was_not_published() {
-        let s = Sandbox::new("release-preflight");
+    fn first_packaged_run_preserves_an_unstamped_duckdb_and_retries_unpublished_cleanup() {
+        let s = Sandbox::new("release-unstamped");
         let data = s.0.join(".mybuddy");
         fs::create_dir(&data).unwrap();
-        let db_path = data.join("app.duckdb");
-        let init = |version| initialize_database(&data, &db_path, DUCKDB_SCHEMA_VERSION as u32, Some(version));
-        init("0.1.1").unwrap();
-        let stamp = fs::read(data.join("database-release.json")).unwrap();
+        let db = data.join("app.duckdb");
+        let init = || initialize_database(&data, &db, DUCKDB_SCHEMA_VERSION as u32, Some("0.1.1"));
+        let (_, generation) = open_and_materialize(&db).unwrap();
+        let conn = Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO tasks (id, title, updated_at) VALUES ('unstamped', 'Keep', 1)", []).unwrap();
+        drop(conn);
         let old = data.join("app.db");
         obsolete_sqlite(&old);
-        let invalid_target = data.join("native-hooks.sqlite");
-        fs::write(&invalid_target, "not a database").unwrap();
+        let unrelated = data.join("app.duckdb-shm");
+        fs::write(&unrelated, "not associated with a legacy app.duckdb").unwrap();
+        let invalid = data.join("native-hooks.sqlite");
+        let stamp = data.join("database-release.json");
+        let pending = data.join(".database-release.json.pending");
+        fs::write(&invalid, "not a database").unwrap();
+        assert!(init().is_err());
+        assert!(old.is_file() && !stamp.exists());
+        fs::remove_file(&invalid).unwrap();
+        fs::write(&pending, "interrupted stamp").unwrap();
+        let cutover = init().unwrap();
+        assert!(!cutover.rebuilt);
+        assert_eq!(cutover.deleted_files, [old.display().to_string()]);
+        assert!(!old.exists() && !pending.exists());
+        assert_eq!(fs::read(&unrelated).unwrap(), b"not associated with a legacy app.duckdb");
+        let saved: database_release::Stamp = serde_json::from_slice(&fs::read(&stamp).unwrap()).unwrap();
+        assert_eq!(saved.database_generation, generation);
+        let conn = Connection::open(&db).unwrap();
+        let title: String = conn.query_row("SELECT title FROM tasks WHERE id='unstamped'", [], |r| r.get(0)).unwrap();
+        assert_eq!(title, "Keep");
+    }
+
+    #[test]
+    fn stamped_upgrade_recovers_committed_duckdb_wal() {
+        let s = Sandbox::new("release-wal");
+        let data = s.0.join(".mybuddy");
+        fs::create_dir(&data).unwrap();
+        let live = s.0.join("live.duckdb");
+        let db = data.join("app.duckdb");
+        let (_, generation) = open_and_materialize(&live).unwrap();
+        let writer = Connection::open(&live).unwrap();
+        writer.execute_batch("CHECKPOINT").unwrap();
+        writer.execute(
+            "INSERT INTO tasks (id, title, updated_at) VALUES ('from-wal', 'Keep', 1)", [],
+        ).unwrap();
+        // Snapshot an idle writer before the clean close checkpoints its WAL.
+        fs::copy(&live, &db).unwrap();
+        fs::copy(s.0.join("live.duckdb.wal"), data.join("app.duckdb.wal")).unwrap();
+        drop(writer);
+        fs::write(
+            data.join("database-release.json"),
+            serde_json::to_vec(&database_release::Stamp {
+                release_version: "0.1.1".to_owned(),
+                database_generation: generation.clone(),
+                sqlite_cutover_recorded: false,
+            }).unwrap(),
+        ).unwrap();
+
+        let report = initialize_database(&data, &db, DUCKDB_SCHEMA_VERSION as u32, Some("0.1.2")).unwrap();
+        assert!(!report.rebuilt && report.deleted_files.is_empty());
+        let saved: database_release::Stamp = serde_json::from_slice(
+            &fs::read(data.join("database-release.json")).unwrap(),
+        ).unwrap();
+        assert_eq!(saved.database_generation, generation);
+        let conn = Connection::open(&db).unwrap();
+        let title: String = conn.query_row("SELECT title FROM tasks WHERE id='from-wal'", [], |r| r.get(0)).unwrap();
+        assert_eq!(title, "Keep");
+    }
+
+    #[test]
+    fn preserves_orphan_duckdb_wal_on_first_cutover_and_upgrade() {
+        let s = Sandbox::new("orphan-wal");
+        let data = s.0.join(".mybuddy");
+        fs::create_dir(&data).unwrap();
+        let db = data.join("app.duckdb");
+        let wal = data.join("app.duckdb.wal");
+        let init = |v| initialize_database(&data, &db, DUCKDB_SCHEMA_VERSION as u32, Some(v));
+        fs::write(&wal, "preserve").unwrap();
+        assert!(init("0.1.1").is_err());
+        assert_eq!(fs::read(&wal).unwrap(), b"preserve");
+        assert!(!data.join("database-release.json").exists());
+        fs::remove_file(&wal).unwrap();
+        init("0.1.1").unwrap();
+        fs::rename(&db, data.join("fixture-copy.duckdb")).unwrap();
+        fs::write(&wal, "still preserve").unwrap();
         assert!(init("0.1.2").is_err());
-        assert!(old.is_file());
-        assert!(db_path.is_file());
-        assert_eq!(fs::read(data.join("database-release.json")).unwrap(), stamp);
-
-        fs::remove_file(&invalid_target).unwrap();
-        fs::remove_file(&db_path).unwrap();
-        fs::write(data.join(".database-release.json.pending"), "interrupted stamp").unwrap();
-        let report = init("0.1.2").unwrap();
-        assert!(report.rebuilt);
-        assert!(!old.exists());
-        assert!(!data.join(".database-release.json.pending").exists());
-        assert!(db_path.is_file());
-
-        fs::write(data.join("database-release.json"), "invalid stamp").unwrap();
-        assert!(init("0.1.3").is_err());
-        assert!(db_path.is_file());
+        assert_eq!(fs::read(&wal).unwrap(), b"still preserve");
+        let saved: database_release::Stamp = serde_json::from_slice(
+            &fs::read(data.join("database-release.json")).unwrap(),
+        ).unwrap();
+        assert_eq!(saved.release_version, "0.1.1");
+        fs::remove_file(&wal).unwrap();
+        assert!(init("0.1.2").is_err());
+        assert!(!db.exists());
     }
 
     #[cfg(unix)]
