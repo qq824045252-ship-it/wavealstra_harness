@@ -2,6 +2,7 @@ import { advanceActivity } from "../../../../../../shared/src/activity-time";
 import { projectDurableHistory } from "./taskHistoryRead";
 import type { ChatMessage, Task } from "../../../types";
 import { hasActiveExecutionMessages } from "../../../utils/taskFilters";
+import { latestConversationGoal } from "../../../utils/conversationGoal";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
 import { applyPatchToMessage } from "../messages/messageReducer";
@@ -310,7 +311,7 @@ export function createAgentProjectionActions(
             // 完成绿点靠噪声复活。只有 assistant_start/end 才推进任务时间。
             return {
               ...current,
-              activeGoal: patch.goal,
+              activeGoal: patch.goal ? latestConversationGoal(current.activeGoal, patch.goal) : current.activeGoal,
             };
           }
 

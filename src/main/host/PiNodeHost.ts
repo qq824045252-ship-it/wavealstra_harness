@@ -11,6 +11,7 @@ import type {
   AuthLoginRequest,
 } from "../../shared/agent-ipc";
 import { DOTS_TASK_ID } from "../../shared/dots";
+import type { ConversationGoalVersionWitness } from "../../shared/conversation-goal";
 import { normalizeDreamSettings, normalizeRssSubscriptions } from "../../shared/dots-discovery";
 import { normalizeDotsGoogleRules } from "../../shared/dots-google";
 import { resolveDotsPreferences } from "../../shared/dots-settings";
@@ -906,7 +907,7 @@ export class PiNodeHost {
         return { status: "completed", result: await agent.retryKernelFailedTurns() };
       case "resumeGoalContinuation":
         return { status: "completed", result: await agent.resumeGoalContinuation(
-          String(payload.goalId), dispatch.execution.taskId) };
+          String(payload.goalId), dispatch.execution.taskId, payload.witness as ConversationGoalVersionWitness | undefined) };
       case "generateTaskTitle": {
         const res = await agent.generateTaskTitle(String(payload.taskId ?? dispatch.execution.taskId), payload.maxTokens as number | undefined);
         return { status: "completed", result: res };

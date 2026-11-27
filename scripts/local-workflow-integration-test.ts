@@ -391,7 +391,7 @@ try {
   assert.equal(verified?.sha, boardSha);
   assert.equal(verified?.command, "node --test check.cjs");
   assert.equal(verified?.fingerprint, beforeClose.find(row => row.kind === "check")?.fingerprint);
-  assert.equal(agent.cancelConversationGoal(goal.goal.id, "pstack-orch").ok, true);
+  assert.equal((await agent.cancelConversationGoal(goal.goal.id, "pstack-orch")).ok, true);
   const replacement = await agent.createConversationGoal({ taskId: "pstack-orch", title: "An unrelated future goal" });
   assert(replacement.ok);
   await agent.releaseDurableTask("pstack-orch");

@@ -11,6 +11,7 @@ import type { AppContext } from "../context";
 import { formatDuration } from "../format";
 import { saveSidebarExpanded } from "../persistence/uiPreferences";
 import { expandSpacePath } from "../workspaces/spaceHelpers";
+import { latestConversationGoal } from "../../../utils/conversationGoal";
 
 export function createTaskActivationActions(
   storeContext: AppContext,
@@ -191,9 +192,10 @@ export function createTaskActivationActions(
                   list.push(interaction);
                   interactionsByMessage.set(resolvedMessageId, list);
                 }
+                const goal = snapshot.activeGoal ?? snapshot.goals?.find(item => item.id === candidate.activeGoal?.id);
                 return {
                   ...candidate,
-                  activeGoal: snapshot.activeGoal,
+                  activeGoal: goal ? latestConversationGoal(candidate.activeGoal, goal) : candidate.activeGoal,
                   messages: candidate.messages.map((message) => ({
                     ...message,
                     interactions:

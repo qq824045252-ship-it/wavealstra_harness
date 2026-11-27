@@ -54,6 +54,7 @@ import { DEFAULT_PROJECT_RESOURCE_BUDGET_CHARS, emptyProjectPolicies } from "../
 import { verifyTaskExpertPackages } from "./task-expert-package-cases";
 import { verifyTaskWorkspaceAuthority } from "./task-workspace-authority-cases";
 import { verifyConversationBranchLineage } from "./conversation-branch-lineage-cases";
+import { verifyConversationGoalEvidence } from "./conversation-goal-evidence-core-cases";
 import { verifyExternalAgentHistory } from "./external-agent-history-cases";
 import { verifyTaskWriteGrants } from "./task-write-grants-cases";
 import { verifyDurableToolPersistence } from "./durable-tool-core-cases";
@@ -1148,6 +1149,7 @@ try {
     const paths = (await agent.usageStats.listSessionFiles()).map(file => file.sessionFile);
     assert(paths.includes(historyPath) && paths.includes(trashHistoryPath));
     console.log("PASS startup usage backfill discovers stored session paths through Core");
+    await verifyConversationGoalEvidence(application, agent, background, root);
     await verifyExternalAgentHistory(application, agent, root);
   } finally {
     agent.dispose();

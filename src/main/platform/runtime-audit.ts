@@ -52,7 +52,7 @@ import type { RuntimeAnswerRoutingRequest, RuntimeAnswerRoutingReply } from "../
 import type { RuntimeLoadoutObservationRow } from "../agent/AgentLoadoutObservationService";
 import type { RuntimeBotHistoryPage, RuntimeBotHistoryQuery } from "../agent/work/BotHistoryData";
 import type { RuntimeBotListQuery, RuntimeBotLookup, RuntimeBotRegistration, RuntimeBotRegistrationReply, RuntimeBotRow } from "../agent/work/BotRegistry";
-import type { RuntimeConversationGoalCreateReply, RuntimeConversationGoalDraft, RuntimeConversationSnapshot, WorkTaskAccess } from "../agent/ConversationRuntimeData";
+import type { RuntimeConversationGoalCreateReply, RuntimeConversationGoalDraft, RuntimeConversationGoalEvidence, RuntimeConversationSnapshot, WorkTaskAccess } from "../agent/ConversationRuntimeData";
 import type { IntegrityReport, RepairPreview, RuntimeWorkGraphRepairReply } from "../workgraph/WorkGraphIntegrity";
 import type { RuntimeDurableTaskProjectionRequest, RuntimeDurableTaskProjectionReply } from "../agent/durable/DurableTaskProjection";
 import type { TaskWorkspaceAuthority } from "../task/TaskWorkspaceResolver";
@@ -1407,6 +1407,10 @@ export class RuntimeAuditReader implements PiStorageClient {
 
   readConversationRuntime(taskId: string, userId: string): Promise<RuntimeConversationSnapshot | null | undefined> {
     return this.read({ operation: "readConversationRuntime", query: { kind: "snapshot", taskId, userId } });
+  }
+
+  readConversationGoalEvidence(taskId: string, userId: string, goalId: string): Promise<RuntimeConversationGoalEvidence | null | undefined> {
+    return this.read({ operation: "readConversationRuntime", query: { kind: "goalEvidence", taskId, userId, goalId } });
   }
 
   readConversationGoalGeneration(taskId: string, userId: string, conversationId: string, generationTaskId: number): Promise<import("../agent/ConversationGoalActivity").OwnedGoalRun | null | undefined> {

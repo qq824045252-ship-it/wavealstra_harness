@@ -1,6 +1,10 @@
 import type { WorkDto } from "../../shared/bot-work";
-import type { ConversationGoalContinuationDto, ConversationGoalDto, ConversationGoalSourceDto, GoalCriterionStatus } from "../../shared/conversation-goal";
+import type { ConversationGoalContinuationDto, ConversationGoalDto, ConversationGoalEvidenceDto, ConversationGoalSourceDto, GoalCriterionStatus } from "../../shared/conversation-goal";
+import type { GoalActivitySkill } from "../../shared/conversation-goal-activity";
+import type { ModelRequestDiagnostic } from "../../shared/task-diagnostics";
 import type { ConversationGoalMutationResult, ConversationRuntimeSnapshotDto } from "../../shared/conversation-runtime";
+import type { OwnedGoalRun } from "./ConversationGoalActivity";
+import type { GoalSavedArtifactVerification } from "./ConversationGoalSavedArtifacts";
 import { mapConversationInteraction, type RuntimeConversationInteractionRow } from "./ConversationInteractionRepository";
 
 type GoalWork = Pick<WorkDto, "workId" | "title" | "goalDescription" | "lifecycle" | "closureConclusion" | "closureSummary"
@@ -9,6 +13,19 @@ type GoalWork = Pick<WorkDto, "workId" | "title" | "goalDescription" | "lifecycl
 export interface WorkTaskAccess {
   taskExists: boolean;
   hasWorkBinding: boolean;
+}
+
+export interface RuntimeConversationGoalEvidence {
+  evidence: Omit<ConversationGoalEvidenceDto, "activity" | "savedArtifacts">;
+  ownerEpoch: number;
+  stateVersion: number;
+  generations: OwnedGoalRun[];
+  learnedSkills: GoalActivitySkill[];
+  auxiliaryScopes: Array<{ taskId: string; executionScope: string; conversationId: string; generationTaskId: number }>;
+  savedArtifactVerifications: GoalSavedArtifactVerification[];
+  diagnosticRequests: ModelRequestDiagnostic[];
+  unattributedAuxiliaryRequests: number;
+  invokedSkills?: Array<GoalActivitySkill & { taskId: string; assistantMessageId: string }>;
 }
 
 interface RuntimeGoalRow {
@@ -75,6 +92,7 @@ export interface RuntimeConversationGoalDraft {
   title: string;
   description?: string;
   criteria: string[];
+  tokenBudget?: number | null;
   source?: ConversationGoalSourceDto;
   createdBy?: "bot";
   originMessageId?: string;
@@ -129,6 +147,7 @@ export function projectCoreConversationGoal(taskId: string, row: RuntimeGoalRow,
   const continuation: ConversationGoalContinuationDto = {
     state: row.continuation_state ?? "idle", attempts: row.attempts ?? 0, tokensUsed: row.tokens_used ?? 0,
     maxAttempts: settings.maxAttempts, tokenBudget: row.tokens_budget ?? settings.tokenBudget, enabled: settings.enabled,
+    tokenBudgetOverride: row.tokens_budget, revision: row.continuation_updated_at ?? undefined,
   };
   if (row.continuation_task_id !== null) {
     continuation.taskId = row.continuation_task_id;
@@ -142,7 +161,7 @@ export function projectCoreConversationGoal(taskId: string, row: RuntimeGoalRow,
     }
     if (row.wake_trigger && row.wake_at !== null) continuation.lastWake = { trigger: row.wake_trigger, at: row.wake_at };
   }
-  return projectConversationGoal({
+  const goal = projectConversationGoal({
     workId: row.work_id, title: row.title, goalDescription: row.goal_description ?? undefined,
     criteria: JSON.parse(row.criteria_json), lifecycle: row.lifecycle,
     closureConclusion: row.closure_conclusion ?? undefined, closureSummary: row.closure_summary ?? undefined,
@@ -150,6 +169,7 @@ export function projectCoreConversationGoal(taskId: string, row: RuntimeGoalRow,
     createdAt: row.created_at, updatedAt: row.updated_at, closedAt: row.closed_at ?? undefined,
     sourceMessageId: row.source_message_id ?? undefined,
   }, taskId, row.source_json ? JSON.parse(row.source_json) : undefined, row.blocker ?? undefined, continuation);
+  return { ...goal, intentRevision: row.intent_revision, ownerEpoch: row.owner_epoch };
 }
 
 export function projectConversationRuntime(taskId: string, snapshot: RuntimeConversationSnapshot,

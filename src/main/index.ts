@@ -112,7 +112,7 @@ import type {
 import { ARTIFACT_SNAPSHOT_BATCH_SIZE, ArtifactDomainIpc } from "../shared/artifact-ipc";
 import { ConversationRuntimeIpc } from "../shared/conversation-runtime";
 import type { ConversationInteractionRespondRequest } from "../shared/conversation-interaction";
-import type { ConversationGoalCreateRequest, ConversationGoalUpdateRequest } from "../shared/conversation-goal";
+import type { ConversationGoalCreateRequest, ConversationGoalUpdateRequest, ConversationGoalVersionWitness } from "../shared/conversation-goal";
 import { BotWorkIpc } from "../shared/bot-work-ipc";
 import {
   GadgetIpc,
@@ -1331,10 +1331,10 @@ function registerIpc(memoryKernel: MemoryService): void {
     agentService.createSavedConversationGoal(req));
   ipcMain.handle(ConversationRuntimeIpc.updateGoal, (_e, req: ConversationGoalUpdateRequest) =>
     agentService.updateConversationGoal(req));
-  ipcMain.handle(ConversationRuntimeIpc.cancelGoal, (_e, goalId: string, taskId?: string) =>
-    agentService.cancelConversationGoal(goalId, taskId));
-  ipcMain.handle(ConversationRuntimeIpc.resumeGoalContinuation, (_e, goalId: string, taskId?: string) =>
-    agentService.resumeGoalContinuation(goalId, taskId));
+  ipcMain.handle(ConversationRuntimeIpc.cancelGoal, (_e, goalId: string, taskId?: string, witness?: ConversationGoalVersionWitness) =>
+    agentService.cancelConversationGoal(goalId, taskId, witness));
+  ipcMain.handle(ConversationRuntimeIpc.resumeGoalContinuation, (_e, goalId: string, taskId?: string, witness?: ConversationGoalVersionWitness) =>
+    agentService.resumeGoalContinuation(goalId, taskId, witness));
 
   // Read-only access for the existing workspace history; no standalone Bot commands.
   ipcMain.handle(BotWorkIpc.history, (_e, request: unknown) => agentService.botMessageHistory(request));

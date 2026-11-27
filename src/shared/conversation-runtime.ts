@@ -1,4 +1,4 @@
-import type { ConversationGoalCreateRequest, ConversationGoalDto, ConversationGoalEvidenceDto, ConversationGoalUpdateRequest, GoalSavedArtifactDto } from "./conversation-goal";
+import type { ConversationGoalCreateRequest, ConversationGoalDto, ConversationGoalEvidenceDto, ConversationGoalUpdateRequest, ConversationGoalVersionWitness, GoalSavedArtifactDto } from "./conversation-goal";
 import type {
   ConversationInteractionDto,
   ConversationInteractionMutationResult,
@@ -33,6 +33,8 @@ export type ConversationGoalMutationResult =
   | { ok: true; goal: ConversationGoalDto }
   | { ok: false; code: "not_found" | "conflict" | "invalid_request"; message: string };
 
+export type { ConversationGoalVersionWitness } from "./conversation-goal";
+
 export interface ConversationRuntimeApi {
   snapshot(taskId: string): Promise<ConversationRuntimeSnapshotDto>;
   goalEvidence(taskId: string, goalId: string): Promise<ConversationGoalEvidenceDto | undefined>;
@@ -42,7 +44,7 @@ export interface ConversationRuntimeApi {
   cancelInteraction(request: ConversationInteractionCancelRequest): Promise<ConversationInteractionMutationResult>;
   createGoal(request: ConversationGoalCreateRequest): Promise<ConversationGoalMutationResult>;
   updateGoal(request: ConversationGoalUpdateRequest): Promise<ConversationGoalMutationResult>;
-  cancelGoal(goalId: string, taskId?: string): Promise<ConversationGoalMutationResult>;
+  cancelGoal(goalId: string, taskId?: string, witness?: ConversationGoalVersionWitness): Promise<ConversationGoalMutationResult>;
   /** Clear the host deferral, reset the attempt/budget window, and try to continue now. */
-  resumeGoalContinuation(goalId: string, taskId?: string): Promise<ConversationGoalMutationResult>;
+  resumeGoalContinuation(goalId: string, taskId?: string, witness?: ConversationGoalVersionWitness): Promise<ConversationGoalMutationResult>;
 }

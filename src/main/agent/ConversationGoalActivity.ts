@@ -305,93 +305,109 @@ export class ConversationGoalActivity {
       Array<{ task_id: string; conversation_id: string; generation_id: number; metadata: string; outcome: GoalActivityRun["status"] | null }>;
     const owned: OwnedGoalRun[] = rows.map(row => ({ taskId: row.task_id, conversationId: row.conversation_id,
       generationTaskId: row.generation_id, ...JSON.parse(row.metadata), goalId, status: row.outcome ?? undefined }));
-    const identified = new Set(owned.map(useId));
-    const requests = new Map<string, ModelRequestDiagnostic[]>();
-    for (const taskId of new Set(owned.map(run => run.taskId))) {
-      for (const req of diagnostics(taskId, owned.filter(run => run.taskId === taskId))) {
-        if (req.taskId !== taskId || req.executionScope !== taskId || req.sourceKind === "auxiliary") continue;
-        const id = useId({ ...req, taskId });
-        if (!identified.has(id)) continue;
-        const group = requests.get(id) ?? [];
-        group.push(req);
-        requests.set(id, group);
-      }
-    }
-    const knownTokens: ReportedTokenUsage = { input: null, output: null, cacheRead: null, cacheWrite: null };
-    let knownCostUsd: number | null = null;
-    const tokenFieldCoverage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-    let requestsWithUsage = 0, requestsWithCompleteUsage = 0, requestsWithCost = 0;
-    let observedRequests = 0, retryCount = 0, missingGenerationObservations = 0;
-    const emptyCost = (): GoalActivityCost => ({ knownCostUsd: null, observedRequests: 0, requestsWithCost: 0,
-      providerReportedRequests: 0, estimatedRequests: 0, missingGenerationObservations: 0 });
-    const costBySource = { main: emptyCost(), child: emptyCost(), auxiliary: emptyCost() };
-    const addRequest = (source: GoalActivityCost, req: ModelRequestDiagnostic): number => {
-      observedRequests++;
-      source.observedRequests++;
-      if (fields.some(field => req.usage[field] !== null)) requestsWithUsage++;
-      if (fields.every(field => req.usage[field] !== null)) requestsWithCompleteUsage++;
-      for (const field of fields) {
-        const measured = req.usage[field];
-        if (measured === null) continue;
-        knownTokens[field] = (knownTokens[field] ?? 0) + measured;
-        tokenFieldCoverage[field]++;
-      }
-      if (req.knownCostUsd !== null) {
-        knownCostUsd = (knownCostUsd ?? 0) + req.knownCostUsd;
-        source.knownCostUsd = (source.knownCostUsd ?? 0) + req.knownCostUsd;
-        if (req.costComplete) {
-          requestsWithCost++;
-          source.requestsWithCost++;
-          if (req.costSource === "provider-reported") source.providerReportedRequests++;
-        }
-        if (req.costSource === "pi-native") source.estimatedRequests++;
-      }
-      return Math.max(0, req.attempts.length - 1);
-    };
-    const skills = new Map<string, GoalActivitySkill>();
     const authored = this.db.prepare(`SELECT s.evidence_json FROM conversation_goal_learned_skills s
       JOIN conversation_goal_generations g USING(task_id, conversation_id, generation_id) WHERE g.work_id=?`).all(goalId) as
       Array<{ evidence_json: string }>;
-    for (const row of authored) {
+    const saved = authored.map(row => {
       const { pathKey: _pathKey, ...item } = JSON.parse(row.evidence_json) as GoalActivitySkill & { pathKey?: string };
-      skills.set(JSON.stringify([item.skillId,item.creationToolCallId]), item);
-    }
-    const runs = owned.map(({ goalId: _goalId, assistantMessageIds, ...run }) => {
-      const observed = requests.get(useId(run)) ?? [];
-      const sourceCost = run.child ? costBySource.child : costBySource.main;
-      if (!observed.length) {
-        missingGenerationObservations++;
-        sourceCost.missingGenerationObservations++;
-      }
-      const retries = observed.reduce((sum, req) => sum + addRequest(sourceCost, req), 0);
-      retryCount += retries;
-      for (const assistantMessageId of assistantMessageIds) {
-        for (const item of learned(run.taskId, assistantMessageId)) {
-          skills.set(JSON.stringify([item.skillId, assistantMessageId]), { ...item, assistantMessageId });
-        }
-      }
-      return { ...run, requestCount: observed.length, retryCount: retries };
+      return item;
     });
-    let unattributedAuxiliaryRequests = 0;
-    for (const taskId of new Set(owned.map(run => run.taskId))) {
-      const linked = this.db.prepare(`SELECT a.execution_scope, g.work_id FROM conversation_goal_auxiliary_scopes a
+    const linked = [...new Set(owned.map(run => run.taskId))].flatMap(taskId => {
+      const rows = this.db.prepare(`SELECT a.execution_scope, g.work_id FROM conversation_goal_auxiliary_scopes a
         JOIN conversation_goal_generations g USING(task_id, conversation_id, generation_id) WHERE a.task_id=?`).all(taskId) as
         Array<{ execution_scope: string; work_id: string }>;
-      const byScope = new Map(linked.map(row => [row.execution_scope, row.work_id]));
-      const observedScopes = new Set<string>();
-      for (const req of auxiliary(taskId)) {
-        if (req.taskId !== taskId || req.sourceKind !== "auxiliary") continue;
-        const owner = byScope.get(req.executionScope);
-        if (owner === goalId) {
-          observedScopes.add(req.executionScope);
-          retryCount += addRequest(costBySource.auxiliary, req);
-        } else if (owner === undefined) unattributedAuxiliaryRequests++;
-      }
-      const missing = linked.filter(row => row.work_id === goalId && !observedScopes.has(row.execution_scope)).length;
-      costBySource.auxiliary.missingGenerationObservations += missing;
-      missingGenerationObservations += missing;
-    }
-    return { runs, skills: [...skills.values()], knownTokens, knownCostUsd, observedRequests, requestsWithUsage,
-      requestsWithCost, costBySource, unattributedAuxiliaryRequests, missingGenerationObservations, retryCount, tokenFieldCoverage, requestsWithCompleteUsage };
+      return rows.map(row => ({ taskId, executionScope: row.execution_scope, workId: row.work_id }));
+    });
+    return projectGoalActivity(goalId, owned, saved, linked, diagnostics, learned, auxiliary);
   }
+}
+
+export interface GoalActivityAuxiliaryScope { taskId: string; executionScope: string; workId: string }
+
+export function projectGoalActivity(goalId: string, owned: readonly OwnedGoalRun[], authored: readonly GoalActivitySkill[],
+  auxiliaryScopes: readonly GoalActivityAuxiliaryScope[],
+  diagnostics: (taskId: string, generations: GoalActivityIdentity[]) => ModelRequestDiagnostic[],
+  learned: (taskId: string, assistantMessageId: string) => GoalActivitySkill[],
+  auxiliary: (taskId: string) => ModelRequestDiagnostic[],
+): GoalActivityDto {
+  const identified = new Set(owned.map(useId));
+  const requests = new Map<string, ModelRequestDiagnostic[]>();
+  for (const taskId of new Set(owned.map(run => run.taskId))) {
+    for (const req of diagnostics(taskId, owned.filter(run => run.taskId === taskId))) {
+      if (req.taskId !== taskId || req.executionScope !== taskId || req.sourceKind === "auxiliary") continue;
+      const id = useId({ ...req, taskId });
+      if (!identified.has(id)) continue;
+      const group = requests.get(id) ?? [];
+      group.push(req);
+      requests.set(id, group);
+    }
+  }
+  const knownTokens: ReportedTokenUsage = { input: null, output: null, cacheRead: null, cacheWrite: null };
+  let knownCostUsd: number | null = null;
+  const tokenFieldCoverage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  let requestsWithUsage = 0, requestsWithCompleteUsage = 0, requestsWithCost = 0;
+  let observedRequests = 0, retryCount = 0, missingGenerationObservations = 0;
+  const emptyCost = (): GoalActivityCost => ({ knownCostUsd: null, observedRequests: 0, requestsWithCost: 0,
+    providerReportedRequests: 0, estimatedRequests: 0, missingGenerationObservations: 0 });
+  const costBySource = { main: emptyCost(), child: emptyCost(), auxiliary: emptyCost() };
+  const addRequest = (source: GoalActivityCost, req: ModelRequestDiagnostic): number => {
+    observedRequests++;
+    source.observedRequests++;
+    if (fields.some(field => req.usage[field] !== null)) requestsWithUsage++;
+    if (fields.every(field => req.usage[field] !== null)) requestsWithCompleteUsage++;
+    for (const field of fields) {
+      const measured = req.usage[field];
+      if (measured === null) continue;
+      knownTokens[field] = (knownTokens[field] ?? 0) + measured;
+      tokenFieldCoverage[field]++;
+    }
+    if (req.knownCostUsd !== null) {
+      knownCostUsd = (knownCostUsd ?? 0) + req.knownCostUsd;
+      source.knownCostUsd = (source.knownCostUsd ?? 0) + req.knownCostUsd;
+      if (req.costComplete) {
+        requestsWithCost++;
+        source.requestsWithCost++;
+        if (req.costSource === "provider-reported") source.providerReportedRequests++;
+      }
+      if (req.costSource === "pi-native") source.estimatedRequests++;
+    }
+    return Math.max(0, req.attempts.length - 1);
+  };
+  const skills = new Map<string, GoalActivitySkill>();
+  for (const item of authored) skills.set(JSON.stringify([item.skillId, item.creationToolCallId]), item);
+  const runs = owned.map(({ goalId: _goalId, assistantMessageIds, ...run }) => {
+    const observed = requests.get(useId(run)) ?? [];
+    const sourceCost = run.child ? costBySource.child : costBySource.main;
+    if (!observed.length) {
+      missingGenerationObservations++;
+      sourceCost.missingGenerationObservations++;
+    }
+    const retries = observed.reduce((sum, req) => sum + addRequest(sourceCost, req), 0);
+    retryCount += retries;
+    for (const assistantMessageId of assistantMessageIds) {
+      for (const item of learned(run.taskId, assistantMessageId)) {
+        skills.set(JSON.stringify([item.skillId, assistantMessageId]), { ...item, assistantMessageId });
+      }
+    }
+    return { ...run, requestCount: observed.length, retryCount: retries };
+  });
+  let unattributedAuxiliaryRequests = 0;
+  for (const taskId of new Set(owned.map(run => run.taskId))) {
+    const linked = auxiliaryScopes.filter(scope => scope.taskId === taskId);
+    const byScope = new Map(linked.map(scope => [scope.executionScope, scope.workId]));
+    const observedScopes = new Set<string>();
+    for (const req of auxiliary(taskId)) {
+      if (req.taskId !== taskId || req.sourceKind !== "auxiliary") continue;
+      const owner = byScope.get(req.executionScope);
+      if (owner === goalId) {
+        observedScopes.add(req.executionScope);
+        retryCount += addRequest(costBySource.auxiliary, req);
+      } else if (owner === undefined) unattributedAuxiliaryRequests++;
+    }
+    const missing = linked.filter(row => row.workId === goalId && !observedScopes.has(row.executionScope)).length;
+    costBySource.auxiliary.missingGenerationObservations += missing;
+    missingGenerationObservations += missing;
+  }
+  return { runs, skills: [...skills.values()], knownTokens, knownCostUsd, observedRequests, requestsWithUsage,
+    requestsWithCost, costBySource, unattributedAuxiliaryRequests, missingGenerationObservations, retryCount, tokenFieldCoverage, requestsWithCompleteUsage };
 }

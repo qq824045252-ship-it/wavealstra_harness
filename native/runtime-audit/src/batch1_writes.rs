@@ -9,6 +9,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
+#[path = "goal_saved_artifact_verification.rs"]
+pub(crate) mod goal_saved_artifact_verification;
+
 #[derive(Deserialize)]
 #[serde(
     tag = "kind",
@@ -187,8 +190,11 @@ pub enum Request {
     },
     GoalSavedArtifactConfirm {
         work_id: String,
+        task_id: String,
+        user_id: String,
         artifact_id: String,
-        verified_at: i64,
+        expected_intent_revision: i64,
+        source: goal_saved_artifact_verification::Source,
     },
 }
 
@@ -904,20 +910,14 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
         }
         Request::GoalSavedArtifactConfirm {
             work_id,
+            task_id,
+            user_id,
             artifact_id,
-            verified_at,
-        } => {
-            tx.execute(
-                "INSERT INTO conversation_goal_saved_artifact_verification VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",
-                params![work_id, artifact_id, verified_at],
-            )?;
-            let stored: i64 = tx.query_row(
-                "SELECT verified_at FROM conversation_goal_saved_artifact_verification WHERE work_id=?1 AND artifact_id=?2",
-                params![work_id, artifact_id],
-                |r| r.get(0),
-            )?;
-            json!({ "verifiedAt": stored })
-        }
+            expected_intent_revision,
+            source,
+        } => goal_saved_artifact_verification::confirm(
+            &tx, &work_id, &task_id, &user_id, &artifact_id, expected_intent_revision, &source,
+        )?,
     };
     crate::request_control::commit(tx)?;
     Ok(out)

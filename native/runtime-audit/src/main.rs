@@ -454,6 +454,12 @@ enum Request {
         operation_id: String,
         draft: conversation_goal_write::CreateGoal,
     },
+    MutateConversationGoal {
+        operation_id: String,
+        mutation: conversation_goal_write::GoalMutation,
+        #[serde(rename = "__client")]
+        client: Option<business_protocol::ClientContext>,
+    },
     ReadWorkQueue {
         query: work_queue_data::Query,
     },
@@ -2546,6 +2552,18 @@ fn read(
         }
         return Ok(Data::Json(result));
     }
+    if let Request::MutateConversationGoal { operation_id, mutation, client } = request {
+        let Some(client) = client else {
+            return Ok(Data::Json(serde_json::json!({
+                "ok": false, "code": "invalid_request", "message": "Goal 写入需要已认证的桌面客户端"
+            })));
+        };
+        let result = conversation_goal_write::mutate(db, &operation_id, mutation, &client)?;
+        if result["replayed"].as_bool() == Some(false) {
+            outbox.wake();
+        }
+        return Ok(Data::Json(result));
+    }
     if let Request::MarkWorkCardRead { request } = request {
         return Ok(Data::WorkCardRead(work_queue_data::mark_read(
             db,
@@ -3047,6 +3065,7 @@ fn read(
         | Request::WriteGoalContinuation { .. }
         | Request::ReadConversationBranchData { .. }
         | Request::CreateConversationGoal { .. }
+        | Request::MutateConversationGoal { .. }
         | Request::MarkWorkCardRead { .. }
         | Request::DeleteWorkspace { .. }
         | Request::WorkspaceSharedData { .. }
@@ -3470,6 +3489,7 @@ fn classify_request(request: &Request) -> RequestClassification {
         | Request::WriteImprovementPackages { .. }
         | Request::WriteImprovementReview { .. }
         | Request::CreateConversationGoal { .. }
+        | Request::MutateConversationGoal { .. }
         | Request::WriteGoalContinuation { .. }
         | Request::UpsertTaskRecord { .. }
         | Request::WriteTaskContextUsage { .. }
@@ -3703,6 +3723,17 @@ fn resource_plan_for_request(request: &Request) -> Vec<resource_gate::ResourceRe
             plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), draft.task_id.clone())));
             plan.push(ResourceRequirement::exclusive(ResourceKey::Entity(
                 format!("conversation-goal:{}", draft.user_id), operation_id.clone(),
+            )));
+        }
+        Request::MutateConversationGoal { operation_id, mutation, .. } => {
+            plan.push(ResourceRequirement::shared(ResourceKey::ExecutionAdmission));
+            for domain in ["batch1", "batch4b", "tasks", "workspaces"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), mutation.task_id.clone())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("work".into(), mutation.goal_id.clone())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity(
+                format!("conversation-goal:{}", mutation.user_id), operation_id.clone(),
             )));
         }
         Request::WriteGoalContinuation { command, .. } => {
@@ -4189,6 +4220,19 @@ fn resource_plan_for_request(request: &Request) -> Vec<resource_gate::ResourceRe
             }
             plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), task_id.clone())));
         }
+        Request::Batch1Write { request: batch1_writes::Request::GoalSavedArtifactConfirm {
+            task_id, work_id, artifact_id, source, ..
+        } } => {
+            for domain in ["tasks", "workspaces", "batch1", "batch4b"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::shared(ResourceKey::Entity("task".into(), task_id.clone())));
+            plan.push(ResourceRequirement::shared(ResourceKey::Entity("task".into(), source.task_id().into())));
+            plan.push(ResourceRequirement::shared(ResourceKey::Entity("work".into(), work_id.clone())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity(
+                format!("goal-artifact:{work_id}"), artifact_id.clone(),
+            )));
+        }
         Request::Batch1Write { .. } => {
             plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
                 "domain".into(),
@@ -4515,7 +4559,7 @@ fn run() -> Result<()> {
         return Err("unexpected argument".into());
     }
     if argument == "--protocol-version" {
-        println!("120");
+        println!("121");
         return Ok(());
     }
     let db_path = PathBuf::from(argument);

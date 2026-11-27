@@ -19,6 +19,7 @@ import { withCodeReviewWrite, type DurableCodeReview } from "./DurableCodeReview
 import { isNativeShell } from "./DurableShellTerminal";
 import { registerNativeMutation } from "./DurableArtifactRegistration";
 import { isNativeFileMutation, NATIVE_FILE_EVIDENCE_MEMO, NATIVE_FILE_INTENT_MEMO, prepareFileEffect, verifyFileEffect } from "./DurableEffectRecovery";
+import { CoreGoalContinuationRevokedError } from "../work/CoreGoalContinuationDriver";
 
 type Access = { kind: "file"; mode: "read" | "write"; path: string; entity: string | null } | { kind: "unknown"; mode: "read" | "write" };
 type Request = { inspect: () => Access[]; accesses: Access[]; grant: (release: () => void) => void;
@@ -130,7 +131,7 @@ export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd:
   beforeExecute?: (name: string, args: unknown, cwd: string) => void | Promise<void>, admitting?: () => readonly string[],
   codeReview?: DurableCodeReview, artifactDirectory?: string,
   registerRecoveryWrite?: (api: Parameters<ToolRegistration["execute"]>[1], context: Parameters<ToolRegistration["execute"]>[2]) => Promise<boolean>,
-  authorize?: (api: Parameters<ToolRegistration["execute"]>[1], context: Parameters<ToolRegistration["execute"]>[2]) => Promise<unknown>): ToolRegistration {
+  authorize?: (api: Parameters<ToolRegistration["execute"]>[1], context: Parameters<ToolRegistration["execute"]>[2]) => Promise<boolean>): ToolRegistration {
   if (containers.has(tool.name) || isDurableContextToolName(tool.name))
     return { ...tool, execute: (args, api, context) => withToolInputFreshness(undefined, async () => {
       await authorize?.(api, context);
@@ -147,7 +148,7 @@ export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd:
       if (check) await check();
       context.abortSignal?.throwIfAborted();
       await beforeExecute?.(tool.name, args, cwd);
-      await authorize?.(api, context);
+      const goal = await authorize?.(api, context);
       context.abortSignal?.throwIfAborted();
       // Snapshot and read back the same mutation while its path lease still excludes other writers.
       const fileArgs = isNativeFileMutation(tool.name) ? fileArgsSchema.parse(args) : undefined;
@@ -156,15 +157,23 @@ export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd:
         await api.memo(NATIVE_FILE_INTENT_MEMO, intent, context);
         context.abortSignal?.throwIfAborted();
       }
-      started = true;
+      if (!goal) started = true;
+      const execute = async (observed: typeof api) => {
+        if (goal) {
+          if (!await authorize?.(api, context)) throw new CoreGoalContinuationRevokedError();
+          context.abortSignal?.throwIfAborted();
+          started = true;
+        }
+        return tool.execute(args, observed, context);
+      };
       const invoke = async () => codeReview
-        ? withCodeReviewWrite(codeReview, tool.name, args, api, context, async observed => tool.execute(args, observed, context))
-        : tool.execute(args, api, context);
+        ? withCodeReviewWrite(codeReview, tool.name, args, api, context, execute)
+        : execute(api);
       let evidence: Awaited<ReturnType<typeof verifyFileEffect>> | undefined;
       let result: Awaited<ReturnType<typeof invoke>>;
       try { result = await withToolInputFreshness(check, invoke); }
       finally {
-        if (intent) evidence = await api.memo(NATIVE_FILE_EVIDENCE_MEMO, await verifyFileEffect(intent, context.abortSignal), withoutAbortSignal(context));
+        if (intent && started) evidence = await api.memo(NATIVE_FILE_EVIDENCE_MEMO, await verifyFileEffect(intent, context.abortSignal), withoutAbortSignal(context));
       }
       if (!result.isError && artifactDirectory && typeof fileArgs?.path === "string" && (!evidence || evidence.status === "passed")) {
         const explicit = evidence?.status === "passed" && tool.name === "write" && await registerRecoveryWrite?.(api, context);

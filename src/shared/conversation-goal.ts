@@ -45,6 +45,10 @@ export interface ConversationGoalContinuationDto {
   maxAttempts: number;
   tokensUsed: number;
   tokenBudget?: number | null;
+  /** Stored per-Goal override. Null follows the global policy. */
+  tokenBudgetOverride?: number | null;
+  /** Monotonic Core ledger revision independent of the Work version. */
+  revision?: number;
   deferReason?: GoalContinuationDeferReason;
   lastContinuationAt?: number;
   enabled?: boolean;
@@ -75,6 +79,8 @@ export interface ConversationGoalDto {
   criteria: GoalCriterionDto[];
   progressSummary?: string;
   version: number;
+  intentRevision?: number;
+  ownerEpoch?: number;
   createdBy: "user" | "agent_explicit_request";
   createdAt: number;
   updatedAt: number;
@@ -120,9 +126,17 @@ export interface ConversationGoalCreateRequest {
   description?: string;
   criteria?: Array<{ id?: string; text: string }>;
   createdBy?: ConversationGoalDto["createdBy"];
+  tokenBudget?: number | null;
 }
 
-export interface ConversationGoalUpdateRequest {
+export interface ConversationGoalVersionWitness {
+  expectedVersion: number;
+  expectedIntentRevision?: number;
+  expectedOwnerEpoch?: number;
+  expectedContinuationRevision?: number;
+}
+
+export interface ConversationGoalUpdateRequest extends Partial<ConversationGoalVersionWitness> {
   goalId: string;
   taskId?: string;
   title?: string;

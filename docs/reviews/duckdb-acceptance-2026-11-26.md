@@ -398,3 +398,9 @@
 
 - Windows worker SHA256 为 `ad62083cec440984807e35b1981067eaea6c7369450fe1944a98c8663fad4781`。Dots 主动暂停、计划暂停和操作回执在一个 Core 事务内提交。恢复全局暂停时保留单空间和手动暂停。旧请求的重放只回读原回执，暂停时新建的计划在恢复后可重新排程。 [真实 Dots 入口](../../out/duckdb-acceptance-20261126/dots-proactive-control-120.log)
 - 隔离 Core 120 复验了发行版重建、原生数据库保护、Goal 认领与 Work 任务越过第一批阻塞候选。Goal 原生测试改用真实 SHA-256 作为输入，完整原生套件 99 项通过。Node 26 类型检查和 Cron 的现有回执恢复也通过。 [数据库切换](../../out/duckdb-acceptance-20261126/core-database-release-120.log) · [原生套件](../../out/duckdb-acceptance-20261126/native-full-120.log) · [Cron](../../out/duckdb-acceptance-20261126/core-cron-120.log)
+
+## Core 121 Goal 写入和证据
+
+- Windows Core SHA256 为 `0c70f4a3b0f348542da4a35e62cfc2e2fac646b9f281cf55e41369f6f227c2a4`。两个已认证桌面客户端从同一版本同时编辑时，Core 只接受其中一个。旧版本和错误任务的写入被拒绝，重启后重放成功请求可取回原回执。创建和自定义预算一起提交。调整预算时保留本轮用量和尝试次数。 [双客户端写入](../../out/duckdb-acceptance-20261126/core-observability-goal-mutations-121.log) · [验收条件与用户证据](../../out/duckdb-acceptance-20261126/goal-mutation-attestation-121.log)
+- 已登记的成果从保存快照读取。实际 Pi 回归验证，工作文件改动后快照内容仍可用，跨空间读取被拒绝，重复核验只保留首次时间。核验或预览期间移动任务或修改 Goal 时，旧请求不能继续使用先前的权限。写入意图保存后、实际工具开始前撤销权限时，Pi 保存未执行回执且没有生成文件。 [成果证据](../../out/duckdb-acceptance-20261126/core-task-and-python-goal-evidence-121.log) · [工具权限](../../out/duckdb-acceptance-20261126/goal-tool-121-final.log)
+- 桌面编辑使用打开表单时看到的版本，迟到的回执和快照无法覆盖更新的状态。手动续跑也核对显示的续跑版本，旧点击不会启动下一次尝试。 [桌面回归](../../out/duckdb-acceptance-20261126/goal-ui-121-final.log) · [续跑回归](../../out/duckdb-acceptance-20261126/goal-driver-121-final.log)

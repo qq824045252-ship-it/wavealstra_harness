@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DurableBotSnapshot } from "../../../shared/durable-bot";
-import type { GoalContinuationState } from "../../../shared/conversation-goal";
+import type { ConversationGoalVersionWitness, GoalContinuationState } from "../../../shared/conversation-goal";
 import { LOCAL_USER_ID } from "../../../shared/bot-work";
 import type { CoreBusinessClient } from "../../platform/core-business-client";
 import { RuntimeAuditUnknownOperationError } from "../../platform/runtime-audit";
@@ -143,8 +143,8 @@ export class CoreGoalContinuationDriver {
     }).catch(error => console.warn("[CoreGoalContinuation] settle evaluation failed", error));
   }
 
-  continue(taskId: string, workId: string): Promise<CoreGoalContinuationDecision> {
-    return this.enqueue(taskId, () => this.evaluate(taskId, workId, "continued"));
+  continue(taskId: string, workId: string, witness?: ConversationGoalVersionWitness): Promise<CoreGoalContinuationDecision> {
+    return this.enqueue(taskId, () => this.evaluate(taskId, workId, "continued", undefined, witness));
   }
 
   async assertCurrent(origin: ActiveCoreGoalContinuation): Promise<void> {
@@ -179,7 +179,8 @@ export class CoreGoalContinuationDriver {
     return await this.options.canAdvance?.(taskId, workId) !== false && !this.disposed && this.options.policy().enabled;
   }
 
-  private async evaluate(taskId: string, workId: string, trigger: Trigger, expected?: SettledEntry): Promise<CoreGoalContinuationDecision> {
+  private async evaluate(taskId: string, workId: string, trigger: Trigger, expected?: SettledEntry,
+    witness?: ConversationGoalVersionWitness): Promise<CoreGoalContinuationDecision> {
     if (this.unconfirmedClaims.has(taskId)) return { status: "unknown" };
     if (this.pendingClaims.has(taskId)) return skip("igniting");
     if (!await this.allowed(taskId, workId)) return skip("policy");
@@ -187,6 +188,8 @@ export class CoreGoalContinuationDriver {
     // This protocol ingress was introduced with the Pi commit-time claim fence.
     const ledger = await this.client().request<CoreGoalContinuationLedger | null>({ operation: "readGoalContinuation", query: scope });
     if (!ledger?.canAdvance || ledger.storeCommitSeq == null) return skip("goal_not_eligible");
+    if (witness && (ledger.stateVersion !== witness.expectedVersion || ledger.intentRevision !== witness.expectedIntentRevision
+      || ledger.ownerEpoch !== witness.expectedOwnerEpoch || ledger.updatedAt !== witness.expectedContinuationRevision)) return skip("goal_changed");
     if (ledger.placementGuardVersion !== 1 || ledger.activeClaimGuardVersion !== 1) return skip("placement_not_supported");
     if (trigger === "settled" ? ledger.state !== "idle" : ledger.state !== "deferred" && ledger.state !== "exhausted") return skip("invalid_state");
     const progressFingerprint = await this.options.progressFingerprint(taskId, workId, ledger.intentRevision);

@@ -106,7 +106,7 @@ import {
   readDurableReadOnlyHistory,
   readDurableUserQuestions,
 } from "./durable/DurableReadOnlyHistory";
-import { durableStorageExists, getDefaultPiHostGeneration } from "./durable/DurableStorage";
+import { durableStorageExists, getDefaultPiHostGeneration, openDurablePassiveStorage } from "./durable/DurableStorage";
 import type { CoreBusinessClient, CoreDomainEvent } from "../platform/core-business-client";
 
 export type AgentExecutionMode = "in-process" | "host" | "isolated-client";
@@ -242,12 +242,13 @@ import { observeCacheRequestTraces } from "./CacheRequestTrace";
 import type { TaskDiagnosticsDto } from "../../shared/task-diagnostics";
 import { ConversationInteractionRepository } from "./ConversationInteractionRepository";
 import { ConversationInteractionService } from "./ConversationInteractionService";
-import { ConversationGoalActivity } from "./ConversationGoalActivity";
-import { ConversationGoalSavedArtifacts } from "./ConversationGoalSavedArtifacts";
+import { ConversationGoalActivity, projectGoalActivity } from "./ConversationGoalActivity";
+import type { GoalActivityIdentity, GoalActivitySkill } from "../../shared/conversation-goal-activity";
+import { ConversationGoalSavedArtifacts, goalSavedArtifactSource, projectGoalSavedArtifacts } from "./ConversationGoalSavedArtifacts";
 import type { SavedArtifactRequest } from "../../shared/saved-artifact";
 import { ConversationGoalService } from "./ConversationGoalService";
 import { normalizeGoalContinuationAttempts, projectConversationRuntime, projectCoreConversationGoal,
-  type GoalUserInputWitness, type RuntimeConversationGoalDraft, type WorkTaskAccess } from "./ConversationRuntimeData";
+  type GoalUserInputWitness, type RuntimeConversationGoalDraft, type RuntimeConversationGoalEvidence, type WorkTaskAccess } from "./ConversationRuntimeData";
 import { renderConversationGoalSection } from "./ConversationGoalPrompt";
 import { GoalContinuationService } from "./work/GoalContinuationService";
 import { CoreGoalContinuationDriver } from "./work/CoreGoalContinuationDriver";
@@ -263,7 +264,8 @@ import type { ConversationRuntimeSnapshotDto } from "../../shared/conversation-r
 import type { AgentLoadoutEffectiveSelectionDto } from "../../shared/agent-loadout";
 import type { ConversationInteractionAnswer, ConversationInteractionMutationResult } from "../../shared/conversation-interaction";
 import { CONVERSATION_GOAL_MAX_CRITERIA, type ConversationGoalContinuationDto, type ConversationGoalCreateRequest,
-  type ConversationGoalDto, type ConversationGoalSourceDto, type ConversationGoalUpdateRequest } from "../../shared/conversation-goal";
+  type ConversationGoalDto, type ConversationGoalSourceDto, type ConversationGoalUpdateRequest,
+  type ConversationGoalVersionWitness } from "../../shared/conversation-goal";
 import type { ConversationGoalMutationResult } from "../../shared/conversation-runtime";
 import { AgentLoadoutObservationService } from "./AgentLoadoutObservationService";
 
@@ -996,7 +998,7 @@ export class AgentService {
           ? this.durableBots.submitClaimedGoalContinuation(claim, validate) : "rejected",
       });
     }
-    this.conversationGoalSavedArtifacts = new ConversationGoalSavedArtifacts(db.fixtureConnection, this.runtimeAuditReader);
+    this.conversationGoalSavedArtifacts = new ConversationGoalSavedArtifacts(db.fixtureConnection);
     this.stopDiagnosticObservation = observeCacheRequestTraces((event, model) => this.taskDiagnostics.observeTrace(event, model));
     this.conversationInteractionRepo = new ConversationInteractionRepository(db.fixtureConnection, this.runtimeAuditReader);
     this.conversationInteractions = new ConversationInteractionService(
@@ -1514,59 +1516,135 @@ export class AgentService {
 
   async getConversationGoalEvidence(taskId: string, goalId: string) {
     await this.taskDiagnostics.flush();
+    if (!this.db.fixtureConnection) return this.readCoreGoalEvidence(taskId, goalId);
     if (!this.db.getTask(taskId)) return undefined;
     const evidence = this.conversationGoals.readEvidence(taskId, goalId);
     if (!evidence) return undefined;
     const activity = this.conversationGoalActivity.read(goalId, (id, generations) => this.taskDiagnostics.requestsForGenerations(id, generations),
-      (id, assistantMessageId) => this.skillEffectiveness.listInvokedForTurn(id, assistantMessageId).map(item => {
-        const installed = this.skillsService.getLearnedSkillRevisionSource(item.skillId);
-        const sameRevision = installed && installed.candidateId === item.candidateId;
-        return {
-          skillId: item.skillId, candidateId: item.candidateId, sourceMemoryIds: item.sourceMemoryIds,
-          installedVersion: sameRevision ? installed.version : undefined,
-          installedFingerprint: sameRevision ? installed.contentHash : undefined,
-          description: sameRevision ? installed.description : undefined,
-          scopeType: sameRevision ? installed.scopeType : undefined,
-          scopeId: sameRevision ? installed.scopeId : undefined,
-          invokedAt: item.invokedAt, invocationKind: item.invocationKind,
-          laterInvokedAt: item.candidateId && item.invokedAt
-            ? this.skillEffectiveness.latestInvocationAfter(item.skillId, item.candidateId, item.invokedAt) : undefined,
-        };
-      }), id => this.taskDiagnostics.auxiliaryRequestsForTask(id));
-    const byTask = new Map<string, Map<string, typeof activity.runs[number]>>();
+      (id, assistantMessageId) => this.skillEffectiveness.listInvokedForTurn(id, assistantMessageId).map(item => this.describeGoalInvokedSkill({
+        ...item, laterInvokedAt: item.candidateId && item.invokedAt
+          ? this.skillEffectiveness.latestInvocationAfter(item.skillId, item.candidateId, item.invokedAt) : undefined,
+      })), id => this.taskDiagnostics.auxiliaryRequestsForTask(id));
+    const native = await this.readGoalNativeActivityEvidence(activity.runs);
+    activity.nativeEvidence = native;
+    return { ...evidence, activity, savedArtifacts: this.conversationGoalSavedArtifacts.read(goalId, native) };
+  }
+
+  private describeGoalInvokedSkill(item: GoalActivitySkill): GoalActivitySkill {
+    const installed = this.skillsService.getLearnedSkillRevisionSource(item.skillId);
+    const sameRevision = installed && installed.candidateId === item.candidateId;
+    return { skillId: item.skillId, candidateId: item.candidateId, sourceMemoryIds: item.sourceMemoryIds,
+      installedVersion: sameRevision ? installed.version : undefined,
+      installedFingerprint: sameRevision ? installed.contentHash : undefined,
+      description: sameRevision ? installed.description : undefined,
+      scopeType: sameRevision ? installed.scopeType : undefined,
+      scopeId: sameRevision ? installed.scopeId : undefined,
+      invokedAt: item.invokedAt, invocationKind: item.invocationKind, laterInvokedAt: item.laterInvokedAt };
+  }
+
+  private async readCoreGoalEvidence(taskId: string, goalId: string) {
+    await this.conversationGoalActivity.flush(taskId);
+    const read = async (): Promise<RuntimeConversationGoalEvidence | null> => {
+      const snapshot = await this.runtimeAuditReader?.readConversationGoalEvidence(taskId, LOCAL_USER_ID, goalId);
+      if (snapshot === undefined) throw new Error("Core 未确认当前任务的目标证据读取");
+      return snapshot;
+    };
+    const observed = await read();
+    if (!observed) return undefined;
+    const native = await this.readGoalNativeActivityEvidence(observed.generations);
+    const current = observed.generations.length ? await read() : observed;
+    if (!current || current.evidence.intentRevision !== observed.evidence.intentRevision || current.ownerEpoch !== observed.ownerEpoch) return undefined;
+    const activity = projectGoalActivity(goalId, current.generations, current.learnedSkills,
+      current.auxiliaryScopes.map(scope => ({ ...scope, workId: goalId })),
+      id => current.diagnosticRequests.filter(request => request.taskId === id && request.sourceKind !== "auxiliary"),
+      (id, messageId) => (current.invokedSkills ?? []).filter(item => item.taskId === id && item.assistantMessageId === messageId)
+        .map(item => this.describeGoalInvokedSkill(item)),
+      id => current.diagnosticRequests.filter(request => request.taskId === id && request.sourceKind === "auxiliary"));
+    activity.unattributedAuxiliaryRequests = current.unattributedAuxiliaryRequests;
+    const identity = (run: GoalActivityIdentity & { taskId: string; intentRevision: number }) =>
+      JSON.stringify([run.taskId, run.conversationId, run.generationTaskId, run.intentRevision]);
+    const admitted = new Set(current.generations.map(identity));
+    activity.nativeEvidence = native.filter(record => admitted.has(identity(record)));
+    return { ...current.evidence, activity, savedArtifacts: projectGoalSavedArtifacts(activity.nativeEvidence, current.savedArtifactVerifications) };
+  }
+
+  private async readGoalNativeActivityEvidence(runs: ReadonlyArray<GoalActivityIdentity & { taskId: string; intentRevision: number }>) {
+    const byTask = new Map<string, Map<string, typeof runs[number]>>();
     const key = (conversationId: string, generationTaskId: number) => JSON.stringify([conversationId, generationTaskId]);
-    for (const run of activity.runs) {
-      const runs = byTask.get(run.taskId) ?? new Map();
-      runs.set(key(run.conversationId, run.generationTaskId), run);
-      byTask.set(run.taskId, runs);
+    for (const run of runs) {
+      const active = byTask.get(run.taskId) ?? new Map();
+      active.set(key(run.conversationId, run.generationTaskId), run);
+      byTask.set(run.taskId, active);
     }
-    const native = (await Promise.all([...byTask].map(async ([id, runs]) => {
-      const records = await this.durableBots?.goalNativeEvidence(id, [...runs.values()]) ?? [];
+    return (await Promise.all([...byTask].map(async ([id, active]) => {
+      const records = await this.readGoalNativeRunEvidence(id, [...active.values()]);
       return records.flatMap(row => {
-        const run = runs.get(key(row.conversationId, row.generationTaskId));
+        const run = active.get(key(row.conversationId, row.generationTaskId));
         return run ? [{ ...row.evidence, toolTaskId: row.toolTaskId, taskId: id, conversationId: row.conversationId,
           generationTaskId: row.generationTaskId, intentRevision: run.intentRevision }] : [];
       });
     }))).flat();
-    activity.nativeEvidence = native;
-    return { ...evidence, activity, savedArtifacts: this.conversationGoalSavedArtifacts.read(goalId, native) };
+  }
+
+  private async readGoalNativeRunEvidence(taskId: string, generations: readonly GoalActivityIdentity[]) {
+    if (this.db.fixtureConnection) return await this.durableBots?.goalNativeEvidence(taskId, generations) ?? [];
+    const reader = this.runtimeAuditReader;
+    const binding = await reader?.readDurableTaskBinding(taskId);
+    if (binding === undefined) throw new Error("Core 未确认目标证据所属 Durable 会话");
+    if (!binding || binding.trashed) return [];
+    const storage = await openDurablePassiveStorage(binding.directory, BACKGROUND_CONTEXT, reader);
+    if (!storage) return [];
+    try {
+      const { readGoalNativeEvidence } = await import("./durable/DurableGoalNativeEvidence");
+      const rows = await readGoalNativeEvidence(binding.directory, generations, storage);
+      const current = await reader?.readDurableTaskBinding(taskId);
+      if (current === undefined) throw new Error("Core 未确认目标证据所属 Durable 会话");
+      return current && !current.trashed && current.directory === binding.directory ? rows : [];
+    } finally {
+      await storage.close(BACKGROUND_CONTEXT);
+    }
   }
 
   async readGoalArtifactText(taskId: string, goalId: string, artifactId: string,
     readText: (request: SavedArtifactRequest) => Promise<string>): Promise<string | undefined> {
     const evidence = await this.getConversationGoalEvidence(taskId, goalId);
     const artifact = evidence?.savedArtifacts.find(candidate => candidate.id === artifactId);
-    return artifact ? readText(artifact.request) : undefined;
+    if (!artifact) return undefined;
+    if (this.db.fixtureConnection) return readText(artifact.request);
+    const text = await readText(artifact.request);
+    const current = await this.readCoreGoalEvidence(taskId, goalId);
+    if (current?.intentRevision !== evidence?.intentRevision || !current?.savedArtifacts.some(candidate => candidate.id === artifact.id
+      && candidate.request.snapshotPath === artifact.request.snapshotPath && candidate.request.manifestPath === artifact.request.manifestPath)) return undefined;
+    return text;
   }
 
   async verifyGoalArtifact(taskId: string, goalId: string, artifactId: string,
     verifySnapshot: (request: SavedArtifactRequest) => Promise<unknown>) {
     const evidence = await this.getConversationGoalEvidence(taskId, goalId);
     const artifact = evidence?.savedArtifacts.find(candidate => candidate.id === artifactId);
-    if (!artifact) return undefined;
+    if (!artifact || !evidence) return undefined;
     await verifySnapshot(artifact.request);
+    if (!this.db.fixtureConnection) {
+      const source = goalSavedArtifactSource(artifact.id, evidence.activity.nativeEvidence ?? []);
+      if (!source || source.snapshotPath !== artifact.request.snapshotPath || source.manifestPath !== artifact.request.manifestPath) return undefined;
+      const reader = this.runtimeAuditReader;
+      if (!reader) throw new Error("Core 目标成果核验服务尚未初始化");
+      const confirm = () => reader.batch1Write<{ status: "confirmed"; verifiedAt: number } | { status: "stale" | "missing" }>({
+        kind: "goalSavedArtifactConfirm", workId: goalId, taskId, userId: LOCAL_USER_ID,
+        artifactId, expectedIntentRevision: evidence.intentRevision, source,
+      });
+      const result = await confirm().catch(error => {
+        if (error instanceof RuntimeAuditUnknownOperationError) return confirm();
+        throw error;
+      });
+      if (result?.status === "confirmed" && Number.isFinite(result.verifiedAt)) {
+        return { ...artifact, verification: { kind: "user" as const, verifiedAt: result.verifiedAt } };
+      }
+      if (result?.status === "stale" || result?.status === "missing") return undefined;
+      throw new Error("成果核验状态写入未获 Core 确认");
+    }
     if (!this.db.getTask(taskId) || !this.workService.repo.getWorkByTaskForUser(goalId, taskId, LOCAL_USER_ID)) return undefined;
-    return this.conversationGoalSavedArtifacts.confirmAsync(goalId, artifact);
+    return this.conversationGoalSavedArtifacts.confirm(goalId, artifact);
   }
 
   /** Remote/UI reconnect snapshot. Approval resolvers intentionally stay private in SessionRegistry. */
@@ -1587,7 +1665,15 @@ export class AgentService {
   }
 
   async createSavedConversationGoal(request: ConversationGoalCreateRequest): Promise<ConversationGoalMutationResult> {
-    if (this.db.fixtureConnection) return this.createConversationGoal(request);
+    if (!this.validGoalBudget(request.tokenBudget)) {
+      return { ok: false, code: "invalid_request", message: "token 预算必须是正整数，或留空使用默认预算" };
+    }
+    if (this.db.fixtureConnection) {
+      const result = await this.createConversationGoal(request);
+      return result.ok && request.tokenBudget !== undefined
+        ? this.updateConversationGoal({ goalId: result.goal.id, taskId: request.taskId, tokenBudget: request.tokenBudget })
+        : result;
+    }
     if (typeof request.taskId !== "string" || !request.taskId.trim()) {
       return { ok: false, code: "invalid_request", message: "Task 与目标标题不能为空" };
     }
@@ -1617,6 +1703,7 @@ export class AgentService {
       title: request.title.trim().slice(0, 240),
       description: request.description?.trim().slice(0, 2000),
       criteria: (request.criteria ?? []).slice(0, CONVERSATION_GOAL_MAX_CRITERIA).map(({ text }) => text.trim().slice(0, 500)),
+      tokenBudget: request.tokenBudget,
       source,
       ...author,
     };
@@ -1704,11 +1791,55 @@ export class AgentService {
     return this.workService.getWork(goalId)?.userId === LOCAL_USER_ID;
   }
 
-  updateConversationGoal(request: ConversationGoalUpdateRequest): ConversationGoalMutationResult {
+  private validGoalBudget(budget: number | null | undefined): boolean {
+    return budget == null || Number.isSafeInteger(budget) && budget > 0;
+  }
+
+  private hasGoalVersionWitness(witness?: Partial<ConversationGoalVersionWitness>): witness is ConversationGoalVersionWitness
+    & Required<Pick<ConversationGoalVersionWitness, "expectedIntentRevision" | "expectedOwnerEpoch">> {
+    return !!witness && [witness.expectedVersion, witness.expectedIntentRevision, witness.expectedOwnerEpoch]
+      .every(version => typeof version === "number" && Number.isSafeInteger(version) && version > 0);
+  }
+
+  private async mutateCoreConversationGoal(request: ConversationGoalUpdateRequest): Promise<ConversationGoalMutationResult> {
+    const { taskId, goalId, expectedVersion, expectedIntentRevision, expectedOwnerEpoch,
+      title, description, progressSummary, status, criteria, criterionUpdates, tokenBudget } = request;
+    if (typeof taskId !== "string" || !taskId.trim() || typeof goalId !== "string" || !goalId.trim()) {
+      return { ok: false, code: "invalid_request", message: "需要指定 Goal 及其所在对话" };
+    }
+    if (!this.hasGoalVersionWitness(request)) {
+      return { ok: false, code: "conflict", message: "请刷新 Goal 后再修改" };
+    }
+    if (!this.validGoalBudget(tokenBudget)) {
+      return { ok: false, code: "invalid_request", message: "token 预算必须是正整数，或留空使用默认预算" };
+    }
+    const client = this.coreClientProvider?.();
+    if (!client || client.isClosed) throw new Error("Core Goal 写入服务尚未连接");
+    const policy = this.goalContinuationPolicy();
+    const command = {
+      operation: "mutateConversationGoal", operationId: `goal-mutate-${randomUUID()}`,
+      mutation: { userId: LOCAL_USER_ID, taskId, goalId, expectedStateVersion: expectedVersion, expectedIntentRevision,
+        expectedOwnerEpoch, title, description, progressSummary, status, criteria, criterionUpdates, tokenBudget,
+        defaultTokenBudget: policy.tokenBudget == null ? null : Math.round(policy.tokenBudget) },
+    };
+    const send = () => client.request<import("./ConversationRuntimeData").RuntimeConversationGoalCreateReply>(command);
+    const reply = await send().catch(error => {
+      if (error instanceof RuntimeAuditUnknownOperationError && !client.isClosed) return send();
+      throw error;
+    });
+    if (!reply.ok) return reply;
+    const goal = projectCoreConversationGoal(taskId, reply.goal, policy);
+    if (!reply.replayed) this.emitPatch({ type: "conversation_goal_snapshot", taskId, goal });
+    return { ok: true, goal };
+  }
+
+  async updateConversationGoal(request: ConversationGoalUpdateRequest): Promise<ConversationGoalMutationResult> {
+    if (!this.db.fixtureConnection) return this.mutateCoreConversationGoal(request);
     if (!this.goalMutationAllowed(request.goalId, request.taskId)) {
       return { ok: false, code: "not_found", message: "找不到该 Goal" };
     }
-    const { tokenBudget, taskId: _taskId, ...goalRequest } = request;
+    const { tokenBudget, taskId: _taskId, expectedVersion: _version, expectedIntentRevision: _intent,
+      expectedOwnerEpoch: _epoch, expectedContinuationRevision: _continuation, ...goalRequest } = request;
     if (tokenBudget !== undefined && tokenBudget !== null && (!Number.isFinite(tokenBudget) || tokenBudget < 1)) {
       return { ok: false, code: "invalid_request", message: "token 预算必须是正整数，或留空表示不限" };
     }
@@ -1735,20 +1866,26 @@ export class AgentService {
   }
 
   /** Explicit "continue" on a deferred/exhausted Goal: fresh attempts and budget window. */
-  async resumeGoalContinuation(goalId: string, taskId?: string): Promise<ConversationGoalMutationResult> {
+  async resumeGoalContinuation(goalId: string, taskId?: string, witness?: ConversationGoalVersionWitness): Promise<ConversationGoalMutationResult> {
     if (!this.workFixture) {
       if (!taskId) return { ok: false, code: "invalid_request", message: "需要指定 Goal 所在的对话" };
+      const continuationRevision = witness?.expectedContinuationRevision;
+      if (!this.hasGoalVersionWitness(witness) || typeof continuationRevision !== "number" || !Number.isSafeInteger(continuationRevision)
+        || continuationRevision <= 0) return { ok: false, code: "conflict", message: "请刷新 Goal 后再继续" };
       if (this.executionMode === "isolated-client") {
         const executionId = `pi-ctrl-goal-continue:${randomUUID()}`;
         return this.submitCorePiExecution<ConversationGoalMutationResult>({ executionId, idempotencyKey: executionId,
-          taskId, kind: "pi_control", payload: { controlAction: "resumeGoalContinuation", goalId } });
+          taskId, kind: "pi_control", payload: { controlAction: "resumeGoalContinuation", goalId, witness } });
       }
       const current = await this.readLiveConversationGoalForTool(taskId, goalId);
       if (!current) return { ok: false, code: "not_found", message: "找不到该 Goal" };
-      const decision = await this.coreGoalContinuation?.continue(taskId, goalId);
+      const decision = await this.coreGoalContinuation?.continue(taskId, goalId, witness);
       if (decision?.status === "started") {
         const next = await this.readLiveConversationGoalForTool(taskId, goalId);
         return { ok: true, goal: next?.goal ?? current.goal };
+      }
+      if (decision?.status === "skipped" && decision.reason === "goal_changed") {
+        return { ok: false, code: "conflict", message: "Goal 已变化，请刷新后再继续" };
       }
       return { ok: false, code: "conflict", message: decision?.status === "unknown"
         ? "Goal 续跑尚未确认，请查看对话状态" : "当前无法继续此 Goal，请查看对话状态" };
@@ -1759,7 +1896,8 @@ export class AgentService {
     return { ok: false, code: result.message.startsWith("找不到") ? "not_found" : "conflict", message: result.message };
   }
 
-  cancelConversationGoal(goalId: string, taskId?: string): ConversationGoalMutationResult {
+  async cancelConversationGoal(goalId: string, taskId?: string, witness?: ConversationGoalVersionWitness): Promise<ConversationGoalMutationResult> {
+    if (!this.db.fixtureConnection) return this.mutateCoreConversationGoal({ ...witness, goalId, taskId, status: "cancelled" });
     if (!this.goalMutationAllowed(goalId, taskId)) return { ok: false, code: "not_found", message: "找不到该 Goal" };
     return this.conversationGoals.cancel(goalId);
   }
@@ -1947,6 +2085,17 @@ export class AgentService {
   }
 
   handleCoreExecutionEvent(ev: CoreDomainEvent): void {
+    if (ev.domain === "work" && ev.kind === "work.conversationGoalChanged") {
+      const taskId = ev.payload.taskId;
+      const workId = ev.payload.workId;
+      if (typeof taskId === "string" && typeof workId === "string") {
+        void this.readConversationRuntimeSnapshot(taskId).then(snapshot => {
+          const goal = snapshot?.goals?.find(item => item.id === workId);
+          if (goal) this.emitPatch({ type: "conversation_goal_snapshot", taskId, goal });
+        }).catch(error => console.warn("[AgentService] Goal mutation snapshot failed", error));
+      }
+      return;
+    }
     if (ev.domain === "work" && (ev.kind === "work.goalContinuationDeferred" || ev.kind === "work.goalContinuationCleared"
       || ev.kind === "work.goalContinuationChanged")) {
       const taskId = ev.payload.taskId;

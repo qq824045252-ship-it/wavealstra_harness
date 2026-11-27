@@ -112,6 +112,24 @@ function fixture(options: Partial<CoreGoalContinuationOptions> = {}, replies: { 
 }
 
 {
+  const { driver, commands } = fixture();
+  const witness = { expectedVersion: ledger.stateVersion, expectedIntentRevision: ledger.intentRevision, expectedOwnerEpoch: ledger.ownerEpoch,
+    expectedContinuationRevision: ledger.updatedAt };
+  for (const stale of [
+    { ...witness, expectedVersion: ledger.stateVersion - 1 },
+    { ...witness, expectedIntentRevision: ledger.intentRevision - 1 },
+    { ...witness, expectedOwnerEpoch: ledger.ownerEpoch - 1 },
+    { ...witness, expectedContinuationRevision: ledger.updatedAt - 1 },
+  ]) {
+    assert.deepEqual(await driver.continue(taskId, workId, stale), { status: "skipped", reason: "goal_changed" });
+  }
+  assert.deepEqual(commands, []);
+  assert.deepEqual(await driver.continue(taskId, workId, witness), { status: "started" });
+  assert.equal(commands.length, 1);
+  driver.dispose();
+}
+
+{
   const { driver, commands } = fixture({}, { authoritative: { ...ledger, state: "idle" } });
   driver.onSettled(taskId, snapshot(8), workId);
   await setImmediate();

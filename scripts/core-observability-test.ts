@@ -14,13 +14,14 @@ import { RuntimeContextSnapshotRepository } from "../src/main/agent/RuntimeConte
 import { TaskDiagnosticsRepository } from "../src/main/agent/TaskDiagnosticsRepository";
 import { CodeReviewService } from "../src/main/agent/CodeReviewService";
 import { ConversationGoalActivity } from "../src/main/agent/ConversationGoalActivity";
-import { projectConversationRuntime } from "../src/main/agent/ConversationRuntimeData";
+import { projectConversationRuntime, type RuntimeConversationGoalCreateReply } from "../src/main/agent/ConversationRuntimeData";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, minimumAuthorization } from "../src/shared/bot-work";
 import { CoreBusinessClient, type CoreDomainEvent } from "../src/main/platform/core-business-client";
 import { shutdownCoreWorker } from "../src/main/platform/core-client";
 import { locateRuntimeAudit, RuntimeAuditReader, RuntimeAuditUnknownOperationError } from "../src/main/platform/runtime-audit";
 import type { RuntimeMaterialUseDto } from "../src/shared/agent-ipc";
+import type { ConversationGoalUpdateRequest } from "../src/shared/conversation-goal";
 import type { ToolDiagnosticEvent } from "../src/shared/task-diagnostics";
 
 const executable = process.env.RUNTIME_AUDIT_BINARY ?? locateRuntimeAudit(process.cwd());
@@ -323,6 +324,106 @@ async function verifyGoalCreation(app: AppDatabase, ui: RuntimeAuditReader, host
   return { operation, draft, goal: a.goal, cursor };
 }
 
+async function verifyGoalMutations(app: AppDatabase, ui: RuntimeAuditReader, host: RuntimeAuditReader, coreExecutable: string) {
+  const taskId = "goal-mutation-task";
+  await app.writeTaskRecord({ id: taskId, title: "Goal mutation task", updatedAt: at });
+  const created = await ui.createConversationGoal("goal-mutation-seed", { userId: LOCAL_USER_ID, taskId,
+    defaultBotId: DEFAULT_BOT_ID, title: "Original Goal", criteria: ["Inspect the result"] });
+  assert(created?.ok);
+  const goalId = created.goal.work_id;
+  const connectUi = (clientId: string) => CoreBusinessClient.connect(coreExecutable, database, { dataDirectory: root, role: "ui", clientId });
+  const clients: CoreBusinessClient[] = [];
+  const settings = { enabled: true, maxAttempts: 4, tokenBudget: 900 };
+  const requestFor = (goal: typeof created.goal) => ({ userId: LOCAL_USER_ID, taskId, goalId,
+    expectedStateVersion: goal.state_version, expectedIntentRevision: goal.intent_revision, expectedOwnerEpoch: goal.owner_epoch,
+    defaultTokenBudget: settings.tokenBudget });
+  type Mutation = ReturnType<typeof requestFor> & Pick<ConversationGoalUpdateRequest, "status" | "title" | "tokenBudget">;
+  const mutate = (client: CoreBusinessClient, operationId: string, mutation: Mutation) =>
+    client.request<RuntimeConversationGoalCreateReply>({ operation: "mutateConversationGoal", operationId, mutation });
+  const readGoal = async (client: RuntimeAuditReader) => {
+    const snapshot = await client.readConversationRuntime(taskId, LOCAL_USER_ID);
+    assert(snapshot);
+    const view = projectConversationRuntime(taskId, snapshot, settings);
+    assert(view.goals && view.goals.length === 1);
+    return { goal: view.goals[0], activeGoal: view.activeGoal };
+  };
+  try {
+    for (const clientId of ["goal-mutation-ui-a", "goal-mutation-ui-b"]) clients.push(await connectUi(clientId));
+    const [firstClient, secondClient] = clients;
+    const initial = (await readGoal(ui)).goal;
+    assert.deepEqual([initial.title, initial.status, initial.version, initial.continuation?.tokenBudget],
+      ["Original Goal", "active", created.goal.state_version, 900]);
+    const edits = [
+      { client: firstClient, operation: "goal-mutation-edit-a", title: "Edited by the first client", budget: 1100 },
+      { client: secondClient, operation: "goal-mutation-edit-b", title: "Edited by the second client", budget: 2200 },
+    ].map(edit => ({ ...edit, mutation: { ...requestFor(created.goal), title: edit.title, tokenBudget: edit.budget } }));
+    const replies = await Promise.all(edits.map(({ client, operation, mutation }) => mutate(client, operation, mutation)));
+    assert.equal(replies.filter(reply => reply?.ok).length, 1);
+    const winnerIndex = replies.findIndex(reply => reply?.ok);
+    const winner = edits[winnerIndex];
+    const edited = replies[winnerIndex];
+    const stale = replies[1 - winnerIndex];
+    assert(edited?.ok && !edited.replayed && stale && !stale.ok);
+    assert.equal(stale.code, "conflict");
+    assert.equal(edited.goal.intent_revision, created.goal.intent_revision + 1);
+    const editedView = (await readGoal(ui)).goal;
+    assert.deepEqual([editedView.title, editedView.status, editedView.version, editedView.continuation?.tokenBudget],
+      [winner.title, "active", created.goal.state_version + 1, winner.budget]);
+    assert.deepEqual(editedView.criteria.map(criterion => [criterion.text, criterion.status]), [["Inspect the result", "pending"]]);
+
+    const retry = async (client: CoreBusinessClient) => {
+      assert.deepEqual(await mutate(client, winner.operation, winner.mutation), { ...edited, replayed: true });
+    };
+    await retry(edits[1 - winnerIndex].client);
+    const reused = await mutate(secondClient, winner.operation, { ...winner.mutation, title: "Different payload on retry" });
+    assert(reused && !reused.ok);
+    assert.equal(reused.code, "conflict");
+    const wrongTask = await mutate(secondClient, "goal-mutation-wrong-task", { ...requestFor(edited.goal), taskId: "task-b", status: "cancelled" });
+    assert(wrongTask && !wrongTask.ok);
+    assert.equal(wrongTask.code, "not_found");
+    assert.deepEqual((await readGoal(ui)).goal, editedView);
+
+    assert.deepEqual(await host.batch4bWrite({ op: "goalContinuationUpsert", workId: goalId, taskId,
+      intentRevision: edited.goal.intent_revision, attempts: 2, attemptSerial: 3, tokensUsed: 150, tokensBudget: winner.budget,
+      timeUsedSeconds: 12, usageCursor: 150, progressStalls: 0, runCursor: 0, state: "idle", updatedAt: Date.now() }), { ok: true });
+    const budgeted = await mutate(firstClient, "goal-mutation-default-budget", { ...requestFor(edited.goal), tokenBudget: null });
+    assert(budgeted?.ok && !budgeted.replayed);
+    assert.equal(budgeted.goal.intent_revision, edited.goal.intent_revision);
+    const budgetView = (await readGoal(ui)).goal;
+    assert.deepEqual([budgetView.version, budgetView.continuation?.tokenBudget, budgetView.continuation?.tokensUsed,
+      budgetView.continuation?.attempts], [editedView.version + 1, 900, 150, 2]);
+    const stalePause = await mutate(secondClient, "goal-mutation-stale-pause", { ...requestFor(edited.goal), status: "paused" });
+    assert(stalePause && !stalePause.ok);
+    assert.equal(stalePause.code, "conflict");
+    assert.deepEqual((await readGoal(ui)).goal, budgetView);
+
+    const paused = await mutate(secondClient, "goal-mutation-pause", { ...requestFor(budgeted.goal), status: "paused" });
+    assert(paused?.ok && !paused.replayed);
+    const pausedView = (await readGoal(ui)).goal;
+    assert.deepEqual([pausedView.status, pausedView.version, pausedView.continuation?.state, pausedView.continuation?.deferReason,
+      pausedView.continuation?.tokenBudget, pausedView.continuation?.tokensUsed],
+      ["paused", budgetView.version + 1, "deferred", "manual_stop", 900, 150]);
+    const cancelled = await mutate(firstClient, "goal-mutation-cancel", { ...requestFor(paused.goal), status: "cancelled" });
+    assert(cancelled?.ok && !cancelled.replayed);
+    const cancelledView = await readGoal(ui);
+    assert.deepEqual([cancelledView.goal.title, cancelledView.goal.status, cancelledView.goal.version,
+      cancelledView.goal.closureConclusion, cancelledView.activeGoal],
+      [winner.title, "cancelled", pausedView.version + 1, "cancelled", undefined]);
+    await retry(secondClient);
+    assert.deepEqual(await readGoal(ui), cancelledView);
+    return async (reopened: RuntimeAuditReader) => {
+      const reconnected = await connectUi("goal-mutation-ui-reopened");
+      await retry(reconnected).finally(() => reconnected.close());
+      const persisted = await readGoal(reopened);
+      assert.deepEqual([persisted.goal.title, persisted.goal.status, persisted.goal.version, persisted.activeGoal],
+        [winner.title, "cancelled", cancelledView.goal.version, undefined]);
+      console.log("PASS two Core UI clients race on Goal edits, preserve usage when changing budget, reject wrong tasks, and replay the edit across pause, cancellation and restart");
+    };
+  } finally {
+    await Promise.all(clients.map(client => client.close()));
+  }
+}
+
 try {
   application = await AppDatabase.open(database, options);
   const ui = application.runtimeAuditReader!;
@@ -330,6 +431,7 @@ try {
   await verifyConversationRuntime(application, ui, worker);
   const stream = await CoreBusinessClient.connect(executable, database, { dataDirectory: root, role: "ui" });
   const created = await verifyGoalCreation(application, ui, worker, stream).finally(() => stream.close());
+  const verifyDurableGoalMutation = await verifyGoalMutations(application, ui, worker, executable);
   const activity = new ConversationGoalActivity(undefined, worker);
   const owner = { goalId: created.goal.work_id, intentRevision: created.goal.intent_revision, ownerEpoch: created.goal.owner_epoch };
   const generation = { taskId: created.draft.taskId, conversationId: "goal-generation", generationTaskId: 12 };
@@ -541,6 +643,7 @@ try {
   await shutdownCoreWorker(root, database);
   application = await AppDatabase.open(database, options);
   const reopened = application.runtimeAuditReader!;
+  await verifyDurableGoalMutation(reopened);
   const replay = await reopened.createConversationGoal(created.operation, created.draft);
   assert.deepEqual(replay, { ok: true, replayed: true, goal: created.goal });
   const saved = (await reopened.readConversationRuntime(created.draft.taskId, LOCAL_USER_ID))?.goals;

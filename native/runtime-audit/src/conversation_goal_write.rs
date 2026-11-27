@@ -5,7 +5,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+#[path = "conversation_goal_mutation.rs"]
+mod mutation;
+pub use mutation::{GoalMutation, mutate};
+
 const MAX_CRITERIA: usize = 12;
+const MAX_TOKEN_BUDGET: i64 = 9_007_199_254_740_991;
 const AUTHORIZATION: &str = r#"{"allowedScopes":[],"targetWhitelist":[],"allowGitBranchOrWorktree":true,"allowRedelegation":true}"#;
 
 #[derive(Deserialize, Serialize)]
@@ -31,6 +36,8 @@ pub struct CreateGoal {
     title: String,
     description: Option<String>,
     criteria: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token_budget: Option<i64>,
     source: Option<Source>,
     #[serde(skip_serializing_if = "Option::is_none")]
     created_by: Option<GoalAuthor>,
@@ -52,10 +59,16 @@ fn rejected(code: &str, message: &str) -> Value {
     json!({ "ok": false, "code": code, "message": message })
 }
 
-fn read_goal(tx: &Connection, draft: &CreateGoal, id: &str, replayed: bool) -> Result<Value> {
-    let goal = goal_rows(tx, &draft.task_id, &draft.user_id, Some(id))?
+fn read_goal(
+    tx: &Connection,
+    task_id: &str,
+    user_id: &str,
+    id: &str,
+    replayed: bool,
+) -> Result<Value> {
+    let goal = goal_rows(tx, task_id, user_id, Some(id))?
         .pop()
-        .ok_or("Goal is missing from its conversation after creation")?;
+        .ok_or("Goal is missing from its conversation after a committed change")?;
     Ok(json!({ "ok": true, "replayed": replayed, "goal": goal }))
 }
 
@@ -87,6 +100,12 @@ fn create_in_tx(tx: &Transaction<'_>, operation_id: &str, draft: &CreateGoal) ->
             "invalid_request",
             "Task、目标标题和操作身份不能为空",
         ));
+    }
+    if draft
+        .token_budget
+        .is_some_and(|budget| !(1..=MAX_TOKEN_BUDGET).contains(&budget))
+    {
+        return Ok(rejected("invalid_request", "Token 预算必须是正整数或留空"));
     }
     let scope = format!("conversation-goal:{}", draft.user_id);
     let fingerprint = hash(&serde_json::to_vec(draft)?);
@@ -155,7 +174,7 @@ fn apply_create(
             |row| row.get(0),
         ).optional()?;
         if let Some(id) = original {
-            return read_goal(tx, draft, &id, true);
+            return read_goal(tx, &draft.task_id, &draft.user_id, &id, true);
         }
     }
 
@@ -250,9 +269,9 @@ fn apply_create(
         )?;
     }
     tx.execute(
-        "INSERT INTO conversation_goal_continuations(work_id,task_id,intent_revision,usage_cursor,updated_at)
-         SELECT ?1,?2,1,COALESCE(SUM(tokens),0),?3 FROM conversation_goal_usage_events WHERE task_id=?2",
-        params![id,draft.task_id,now],
+        "INSERT INTO conversation_goal_continuations(work_id,task_id,intent_revision,usage_cursor,updated_at,tokens_budget)
+         SELECT ?1,?2,1,COALESCE(SUM(tokens),0),?3,?4 FROM conversation_goal_usage_events WHERE task_id=?2",
+        params![id,draft.task_id,now,draft.token_budget],
     )?;
     let outbox_id = format!("instruction-{id}-created");
     let payload =
@@ -289,5 +308,5 @@ fn apply_create(
         now,
     )?;
 
-    read_goal(tx, draft, &id, false)
+    read_goal(tx, &draft.task_id, &draft.user_id, &id, false)
 }

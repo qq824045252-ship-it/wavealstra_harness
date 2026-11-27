@@ -9,6 +9,8 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat"
 import { MemoryStorage, defineTool } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { DurableBotRuntime, type DurableBotOptions } from "../src/main/agent/durable/DurableBotRuntime";
+import { NATIVE_FILE_INTENT_MEMO } from "../src/main/agent/durable/DurableEffectRecovery";
+import { TOOL_NOT_STARTED_MEMO } from "../src/main/agent/durable/DurableToolOutcome";
 import { CoreGoalContinuationRevokedError } from "../src/main/agent/work/CoreGoalContinuationDriver";
 
 const root = await mkdtemp(join(tmpdir(), "mybuddy-goal-authority-"));
@@ -22,14 +24,25 @@ const ref = { provider: model.provider, modelId: model.id };
 const text = (value: string) => [{ type: "text" as const, text: value }];
 const metadata = { text: "Goal nudge", displayText: "Goal nudge", attachments: [], goalContinuation: marker };
 
-function fixture(name: string, mode: "valid" | "stale-payload" | "stale-tool" | "resume-tool" | "resume-foreground") {
+function fixture(name: string, mode: "valid" | "stale-payload" | "stale-tool" | "stale-after-file-intent" | "resume-tool" | "resume-foreground") {
   const backend = new MemoryStorage();
+  let allowed = true;
+  let fileIntentSaved = false;
+  let toolNotStarted = false;
   const storage = new Proxy(backend, { get(target, key, receiver) {
     if (key === "close") return async () => {};
+    if (key === "commit" && mode === "stale-after-file-intent") return async (...args: Parameters<MemoryStorage["commit"]>) => {
+      const result = await target.commit(...args);
+      for (const batch of args[0].slice(0, result.stored)) for (const write of batch) {
+        if (write.type !== "task" || !("memos" in write.value)) continue;
+        if (write.value.memos?.[NATIVE_FILE_INTENT_MEMO]) { fileIntentSaved = true; allowed = false; }
+        if (write.value.memos?.[TOOL_NOT_STARTED_MEMO]) toolNotStarted = true;
+      }
+      return result;
+    };
     const member = Reflect.get(target, key, receiver);
     return typeof member === "function" ? member.bind(target) : member;
   } });
-  let allowed = true;
   let sends = 0;
   let toolChecks = 0;
   let initialToolCalls = 0;
@@ -57,7 +70,9 @@ function fixture(name: string, mode: "valid" | "stale-payload" | "stale-tool" | 
           sends++;
           if (mode === "stale-tool") allowed = false;
           if (sends === 1) {
-            message = { ...message, stopReason: "toolUse", content: [{ type: "toolCall", id: "effect", name: effect.name, arguments: {} }] };
+            message = { ...message, stopReason: "toolUse", content: [{ type: "toolCall", id: "effect",
+              ...(mode === "stale-after-file-intent" ? { name: "write", arguments: { path: file, content: "effect committed" } }
+                : { name: effect.name, arguments: {} }) }] };
             stream.push({ type: "done", reason: "toolUse", message });
           } else {
             message = { ...message, content: text("fixture done") };
@@ -81,12 +96,12 @@ function fixture(name: string, mode: "valid" | "stale-payload" | "stale-tool" | 
       if (!allowed) throw new CoreGoalContinuationRevokedError();
     } };
   return { open: () => DurableBotRuntime.open(options), file, sends: () => sends, toolChecks: () => toolChecks,
-    started: () => initialToolCalls, fence: () => { allowed = false; },
+    started: () => initialToolCalls, fence: () => { allowed = false; }, fileIntentSaved: () => fileIntentSaved, toolNotStarted: () => toolNotStarted,
     toolStates: async () => (await storage.scanTasks({}, 100, undefined, ctx)).items.filter(task => task.kind.includes("tool")).map(task => task.state) };
 }
 
 try {
-  for (const mode of ["valid", "stale-payload", "stale-tool"] as const) {
+  for (const mode of ["valid", "stale-payload", "stale-tool", "stale-after-file-intent"] as const) {
     const gate = fixture(mode, mode);
     const runtime = await gate.open();
     try {
@@ -102,6 +117,10 @@ try {
         await assert.rejects(readFile(gate.file), { code: "ENOENT" });
         assert.equal(gate.sends(), mode === "stale-payload" ? 0 : 1);
         if (mode === "stale-tool") assert.equal(gate.toolChecks(), 1);
+        if (mode === "stale-after-file-intent") {
+          assert(gate.fileIntentSaved(), "the file intent was persisted before the Goal changed");
+          assert(gate.toolNotStarted(), "the denied write has a durable not-started receipt");
+        }
       }
     } finally { await runtime.close(); }
   }

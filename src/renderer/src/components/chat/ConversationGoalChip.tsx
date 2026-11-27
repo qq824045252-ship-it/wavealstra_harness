@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { ConversationGoalDto } from "@shared/conversation-goal";
+import type { ConversationGoalDto, ConversationGoalUpdateRequest, ConversationGoalVersionWitness } from "@shared/conversation-goal";
 import { IconTarget } from "@/components/common/icons";
 import { useBlockNativeSurfaces } from "@/hooks/useBlockNativeSurfaces";
+import { latestConversationGoal } from "@/utils/conversationGoal";
 import ConversationGoalEvidence from "./ConversationGoalEvidence";
 import { goalContinuationSummary, goalProgressFacts, goalWaitingSummary } from "./goalOverview";
 
@@ -31,6 +32,26 @@ function progressText(goal: ConversationGoalDto, observedFacts?: string | null):
   return observedFacts === undefined ? "正在读取进展…" : observedFacts === null ? "进展暂不可读" : "暂无进展记录";
 }
 
+function mergeGoals(current: ConversationGoalDto[], incoming: readonly ConversationGoalDto[]): ConversationGoalDto[] {
+  const goals = new Map(current.map(goal => [goal.id, goal]));
+  let changed = false;
+  for (const goal of incoming) {
+    const previous = goals.get(goal.id);
+    const latest = latestConversationGoal(previous, goal);
+    if (latest !== previous) { goals.set(goal.id, latest); changed = true; }
+  }
+  return changed ? [...goals.values()] : current;
+}
+
+function goalWitness(goal: ConversationGoalDto): ConversationGoalVersionWitness {
+  return { expectedVersion: goal.version, expectedIntentRevision: goal.intentRevision, expectedOwnerEpoch: goal.ownerEpoch };
+}
+
+function budgetOverride(goal?: ConversationGoalDto): number | null {
+  const continuation = goal?.continuation;
+  return continuation?.tokenBudgetOverride !== undefined ? continuation.tokenBudgetOverride : continuation?.tokenBudget ?? null;
+}
+
 export default function ConversationGoalChip({ taskId, goal: latestGoal, viewGoal }: {
   taskId: string;
   goal?: ConversationGoalDto;
@@ -45,14 +66,10 @@ export default function ConversationGoalChip({ taskId, goal: latestGoal, viewGoa
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [progressFacts, setProgressFacts] = useState<Record<string, string | null>>({});
   const readListVersions = useRef(new Map<string, string>());
-  const activeGoal = latestGoal?.closedAt ? undefined : latestGoal;
-  const visibleGoals = useMemo(() => {
-    const result = new Map(goals.map(item => [item.id, item]));
-    for (const item of [latestGoal, viewGoal]) {
-      if (item && !result.has(item.id)) result.set(item.id, item);
-    }
-    return [...result.values()];
-  }, [goals, latestGoal, viewGoal]);
+  const visibleGoals = useMemo(() => mergeGoals(goals, [latestGoal, viewGoal].filter((item): item is ConversationGoalDto => item?.taskId === taskId)),
+    [goals, latestGoal, viewGoal, taskId]);
+  const projectedGoal = visibleGoals.reduce<ConversationGoalDto | undefined>(latestConversationGoal, latestGoal);
+  const activeGoal = projectedGoal?.closedAt === undefined ? projectedGoal : undefined;
   const selectedId = selected === undefined ? activeGoal?.id ?? visibleGoals[0]?.id : selected;
   const goal = visibleGoals.find(item => item.id === selectedId);
   const readOnly = Boolean(goal?.closedAt || goal?.status === "achieved" || goal?.status === "cancelled");
@@ -68,13 +85,17 @@ export default function ConversationGoalChip({ taskId, goal: latestGoal, viewGoa
   /** Seed the form only when the dialog opens (or the edited Goal changes).
    * A host continuation patch updates the goal prop while the user is typing;
    * resetting every field on each patch would discard their edits. */
-  const seeded = useRef<string | null>(null);
+  const seeded = useRef<{ goal?: ConversationGoalDto } | null>(null);
   const recordProgress = useCallback((goalId: string, facts: string | null): void => {
     setProgressFacts(previous => previous[goalId] === facts || facts === null && previous[goalId]
       ? previous : { ...previous, [goalId]: facts });
   }, []);
 
   useBlockNativeSurfaces(open);
+
+  useEffect(() => {
+    setGoals(previous => mergeGoals(previous, [latestGoal, viewGoal].filter((item): item is ConversationGoalDto => item?.taskId === taskId)));
+  }, [latestGoal, viewGoal, taskId]);
 
   useEffect(() => {
     if (!viewGoal) return;
@@ -95,7 +116,8 @@ export default function ConversationGoalChip({ taskId, goal: latestGoal, viewGoa
     setLoading(true);
     setLoadError(null);
     void api.snapshot(taskId).then(snapshot => {
-      if (live) setGoals(snapshot.goals ?? (snapshot.activeGoal ? [snapshot.activeGoal] : []));
+      if (live && snapshot.taskId === taskId) setGoals(previous => mergeGoals(previous,
+        (snapshot.goals ?? (snapshot.activeGoal ? [snapshot.activeGoal] : [])).filter(item => item.taskId === taskId)));
     }).catch((cause: unknown) => {
       if (live) setLoadError(cause instanceof Error ? cause.message : String(cause));
     }).finally(() => {
@@ -145,14 +167,14 @@ export default function ConversationGoalChip({ taskId, goal: latestGoal, viewGoa
 
   useEffect(() => {
     if (!open || !showForm) { seeded.current = null; return; }
-    const key = goal?.id ?? "new";
-    if (seeded.current === key) return;
-    seeded.current = key;
+    if (seeded.current && seeded.current.goal?.id === goal?.id) return;
+    seeded.current = { goal: goal && { ...goal, criteria: goal.criteria.map(criterion => ({ ...criterion })) } };
     setTitle(goal?.title ?? "");
     setDescription(goal?.description ?? "");
     setCriteria(goal?.criteria.map((item) => item.text).join("\n") ?? "");
     setProgress(goal?.progressSummary ?? "");
-    setBudget(goal?.continuation?.tokenBudget != null ? String(goal.continuation.tokenBudget) : "");
+    const override = budgetOverride(goal);
+    setBudget(override !== null ? String(override) : "");
     setError(null);
   }, [open, goal, showForm]);
 
@@ -170,32 +192,34 @@ export default function ConversationGoalChip({ taskId, goal: latestGoal, viewGoa
     try {
       const api = window.api?.conversationRuntime;
       const tokenBudget = budgetValue();
-      const result = goal
-        ? await api?.updateGoal({
-            goalId: goal.id, taskId,
-            title: title.trim(),
-            description: description.trim(),
-            progressSummary: progress.trim(),
-            tokenBudget,
-            criteria: criteria.split(/\r?\n/).map((text, index) => ({
-              id: goal.criteria[index]?.id,
-              text: text.trim(),
-              status: goal.criteria[index]?.status,
-              evidence: goal.criteria[index]?.evidence,
-            })).filter((item) => item.text),
-          })
-        : await api?.createGoal({
-            taskId,
-            title: title.trim(),
-            description: description.trim(),
-            criteria: criteria.split(/\r?\n/).map((text) => text.trim()).filter(Boolean).map((text) => ({ text })),
+      const baseline = seeded.current?.goal;
+      if (baseline?.id !== goal?.id) throw new Error("Goal 已变更，请重新打开编辑。");
+      const texts = criteria.split(/\r?\n/).map(text => text.trim()).filter(Boolean);
+      const changes: Pick<ConversationGoalUpdateRequest, "title" | "description" | "progressSummary" | "tokenBudget" | "criteria"> = {};
+      if (baseline) {
+        if (title.trim() !== baseline.title) changes.title = title.trim();
+        if (description.trim() !== (baseline.description ?? "")) changes.description = description.trim();
+        if (progress.trim() !== (baseline.progressSummary ?? "")) changes.progressSummary = progress.trim();
+        if (tokenBudget !== budgetOverride(baseline)) changes.tokenBudget = tokenBudget;
+        if (texts.length !== baseline.criteria.length || texts.some((text, index) => text !== baseline.criteria[index]?.text)) {
+          const unused = [...baseline.criteria];
+          changes.criteria = texts.map(text => {
+            const index = unused.findIndex(criterion => criterion.text === text);
+            return index < 0 ? { text } : { id: unused.splice(index, 1)[0].id, text };
           });
-      if (!result?.ok) throw new Error(result?.message ?? "保存 Goal 失败");
-      // Creation cannot carry scheduling configuration; apply it as a second,
-      // independent write so the create request keeps its single authority.
-      if (!goal && tokenBudget !== null) await api?.updateGoal({ goalId: result.goal.id, taskId, tokenBudget });
-      setGoals(items => [result.goal, ...items.filter(item => item.id !== result.goal.id)]);
-      setSelected(result.goal.id);
+        }
+        if (!Object.keys(changes).length) { setEditing(false); return; }
+      }
+      const result = baseline
+        ? await api?.updateGoal({ goalId: baseline.id, taskId, ...goalWitness(baseline), ...changes })
+        : await api?.createGoal({ taskId, title: title.trim(), description: description.trim(), tokenBudget,
+          criteria: texts.map(text => ({ text })) });
+      if (!result?.ok) {
+        if (result?.code === "conflict") refresh();
+        throw new Error(result?.message ?? "保存 Goal 失败");
+      }
+      setGoals(items => mergeGoals(items, [result.goal]));
+      if (!baseline) setSelected(current => current ?? result.goal.id);
       setEditing(false);
       seeded.current = null;
       refresh();
@@ -211,10 +235,12 @@ export default function ConversationGoalChip({ taskId, goal: latestGoal, viewGoa
     setBusy(true);
     setError(null);
     try {
-      const result = await window.api?.conversationRuntime?.updateGoal({ goalId: goal.id, taskId, status });
-      if (!result?.ok) throw new Error(result?.message ?? "更新 Goal 状态失败");
-      setGoals(items => [result.goal, ...items.filter(item => item.id !== result.goal.id)]);
-      setSelected(result.goal.id);
+      const result = await window.api?.conversationRuntime?.updateGoal({ goalId: goal.id, taskId, status, ...goalWitness(goal) });
+      if (!result?.ok) {
+        if (result?.code === "conflict") refresh();
+        throw new Error(result?.message ?? "更新 Goal 状态失败");
+      }
+      setGoals(items => mergeGoals(items, [result.goal]));
       seeded.current = null;
       refresh();
     } catch (cause) {
@@ -227,10 +253,14 @@ export default function ConversationGoalChip({ taskId, goal: latestGoal, viewGoa
     setBusy(true);
     setError(null);
     try {
-      const result = await window.api?.conversationRuntime?.resumeGoalContinuation(goal.id, taskId);
-      if (!result?.ok) throw new Error(result?.message ?? "继续 Goal 失败");
-      setGoals(items => [result.goal, ...items.filter(item => item.id !== result.goal.id)]);
-      setSelected(result.goal.id);
+      const result = await window.api?.conversationRuntime?.resumeGoalContinuation(goal.id, taskId, {
+        ...goalWitness(goal), expectedContinuationRevision: goal.continuation?.revision,
+      });
+      if (!result?.ok) {
+        if (result?.code === "conflict") refresh();
+        throw new Error(result?.message ?? "继续 Goal 失败");
+      }
+      setGoals(items => mergeGoals(items, [result.goal]));
       seeded.current = null;
       refresh();
     } catch (cause) {
@@ -241,11 +271,14 @@ export default function ConversationGoalChip({ taskId, goal: latestGoal, viewGoa
   const cancelGoal = async (): Promise<void> => {
     if (!goal || busy) return;
     setBusy(true);
+    setError(null);
     try {
-      const result = await window.api?.conversationRuntime?.cancelGoal(goal.id, taskId);
-      if (!result?.ok) throw new Error(result?.message ?? "取消 Goal 失败");
-      setGoals(items => [result.goal, ...items.filter(item => item.id !== result.goal.id)]);
-      setSelected(result.goal.id);
+      const result = await window.api?.conversationRuntime?.cancelGoal(goal.id, taskId, goalWitness(goal));
+      if (!result?.ok) {
+        if (result?.code === "conflict") refresh();
+        throw new Error(result?.message ?? "取消 Goal 失败");
+      }
+      setGoals(items => mergeGoals(items, [result.goal]));
       seeded.current = null;
       refresh();
     } catch (cause) {
@@ -329,7 +362,7 @@ export default function ConversationGoalChip({ taskId, goal: latestGoal, viewGoa
               <label>说明（可选）<textarea rows={3} value={description} onChange={(event) => setDescription(event.target.value)} /></label>
               <label>成功标准（每行一条，最多 12 条）<textarea rows={5} value={criteria} onChange={(event) => setCriteria(event.target.value)} placeholder={"结果可以被验证\n关键交付物已完成"} /></label>
               {goal && <label>当前进展<textarea rows={3} value={progress} onChange={(event) => setProgress(event.target.value)} /></label>}
-              {goal && <label>自动续跑 token 预算（留空 = 跟随全局设置）<input inputMode="numeric" value={budget} onChange={(event) => setBudget(event.target.value)} placeholder="例如 50000" /></label>}
+              <label>自动续跑 token 预算（留空 = 跟随全局设置）<input inputMode="numeric" value={budget} onChange={(event) => setBudget(event.target.value)} placeholder="例如 50000" /></label>
               {error && <div className="conversation-interaction-error" role="alert">{error}</div>}
               <footer><div className="conversation-goal-save">
                 <button type="button" disabled={busy} onClick={goal ? () => { setError(null); setEditing(false); } : close}>返回</button>

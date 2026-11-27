@@ -203,7 +203,7 @@ try {
     criteria: [{ text: "预算内完成" }],
   });
   assert(budgetGoal.ok);
-  assert(agent.updateConversationGoal({ goalId: budgetGoal.goal.id, tokenBudget: 3 }).ok, "设置预算应成功");
+  assert((await agent.updateConversationGoal({ goalId: budgetGoal.goal.id, tokenBudget: 3 })).ok, "设置预算应成功");
   await fixture.prompt({ taskId: "goal-budget", text: "开始推进", userMessageId: "budget-user-1", assistantMessageId: "budget-assistant-1" });
   await waitFor("预算用尽停止", () => continuationOf(budgetGoal.goal.id).state === "exhausted");
   const budgeted = continuationOf(budgetGoal.goal.id);
@@ -267,14 +267,14 @@ try {
     taskId: "goal-pause", title: "验证暂停", criteria: [{ text: "暂停期间不推进" }],
   });
   assert(pauseGoal.ok);
-  assert(agent.updateConversationGoal({ goalId: pauseGoal.goal.id, status: "paused" }).ok, "暂停应成功");
+  assert((await agent.updateConversationGoal({ goalId: pauseGoal.goal.id, status: "paused" })).ok, "暂停应成功");
   const pauseRequestsBefore = requests.length;
   await fixture.prompt({ taskId: "goal-pause", text: "先做点别的", userMessageId: "pause-user-1", assistantMessageId: "pause-assistant-1" });
   await sleep(900);
   assert.equal(continuationOf(pauseGoal.goal.id).attempts, 0, "暂停的 Goal 不得点火");
   assert.equal(requests.length, pauseRequestsBefore + 1, "暂停时只应有用户自己的那一轮");
 
-  assert(agent.updateConversationGoal({ goalId: pauseGoal.goal.id, status: "active" }).ok, "恢复应成功");
+  assert((await agent.updateConversationGoal({ goalId: pauseGoal.goal.id, status: "active" })).ok, "恢复应成功");
   await waitFor("恢复后自动续跑", () => continuationOf(pauseGoal.goal.id).attempts >= 1);
   await waitFor("恢复后的无进展停止", () => continuationOf(pauseGoal.goal.id).state === "deferred");
   assert.equal(continuationOf(pauseGoal.goal.id).deferReason, "no_progress");
@@ -429,7 +429,7 @@ try {
   await waitFor("Goal A waits for confirmation", () => agent.getConversationRuntimeSnapshot(lineageTask).interactions.some(item => item.status === "pending"));
   const wait = agent.getConversationRuntimeSnapshot(lineageTask).interactions.find(item => item.status === "pending");
   assert(wait);
-  assert(agent.cancelConversationGoal(goalA.goal.id, lineageTask).ok);
+  assert((await agent.cancelConversationGoal(goalA.goal.id, lineageTask)).ok);
   const goalB = await agent.createConversationGoal({ taskId: lineageTask, title: "Goal B", sourceMessage: sourceRef(sourceB) });
   assert(goalB.ok);
   await agent.abort(lineageTask);
@@ -479,7 +479,7 @@ try {
   assert.equal(pricedSkill.knownCostUsd, 0.025);
   assert.equal(pricedSkill.costBySource.auxiliary.providerReportedRequests, 1);
   assert.equal(pricedSkill.unattributedAuxiliaryRequests, 1, "unowned task auxiliary costs stay outside the Goal");
-  assert(agent.updateConversationGoal({ goalId: skillGoal.goal.id, status: "achieved" }).ok, "complete the Goal before later reuse");
+  assert((await agent.updateConversationGoal({ goalId: skillGoal.goal.id, status: "achieved" })).ok, "complete the Goal before later reuse");
   await fixture.prompt({ taskId: "goal-skill", text: "goal-reuse-skill", userMessageId: "goal-reuse-user", assistantMessageId: "goal-reuse-answer" });
   assert.equal(typeof (await skillEvidence())?.laterInvokedAt, "number", "a later real skill read is attached to the matching installed content");
   console.log("PASS completed Goal skill shows native creation, scope, installed revision and the later real read");

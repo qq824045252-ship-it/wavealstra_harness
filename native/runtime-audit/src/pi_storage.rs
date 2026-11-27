@@ -3257,6 +3257,33 @@ fn get_document(db: &Connection, store_id: &str, id: i64, at: &Value) -> Result<
     })))
 }
 
+pub(crate) fn current_session_document(
+    db: &Connection,
+    store_id: &str,
+    kind: &str,
+    key: &str,
+) -> Result<Option<Value>> {
+    let current = json!("current");
+    let address = json!({"kind":kind,"scope":{"kind":"session"},"key":key});
+    let OpOutcome::Ok(record) = find_document(db, store_id, &address, &current)? else {
+        return Err("Failed to locate a native session document".into());
+    };
+    let Some(id) = record["id"].as_i64() else {
+        return Ok(None);
+    };
+    let OpOutcome::Ok(mut stored) = get_document(db, store_id, id, &current)? else {
+        return Err("Failed to read a native session document".into());
+    };
+    let Some(base) = stored.get_mut("baseValue") else {
+        return Ok(None);
+    };
+    let mut value = std::mem::take(base);
+    for delta in stored["deltas"].as_array().into_iter().flatten() {
+        apply_chord_delta(&mut value, delta)?;
+    }
+    Ok(Some(value))
+}
+
 fn scan_documents(
     db: &Connection,
     store_id: &str,

@@ -6,7 +6,8 @@ import { ConversationInteractionCard } from "../src/renderer/src/components/chat
 import MessageBlockView from "../src/renderer/src/components/chat/MessageBlockView";
 import { deriveTaskStatus, matchesTaskFilter } from "../src/renderer/src/utils/taskFilters";
 import type { ChatMessage, Task } from "../src/renderer/src/types";
-import type { ConversationGoalDto, GoalSavedArtifactDto } from "../src/shared/conversation-goal";
+import type { ConversationGoalCreateRequest, ConversationGoalDto, ConversationGoalUpdateRequest, ConversationGoalVersionWitness, GoalSavedArtifactDto } from "../src/shared/conversation-goal";
+import type { ConversationGoalMutationResult } from "../src/shared/conversation-runtime";
 import type { GoalActivityDto } from "../src/shared/conversation-goal-activity";
 
 const base: ChatMessage = { id: "assistant-a", role: "assistant", blocks: [], createdAt: 1, streaming: true };
@@ -44,6 +45,7 @@ assert.doesNotMatch(malformedHtml, /<button|<input|<progress/);
 async function goalArtifactPreviewKeepsExactVersion(): Promise<void> {
   const { parseHTML } = await import("linkedom/worker");
   const { window, document } = parseHTML("<html><body><div id='root'></div></body></html>");
+  Object.defineProperty(document, "oninput", { value: null, configurable: true });
   Object.assign(globalThis, { window, document, IS_REACT_ACT_ENVIRONMENT: true });
   const { createRoot } = await import("react-dom/client");
   const { default: ConversationGoalChip } = await import("../src/renderer/src/components/chat/ConversationGoalChip");
@@ -144,7 +146,113 @@ async function goalArtifactPreviewKeepsExactVersion(): Promise<void> {
   }
 }
 
-void goalArtifactPreviewKeepsExactVersion().then(() => {
+async function goalMutationsUseTheDisplayedVersion(): Promise<void> {
+  const { parseHTML } = await import("linkedom/worker");
+  const { window, document } = parseHTML("<html><body><div id='root'></div></body></html>");
+  Object.defineProperty(document, "oninput", { value: null, configurable: true });
+  Object.assign(globalThis, { window, document, IS_REACT_ACT_ENVIRONMENT: true });
+  const { createRoot } = await import("react-dom/client");
+  const { default: ConversationGoalChip } = await import("../src/renderer/src/components/chat/ConversationGoalChip");
+  const goal: ConversationGoalDto = { id: "goal", taskId: "task", title: "第一版目标", status: "active", version: 1, intentRevision: 1,
+    ownerEpoch: 1, createdBy: "user", createdAt: 1, updatedAt: 2, criteria: [{ id: "first", text: "第一项", status: "pending" },
+      { id: "second", text: "第二项", status: "met" }], continuation: { state: "idle", attempts: 0, maxAttempts: 3,
+      tokensUsed: 0, tokenBudget: 50_000, tokenBudgetOverride: null, revision: 2 } };
+  const newer: ConversationGoalDto = { ...goal, version: 2, intentRevision: 2, ownerEpoch: 2, updatedAt: 3, title: "较新目标",
+    criteria: [{ id: "new-first", text: "第一项", status: "pending" }, { id: "new-second", text: "第二项", status: "pending" }] };
+  const newest: ConversationGoalDto = { ...newer, version: 3, intentRevision: 3, updatedAt: 4, title: "最新目标",
+    continuation: { ...goal.continuation!, state: "deferred", deferReason: "no_progress", revision: 4 } };
+  const cancelled: ConversationGoalDto = { ...newest, version: 4, title: "最终状态", status: "cancelled", closedAt: 5 };
+  const updates: ConversationGoalUpdateRequest[] = [];
+  const creates: ConversationGoalCreateRequest[] = [];
+  const cancels: Array<[string, string | undefined, ConversationGoalVersionWitness | undefined]> = [];
+  const resumes: typeof cancels = [];
+  let respondToPause!: (result: ConversationGoalMutationResult) => void;
+  const pause = new Promise<ConversationGoalMutationResult>(resolve => { respondToPause = resolve; });
+  Object.assign(window, { api: { conversationRuntime: {
+    snapshot: async () => ({ taskId: "task", goals: [goal], activeGoal: goal, interactions: [] }),
+    goalEvidence: async () => undefined,
+    updateGoal: async (request: ConversationGoalUpdateRequest) => {
+      updates.push(request);
+      if (request.status === "paused") return await pause;
+      return { ok: false, code: "conflict", message: "Goal 已改动，请重新编辑" };
+    },
+    cancelGoal: async (id: string, task: string | undefined, witness: ConversationGoalVersionWitness | undefined) => {
+      cancels.push([id, task, witness]);
+      return { ok: true, goal: cancelled };
+    },
+    resumeGoalContinuation: async (id: string, task: string | undefined, witness: ConversationGoalVersionWitness | undefined) => {
+      resumes.push([id, task, witness]);
+      return { ok: false, code: "conflict", message: "Goal 已改动" };
+    },
+    createGoal: async (request: ConversationGoalCreateRequest) => {
+      creates.push(request);
+      return { ok: true, goal: { ...goal, id: "created", title: request.title, createdAt: 8 } };
+    },
+  } } });
+  const root = createRoot(document.getElementById("root")!);
+  const render = async (value?: ConversationGoalDto) => act(async () => root.render(createElement(ConversationGoalChip, { taskId: "task", goal: value })));
+  const click = async (label: string) => {
+    const button = [...document.querySelectorAll("button")].find(node => node.textContent === label || node.getAttribute("aria-label") === label);
+    assert.ok(button, `找不到 ${label}`);
+    await act(async () => button.dispatchEvent(new window.Event("click", { bubbles: true })));
+  };
+  const input = async (selector: string, value: string) => {
+    const control = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector)!;
+    assert.ok(control, selector);
+    const prototype = control.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    await act(async () => {
+      if (control.tagName === "INPUT" && !control.getAttribute("type")) control.setAttribute("type", "text");
+      Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(control, value);
+      control.dispatchEvent(new window.Event("input", { bubbles: true }));
+      control.dispatchEvent(new window.Event("change", { bubbles: true }));
+    });
+  };
+  const submit = async () => act(async () => document.querySelector(".conversation-goal-dialog form")!
+    .dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })));
+  const heading = () => document.querySelector(".conversation-goal-dialog h2")?.textContent;
+  try {
+    await render(goal);
+    await click("此对话的 Goal");
+    await click("编辑 Goal");
+    assert.equal(document.querySelector<HTMLInputElement>("form label:last-of-type input")?.value, "", "the effective default is not a saved override");
+    await input("form label:nth-of-type(3) textarea", "第二项\n第一项");
+    await render(newer);
+    assert.equal(document.querySelector<HTMLInputElement>("form input")?.value, goal.title, "a fresh projection keeps the existing draft");
+    await submit();
+    assert.deepEqual(updates[0], { goalId: "goal", taskId: "task", expectedVersion: 1, expectedIntentRevision: 1, expectedOwnerEpoch: 1,
+      criteria: [{ id: "second", text: "第二项" }, { id: "first", text: "第一项" }] });
+    assert.match(document.querySelector("form [role=alert]")?.textContent ?? "", /已改动/);
+    await click("返回");
+    assert.equal(heading(), newer.title, "an older snapshot cannot erase the latest goal projection");
+    await click("暂停");
+    assert.deepEqual(updates[1], { goalId: "goal", taskId: "task", status: "paused", expectedVersion: 2,
+      expectedIntentRevision: 2, expectedOwnerEpoch: 2 });
+    await render(newest);
+    await act(async () => respondToPause({ ok: true, goal: { ...newer, status: "paused" } }));
+    assert.equal(heading(), newest.title, "the delayed mutation callback cannot replace a newer push");
+    await render({ ...newest, continuation: { ...newest.continuation!, state: "exhausted", deferReason: "attempts", revision: 5 } });
+    await render(newest);
+    assert.match(document.querySelector(".conversation-goal-chip")?.textContent ?? "", /用尽/,
+      "an older continuation snapshot cannot rewind the same Work version");
+    await click("继续");
+    assert.deepEqual(resumes, [["goal", "task", { expectedVersion: 3, expectedIntentRevision: 3, expectedOwnerEpoch: 2,
+      expectedContinuationRevision: 5 }]]);
+    await click("取消 Goal");
+    assert.deepEqual(cancels, [["goal", "task", { expectedVersion: 3, expectedIntentRevision: 3, expectedOwnerEpoch: 2 }]]);
+    assert.equal(heading(), cancelled.title);
+    await click("建立 Goal");
+    await input("form input", "新目标带预算");
+    await input("form label:last-of-type input", "12500");
+    await submit();
+    assert.equal(creates.length, 1);
+    assert.equal(creates[0]?.tokenBudget, 12_500);
+    assert.equal(updates.length, 2, "creation and its budget use one mutation");
+  } finally {
+    await act(async () => root.unmount());
+  }
+}
+
+void goalArtifactPreviewKeepsExactVersion().then(goalMutationsUseTheDisplayedVersion).then(() => {
   console.log("conversation runtime ui tests: ok");
 }).catch(error => {
   console.error(error);
