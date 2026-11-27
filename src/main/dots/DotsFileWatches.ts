@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { watch } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import pLimit from "p-limit";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { AgentPromptRequest, AgentPromptResult } from "../../shared/agent-ipc";
 import { DotsIntentChanged } from "./DotsNativeIntent";
@@ -30,6 +31,7 @@ interface Host {
 }
 const active = (row: FileWatch) => row.state === "watching" || row.state === "sending";
 const operation = (id: string) => "dots-input-file-" + id;
+const MAX_CONCURRENT_WATCH_TASKS = 4;
 const contained = (root: string, path: string) => {
   const ref = relative(root, path);
   return ref !== ".." && !ref.startsWith(".." + sep) && !isAbsolute(ref);
@@ -132,8 +134,7 @@ export class DotsFileWatches {
     return reply;
   }
 
-  private async *coreRows(taskId: string | undefined, activeOnly: boolean): AsyncGenerator<FileWatch> {
-    let afterId: string | undefined;
+  private async *coreRows(taskId: string | undefined, activeOnly: boolean, afterId?: string): AsyncGenerator<FileWatch> {
     for (;;) {
       const page = await this.coreRead<{ rows: FileWatch[]; next: string | null }>({ kind: "list", taskId, afterId, activeOnly });
       yield* page.rows;
@@ -374,20 +375,44 @@ export class DotsFileWatches {
   }
 
   private async checkCoreWatches(spaceIds: readonly string[] | null, mode: FollowupMode) {
-    let failure: { error: unknown } | undefined;
-    for await (const row of this.coreRows(undefined, true)) {
-      if (!this.started) return;
+    const run = pLimit(MAX_CONCURRENT_WATCH_TASKS);
+    const discovered = new Set<string>();
+    const pending = new Set<Promise<void>>();
+    let failure: { watchId: string; error: unknown } | undefined;
+    const recordFailure = (watchId: string, error: unknown) => {
+      if (!failure || watchId < failure.watchId) failure = { watchId, error };
+    };
+    const check = async (row: FileWatch) => {
       try {
         await this.checkCoreWatch(row, spaceIds, mode);
       } catch (error) {
-        if (!(error instanceof DotsIntentChanged)) {
-          failure ??= { error };
-        } else if (await this.transition(row, "expired", error.message)) {
-          this.host.failed(row.task_id, operation(row.id), error.message);
-        }
+        if (!(error instanceof DotsIntentChanged)) throw error;
+        if (await this.transition(row, "expired", error.message)) this.host.failed(row.task_id, operation(row.id), error.message);
       }
+    };
+    try {
+      for await (const row of this.coreRows(undefined, true)) {
+        if (!this.started) break;
+        if (discovered.has(row.task_id)) continue;
+        discovered.add(row.task_id);
+        // A task's backlog stays in Core. It can never hide another task from this discovery scan.
+        const current = run(async () => {
+          if (!this.started) return;
+          await check(row).catch(error => recordFailure(row.id, error));
+          if (!this.started) return;
+          for await (const next of this.coreRows(row.task_id, true, row.id)) {
+            if (!this.started) return;
+            await check(next).catch(error => recordFailure(next.id, error));
+          }
+        }).catch(error => recordFailure(row.id, error)).finally(() => {
+          pending.delete(current);
+        });
+        pending.add(current);
+      }
+    } finally {
+      await Promise.all(pending);
     }
-    if (failure) throw failure.error;
+    if (this.started && failure) throw failure.error;
   }
 
   private async checkCoreWatch(row: FileWatch, spaceIds: readonly string[] | null, mode: FollowupMode) {

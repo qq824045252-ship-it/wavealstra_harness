@@ -114,7 +114,7 @@ fn library_index_join(space_placeholders: &str) -> String {
         "FROM library_chunks c JOIN library_items i ON i.id=c.item_id
          LEFT JOIN library_chunk_embeddings e ON e.chunk_id=c.id AND e.chunk_hash=c.hash
              AND e.model_id=?1 AND e.model_version=?2 AND e.dimension=?3
-             AND length(e.embedding)=?4
+             AND octet_length(e.embedding)=?4
          WHERE i.trashed_at IS NULL AND i.space_id IN ({space_placeholders})"
     )
 }
@@ -122,7 +122,7 @@ fn library_index_join(space_placeholders: &str) -> String {
 const MEMORY_INDEX_JOIN: &str = "FROM memory_records m
     LEFT JOIN memory_embeddings e ON e.memory_id=m.id AND e.content_hash=m.content_hash
         AND e.model_id=$model_id AND e.model_version=$model_version AND e.dimension=$dimension
-        AND length(e.embedding)=$bytes
+        AND octet_length(e.embedding)=$bytes
     WHERE m.status='active'";
 
 impl IndexQueues {
@@ -282,7 +282,7 @@ pub fn stage(
             let row = db.query_row(
                 "SELECT kind,title,content,EXISTS(
                     SELECT 1 FROM memory_embeddings e WHERE e.memory_id=m.id AND e.content_hash=m.content_hash
-                    AND e.model_id=? AND e.model_version=? AND e.dimension=? AND length(e.embedding)=?
+                    AND e.model_id=? AND e.model_version=? AND e.dimension=? AND octet_length(e.embedding)=?
                  ) FROM memory_records m WHERE m.id=? AND m.content_hash=? AND m.status='active'",
                 params![model_id, model_version, dimension, dimension * 4, id, hash],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, bool>(3)?)),
@@ -406,7 +406,7 @@ fn save_memory(
         "INSERT INTO memory_embeddings(memory_id,model_id,model_version,content_hash,dimension,embedding,created_at)
          VALUES (?,?,?,?,?,?,?) ON CONFLICT(memory_id,model_id,model_version) DO UPDATE SET
            content_hash=excluded.content_hash,dimension=excluded.dimension,embedding=excluded.embedding,created_at=excluded.created_at
-         WHERE content_hash<>excluded.content_hash OR dimension<>excluded.dimension OR length(embedding)<>length(excluded.embedding)",
+         WHERE content_hash<>excluded.content_hash OR dimension<>excluded.dimension OR octet_length(embedding)<>octet_length(excluded.embedding)",
     )?.execute(params![id, vector.model_id, vector.model_version, hash, vector.dimension, vector.bytes, at])?;
     counts.indexed += saved;
     counts.current += usize::from(saved == 0);
@@ -437,7 +437,7 @@ fn save_library(
         "INSERT INTO library_chunk_embeddings(chunk_id,model_id,model_version,chunk_hash,dimension,embedding,created_at)
          VALUES (?,?,?,?,?,?,?) ON CONFLICT(chunk_id,model_id,model_version) DO UPDATE SET
            chunk_hash=excluded.chunk_hash,dimension=excluded.dimension,embedding=excluded.embedding,created_at=excluded.created_at
-         WHERE chunk_hash<>excluded.chunk_hash OR dimension<>excluded.dimension OR length(embedding)<>length(excluded.embedding)",
+         WHERE chunk_hash<>excluded.chunk_hash OR dimension<>excluded.dimension OR octet_length(embedding)<>octet_length(excluded.embedding)",
     )?.execute(params![id, vector.model_id, vector.model_version, hash, vector.dimension, vector.bytes, at])?;
     counts.indexed += saved;
     counts.current += usize::from(saved == 0);

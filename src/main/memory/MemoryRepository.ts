@@ -210,9 +210,9 @@ export class MemoryRepository {
 
   async readForTurn(turnId: string): Promise<MemoryRecordDto[]> {
     const data = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "forTurn", turnId });
-    return data?.kind === "forTurn"
-      ? data.records.map(memoryRecordFromWire)
-      : this.listByEvidence("conversation", turnId, 500);
+    if (data?.kind === "forTurn") return data.records.map(memoryRecordFromWire);
+    if (!this.db.fixtureConnection) throw new Error("Core 未确认对话关联记忆");
+    return this.listByEvidence("conversation", turnId, 500);
   }
 
   /** Cross-scope browse query for the settings explorer; filters apply to the whole store, not a scope chain. */

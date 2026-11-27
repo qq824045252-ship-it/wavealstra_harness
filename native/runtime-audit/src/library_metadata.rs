@@ -50,12 +50,25 @@ pub enum Query {
         root: PathBuf,
         max_chars: Option<usize>,
     },
+    IndexCandidates {
+        work: IndexWork,
+        after: Option<String>,
+        limit: usize,
+    },
     NoteWritesSupported,
     NoteRestoresSupported,
     TextSavesSupported,
     DeletesSupported,
     BackupsSupported,
     RestoreBackupsSupported,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IndexWork {
+    Documents,
+    Text,
+    Chunks,
 }
 
 #[derive(Deserialize)]
@@ -69,6 +82,7 @@ pub enum CatalogOwner {
 pub fn read(db: &Connection, query: Query) -> Result<Value> {
     match query {
         Query::Catalog { space_ids, item_id, owner } => catalog(db, space_ids, item_id, owner),
+        Query::IndexCandidates { work, after, limit } => index_candidates(db, work, after, limit),
         Query::TaskScope { task_id, project_id, workspace_id, item_ids } => {
             task_scope(db, task_id.as_deref(), project_id, workspace_id, item_ids)
         }
@@ -127,6 +141,32 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
         | Query::BackupsSupported
         | Query::RestoreBackupsSupported => Ok(Value::Bool(true)),
     }
+}
+
+fn index_candidates(
+    db: &Connection,
+    work: IndexWork,
+    after: Option<String>,
+    limit: usize,
+) -> Result<Value> {
+    let predicate = match work {
+        IndexWork::Documents => "kind IN ('office','pdf') AND (
+            extract_status IS NULL OR extract_status IN ('pending','error')
+            OR (extract_status='extracted' AND NOT EXISTS (
+                SELECT 1 FROM search_documents d WHERE d.doc_key='library:' || i.id)))",
+        IndexWork::Text => "kind IN ('markdown','html','csv') AND NOT EXISTS (
+            SELECT 1 FROM search_documents d WHERE d.doc_key='library:' || i.id)",
+        IndexWork::Chunks => "(kind IN ('markdown','html','csv') OR
+            (kind IN ('office','pdf') AND extract_status='extracted')) AND NOT EXISTS (
+            SELECT 1 FROM library_chunks c WHERE c.item_id=i.id)",
+    };
+    Ok(records(
+        db,
+        &format!("SELECT {ITEMS} FROM library_items i
+            WHERE trashed_at IS NULL AND (?1 IS NULL OR id>?1) AND ({predicate})
+            ORDER BY id LIMIT ?2"),
+        params![after, limit.clamp(1, 100) as i64],
+    )?.into())
 }
 
 fn task_scope(

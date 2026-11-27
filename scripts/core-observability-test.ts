@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { Document, Packer, Paragraph } from "docx";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { LibraryService } from "../src/main/library/LibraryService";
 import { AgentLoadoutObservationService } from "../src/main/agent/AgentLoadoutObservationService";
 import { DurableSkillProjection } from "../src/main/agent/durable/DurableSkillProjection";
 import { MemorySkillEffectivenessService } from "../src/main/memory/MemorySkillEffectivenessService";
@@ -34,6 +37,78 @@ const input = (taskId: string, executionId: string) => ({
   resolvedInstructions: [{ id: "instructions", title: "Instructions", source: "seed" as const, chars: 9, content: "same body" }],
   resolvedCapabilities: [], warnings: [],
 });
+
+async function verifyIndependentLibraryRecovery(app: AppDatabase) {
+  const reader = app.runtimeAuditReader!;
+  const libraryRoot = join(root, "index-concurrency-library");
+  const library = new LibraryService(app, { libraryRoot });
+  const first = { id: "concurrent-library-a", spaceId: "independent-library-a", text: "calibration apple original" };
+  const second = { id: "concurrent-library-b", spaceId: "independent-library-b", text: "bandwidth banana original" };
+  const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const seedFile = async ({ id, spaceId, itemKind, filename, mimeType, content }: {
+    id: string; spaceId: string; itemKind: "office" | "markdown"; filename: string; mimeType: string; content: Buffer;
+  }) => {
+    assert.deepEqual(await reader.batch3Write({ kind: "libraryInsertItem", id, spaceId, itemKind, title: id,
+      filename, mimeType, sizeBytes: content.length, owner: "fixture", favorite: 0,
+      sourceType: "import", contentHash: createHash("sha256").update(content).digest("hex"),
+      extractStatus: itemKind === "office" ? "pending" : undefined,
+      createdAt: at, updatedAt: at }), { ok: true });
+    const [item] = (await library.readSnapshot({ itemId: id })).items;
+    assert(item);
+    mkdirSync(join(libraryRoot, spaceId), { recursive: true });
+    writeFileSync(library.absolutePath(item), content);
+  };
+  for (const { id, spaceId, text } of [first, second]) {
+    assert.deepEqual(await reader.batch3Write({ kind: "libraryInsertSpace", id: spaceId, name: spaceId,
+      spaceKind: "personal", createdAt: at, updatedAt: at }), { ok: true });
+    const content = await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph(text)] }] }));
+    await seedFile({ id, spaceId, itemKind: "office", filename: `${id}.docx`, mimeType: mime, content });
+  }
+  const aWaiting = Promise.withResolvers<void>();
+  const releaseA = Promise.withResolvers<void>();
+  const bPublished = Promise.withResolvers<void>();
+  const publish = reader.publishLibraryDocument.bind(reader);
+  reader.publishLibraryDocument = async request => {
+    if (request.item.id === first.id) {
+      assert(request.content.kind === "extracted" && request.content.text?.includes(first.text));
+      aWaiting.resolve();
+      await releaseA.promise;
+    }
+    const result = await publish(request);
+    if (request.item.id === second.id) {
+      assert(request.content.kind === "extracted" && request.content.text?.includes(second.text));
+      assert.equal(result, "indexed");
+      bPublished.resolve();
+    }
+    return result;
+  };
+  const deadline = new AbortController();
+  const recovery = Promise.all([aWaiting.promise, bPublished.promise]);
+  try {
+    const scheduled = library.recoverPendingExtractions();
+    await Promise.race([Promise.all([scheduled, recovery]), delay(8000, undefined, { signal: deadline.signal })
+      .then(() => { throw new Error("independent document recovery did not progress"); })]);
+    assert.equal(await scheduled, 2);
+    assert.equal((await library.readSnapshot({ itemId: first.id })).items[0]?.extractStatus, "pending");
+    assert.equal((await library.readSnapshot({ itemId: second.id })).items[0]?.extractStatus, "extracted");
+  } finally {
+    deadline.abort();
+    releaseA.resolve();
+    await library.flushPendingIndexes();
+    reader.publishLibraryDocument = publish;
+  }
+  assert.equal((await library.readSnapshot({ itemId: first.id })).items[0]?.extractStatus, "extracted");
+  assert.equal(await library.recoverPendingExtractions(), 0);
+  console.log("PASS Core library recovers two real DOCX sources concurrently across independent spaces");
+
+  await seedFile({ id: "concurrent-library-text", spaceId: first.spaceId, itemKind: "markdown", filename: "recovery.md",
+    mimeType: "text/markdown", content: Buffer.from("# Independently repaired document\n\nA persisted heading and body.") });
+  assert.deepEqual(await library.backfillMissingChunks(), { processed: 1, succeeded: 1, failed: 0, skipped: 0 });
+  assert.deepEqual(await library.recoverTextFtsCoverageV2(), { processed: 1, failed: 0 });
+  assert.equal((await library.backfillMissingChunks()).processed, 0);
+  assert.deepEqual(await library.recoverTextFtsCoverageV2(), { processed: 0, failed: 0 });
+  console.log("PASS Core library repairs missing text and chunk indexes once");
+}
 
 async function verifyLoadoutProjection(app: AppDatabase) {
   const peer = await AppDatabase.open(database, options);
@@ -493,6 +568,7 @@ try {
   assert.equal((await reopened.diagnostics("task-b"))?.tools[0]?.status, "completed");
   console.log("PASS native observability survives restart and task deletion removes only the deleted task's snapshots and diagnostics");
   await verifyLoadoutProjection(application);
+  await verifyIndependentLibraryRecovery(application);
 } finally {
   await Promise.allSettled([application?.runtimeAuditReader?.close(), worker.close()]);
   application?.close();

@@ -622,6 +622,46 @@ try {
   assert.equal(drained, true);
   console.log("PASS an independent task commits while another task waits, and same-task writes stay ordered");
 
+  const waitingSpace = "workspace-queue-waiting";
+  const independentSpace = "workspace-queue-independent";
+  await application.writeWorkspaceUpsert({ id: waitingSpace, name: "Waiting workspace" });
+  await application.writeWorkspaceUpsert({ id: independentSpace, name: "Independent workspace" });
+  const workspaceLabel = ui.writeWorkspaceLabel;
+  const allowWaitingIcon = Promise.withResolvers<void>();
+  const waitingIconEntered = Promise.withResolvers<void>();
+  ui.writeWorkspaceLabel = async function (mutation) {
+    if (mutation.kind === "icon" && mutation.id === waitingSpace) {
+      waitingIconEntered.resolve();
+      await allowWaitingIcon.promise;
+    }
+    return workspaceLabel.call(this, mutation);
+  };
+  const waitingIcon = application.writeWorkspaceIcon(waitingSpace, { shape: "star", color: "teal" });
+  await waitingIconEntered.promise;
+  const archiveWaitingSpace = application.writeSpaceArchive(waitingSpace, true);
+  const independentIcon = application.writeWorkspaceIcon(independentSpace, { shape: "book", color: "blue" });
+  let workspacesDrained = false;
+  const workspaceDrain = application.flushPersistenceWrites().then(() => { workspacesDrained = true; });
+  try {
+    assert.deepEqual(await Promise.race([independentIcon, delay(5000, undefined, { ref: false })]),
+      { shape: "book", color: "blue" }, "Unrelated workspace edits must complete while another workspace is held");
+    const readback = await background.workspaceData({ kind: "spaces" });
+    assert.equal(readback?.spaces.find(space => space.id === independentSpace)?.icon_shape, "book");
+    assert.equal(readback?.spaces.find(space => space.id === waitingSpace)?.archived, 0);
+    assert.equal(workspacesDrained, false);
+  } finally {
+    allowWaitingIcon.resolve();
+    await Promise.allSettled([waitingIcon, archiveWaitingSpace, independentIcon, workspaceDrain]);
+    ui.writeWorkspaceLabel = workspaceLabel;
+  }
+  await Promise.all([waitingIcon, archiveWaitingSpace]);
+  const workspaceReadback = await background.workspaceData({ kind: "spaces" });
+  assert.equal(workspaceReadback?.spaces.find(space => space.id === waitingSpace)?.archived, 1);
+  assert.equal(workspaceReadback?.spaces.find(space => space.id === waitingSpace)?.icon_shape, "star");
+  assert.equal(workspacesDrained, true);
+  await Promise.all([application.writeWorkspaceDelete(waitingSpace), application.writeWorkspaceDelete(independentSpace)]);
+  console.log("PASS independent workspace labels commit while a workspace waits, and its archive stays ordered");
+
   const trashed = ids.at(-1)!;
   assert.deepEqual(await ui.batch2Write({ kind: "upsertTaskExecutionWorkspaceState", taskId: trashed,
     directoryName: trashed, state: "trashed", createdAt: at, updatedAt: at, trashedAt: at }), { ok: true });
@@ -1233,6 +1273,78 @@ try {
     await newerWorker.flushWrites();
     assert.deepEqual((await background.readDotsDelegations([raceSource]))[0]?.activity,
       { lastActivityAt: at, tool: "read", phase: "start", lastProgressAt: at + 1 });
+
+    const independentTask = "dots-reconcile-independent";
+    const independentOperation = "dots-reconcile-independent-operation";
+    const independentSource = "dots-reconcile-independent-source";
+    assert.equal((await ui.upsertTaskRecord(task(independentTask, "Independent Dots reconciliation")))?.status, "saved");
+    await oldWorker.link(independentTask, independentOperation, independentSource);
+    oldWorker.observeTool({ ...tool, taskId: independentTask, dotsOperationId: independentOperation });
+    await oldWorker.flushWrites();
+
+    const originalWrite = ui.batch4aWrite;
+    const writeToCore = originalWrite.bind(ui);
+    const firstEntered = Promise.withResolvers<void>();
+    const releaseFirst = Promise.withResolvers<void>();
+    const independentSaved = Promise.withResolvers<void>();
+    const sameTaskOrder: string[] = [];
+    ui.batch4aWrite = async <T>(command: Record<string, unknown>) => {
+      if (command.kind === "dotsDelegationObserveProgress" && command.taskId === raceTask.id) {
+        sameTaskOrder.push(String(command.identity));
+        if (command.identity === "waiting-checkpoint") {
+          firstEntered.resolve();
+          await releaseFirst.promise;
+        }
+      }
+      const result = await writeToCore(command) as T | undefined;
+      if (command.kind === "dotsDelegationObserveProgress" && command.taskId === independentTask) independentSaved.resolve();
+      return result;
+    };
+    try {
+      oldWorker.observeProgress(raceTask.id, raceOperation, "waiting-checkpoint", at + 20);
+      await Promise.race([firstEntered.promise, delay(5000, undefined, { ref: false })
+        .then(() => assert.fail("The held Dots progress write did not start"))]);
+      oldWorker.observeProgress(raceTask.id, raceOperation, "next-checkpoint", at + 21);
+      oldWorker.observeProgress(independentTask, independentOperation, "independent-checkpoint", at + 22);
+      let drained = false;
+      void oldWorker.flushWrites().then(() => { drained = true; });
+      await Promise.race([independentSaved.promise, delay(5000, undefined, { ref: false })
+        .then(() => assert.fail("An unrelated Dots progress write was waiting for another task"))]);
+      assert.deepEqual(sameTaskOrder, ["waiting-checkpoint"]);
+      assert.equal(drained, false);
+      assert.equal((await background.readDotsDelegations([independentSource]))[0]?.activity?.lastProgressAt, at + 22);
+    } finally {
+      releaseFirst.resolve();
+      await oldWorker.flushWrites();
+      ui.batch4aWrite = originalWrite;
+    }
+    assert.deepEqual(sameTaskOrder, ["waiting-checkpoint", "next-checkpoint"]);
+    assert.equal((await background.readDotsDelegations([raceSource]))[0]?.activity?.lastProgressAt, at + 21);
+
+    const firstInspect = Promise.withResolvers<void>();
+    const releaseInspect = Promise.withResolvers<void>();
+    const independentReconciled = Promise.withResolvers<void>();
+    const sweep = new DotsDelegations(undefined, async taskId => {
+      if (taskId === raceTask.id) {
+        firstInspect.resolve();
+        await releaseInspect.promise;
+        return;
+      }
+      if (taskId === independentTask) return { status: "running", text: "Independent worker reconciled", artifacts: [] };
+    }, () => { independentReconciled.resolve(); }, undefined, ui);
+    try {
+      sweep.refresh();
+      await Promise.race([firstInspect.promise, delay(5000, undefined, { ref: false })
+        .then(() => assert.fail("The held Dots reconciliation did not start"))]);
+      await Promise.race([independentReconciled.promise, delay(5000, undefined, { ref: false })
+        .then(() => assert.fail("The Dots sweep waited for an unrelated inspected task"))]);
+      assert.equal((await background.readDotsDelegations([independentSource]))[0]?.text, "Independent worker reconciled");
+    } finally {
+      releaseInspect.resolve();
+      sweep.close();
+      await sweep.drain();
+    }
+    console.log("PASS independent Dots progress and reconciliation continue while another task waits, and same-task writes stay ordered");
   } finally {
     releaseOld.resolve();
     oldWorker.close();

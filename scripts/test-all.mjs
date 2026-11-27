@@ -250,7 +250,6 @@ const DATASET_TESTS = new Set([
   "test:core-observability", // Snapshot/diagnostic producers, conversation runtime and file review through Core.
   "test:durable-provider-authority", // Real Pi Storage and model adapters with a local provider and asynchronous Core authority.
   "test:core-business-protocol", // Step 3 multi-role Core protocol, cursor events, execution bridge, and watchdog recovery.
-  "test:rust-work-scheduler", // Step 5 RC-11..13 Rust Core Work scheduler, owner fencing, conflict concurrency, and crash recovery.
   "test:rust-gadget-host", // Step 7 RC-17..19 Shared Rust HTTP static Gadget host, on-demand backends, and generation split.
   "test:pi-node-host", // Step 8 RC-20..22 Isolated Pi Node Host, crash/restart single-lease recovery, and passive Main reads.
   "test:pi-duckdb-storage-conformance", // Official Pi Storage contract over real Core IPC and process recovery.

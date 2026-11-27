@@ -2972,6 +2972,7 @@ type RuntimeScopedNoteReply =
 
 type RuntimeLibraryMetadataQuery =
   | { kind: "catalog"; spaceIds?: string[]; itemId?: string; owner?: LibraryOwnerScope }
+  | { kind: "indexCandidates"; work: "documents" | "text" | "chunks"; after?: string; limit: number }
   | { kind: "taskScope"; taskId?: string; projectId?: string; workspaceId?: string; itemIds?: string[] }
   | { kind: "trash"; spaceIds: string[] }
   | { kind: "versions"; itemId: string }

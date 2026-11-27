@@ -122,6 +122,8 @@ export class GatewayService {
   private readonly lifecycle: GatewayLifecycleManager;
   private get webhookServer() { return this.lifecycle.server; }
   private get webhookPort() { return this.lifecycle.port; }
+  private announcedWebhookServer?: NonNullable<GatewayLifecycleManager["server"]>;
+  private suspending?: Promise<void>;
   private running = false;
   private stopping = false;
   /** Invalidates startup/restore work when shutdown crosses an awaited operation. */
@@ -134,6 +136,7 @@ export class GatewayService {
   private readonly bindingSessionId = randomUUID();
   private readonly bindingGenerations = new Map<string, number>();
   private readonly deliveryJournal?: GatewayDeliveryJournal;
+  private readonly pendingHistoryWrites = new Set<Promise<void>>();
 
   private async readChannelState(channelId: string): Promise<GatewayChannelState> {
     const core = this.db.runtimeAuditReader;
@@ -647,10 +650,18 @@ export class GatewayService {
 
   async start(): Promise<void> {
     const epoch = this.lifecycleEpoch;
+    if (this.suspending) await this.suspending;
+    if (epoch !== this.lifecycleEpoch) throw new Error("Gateway 启动已取消");
     this.stopping = false;
-    if (this.webhookServer) return;
+    if (this.webhookServer) {
+      this.running = true;
+      return;
+    }
     await this.startWebhookServer();
     if (epoch !== this.lifecycleEpoch || this.stopping) throw new Error("Gateway 启动已取消");
+    const server = this.webhookServer;
+    if (!server || this.announcedWebhookServer === server) return;
+    this.announcedWebhookServer = server;
     this.running = true;
     this.emitEvent({
       channelId: "system",
@@ -705,117 +716,126 @@ export class GatewayService {
 
   /** 应用启动时恢复上次已连接的通道（配置从 DB 读回，无需重新手输） */
   async restoreChannels(channelId?: string): Promise<void> {
+    if (channelId === undefined && this.suspending) await this.suspending;
     const epoch = this.lifecycleEpoch;
     const priorOperations = new Map(this.channelOperations);
     if (channelId === undefined) {
       this.stopping = false;
       if (this.db.runtimeAuditReader?.supervised) await this.db.runtimeAuditReader.gatewayScheduler({ action: "start" });
     }
-    const current = () => epoch === this.lifecycleEpoch && !this.stopping;
-    for (let row of await this.db.readGatewayChannels(channelId)) {
+    const rows = await this.db.readGatewayChannels(channelId);
+    await Promise.all(rows.map(row => this.restoreChannel(row, priorOperations.get(row.id), epoch)));
+  }
+
+  private async restoreChannel(row: GatewayChannelRecord, priorOperation: symbol | undefined, epoch: number): Promise<void> {
+    if (!row.connected || this.stopping || epoch !== this.lifecycleEpoch) return;
+    // A user connect/disconnect/QR operation after restore began takes precedence.
+    if (this.channelOperations.get(row.id) !== priorOperation) return;
+    const adapter = this.adapters.get(row.id);
+    if (!adapter) return;
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(row.configJson || "{}") as Record<string, unknown>;
+    } catch {
+      console.warn(`[Gateway] ${row.id} 配置损坏，跳过恢复`);
+      return;
+    }
+    const operation = this.beginChannelOperation(row.id);
+    const current = () => this.ownsChannelOperation(row.id, operation, epoch);
+    try {
+      let state = await this.readChannelState(row.id);
+      if (!current() || !isDeepStrictEqual(state.channel, row)) return;
+      // Encrypt existing plaintext configuration before enabling its transport.
+      if (isSecureGatewayProvider(adapter.type) && !config.encryptedSecrets) {
+        config = sealGatewayProviderConfig(adapter.type, validateGatewayProviderConfig(adapter.type, config));
+        const sealed = { ...row, configJson: JSON.stringify(config) };
+        if (!await this.writeChannel(sealed, state)) return;
+        row = sealed;
+        state = { channel: sealed, revision: state.revision === undefined ? undefined : state.revision + 1 };
+      }
       if (!current()) return;
-      if (!row.connected) continue;
-      // A user connect/disconnect/QR operation after restore began takes precedence.
-      if (this.channelOperations.get(row.id) !== priorOperations.get(row.id)) continue;
-      const adapter = this.adapters.get(row.id);
-      if (!adapter) continue;
-      let config: Record<string, unknown> = {};
-      const operation = this.beginChannelOperation(row.id);
-      try {
-        config = JSON.parse(row.configJson || "{}") as Record<string, unknown>;
-      } catch {
-        console.warn(`[Gateway] ${row.id} 配置损坏，跳过恢复`);
-        continue;
+      const opened = adapter.type === "slack" ? openSlackGatewayConfig(config)
+        : isSecureGatewayProvider(adapter.type) ? openGatewayProviderConfig(adapter.type, config) : config;
+      this.secrets.remember(adapter.id, adapter.type, opened);
+      this.channelPolicies.delete(adapter.id);
+      const socketOnly = this.isSocketOnly(adapter, opened);
+      if (!socketOnly) await this.start();
+      if (!current()) return;
+      await adapter.connect(opened);
+      if (!current()) return;
+      const restored = this.db.runtimeAuditReader?.supervised
+        ? await this.writeChannel(row, state, { kind: "restore", accountKey: this.preparedAccountKey(adapter) })
+          && await this.channelWriteCurrent(row, state)
+        : isDeepStrictEqual((await this.db.readGatewayChannels(row.id))[0], row);
+      if (!current()) return;
+      if (!restored) {
+        await adapter.disconnect();
+        return;
       }
-      try {
-        let state = await this.readChannelState(row.id);
-        if (!this.ownsChannelOperation(row.id, operation, epoch) || !isDeepStrictEqual(state.channel, row)) continue;
-        // Encrypt existing plaintext configuration before enabling its transport.
-        if (isSecureGatewayProvider(adapter.type) && !config.encryptedSecrets) {
-          config = sealGatewayProviderConfig(adapter.type, validateGatewayProviderConfig(adapter.type, config));
-          const sealed = { ...row, configJson: JSON.stringify(config) };
-          if (!await this.writeChannel(sealed, state)) continue;
-          row = sealed;
-          state = { channel: sealed, revision: state.revision === undefined ? undefined : state.revision + 1 };
-        }
-        if (!this.ownsChannelOperation(row.id, operation, epoch)) continue;
-        const opened = adapter.type === "slack" ? openSlackGatewayConfig(config)
-          : isSecureGatewayProvider(adapter.type) ? openGatewayProviderConfig(adapter.type, config) : config;
-        this.secrets.remember(adapter.id, adapter.type, opened);
-        this.channelPolicies.delete(adapter.id);
-        if (!this.isSocketOnly(adapter, opened)) await this.start();
-        if (!current()) return;
-        if (!this.ownsChannelOperation(row.id, operation, epoch)) continue;
-        await adapter.connect(opened);
-        if (!current()) return;
-        if (!this.ownsChannelOperation(row.id, operation, epoch)) continue;
-        const restored = this.db.runtimeAuditReader?.supervised
-          ? await this.writeChannel(row, state, { kind: "restore", accountKey: this.preparedAccountKey(adapter) })
-            && await this.channelWriteCurrent(row, state)
-          : isDeepStrictEqual((await this.db.readGatewayChannels(row.id))[0], row);
-        if (!this.ownsChannelOperation(row.id, operation, epoch)) continue;
-        if (!restored) {
-          await adapter.disconnect();
-          continue;
-        }
-        if (this.isSocketOnly(adapter)) this.running = true;
-        this.channelPolicies.set(row.id, { allowUsers: toStrArray(config.allowUsers) });
-        if (adapter.type === "feishu") this.feishu.activate();
-        if (adapter.type === "wecom") this.wecom.activate();
-        if (adapter.type === "slack") this.slack.activate();
-        if (adapter.type === "discord") this.discord.activate();
-        if (adapter.type === "dingtalk") this.dingtalk.activate();
-        if (adapter.type === "qq") this.qq.activate();
-        if (adapter.type === "weixin") this.weixin.activate();
-        this.platforms.resume(adapter.id);
-        this.emitEvent({
-          channelId: row.id,
-          direction: "system",
-          text: `${adapter.name} 已恢复连接`,
-          at: Date.now(),
-        });
-      } catch (err) {
-        if (!current()) return;
-        if (!this.ownsChannelOperation(row.id, operation, epoch)) continue;
-        this.channelPolicies.delete(row.id);
-        await adapter.disconnect().catch(() => undefined);
-        if (!this.ownsChannelOperation(row.id, operation, epoch)) continue;
-        const message = this.secrets.error(err);
-        console.warn(`[Gateway] 恢复 ${row.id} 失败: ${message}`);
-        this.emitEvent({
-          channelId: row.id,
-          direction: "system",
-          text: `${adapter.name} 恢复连接失败：${message}`,
-          at: Date.now(),
-        });
-      }
+      if (socketOnly) this.running = true;
+      this.channelPolicies.set(row.id, { allowUsers: toStrArray(config.allowUsers) });
+      if (adapter.type === "feishu") this.feishu.activate();
+      if (adapter.type === "wecom") this.wecom.activate();
+      if (adapter.type === "slack") this.slack.activate();
+      if (adapter.type === "discord") this.discord.activate();
+      if (adapter.type === "dingtalk") this.dingtalk.activate();
+      if (adapter.type === "qq") this.qq.activate();
+      if (adapter.type === "weixin") this.weixin.activate();
+      this.platforms.resume(adapter.id);
+      this.emitEvent({ channelId: row.id, direction: "system", text: `${adapter.name} 已恢复连接`, at: Date.now() });
+    } catch (err) {
+      if (!current()) return;
+      this.channelPolicies.delete(row.id);
+      await adapter.disconnect().catch(() => undefined);
+      if (!current()) return;
+      const message = this.secrets.error(err);
+      console.warn(`[Gateway] 恢复 ${row.id} 失败: ${message}`);
+      this.emitEvent({ channelId: row.id, direction: "system", text: `${adapter.name} 恢复连接失败：${message}`, at: Date.now() });
     }
   }
 
   async suspend(): Promise<void> {
+    if (this.suspending) return this.suspending;
     ++this.lifecycleEpoch;
     this.stopping = true;
+    this.running = false;
     this.platforms.suspend();
-    await this.cancelBusinessRegistration("feishu");
-    await this.cancelBusinessRegistration("dingtalk");
-    await this.cancelBusinessRegistration("wecom");
-    await this.cancelQQQrLogin();
-    await this.cancelWeixinQrLogin();
-    for (const a of this.adapters.values()) {
-      // A webhook adapter can still be awaiting token verification while its
-      // public connected flag is false. Disconnect also invalidates that attempt.
-      await a.disconnect();
-    }
+    const suspension = Promise.resolve().then(() => this.suspendChannels());
+    this.suspending = suspension;
+    try { await suspension; }
+    finally { if (this.suspending === suspension) this.suspending = undefined; }
+  }
+
+  private async suspendChannels(): Promise<void> {
+    const results = await Promise.allSettled([
+      this.webhookServer ? Promise.resolve() : this.lifecycle.stop(),
+      ...[...this.adapters.values()].map(async adapter => {
+        try {
+          if (adapter.id === this.feishu.id) await this.cancelBusinessRegistration("feishu");
+          if (adapter.id === this.dingtalk.id) await this.cancelBusinessRegistration("dingtalk");
+          if (adapter.id === this.wecom.id) await this.cancelBusinessRegistration("wecom");
+          if (adapter.id === this.qq.id) await this.cancelQQQrLogin();
+          if (adapter.id === this.weixin.id) await this.cancelWeixinQrLogin();
+        } finally {
+          // Also invalidates an adapter still awaiting provider authorization.
+          await adapter.disconnect();
+        }
+      }),
+    ]);
+    const failure = results.find(result => result.status === "rejected");
+    if (failure) throw failure.reason;
   }
 
   async stop(): Promise<void> {
     await this.db.runtimeAuditReader?.gatewayScheduler?.({ action: "stop" }).catch(() => undefined);
     await this.suspend();
     await this.lifecycle.stop();
+    this.announcedWebhookServer = undefined;
     await this.dotsBindings?.flush();
     await this.deliveryJournal?.flush();
     if (this.db.fixtureConnection) await flushGatewayConversationReservations(this.db.fixtureConnection);
     await this.db.flushGatewayWrites?.();
+    await Promise.all(this.pendingHistoryWrites);
     this.running = false;
   }
 
@@ -866,6 +886,7 @@ export class GatewayService {
   }
 
   private async connectChannel(channelId: string, config: Record<string, unknown>): Promise<GatewayStatusDto> {
+    if (this.suspending) await this.suspending;
     if (channelId === this.feishu.id) await this.cancelBusinessRegistration("feishu");
     if (channelId === this.dingtalk.id) await this.cancelBusinessRegistration("dingtalk");
     if (channelId === this.wecom.id) await this.cancelBusinessRegistration("wecom");
@@ -1013,9 +1034,8 @@ export class GatewayService {
   private emitEvent(ev: GatewayEventDto): void {
     ev = { ...ev, text: this.secrets.redact(ev.text),
       ...(ev.senderName ? { senderName: this.secrets.redact(ev.senderName) } : {}) };
-    // Persisted so history survives a restart: the resident worker owns the write, and a
-    // failure is only logged — the transport never waits for it.
-    void this.db
+    // Every event writes independently. Shutdown waits for the outstanding acknowledgements.
+    const persisted = this.db
       .writeGatewayMessage({
         channelId: ev.channelId,
         chatId: ev.chatId ?? "",
@@ -1028,6 +1048,8 @@ export class GatewayService {
       .catch((err) => {
         console.warn("[Gateway] 消息落库失败", this.secrets.error(err));
       });
+    this.pendingHistoryWrites.add(persisted);
+    void persisted.then(() => this.pendingHistoryWrites.delete(persisted));
     broadcast(GatewayIpc.event, ev);
     try { this.workNotificationWake?.(); }
     catch { /* Observation failure cannot roll back a committed transport action. */ }

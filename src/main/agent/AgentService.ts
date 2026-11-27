@@ -5845,6 +5845,7 @@ export class AgentService {
         if (result.skippedSourceCount) summary.skippedSourceCount = (summary.skippedSourceCount ?? 0) + result.skippedSourceCount;
         if (result.status === "published") {
           summary.processedTurns += basis.turns.length;
+          if (result.committedCount > 0) this.indexPublishedMemorySources(basis.turns.map(turn => turn.id));
           if (result.changedScopes.includes("global")) this.notifyMemoryChanged({ scope: "global" });
           if (task.spaceId && result.changedScopes.includes("workspace")) {
             this.notifyMemoryChanged({ scope: "space", spaceId: task.spaceId });
@@ -5916,6 +5917,15 @@ export class AgentService {
       if (!settled) await turns.settleExtraction(lease, "release");
       if (!this.memoryDisposed) this.notifyMemoryChanged({ scope: "settings" });
     }
+  }
+
+  private indexPublishedMemorySources(turnIds: readonly string[]): void {
+    if (this.memoryDisposed) return;
+    void Promise.all(turnIds.map(id => this.memoryService.readMemoriesForTurn(id))).then(records => {
+      if (this.memoryDisposed) return;
+      const revisions = new Map(records.flat().map(record => [record.id, record]));
+      for (const record of revisions.values()) this.memoryService.indexSavedMemory(record);
+    }).catch(error => console.warn("[AgentService] published memory indexing failed", error));
   }
 
   private queueFixtureMemoryExtraction(

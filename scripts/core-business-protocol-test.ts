@@ -652,11 +652,90 @@ async function verifyDurableExecutionProgress(): Promise<void> {
   }
 }
 
+async function verifyPiControlsWhenTurnSlotsAreFull(): Promise<void> {
+  const dir = mkdtempSync(join(sandbox, "pi-control-capacity-"));
+  const dbPath = join(dir, "app.db");
+  writeFileSync(dbPath, "");
+  let ui: CoreBusinessClient | undefined;
+  const held = new Map<string, () => void>();
+  const bridge = new ExecutionHostBridge(executable!, dbPath, dir, {
+    async start({ execution }) {
+      if (execution.executionId.startsWith("held-")) await new Promise<void>(resolve => held.set(execution.executionId, resolve));
+      return { status: "completed", result: { executionId: execution.executionId } };
+    },
+  });
+  try {
+    ui = await CoreBusinessClient.connect(executable!, dbPath, { dataDirectory: dir, role: "ui", clientId: "pi-control-capacity" });
+    await bridge.connect();
+    const submit = (executionId: string, kind: string, payload: Record<string, unknown>, taskId = `task-${executionId}`) =>
+      ui!.submitExecution({ executionId, idempotencyKey: executionId, taskId, kind, payload });
+    const state = async (executionId: string) => (await ui!.executionStatus(executionId)).execution;
+    const expectCompleted = (id: string) => waitUntil(async () => (await state(id))?.status === "completed", id);
+    const turns = Array.from({ length: 8 }, (_, index) => `held-turn-${index}`);
+    await Promise.all(turns.map(id => submit(id, "pi_turn", { resourceKey: `workspace-${id}` })));
+    await waitUntil(() => turns.every(id => held.has(id)), "eight independent Pi turns occupy the default execution slots");
+
+    for (const [action, payload] of [
+      ["abort", {}], ["findSubmission", {}], ["submissionStatus", { wait: false }], ["authRespond", {}], ["authCancel", {}],
+    ] as const) {
+      const id = `control-${action}`;
+      assert.equal((await submit(id, "pi_control", { controlAction: action, ...payload })).status, "ok");
+      await expectCompleted(id);
+    }
+    for (const [id, kind, payload] of [
+      ["result-wait", "pi_control", { controlAction: "submissionStatus", wait: true }],
+      ["malformed-wait", "pi_control", { controlAction: "submissionStatus", wait: "true" }],
+      ["title", "pi_control", { controlAction: "generateTaskTitle" }],
+      ["login", "pi_control", { controlAction: "login" }],
+      ["compact", "pi_compact", {}],
+      ["ninth-turn", "pi_turn", {}],
+    ] as const) {
+      const result = await submit(id, kind, payload);
+      assert.equal(result.execution?.status, "queued", id);
+      assert.equal((await state(id))?.waitReason, "slots_exhausted", id);
+    }
+    await submit("locked-control", "pi_control", { controlAction: "findSubmission", resourceKey: "workspace-held-turn-0" });
+    assert.match((await state("locked-control"))?.waitReason ?? "", /^conflict:resource:/);
+    await submit("same-session-turn", "pi_turn", {}, "task-held-turn-0");
+    assert.match((await state("same-session-turn"))?.waitReason ?? "", /^conflict:session:/);
+
+    const controls = Array.from({ length: 5 }, (_, index) => `held-control-${index}`);
+    for (const id of controls) await submit(id, "pi_control", { controlAction: "findSubmission" });
+    await waitUntil(() => controls.slice(0, 4).every(id => held.has(id)), "four independent Pi controls start even with eight active turns");
+    assert.equal((await state(controls[4]))?.waitReason, "pi_control_slots_exhausted");
+    held.get(controls[0])!();
+    await waitUntil(() => held.has(controls[4]), "the next control starts after only a control slot frees up");
+    for (const id of controls.slice(1)) held.get(id)!();
+    await Promise.all(controls.map(expectCompleted));
+
+    let saturated = false;
+    for (let start = 0; start < 288 && !saturated; start += 16) {
+      const replies = await Promise.all(Array.from({ length: 16 }, (_, index) =>
+        submit(`backlog-${start + index}`, "pi_turn", {}, "task-held-turn-0")));
+      saturated = replies.some(reply => reply.code === "OVERLOADED");
+    }
+    assert(saturated, "a full ordinary backlog is still bounded");
+    assert.equal((await submit("reserved-auth-cancel", "pi_control", { controlAction: "authCancel" })).status, "ok");
+    await expectCompleted("reserved-auth-cancel");
+    const reserved = await Promise.all(Array.from({ length: 20 }, (_, index) =>
+      submit(`held-reserve-${index}`, "pi_control", { controlAction: "findSubmission" })));
+    assert(reserved.some(reply => reply.status === "ok"));
+    assert(reserved.some(reply => reply.code === "OVERLOADED"), "the independent control admission reserve is bounded");
+    console.log("PASS Pi controls run through independent bounded slots and admission reserve while long turns remain active");
+  } finally {
+    await bridge.close().catch(() => undefined);
+    for (const release of held.values()) release();
+    await ui?.close().catch(() => undefined);
+    await shutdownCoreWorker(dir, dbPath).catch(() => undefined);
+  }
+}
+
 try {
   await verifyMultiRoleIsolationAndDomainCommands();
   await verifyEventSnapshotCursorAndGapResync();
   await verifyExecutionBridgeAndWatchdogRecovery();
   await verifyDurableExecutionProgress();
+  await verifyPiControlsWhenTurnSlotsAreFull();
 } finally {
   for (const pid of trackedPids) {
     try { process.kill(pid, "SIGKILL"); } catch { /* exited */ }

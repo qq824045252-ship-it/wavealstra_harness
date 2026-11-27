@@ -5,6 +5,7 @@ import type Database from "better-sqlite3";
 import type { AgentUiPatch, AgentPromptRequest } from "../../shared/agent-ipc";
 import type { DotsAssistantReply, DotsDelegation, DotsDependencyWait, DotsReplyOrigin, DotsTaskOutput, DotsWorkerObservation } from "../../shared/dots";
 import type { ReplyCitation } from "../../shared/chat-reply-content";
+import { TaskWriteQueue } from "../db/TaskWriteQueue";
 import { RuntimeAuditUnknownOperationError, type RuntimeAuditReader, type RuntimeDotsActiveDelegation } from "../platform/runtime-audit";
 import { DOTS_TASK_ID } from "../../shared/dots";
 import { DotsReplyOutbox, type AppendDotsReply, type DotsFollowup } from "./DotsReplyOutbox";
@@ -56,7 +57,7 @@ export class DotsDelegations {
   private readonly recoveryFlights = new Set<Promise<void>>();
   private readonly liveOutput = new Map<string, DotsTaskOutput & { generationId: number }>();
   private liveNotify?: ReturnType<typeof setTimeout>;
-  private writeTail = Promise.resolve();
+  private readonly writes = new TaskWriteQueue();
   private pendingWriteCount = 0;
   private readonly pendingToolReceiptKeys = new Set<string>();
   private readonly pendingProgressKeys = new Set<string>();
@@ -136,15 +137,15 @@ export class DotsDelegations {
   }
 
   async flushWrites(): Promise<void> {
-    await this.writeTail;
+    await this.writes.flush();
     await this.fixtureOutbox?.flushWrites();
   }
 
-  private enqueueWrite(request: Record<string, unknown>, label: string): void {
+  private enqueueWrite(request: Record<string, unknown>, label: string, taskId?: string): void {
     const batch4a = this.native?.batch4aWrite;
     if (!batch4a) throw new Error(`只读模式下缺少 Dots 委派 Rust 写入通道: ${label}`);
     this.pendingWriteCount += 1;
-    this.writeTail = this.writeTail.then(() => batch4a.call(this.native, request)).then(() => undefined, error => {
+    const write = () => batch4a.call(this.native, request).catch(error => {
       console.warn(`[DotsDelegations] ${label} failed`, error);
     }).finally(() => {
       this.pendingWriteCount -= 1;
@@ -157,6 +158,8 @@ export class DotsDelegations {
         this.pendingDepWaits.clear();
       }
     });
+    if (taskId) void this.writes.run([taskId], write);
+    else void this.writes.runExclusive(write);
   }
 
   connect(followup: DotsFollowup, append: AppendDotsReply, allowed?: (taskId: string) => boolean,
@@ -278,7 +281,7 @@ export class DotsDelegations {
     if (this.disposed || event.sourceKind !== "main" || !event.taskId || !event.dotsOperationId) return;
     if (this.core) {
       const observed = { ...event, taskId: event.taskId, operationId: event.dotsOperationId };
-      this.writeTail = this.writeTail.then(() => this.observeCoreTool(observed)).catch(error => {
+      void this.writes.run([observed.taskId], () => this.observeCoreTool(observed)).catch(error => {
         console.warn("[DotsDelegations] 记录工具状态失败", error);
       });
       return;
@@ -306,7 +309,7 @@ export class DotsDelegations {
         at: event.at,
         tool: event.name,
         nextAt,
-      }, "observeTool");
+      }, "observeTool", row.task_id);
       changed = true;
     } else {
       changed = this.db.transaction(() => {
@@ -328,7 +331,7 @@ export class DotsDelegations {
   observeProgress(taskId: string, operationId: string, identity: string, at: number): void {
     if (this.disposed) return;
     if (this.core) {
-      this.writeTail = this.writeTail.then(async () => {
+      void this.writes.run([taskId], async () => {
         const reply = await this.writeCore<{ changed: boolean }>({ kind: "dotsDelegationObserveProgress", taskId, operationId, identity, at });
         if (reply.changed && !this.disposed) this.notify();
       }).catch(error => console.warn("[DotsDelegations] 记录任务进展失败", error));
@@ -345,7 +348,7 @@ export class DotsDelegations {
       if (this.pendingProgressKeys.has(progressKey) || this.db.prepare("SELECT 1 FROM dots_verified_progress WHERE operation_id=? AND identity=?")
         .get(operationId, identity)) return;
       this.pendingProgressKeys.add(progressKey);
-      this.enqueueWrite({ kind: "dotsDelegationObserveProgress", taskId, operationId, identity, at }, "observeProgress");
+      this.enqueueWrite({ kind: "dotsDelegationObserveProgress", taskId, operationId, identity, at }, "observeProgress", taskId);
       this.notify();
       return;
     }
@@ -518,7 +521,7 @@ export class DotsDelegations {
         supersedes,
         requestJson,
         goalId,
-      }, "link");
+      }, "link", taskId);
       this.outbox.track(operationId, request);
       if (inserted) { this.notify(); this.refreshDependentTasks(operationId); }
       return;
@@ -693,7 +696,7 @@ export class DotsDelegations {
           const cur = this.pendingDelegations.get(row.operation_id) ?? row;
           if (cur.text !== message) {
             this.pendingDelegations.set(row.operation_id, { ...cur, text: message, updated_at: now });
-            this.enqueueWrite({ kind: "dotsDelegationUpdateText", seq: row.seq, text: message, updatedAt: now }, "recoverText");
+            this.enqueueWrite({ kind: "dotsDelegationUpdateText", seq: row.seq, text: message, updatedAt: now }, "recoverText", taskId);
             this.notify();
             console.warn("[Dots] 暂时无法恢复原委派", taskId, error);
           }
@@ -720,8 +723,9 @@ export class DotsDelegations {
   }
 
   failed(taskId: string, operationId: string, reason: string): void {
+    if (this.disposed) return;
     if (this.core) {
-      this.writeTail = this.writeTail.then(async () => {
+      void this.writes.run([taskId], async () => {
         for await (const row of this.core!.readActiveDotsDelegations(taskId)) {
           if (row.id !== operationId || row.status !== "pending") continue;
           const written = await this.reconcileCoreResult(row, { status: "failed", text: reason, artifacts: [] });
@@ -757,7 +761,7 @@ export class DotsDelegations {
         reason,
         updatedAt: now,
         observations: [obs],
-      }, "failed");
+      }, "failed", taskId);
       this.outbox.observe(job);
       this.notify();
       this.refresh(taskId);
@@ -862,6 +866,16 @@ export class DotsDelegations {
     const key = taskId ?? DOTS_TASK_ID;
     if (this.flights.has(key)) { this.dirty.add(key); return; }
     const flight = (async () => {
+      if (!taskId) {
+        const tasks = new Set<string>();
+        for await (const row of this.core!.readActiveDotsDelegations()) {
+          if (this.disposed) return;
+          if (tasks.has(row.taskId)) continue;
+          tasks.add(row.taskId);
+          this.refresh(row.taskId);
+        }
+        return;
+      }
       for await (const row of this.core!.readActiveDotsDelegations(taskId)) {
         if (this.disposed) return;
         if (row.status === "blocked" && row.waitingOnPrerequisite) continue;
@@ -935,7 +949,7 @@ export class DotsDelegations {
             reason: "原任务已删除",
             updatedAt: now,
             observations: observations.map(({ job: _job, ...obs }) => obs),
-          }, "reconcileTaskDeleted");
+           }, "reconcileTaskDeleted", taskId);
           for (const item of observations) this.outbox.observe(item.job);
         } else {
           this.db.transaction(() => {

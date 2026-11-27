@@ -18,10 +18,15 @@ import { resolveDotsPreferences, type DotsSettings } from "../../shared/dots-set
 import type { AppDatabase } from "../db/AppDatabase";
 import type { CronGeneratedTask, CronRunWrite } from "../db/CronRunPersistence";
 import { encodeCronPlan, type CronPlanGuard, type CronPlanProvenance } from "../db/CronPlanPersistence";
+import { TaskWriteQueue } from "../db/TaskWriteQueue";
 import { DotsIntentChanged } from "../dots/DotsNativeIntent";
 import { computeNextRunAt, validateSchedule, withinEffectiveRange, scheduleTimer, type SegmentedTimer } from "./CronSchedule";
 
 type CronJobState = NonNullable<Awaited<ReturnType<AppDatabase["readCronJobState"]>>>;
+
+function taskPlanId(operation?: string): string {
+  return operation ? `cron-request-${operation}` : randomUUID();
+}
 
 const storedCronInput = z.object({
   taskId: z.string().min(1), text: z.string(), userMessageId: z.string().min(1), assistantMessageId: z.string().min(1),
@@ -103,7 +108,7 @@ export class CronService {
   private readonly timers = new Map<string, SegmentedTimer>();
   private readonly runningJobs = new Set<string>();
   private readonly pendingRunWrites = new Set<Promise<boolean>>();
-  private planWrites: Promise<void> = Promise.resolve();
+  private readonly planWrites = new TaskWriteQueue();
   private coreConfigWrites: Promise<void> = Promise.resolve();
   private readonly revisions = new Map<string, number>();
   private stopped = false;
@@ -282,21 +287,20 @@ export class CronService {
   }
 
   async flushWrites(): Promise<void> {
-    await this.planWrites;
+    await this.planWrites.flush();
     await Promise.allSettled(this.pendingRunWrites);
   }
 
-  private queuePlanWrite<T>(write: () => Promise<T>): Promise<T> {
-    const result = this.planWrites.then(() => {
+  private queuePlanWrite<T>(jobId: string | null, write: () => T | Promise<T>): Promise<T> {
+    const run = () => {
       if (this.stopped) throw new Error("自动化调度已停止");
       return write();
-    });
-    this.planWrites = result.then(() => undefined, () => undefined);
-    return result;
+    };
+    return jobId === null ? this.planWrites.runExclusive(run) : this.planWrites.run([jobId], run);
   }
 
   withPlanMaintenance<T>(maintain: () => T | Promise<T>): Promise<T> {
-    return this.queuePlanWrite(async () => maintain());
+    return this.queuePlanWrite(null, maintain);
   }
 
   private async writeRun(mutation: CronRunWrite): Promise<boolean> {
@@ -403,7 +407,6 @@ export class CronService {
     return this.dotsScheduleVisible(job.id) ? resolveDotsPreferences(this.agent.getAppSettings().dotsSettings).followupMode : "paused";
   }
 
-  private pendingHoldWriteCount = 0;
   private readonly pendingScheduleHolds = new Map<string, Set<string>>();
 
   private get requiresRustWrites(): boolean {
@@ -433,20 +436,15 @@ export class CronService {
     const reader = this.db.runtimeAuditReader;
     if (!reader) throw new Error("只读模式下缺少 Cron Dots 暂停状态写入通道");
     this.pendingScheduleHolds.set(jobId, holders);
-    this.pendingHoldWriteCount += 1;
     const now = Date.now();
-    this.planWrites = this.planWrites.then(() => reader.batch4aWrite({
-      kind: "cronHoldDotsSchedule",
-      id: jobId,
-      holder,
-      pause,
-      now,
-      setEnabled: null,
-    })).then(() => undefined, error => {
-      console.warn("[CronService] holdDotsSchedule write failed", error);
-    }).finally(() => {
-      this.pendingHoldWriteCount -= 1;
-      if (this.pendingHoldWriteCount === 0) this.pendingScheduleHolds.clear();
+    void this.planWrites.run([jobId], async () => {
+      try {
+        await reader.batch4aWrite({ kind: "cronHoldDotsSchedule", id: jobId, holder, pause, now, setEnabled: null });
+      } catch (error) {
+        console.warn("[CronService] holdDotsSchedule write failed", error);
+      } finally {
+        if (this.pendingScheduleHolds.get(jobId) === holders) this.pendingScheduleHolds.delete(jobId);
+      }
     });
   }
 
@@ -598,8 +596,7 @@ export class CronService {
     };
   }
 
-  private prepareTaskCreation(taskId: string, cwd: string, input: TaskPlanInput, operation?: string, provenance?: CronPlanProvenance) {
-    const id = operation ? "cron-request-" + operation : randomUUID();
+  private prepareTaskCreation(taskId: string, cwd: string, input: TaskPlanInput, id: string, operation?: string, provenance?: CronPlanProvenance) {
     const existing = operation ? this.db.getCronJob(id) : undefined;
     if (existing) {
       if (existing.sourceTaskId !== taskId) throw new Error("计划不属于当前任务");
@@ -629,7 +626,7 @@ export class CronService {
   }
 
   createForTask(taskId: string, cwd: string, input: TaskPlanInput, operation?: string, provenance?: CronPlanProvenance): CronJobDto {
-    const prepared = this.prepareTaskCreation(taskId, cwd, input, operation, provenance);
+    const prepared = this.prepareTaskCreation(taskId, cwd, input, taskPlanId(operation), operation, provenance);
     if (prepared.existing) return this.withNext(prepared.job);
     const create = () => this.upsert(prepared.job);
     if (taskId !== DOTS_TASK_ID || !provenance) return create();
@@ -659,10 +656,11 @@ export class CronService {
   }
 
   createTaskPlan(taskId: string, cwd: string, input: TaskPlanInput, operation?: string, provenance?: CronPlanProvenance): Promise<CronJobDto> {
-    return this.queuePlanWrite(async () => {
+    const id = taskPlanId(operation);
+    return this.queuePlanWrite(id, async () => {
       const { job, existing } = this.coreOwnsScheduling
-        ? await this.prepareCoreTaskCreation(taskId, cwd, input, operation, provenance)
-        : this.prepareTaskCreation(taskId, cwd, input, operation, provenance);
+        ? await this.prepareCoreTaskCreation(taskId, cwd, input, id, operation, provenance)
+        : this.prepareTaskCreation(taskId, cwd, input, id, operation, provenance);
       if (existing) return this.withNext(job);
       const next = this.preparePlan(job);
       const origin = taskId === DOTS_TASK_ID ? provenance : undefined;
@@ -674,8 +672,7 @@ export class CronService {
     });
   }
 
-  private async prepareCoreTaskCreation(taskId: string, cwd: string, input: TaskPlanInput, operation?: string, provenance?: CronPlanProvenance) {
-    const id = operation ? "cron-request-" + operation : randomUUID();
+  private async prepareCoreTaskCreation(taskId: string, cwd: string, input: TaskPlanInput, id: string, operation?: string, provenance?: CronPlanProvenance) {
     const prior = operation ? await this.db.readCronJobState(id) : undefined;
     const spaces = taskId === DOTS_TASK_ID ? resolveDotsPreferences(this.agent.getAppSettings().dotsSettings).spaceIds : null;
     if (prior) {
@@ -711,7 +708,7 @@ export class CronService {
   }
 
   updateTaskPlan(taskId: string, id: string, patch: TaskPlanPatch): Promise<CronJobDto> {
-    return this.queuePlanWrite(async () => {
+    return this.queuePlanWrite(id, async () => {
       const state = await this.db.readCronJobState(id);
       const { next, changed, preserveTimer } = this.prepareTaskUpdate(taskId, state?.job, patch);
       if (state && taskId === DOTS_TASK_ID) this.assertDotsPlanVisible(state);
@@ -736,7 +733,7 @@ export class CronService {
   }
 
   changeTaskPlan(taskId: string, id: string, action: "pause" | "resume" | "cancel"): Promise<void> {
-    return this.queuePlanWrite(async () => {
+    return this.queuePlanWrite(id, async () => {
       const state = await this.db.readCronJobState(id);
       if (!state || state.job.sourceTaskId !== taskId) throw new Error("计划不属于当前任务");
       if (action !== "cancel") return this.setPlanEnabled(state, action === "resume");
@@ -759,7 +756,7 @@ export class CronService {
   }
 
   saveUserPlan(job: CronJobDto): Promise<CronJobDto> {
-    return this.queuePlanWrite(async () => this.savePlan(job, false, await this.db.readCronJobState(job.id)));
+    return this.queuePlanWrite(job.id, async () => this.savePlan(job, false, await this.db.readCronJobState(job.id)));
   }
 
   private async savePlan(job: CronJobDto, preserveTimer: boolean, state?: CronJobState): Promise<CronJobDto> {
@@ -859,7 +856,7 @@ export class CronService {
   }
 
   setUserPlanEnabled(id: string, enabled: boolean): Promise<void> {
-    return this.queuePlanWrite(async () => {
+    return this.queuePlanWrite(id, async () => {
       const state = await this.db.readCronJobState(id);
       if (state) await this.setPlanEnabled(state, enabled);
     });
@@ -920,7 +917,7 @@ export class CronService {
   }
 
   deleteUserPlan(id: string): Promise<void> {
-    return this.queuePlanWrite(async () => {
+    return this.queuePlanWrite(id, async () => {
       const expected = (await this.db.readCronJobState(id))?.expectedJob ?? null;
       if (!await this.db.writeCronPlan({ kind: "remove", id, expected })) {
         throw new Error("自动化计划已变化，请刷新后删除");

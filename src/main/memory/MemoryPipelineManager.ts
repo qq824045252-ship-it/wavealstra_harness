@@ -18,7 +18,8 @@ export interface MemoryCaptureDecision {
  */
 export class MemoryPipelineManager {
   readonly turns: MemoryTurnRepository;
-  private captureWrites: Promise<unknown> = Promise.resolve();
+  private readonly taskCaptures = new Map<string, Promise<void>>();
+  private captureFence: Promise<void> = Promise.resolve();
   private capturesClosed = false;
 
   constructor(private readonly db: AppDatabase) {
@@ -27,14 +28,14 @@ export class MemoryPipelineManager {
 
   captureCompleted(input: CaptureMemoryTurnInput): Promise<boolean> {
     const turn = prepareMemoryTurn(input);
-    return this.withCaptureWrites(async () => {
+    return this.captureTask(input.taskId, async () => {
       if (this.capturesClosed) return false;
       return (await this.storeCapture({ kind: "turn", turn })) > 0;
     });
   }
 
   projectCompleted(taskId: string, turns: readonly DurableMemoryTurn[], enabled: () => boolean): Promise<boolean> {
-    return this.withCaptureWrites(async () => {
+    return this.captureTask(taskId, async () => {
       if (this.capturesClosed || !turns.length) return false;
       const capture = enabled();
       const entries = turns.map(turn => ({
@@ -59,14 +60,24 @@ export class MemoryPipelineManager {
     return recovered;
   }
 
+  private captureTask<T>(taskId: string, operation: () => Promise<T>): Promise<T> {
+    const result = Promise.all([this.captureFence, this.taskCaptures.get(taskId)]).then(operation);
+    const settled = result.then(() => undefined, () => undefined).finally(() => {
+      if (this.taskCaptures.get(taskId) === settled) this.taskCaptures.delete(taskId);
+    });
+    this.taskCaptures.set(taskId, settled);
+    return result;
+  }
+
+  /** Erasure and shutdown fence already accepted captures across tasks. */
   withCaptureWrites<T>(operation: () => T | Promise<T>): Promise<T> {
-    const result = this.captureWrites.then(operation);
-    this.captureWrites = result.then(() => undefined, () => undefined);
+    const result = Promise.all([this.captureFence, ...this.taskCaptures.values()]).then(operation);
+    this.captureFence = result.then(() => undefined, () => undefined);
     return result;
   }
 
   async flushCaptureWrites(): Promise<void> {
-    await this.captureWrites;
+    await Promise.all([this.captureFence, ...this.taskCaptures.values()]);
     await this.turns.flush();
   }
 

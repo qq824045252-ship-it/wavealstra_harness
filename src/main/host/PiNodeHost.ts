@@ -277,7 +277,6 @@ export class PiNodeHost {
         },
       },
     });
-    await gadgetService.recoverStorage();
     this.gadgetService = gadgetService;
     agent.setGadgetDomain(gadgetService);
 
@@ -554,9 +553,19 @@ export class PiNodeHost {
     this.heartbeatTimer.unref?.();
 
     // Phase 2: controlled recovery under bootstrapping fence before admitting new work.
-    await agent.init();
-    const recoveredTaskIds = await agent.resumePersistedTasks();
-    await dotsProactive.restoreNotifications(key => dotsDiscovery.retainedLinks(key));
+    const recoverPersistedTasks = async () => {
+      const [initialized, reconciled] = await Promise.allSettled([agent.init(), gadgetService.recoverStorage()]);
+      if (initialized.status === "rejected") throw initialized.reason;
+      if (reconciled.status === "rejected") throw reconciled.reason;
+      return agent.resumePersistedTasks();
+    };
+    const [tasks, notices] = await Promise.allSettled([
+      recoverPersistedTasks(),
+      dotsProactive.restoreNotifications(key => dotsDiscovery.retainedLinks(key)),
+    ]);
+    if (tasks.status === "rejected") throw tasks.reason;
+    if (notices.status === "rejected") throw notices.reason;
+    const recoveredTaskIds = tasks.value;
     dotsProactive.start();
 
     // 5. Background maintenance services owned strictly under Core's maintenance_control dispatches.
@@ -1051,6 +1060,7 @@ export class PiNodeHost {
     await this.dotsProactiveDelivery?.close().catch(() => undefined);
     await this.dotsActions?.closeFileWatches().catch(() => undefined);
     try { this.dotsDelegations?.close(); } catch { /* ignore */ }
+    await this.dotsDelegations?.flushWrites().catch(() => undefined);
     this.cronService?.stop();
     await this.gadgetRuntime?.disposeAll().catch(() => undefined);
     this.terminalHost?.dispose();

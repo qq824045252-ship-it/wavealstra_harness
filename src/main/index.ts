@@ -4073,26 +4073,22 @@ app.whenReady().then(async () => {
   void gatewayService.restoreChannels().catch(error => {
     console.warn("[Gateway] 渠道恢复失败", error);
   }).finally(() => startupMark("gatewayRestored"));
-  if (memoryGatewayController) {
-    try {
-      const status = await memoryGatewayController.start();
+  await Promise.all([
+    memoryGatewayController?.start().then(status => {
       if (status.running) {
         console.log(`[MemoryGateway] listening ${status.mcpUrl} (${status.writeEnabled ? "read-write" : "read-only"})`);
       }
       startupMark("memoryGatewayReady");
-    } catch (error) {
+    }).catch(error => {
       console.warn(`[MemoryGateway] 启动失败，MyBuddy 将继续运行：${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  if (remoteAccessController) {
-    try {
-      const status = await remoteAccessController.start();
+    }),
+    remoteAccessController?.start().then(status => {
       if (status.running) console.log(`[RemoteAccess] listening http://127.0.0.1:${status.port}`);
       startupMark("remoteAccessReady");
-    } catch (error) {
+    }).catch(error => {
       console.warn(`[RemoteAccess] 启动失败，MyBuddy 将继续运行：${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
+    }),
+  ]);
 
   app.on("activate", () => {
     showClientInterface();

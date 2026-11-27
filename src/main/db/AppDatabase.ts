@@ -341,7 +341,8 @@ export class AppDatabase {
   readonly runtimeAuditReader?: RuntimeAuditReader;
   private closed = false;
   private readonly taskWrites = new TaskWriteQueue();
-  private workspaceWriteTail: Promise<void> = Promise.resolve();
+  // Tree changes coordinate across workspaces. Icons and explicit archive flags affect one workspace.
+  private readonly workspaceWrites = new TaskWriteQueue();
   private cronWriteTail: Promise<void> = Promise.resolve();
   private gatewayWriteTail: Promise<void> = Promise.resolve();
   private readonly pendingCronJobs = new Map<string, CronJobDto | null>();
@@ -1539,7 +1540,7 @@ export class AppDatabase {
   /** 删除 workspace 时清理 Space + Collection 两类 binding（无 FK cascade）。 */
   deleteWorkspaceLibraryLinks(workspaceId: string): void {
     if (this.requiresRustWrites) {
-      void this.writeWorkspaceChange(async () => {
+      void this.workspaceWrites.runExclusive(async () => {
         const reader = this.requireBatch2Writer("工作空间资料库绑定清理");
         const result = await reader.batch3Write({ kind: "libraryDeleteBindingLinks", linkKind: "workspace", id: workspaceId });
         if (result === undefined) throw new Error("工作空间资料库绑定清理：Rust 写入未收到确认");
@@ -1553,7 +1554,7 @@ export class AppDatabase {
   /** 删除 library space 时清理其全部 Space + Collection binding。 */
   deleteLibrarySpaceLinks(librarySpaceId: string): void {
     if (this.requiresRustWrites) {
-      void this.writeWorkspaceChange(async () => {
+      void this.workspaceWrites.runExclusive(async () => {
         const reader = this.requireBatch2Writer("资料库绑定清理");
         const result = await reader.batch3Write({ kind: "libraryDeleteBindingLinks", linkKind: "space", id: librarySpaceId });
         if (result === undefined) throw new Error("资料库绑定清理：Rust 写入未收到确认");
@@ -1567,7 +1568,7 @@ export class AppDatabase {
   /** 删除资料库文件夹时清理该文件夹的 Workspace binding。 */
   deleteLibraryCollectionLinks(collectionId: string): void {
     if (this.requiresRustWrites) {
-      void this.writeWorkspaceChange(async () => {
+      void this.workspaceWrites.runExclusive(async () => {
         const reader = this.requireBatch2Writer("资料库文件夹绑定清理");
         const result = await reader.batch3Write({ kind: "libraryDeleteBindingLinks", linkKind: "collection", id: collectionId });
         if (result === undefined) throw new Error("资料库文件夹绑定清理：Rust 写入未收到确认");
@@ -2705,7 +2706,7 @@ export class AppDatabase {
   }
 
   writeWorkspaceUpsert(space: SpaceDto): Promise<SpaceDto> {
-    return this.writeWorkspaceChange(async () => {
+    return this.workspaceWrites.runExclusive(async () => {
       if (this.requiresRustWrites) {
         if (space.sortOrder != null && !Number.isFinite(space.sortOrder)) throw new Error("空间排序无效");
         const reader = this.requireBatch2Writer("工作空间保存");
@@ -2774,7 +2775,7 @@ export class AppDatabase {
   }
 
   writeWorkspaceRename(id: string, name: string): Promise<void> {
-    return this.writeWorkspaceChange(async () => {
+    return this.workspaceWrites.runExclusive(async () => {
       if (!await this.writeWorkspaceLabel({ kind: "rename", id, name, at: Date.now() })) this.renameSpace(id, name);
     });
   }
@@ -2793,7 +2794,7 @@ export class AppDatabase {
   }
 
   writeWorkspaceIcon(id: string, icon: WorkspaceIconAppearance | null): Promise<WorkspaceIconAppearance | null> {
-    return this.writeWorkspaceChange(async () => {
+    return this.workspaceWrites.run([id], async () => {
       const normalized = normalizeWorkspaceIcon(icon);
       if (await this.writeWorkspaceLabel({ kind: "icon", id, icon: normalized })) return normalized;
       return this.setWorkspaceIcon(id, normalized);
@@ -2913,7 +2914,7 @@ export class AppDatabase {
   }
 
   private writeWorkspaceMove(movement: import("../platform/runtime-audit").RuntimeWorkspaceMove, writeOnHost: () => void): Promise<void> {
-    return this.writeWorkspaceChange(async () => {
+    return this.workspaceWrites.runExclusive(async () => {
       const { targetParentId, targetIndex, targetSortOrder } = movement;
       const badArgs = targetParentId === "" ||
         (targetIndex !== undefined && !Number.isSafeInteger(targetIndex)) ||
@@ -2931,12 +2932,6 @@ export class AppDatabase {
       if (result?.status === "rejected") throw new Error(result.message);
       throw new Error("未收到移动确认，请刷新后查看位置");
     });
-  }
-
-  private writeWorkspaceChange<T>(write: () => Promise<T>): Promise<T> {
-    const operation = this.workspaceWriteTail.then(write);
-    this.workspaceWriteTail = operation.then(() => undefined, () => undefined);
-    return operation;
   }
 
   /**
@@ -4346,7 +4341,7 @@ export class AppDatabase {
   async flushPersistenceWrites(): Promise<void> {
     await Promise.all([
       this.taskWrites.flush(),
-      this.workspaceWriteTail,
+      this.workspaceWrites.flush(),
       this.cronWriteTail,
       this.gatewayWriteTail,
       this.sqlite ? flushWorkDomainWrites(this.sqlite) : undefined,
@@ -4431,7 +4426,7 @@ export class AppDatabase {
   }
 
   writeSpaceArchive(id: string, archived: boolean): Promise<void> {
-    return this.writeWorkspaceChange(async () => {
+    return this.workspaceWrites.run([id], async () => {
       if (!this.runtimeAuditReader) {
         if (this.requiresRustWrites) throw new Error("空间归档：Rust 写入核心未就绪");
         return this.archiveSpace(id, archived);
@@ -4548,7 +4543,7 @@ export class AppDatabase {
   }
 
   writeWorkspaceDelete(id: string, archiveRoots?: ReadonlySet<string>): Promise<void> {
-    return this.writeWorkspaceChange(async () => {
+    return this.workspaceWrites.runExclusive(async () => {
       if (!this.runtimeAuditReader) {
         if (this.requiresRustWrites) throw new Error("空间删除：Rust 写入核心未就绪");
         return this.deleteSpace(id, { archiveRoots });

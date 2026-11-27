@@ -16,6 +16,7 @@ use std::{
 const DEFAULT_RETENTION_LIMIT: i64 = 4096;
 const DEFAULT_REPLAY_LIMIT: usize = 256;
 const MAX_EXECUTION_QUEUE: i64 = 256;
+const PI_CONTROL_QUEUE_RESERVE: i64 = 16;
 const MAX_EXECUTION_SLOTS: i64 = 8;
 
 static EVENT_ID_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -57,6 +58,12 @@ impl ClientContext {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ExecutionPromotionCursor {
+    pub after: (i64, String),
+    pub through: (i64, String),
+}
+
 pub struct ExecutorTracker {
     online: std::sync::atomic::AtomicBool,
     ready: std::sync::atomic::AtomicBool,
@@ -66,6 +73,7 @@ pub struct ExecutorTracker {
     slots_limit: AtomicI64,
     capabilities: std::sync::Mutex<Option<HashSet<String>>>,
     active_executions: std::sync::Mutex<HashMap<String, (i64, u64, String)>>,
+    execution_promotion_cursor: std::sync::Mutex<Option<ExecutionPromotionCursor>>,
 }
 
 impl Default for ExecutorTracker {
@@ -85,6 +93,23 @@ impl ExecutorTracker {
             slots_limit: AtomicI64::new(MAX_EXECUTION_SLOTS),
             capabilities: std::sync::Mutex::new(None),
             active_executions: std::sync::Mutex::new(HashMap::new()),
+            execution_promotion_cursor: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn execution_promotion_cursor(&self) -> Option<ExecutionPromotionCursor> {
+        self.execution_promotion_cursor.lock().ok()?.clone()
+    }
+
+    pub(crate) fn advance_execution_promotion_cursor(
+        &self,
+        previous: Option<&ExecutionPromotionCursor>,
+        next: Option<ExecutionPromotionCursor>,
+    ) {
+        if let Ok(mut cursor) = self.execution_promotion_cursor.lock()
+            && cursor.as_ref() == previous
+        {
+            *cursor = next;
         }
     }
 
@@ -932,7 +957,14 @@ pub fn execute_execution(
                 [],
                 |row| row.get(0),
             )?;
-            if queued_count >= MAX_EXECUTION_QUEUE {
+            // A saturated model backlog must still admit the stop and authentication
+            // responses that can release it. Keep a bounded overflow for those controls.
+            let reserve = if payload.as_ref().is_some_and(|value| crate::work_scheduler::is_lightweight_pi_control(&kind, value)) {
+                PI_CONTROL_QUEUE_RESERVE
+            } else {
+                0
+            };
+            if queued_count >= MAX_EXECUTION_QUEUE + reserve {
                 return Ok(WriteSideEffects {
                     data: json!({ "status": "rejected", "code": "OVERLOADED", "message": "execution queue limit reached" }),
                     events: vec![],

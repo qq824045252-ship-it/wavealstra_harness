@@ -113,6 +113,40 @@ async function main() {
     assert.deepEqual(await cron.runsForTask("other"), []);
     assert.deepEqual((await cron.runsForTask("source")).map(run => [run.jobId, run.status, run.taskId]), [[scoped.id, "success", "source"]]);
 
+    const planA = await cron.saveUserPlan(job("parallel-plan-a", { enabled: false }));
+    const planB = await cron.saveUserPlan(job("parallel-plan-b", { enabled: false }));
+    const holdFirstPlan = barrier();
+    const readPlan = db.readCronJobState.bind(db);
+    let readsOfA = 0;
+    db.readCronJobState = async id => {
+      if (id === planA.id && ++readsOfA === 1) await holdFirstPlan.promise;
+      return readPlan(id);
+    };
+    const firstEdit = cron.saveUserPlan({ ...planA, prompt: "First A" });
+    const secondEdit = cron.saveUserPlan({ ...planA, prompt: "Second A" });
+    let completedB = false;
+    const otherEdit = cron.saveUserPlan({ ...planB, prompt: "Independent B" }).then(saved => {
+      completedB = true;
+      return saved;
+    });
+    const edits = Promise.all([firstEdit, secondEdit, otherEdit]);
+    void edits.catch(() => undefined);
+    try {
+      await until(() => completedB, "unrelated plan commits while the first plan is held");
+      assert.equal(readsOfA, 1);
+      assert.equal(db.getCronJob(planA.id)?.prompt, "check");
+      assert.equal(db.getCronJob(planB.id)?.prompt, "Independent B");
+      holdFirstPlan.release();
+      assert.deepEqual((await edits).map(saved => saved.prompt), ["First A", "Second A", "Independent B"]);
+      assert.equal(db.getCronJob(planA.id)?.prompt, "Second A");
+    } finally {
+      holdFirstPlan.release();
+      await edits.catch(() => undefined);
+      db.readCronJobState = readPlan;
+    }
+    await Promise.all([cron.deleteUserPlan(planA.id), cron.deleteUserPlan(planB.id)]);
+    console.log("PASS Cron plan preparation runs independently while same-plan edits retain order");
+
     promptBarrier = barrier();
     await cron.saveUserPlan(job("timer", { scheduleType: "at", scheduleExpr: new Date(Date.now() + 180).toISOString(), cwd: root }));
     await until(() => prompts.length === 2, "real timer");

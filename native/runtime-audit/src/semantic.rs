@@ -66,7 +66,7 @@ pub fn search(db: &Connection, request: Search) -> Result<Vec<Hit>> {
     };
     // The host supplies the same static predicate and bound scope values as its SQLite reader.
     let sql = format!(
-        "{select} AND e.model_id=? AND e.model_version=? AND e.dimension=? AND length(e.embedding)=?
+        "{select} AND e.model_id=? AND e.model_version=? AND e.dimension=? AND octet_length(e.embedding)=?
          AND ({}){order}",
         request.scope.sql,
     );

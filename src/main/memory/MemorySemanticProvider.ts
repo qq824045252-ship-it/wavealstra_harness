@@ -5,6 +5,7 @@ import type { MemoryIndexResult, MemoryRecordDto } from "../../shared/memory-ker
 import { memorySearchWhere, type MemorySearchScope } from "./MemorySearchScope";
 import { setImmediate as yieldThread } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
+import pLimit from "p-limit";
 import {
   SEMANTIC_DIMENSION,
   SEMANTIC_MODEL_ID,
@@ -38,6 +39,9 @@ export interface MemorySemanticHit {
 type IndexableMemory = Pick<MemoryRecordDto, "id" | "status" | "contentHash" | "kind" | "title" | "content">;
 type IndexOutcome = "indexed" | "current" | "skipped";
 const INDEX_MODEL = { modelId: SEMANTIC_MODEL_ID, modelVersion: SEMANTIC_MODEL_VERSION, dimension: SEMANTIC_DIMENSION };
+const MEMORY_INDEX_PAGE_SIZE = 64;
+const limitMemoryIndex = pLimit(4);
+const pendingByDatabase = new WeakMap<AppDatabase, Map<string, Promise<IndexOutcome>>>();
 
 function indexIssue(error: unknown): NonNullable<MemoryIndexResult["issue"]> {
   return error instanceof SemanticUnavailableError
@@ -55,8 +59,14 @@ export class MemorySemanticProvider {
   }
 
   async index(record: IndexableMemory): Promise<IndexOutcome> {
-    if (record.status !== "active") return "skipped";
-    const conn = this.db.connection;
+    if (record.status !== "active" || !this.db.isOpen) return "skipped";
+    return this.scheduleIndex(record.id, record.contentHash, () => this.indexCurrent(record));
+  }
+
+  private async indexCurrent(record: IndexableMemory): Promise<IndexOutcome> {
+    if (this.db.runtimeAuditReader?.supervised) return this.indexSupervised(record.id, record.contentHash);
+    const conn = this.db.fixtureConnection;
+    if (!conn) throw new SemanticUnavailableError("Core 未确认记忆语义索引");
     if (!conn.open) return "skipped";
     const existing = conn.prepare(
       `SELECT 1 FROM memory_embeddings WHERE memory_id=? AND model_id=? AND model_version=?
@@ -66,10 +76,30 @@ export class MemorySemanticProvider {
     return await this.indexNative(record.id, record.contentHash) ?? this.indexOnHost(record);
   }
 
+  private scheduleIndex(id: string, hash: string, index: () => Promise<IndexOutcome>): Promise<IndexOutcome> {
+    let pending = pendingByDatabase.get(this.db);
+    if (!pending) {
+      pending = new Map();
+      pendingByDatabase.set(this.db, pending);
+    }
+    const key = JSON.stringify([id, hash]);
+    const existing = pending.get(key);
+    if (existing) return existing;
+    const operation = limitMemoryIndex(index).finally(() => pending.delete(key));
+    pending.set(key, operation);
+    return operation;
+  }
+
+  private async indexSupervised(id: string, hash: string): Promise<IndexOutcome> {
+    if (!this.db.isOpen) return "skipped";
+    const outcome = await this.indexNative(id, hash);
+    if (!outcome) throw new SemanticUnavailableError("Core 未确认记忆语义索引");
+    return outcome;
+  }
+
   private async indexNative(id: string, hash: string): Promise<IndexOutcome | undefined> {
-    const conn = this.db.connection;
     const reader = this.db.runtimeAuditReader;
-    if (!reader || conn.inTransaction || !conn.open) return;
+    if (!reader || this.db.inTransaction || !this.db.isOpen) return;
     const staged = await this.runtime.stageIndex({ kind: "memory", id, hash });
     if (staged?.status === "current" || staged?.status === "skipped") return staged.status;
     if (staged?.status === "staged") {
@@ -117,13 +147,17 @@ export class MemorySemanticProvider {
   }
 
   async backfill(limit?: number): Promise<MemoryIndexResult> {
-    return await this.backfillNative(limit) ?? this.backfillOnHost(limit);
+    const result = await this.backfillNative(limit);
+    if (result) return result;
+    if (!this.db.fixtureConnection || this.db.runtimeAuditReader?.supervised) {
+      throw new SemanticUnavailableError("Core 未确认记忆索引队列");
+    }
+    return this.backfillOnHost(limit);
   }
 
   private async backfillNative(limit?: number): Promise<MemoryIndexResult | undefined> {
     const reader = this.db.runtimeAuditReader;
-    const conn = this.db.connection;
-    if (!reader || conn.inTransaction || !conn.open) return;
+    if (!reader || this.db.inTransaction || !this.db.isOpen) return;
     const queueId = randomUUID();
     const boundedLimit = limit === undefined || limit === Infinity ? undefined
       : Number.isNaN(limit) ? 0 : Math.min(Number.MAX_SAFE_INTEGER, Math.trunc(Math.max(1, limit)));
@@ -133,28 +167,29 @@ export class MemorySemanticProvider {
       indexed: 0, current: stats.completed, skipped: 0, failed: 0, pending: stats.total - stats.completed,
     };
     const queued = Math.min(result.pending, boundedLimit ?? result.pending);
-    if (!stats.total) return result;
+    if (!queued) return result;
     try {
       await this.runtime.ensureSession();
       let remaining = queued;
       while (remaining > 0) {
-        const page = await reader.embeddingIndex({ kind: "memoryPage", queueId, limit: Math.min(64, remaining) });
+        const page = await reader.embeddingIndex({ kind: "memoryPage", queueId, limit: Math.min(MEMORY_INDEX_PAGE_SIZE, remaining) });
         if (!page?.length) throw new Error("本次记忆索引队列已中断，可继续补齐其余记录");
-        for (const row of page) {
-          await this.indexPending(result, async () => {
-            if (!row.hash || !conn.open) return "skipped";
-            const outcome = await this.indexNative(row.id, row.hash);
+        await this.indexPage(result, page, async ({ id, hash }) => {
+          if (!hash || !this.db.isOpen) return "skipped";
+          return this.scheduleIndex(id, hash, async () => {
+            if (reader.supervised) return this.indexSupervised(id, hash);
+            const outcome = await this.indexNative(id, hash);
             if (outcome) return outcome;
-            const record = this.readIndexableMemory(row.id);
+            const record = this.readIndexableMemory(id);
             return record ? this.indexOnHost(record) : "skipped";
           });
-        }
+        });
         remaining -= page.length;
       }
     } catch (error) {
       result.issue = indexIssue(error);
     } finally {
-      if (queued) await reader.embeddingIndex({ kind: "closeMemoryQueue", queueId });
+      await reader.embeddingIndex({ kind: "closeMemoryQueue", queueId });
     }
     return result;
   }
@@ -176,6 +211,12 @@ export class MemorySemanticProvider {
     result.pending--;
   }
 
+  private async indexPage<T>(result: MemoryIndexResult, rows: readonly T[], index: (row: T) => Promise<IndexOutcome>): Promise<void> {
+    const outcomes = await Promise.allSettled(rows.map(row => this.indexPending(result, () => index(row))));
+    const failed = outcomes.find(outcome => outcome.status === "rejected");
+    if (failed) throw failed.reason;
+  }
+
   private async backfillOnHost(limit?: number): Promise<MemoryIndexResult> {
     const conn = this.db.connection;
     const rows = conn.prepare(`SELECT m.id, e.memory_id IS NOT NULL AS ready FROM memory_records m
@@ -185,11 +226,12 @@ export class MemorySemanticProvider {
       .all(SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, SEMANTIC_DIMENSION, SEMANTIC_DIMENSION * 4) as Array<{ id: string; ready: number }>;
     const missing = rows.filter(row => !row.ready);
     const result: MemoryIndexResult = { indexed: 0, current: rows.length - missing.length, skipped: 0, failed: 0, pending: missing.length };
-    if (!rows.length) return result;
+    if (!missing.length) return result;
     try {
       await this.runtime.ensureSession();
-      for (const row of missing.slice(0, limit === undefined ? missing.length : Math.max(1, limit))) {
-        await this.indexPending(result, async () => {
+      const selected = missing.slice(0, limit === undefined ? missing.length : Math.max(1, limit));
+      for (let offset = 0; offset < selected.length; offset += MEMORY_INDEX_PAGE_SIZE) {
+        await this.indexPage(result, selected.slice(offset, offset + MEMORY_INDEX_PAGE_SIZE), async row => {
           const record = this.readIndexableMemory(row.id);
           return record ? this.index(record) : "skipped";
         });

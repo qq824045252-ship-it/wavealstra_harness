@@ -2,14 +2,14 @@
 //! resource-conflict/concurrency dispatcher, and crash recovery scanner.
 
 use crate::business_protocol::{
-    ClientContext, EmittedEvent, ExecutorTracker, WriteSideEffects, append_event,
+    ClientContext, EmittedEvent, ExecutionPromotionCursor, ExecutorTracker, WriteSideEffects, append_event,
     current_core_generation, ensure_tables,
 };
 use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_LEASE_TTL_MS: i64 = 60_000;
@@ -1015,7 +1015,8 @@ fn insert_outbox(
 }
 
 struct ActiveConflictSet {
-    active_ids: HashSet<String>,
+    active_executions: i64,
+    active_pi_controls: i64,
     work_ids: HashMap<String, String>,
     resources: HashMap<String, Vec<(String, String)>>,
     sessions: HashMap<String, String>,
@@ -1024,7 +1025,8 @@ struct ActiveConflictSet {
 impl ActiveConflictSet {
     fn load(tx: &Connection) -> crate::Result<Self> {
         let mut set = Self {
-            active_ids: HashSet::new(),
+            active_executions: 0,
+            active_pi_controls: 0,
             work_ids: HashMap::new(),
             resources: HashMap::new(),
             sessions: HashMap::new(),
@@ -1066,7 +1068,11 @@ impl ActiveConflictSet {
     }
 
     fn insert(&mut self, exec_id: &str, task_id: &str, kind: &str, payload: &Value) {
-        self.active_ids.insert(exec_id.to_owned());
+        if is_lightweight_pi_control(kind, payload) {
+            self.active_pi_controls += 1;
+        } else {
+            self.active_executions += 1;
+        }
         if let Some(work_id) = payload
             .get("workId")
             .and_then(Value::as_str)
@@ -1152,6 +1158,17 @@ impl ActiveConflictSet {
             return Some(format!("session:{sk}:active:{active_id}"));
         }
         None
+    }
+}
+
+pub(crate) fn is_lightweight_pi_control(kind: &str, payload: &Value) -> bool {
+    if kind != "pi_control" {
+        return false;
+    }
+    match payload.get("controlAction").and_then(Value::as_str) {
+        Some("abort" | "authRespond" | "authCancel" | "findSubmission") => true,
+        Some("submissionStatus") => matches!(payload.get("wait"), None | Some(Value::Bool(false))),
+        _ => false,
     }
 }
 
@@ -1249,8 +1266,8 @@ fn update_wait_reason_if_changed(
     Ok(())
 }
 
-/// Promotes non-conflicting queued/waiting executions across ALL queued candidates (no `LIMIT 128`
-/// head-of-line blocking), with foreground priority + bounded aging and explainable `waitReason`.
+/// Each pass bounds writer work. Keep scanning past conflicts in later passes while slots
+/// remain, then circle back to the oldest candidates within a finite queue snapshot.
 pub(crate) fn promote_compatible_executions(
     tx: &Connection,
     core_gen: &str,
@@ -1261,21 +1278,38 @@ pub(crate) fn promote_compatible_executions(
     const PAGE_SIZE: i64 = 128;
     const MAX_PROMOTE_SCAN: usize = 1024;
     const AGING_STEP_MS: i64 = 5_000;
+    const PI_CONTROL_SLOTS: i64 = 4;
 
+    let previous = tracker.execution_promotion_cursor();
+    let through = if let Some(cursor) = &previous {
+        cursor.through.clone()
+    } else {
+        let Some(last) = tx.query_row(
+            "SELECT created_at_ms, execution_id FROM core_execution_runs
+             WHERE status IN ('queued', 'waiting_executor')
+             ORDER BY created_at_ms DESC, execution_id DESC LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        ).optional()? else {
+            return Ok(0);
+        };
+        last
+    };
     let mut all_candidates: Vec<(String, String, String, String, i64, Option<String>)> = Vec::new();
-    let mut cursor_ts = i64::MIN;
-    let mut cursor_id = String::new();
+    let mut after = previous.as_ref().map(|cursor| cursor.after.clone());
     while all_candidates.len() < MAX_PROMOTE_SCAN {
         let mut stmt = tx.prepare(
             "SELECT execution_id, task_id, kind, payload_json, created_at_ms, wait_reason
              FROM core_execution_runs
              WHERE status IN ('queued', 'waiting_executor')
-               AND (created_at_ms > ?1 OR (created_at_ms = ?1 AND execution_id > ?2))
+               AND (?1 IS NULL OR created_at_ms > ?1 OR (created_at_ms = ?1 AND execution_id > ?2))
+               AND (created_at_ms < ?3 OR (created_at_ms = ?3 AND execution_id <= ?4))
              ORDER BY created_at_ms ASC, execution_id ASC
-             LIMIT ?3",
+             LIMIT ?5",
         )?;
         let page: Vec<(String, String, String, String, i64, Option<String>)> = stmt
-            .query_map(params![cursor_ts, cursor_id, PAGE_SIZE], |r| {
+            .query_map(params![after.as_ref().map(|key| key.0), after.as_ref().map(|key| key.1.as_str()),
+                through.0, through.1, PAGE_SIZE], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,
@@ -1288,8 +1322,7 @@ pub(crate) fn promote_compatible_executions(
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let page_len = page.len();
         if let Some(last) = page.last() {
-            cursor_ts = last.4;
-            cursor_id = last.0.clone();
+            after = Some((last.4, last.0.clone()));
         }
         all_candidates.extend(page);
         if (page_len as i64) < PAGE_SIZE {
@@ -1298,20 +1331,23 @@ pub(crate) fn promote_compatible_executions(
     }
 
     if all_candidates.is_empty() {
+        tracker.advance_execution_promotion_cursor(previous.as_ref(), None);
         return Ok(0);
     }
 
+    let next = after.filter(|after| all_candidates.len() == MAX_PROMOTE_SCAN && *after < through)
+        .map(|after| ExecutionPromotionCursor { after, through });
     let Some((exec_epoch, exec_client_id)) = tracker.is_online() else {
         for (exec_id, _, _, _, _, prev_reason) in all_candidates {
             update_wait_reason_if_changed(tx, &exec_id, prev_reason.as_deref(), "executor_offline")?;
         }
+        tracker.advance_execution_promotion_cursor(previous.as_ref(), next);
         return Ok(0);
     };
 
-    let active_conflicts = ActiveConflictSet::load(tx)?;
-    let active_count = active_conflicts.active_ids.len() as i64;
-    let mut available = (tracker.slots_limit() - active_count).max(0);
-    let mut conflicts = active_conflicts;
+    let mut conflicts = ActiveConflictSet::load(tx)?;
+    let mut available = (tracker.slots_limit() - conflicts.active_executions).max(0);
+    let mut available_pi_controls = (PI_CONTROL_SLOTS - conflicts.active_pi_controls).max(0);
 
     let mut prioritized: Vec<(i64, i64, String, String, String, Value, Option<String>)> = all_candidates
         .into_iter()
@@ -1337,8 +1373,13 @@ pub(crate) fn promote_compatible_executions(
             update_wait_reason_if_changed(tx, &exec_id, prev_reason.as_deref(), &reason)?;
             continue;
         }
-        if available <= 0 {
-            update_wait_reason_if_changed(tx, &exec_id, prev_reason.as_deref(), "slots_exhausted")?;
+        let (slots, wait_reason) = if is_lightweight_pi_control(&kind, &payload) {
+            (&mut available_pi_controls, "pi_control_slots_exhausted")
+        } else {
+            (&mut available, "slots_exhausted")
+        };
+        if *slots <= 0 {
+            update_wait_reason_if_changed(tx, &exec_id, prev_reason.as_deref(), wait_reason)?;
             continue;
         }
         let Some(row) = crate::business_protocol::fetch_execution_tx(tx, &exec_id)? else {
@@ -1407,9 +1448,11 @@ pub(crate) fn promote_compatible_executions(
                 "execution": updated,
             }
         }));
-        available -= 1;
+        *slots -= 1;
         promoted += 1;
     }
+    tracker.advance_execution_promotion_cursor(previous.as_ref(),
+        if available > 0 || available_pi_controls > 0 { next } else { None });
     Ok(promoted)
 }
 
@@ -4130,6 +4173,59 @@ mod tests {
             )
             .unwrap();
         assert!(wait_reason.as_deref().unwrap_or("").contains("conflict:resource:hot-lock"));
+    }
+
+    #[test]
+    fn promotion_resumes_after_a_full_slice_of_blocked_work() {
+        let db = setup_db();
+        let tracker = ExecutorTracker::new();
+        tracker.set_presence(true, 1, "pi-1".into());
+        tracker.set_slots_limit(2);
+        let core_gen = current_core_generation();
+        db.execute(
+            "INSERT INTO core_execution_runs (
+                execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
+                task_id, kind, payload_json, status, revision, executor_client_id, executor_epoch, attempt, created_at_ms, updated_at_ms
+             ) VALUES ('holder', 'holder', ?1, 'ui', 'c1', 1, 'task-holder', 'work_execution',
+                '{\"resourceKey\":\"held\"}', 'running', 2, 'pi-1', 1, 1, 1, 1)",
+            [&core_gen],
+        ).unwrap();
+        db.execute(
+            "INSERT INTO core_execution_runs (
+                execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
+                task_id, kind, payload_json, status, revision, attempt, created_at_ms, updated_at_ms
+             ) SELECT 'waiting-' || n, 'waiting-' || n, ?1, 'ui', 'c1', 1, 'task-waiting-' || n,
+                'work_execution', '{\"resourceKey\":\"held\"}', 'queued', 1, 0, n+1, n+1
+             FROM range(1, 1025) AS blocked(n)",
+            [&core_gen],
+        ).unwrap();
+        db.execute(
+            "INSERT INTO core_execution_runs (
+                execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
+                task_id, kind, payload_json, status, revision, attempt, created_at_ms, updated_at_ms
+             ) VALUES ('independent', 'independent', ?1, 'ui', 'c1', 1, 'task-independent', 'work_execution',
+                '{\"resourceKey\":\"free\"}', 'queued', 1, 0, 1026, 1026)",
+            [&core_gen],
+        ).unwrap();
+        let mut events = Vec::new();
+        let mut dispatches = Vec::new();
+        for expected in [0, 1] {
+            let tx = db.unchecked_transaction().unwrap();
+            assert_eq!(
+                promote_compatible_executions(&tx, &core_gen, &tracker, &mut events, &mut dispatches).unwrap(),
+                expected,
+            );
+            tx.commit().unwrap();
+            apply_committed_promotion_dispatches(&tracker, &dispatches);
+        }
+        assert_eq!(dispatches[0]["coreExecutionDispatch"]["execution"]["executionId"], "independent");
+        assert!(tracker.verify_active_execution("independent", 1, 1).is_some());
+        let blocking_work: i64 = db.query_row(
+            "SELECT count(*) FROM core_execution_runs
+             WHERE execution_id LIKE 'waiting-%' AND status='queued' AND wait_reason LIKE 'conflict:resource:held:%'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(blocking_work, 1024);
     }
 
     #[test]

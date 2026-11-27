@@ -4387,6 +4387,69 @@ fn start_database_writer(
     )
 }
 
+struct SchedulerTickerGuard {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    handles: Vec<thread::JoinHandle<()>>,
+}
+
+impl SchedulerTickerGuard {
+    fn new() -> Self {
+        Self {
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            handles: Vec::new(),
+        }
+    }
+
+    fn start(
+        &mut self,
+        name: &str,
+        interval_ms: u64,
+        mut tick: impl FnMut(&std::sync::atomic::AtomicBool) + Send + 'static,
+    ) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let stop = Arc::clone(&self.stop);
+        self.handles.push(thread::Builder::new().name(name.into()).spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                tick(&stop);
+                let mut slept = 0;
+                while slept < interval_ms && !stop.load(Ordering::Acquire) {
+                    let step = (interval_ms - slept).min(50);
+                    thread::sleep(Duration::from_millis(step));
+                    slept += step;
+                }
+            }
+        })?);
+        Ok(())
+    }
+}
+
+impl Drop for SchedulerTickerGuard {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        for handle in self.handles.drain(..) {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn acquire_scheduler_phase(
+    gate: &resource_gate::ResourceGate,
+    stop: &std::sync::atomic::AtomicBool,
+    phase: &str,
+) -> Option<resource_gate::ResourceLease> {
+    use resource_gate::{ResourceKey, ResourceRequirement};
+    gate.acquire(
+        vec![
+            ResourceRequirement::shared(ResourceKey::DbLifecycle),
+            ResourceRequirement::shared(ResourceKey::CommitShare),
+            ResourceRequirement::exclusive(ResourceKey::PublisherOrder),
+            ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), phase.into())),
+        ],
+        Duration::from_secs(5),
+        || stop.load(std::sync::atomic::Ordering::Acquire),
+    ).ok()
+}
+
 fn run() -> Result<()> {
     let all = std::env::args_os().skip(1).collect::<Vec<_>>();
     // Supervisor mode owns the data directory and keeps the worker alive across clients;
@@ -4441,7 +4504,7 @@ fn run() -> Result<()> {
         return Err("unexpected argument".into());
     }
     if argument == "--protocol-version" {
-        println!("117");
+        println!("118");
         return Ok(());
     }
     let db_path = PathBuf::from(argument);
@@ -4495,18 +4558,6 @@ fn run() -> Result<()> {
     }));
     let publisher_worker = outbox.start_worker(Arc::clone(&engine), Arc::clone(&gate),
         business_protocol::current_core_generation())?;
-    struct SchedulerTickerGuard {
-        stop: Arc<std::sync::atomic::AtomicBool>,
-        handle: Option<thread::JoinHandle<()>>,
-    }
-    impl Drop for SchedulerTickerGuard {
-        fn drop(&mut self) {
-            self.stop.store(true, std::sync::atomic::Ordering::Release);
-            if let Some(h) = self.handle.take() {
-                let _ = h.join();
-            }
-        }
-    }
     let scheduler_ticker = if std::env::var_os("MYBUDDY_CORE_SUPERVISED").is_some()
         && std::env::var("MYBUDDY_WORK_AUTO_TICK_MS").ok().as_deref() != Some("0")
     {
@@ -4515,139 +4566,109 @@ fn run() -> Result<()> {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(1_000)
             .clamp(50, 30_000);
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_flag = stop.clone();
+        let mut ticker = SchedulerTickerGuard::new();
+        let pi_engine = Arc::clone(&engine);
+        let pi_gate = Arc::clone(&gate);
+        let pi_tracker = executor_tracker.clone();
+        ticker.start("pi-host-supervision", interval_ms, move |stop| {
+            let fx = acquire_scheduler_phase(&pi_gate, stop, "pi_host_tick").and_then(|lease| {
+                let mut phase = pi_host_supervisor::PiHostWritePhase::new(
+                    &pi_engine, lease, None, Duration::from_secs(5),
+                );
+                pi_host_supervisor::supervise_tick_in_phase(&mut phase, &pi_tracker)
+                    .ok()
+                    .flatten()
+            });
+            emit_side_effects(fx);
+        })?;
         let tick_engine = Arc::clone(&engine);
         let tick_gate = Arc::clone(&gate);
         let tick_tracker = executor_tracker.clone();
-        let handle = thread::Builder::new()
-            .name("work-scheduler-tick".into())
-            .spawn(move || {
-                use resource_gate::{ResourceKey, ResourceRequirement};
-                let acquire_phase = |phase: &str| {
-                    tick_gate
-                        .acquire(
-                            vec![
-                                ResourceRequirement::shared(ResourceKey::DbLifecycle),
-                                ResourceRequirement::shared(ResourceKey::CommitShare),
-                                ResourceRequirement::exclusive(ResourceKey::PublisherOrder),
-                                ResourceRequirement::exclusive(ResourceKey::Namespace(
-                                    "domain".into(),
-                                    phase.into(),
-                                )),
-                            ],
-                            Duration::from_secs(5),
-                            || stop_flag.load(Ordering::Acquire),
+        ticker.start("work-scheduler-tick", interval_ms, move |stop_flag| {
+            let acquire_phase = |phase: &str| acquire_scheduler_phase(&tick_gate, stop_flag, phase);
+            let lease_held = acquire_phase("work_lease")
+                .and_then(|_lease| {
+                    let mut conn = tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
+                    work_scheduler::claim_supervised_core_lease(conn.conn_mut()).ok()
+                })
+                .unwrap_or(false);
+            if lease_held {
+                let core_gen = business_protocol::current_core_generation();
+                let ctx = business_protocol::ClientContext::synthetic(&core_gen);
+
+                let work_fx = acquire_phase("work_tick").and_then(|_lease| {
+                    let mut conn = tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
+                    work_scheduler::execute_write(
+                        conn.conn_mut(),
+                        &tick_tracker,
+                        &ctx,
+                        work_scheduler::Command::Tick {
+                            owner_id: Some(format!("core:{core_gen}")),
+                            now_ms: None,
+                            lease_ttl_ms: None,
+                        },
+                    )
+                    .ok()
+                });
+                if work_fx
+                    .as_ref()
+                    .is_some_and(|fx| !fx.events.is_empty() || !fx.dispatches.is_empty())
+                {
+                    emit_side_effects(work_fx);
+                }
+
+                if !stop_flag.load(Ordering::Acquire) {
+                    let cron_fx = acquire_phase("cron_tick").and_then(|_lease| {
+                        let mut conn =
+                            tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
+                        cron_scheduler::run_supervised_tick(conn.conn_mut(), &tick_tracker)
+                            .ok()
+                            .flatten()
+                    });
+                    emit_side_effects(cron_fx);
+                }
+
+                if !stop_flag.load(Ordering::Acquire) {
+                    let dots_fx = acquire_phase("dots_tick").and_then(|_lease| {
+                        let mut conn =
+                            tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
+                        dots_scheduler::run_supervised_tick(conn.conn_mut(), &tick_tracker)
+                            .ok()
+                            .flatten()
+                    });
+                    emit_side_effects(dots_fx);
+                }
+
+                if !stop_flag.load(Ordering::Acquire) {
+                    let gw_fx = acquire_phase("gateway_tick").and_then(|_lease| {
+                        let mut conn =
+                            tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
+                        gateway_scheduler::run_supervised_tick(
+                            conn.conn_mut(),
+                            &tick_tracker,
                         )
                         .ok()
-                };
-                while !stop_flag.load(Ordering::Acquire) {
-                    let lease_held = acquire_phase("work_lease")
-                        .and_then(|_lease| {
-                            let mut conn = tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
-                            work_scheduler::claim_supervised_core_lease(conn.conn_mut()).ok()
-                        })
-                        .unwrap_or(false);
-                    if lease_held {
-                        let core_gen = business_protocol::current_core_generation();
-                        let ctx = business_protocol::ClientContext::synthetic(&core_gen);
-
-                        let work_fx = acquire_phase("work_tick").and_then(|_lease| {
-                            let mut conn = tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
-                            work_scheduler::execute_write(
-                                conn.conn_mut(),
-                                &tick_tracker,
-                                &ctx,
-                                work_scheduler::Command::Tick {
-                                    owner_id: Some(format!("core:{core_gen}")),
-                                    now_ms: None,
-                                    lease_ttl_ms: None,
-                                },
-                            )
-                            .ok()
-                        });
-                        if work_fx
-                            .as_ref()
-                            .is_some_and(|fx| !fx.events.is_empty() || !fx.dispatches.is_empty())
-                        {
-                            emit_side_effects(work_fx);
-                        }
-
-                        if !stop_flag.load(Ordering::Acquire) {
-                            let pi_fx = acquire_phase("pi_host_tick").and_then(|lease| {
-                                let mut phase = pi_host_supervisor::PiHostWritePhase::new(
-                                    &tick_engine, lease, None, Duration::from_secs(5),
-                                );
-                                pi_host_supervisor::supervise_tick_in_phase(
-                                    &mut phase,
-                                    &tick_tracker,
-                                )
-                                .ok()
-                                .flatten()
-                            });
-                            emit_side_effects(pi_fx);
-                        }
-
-                        if !stop_flag.load(Ordering::Acquire) {
-                            let cron_fx = acquire_phase("cron_tick").and_then(|_lease| {
-                                let mut conn =
-                                    tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
-                                cron_scheduler::run_supervised_tick(conn.conn_mut(), &tick_tracker)
-                                    .ok()
-                                    .flatten()
-                            });
-                            emit_side_effects(cron_fx);
-                        }
-
-                        if !stop_flag.load(Ordering::Acquire) {
-                            let dots_fx = acquire_phase("dots_tick").and_then(|_lease| {
-                                let mut conn =
-                                    tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
-                                dots_scheduler::run_supervised_tick(conn.conn_mut(), &tick_tracker)
-                                    .ok()
-                                    .flatten()
-                            });
-                            emit_side_effects(dots_fx);
-                        }
-
-                        if !stop_flag.load(Ordering::Acquire) {
-                            let gw_fx = acquire_phase("gateway_tick").and_then(|_lease| {
-                                let mut conn =
-                                    tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
-                                gateway_scheduler::run_supervised_tick(
-                                    conn.conn_mut(),
-                                    &tick_tracker,
-                                )
-                                .ok()
-                                .flatten()
-                            });
-                            emit_side_effects(gw_fx);
-                        }
-
-                        if !stop_flag.load(Ordering::Acquire) {
-                            let maint_fx = acquire_phase("maintenance_tick").and_then(|_lease| {
-                                let mut conn =
-                                    tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
-                                maintenance_scheduler::run_supervised_tick(
-                                    conn.conn_mut(),
-                                    &tick_tracker,
-                                )
-                                .ok()
-                                .flatten()
-                            });
-                            emit_side_effects(maint_fx);
-                        }
-                    }
-                    let mut slept = 0u64;
-                    while slept < interval_ms && !stop_flag.load(Ordering::Acquire) {
-                        let step = (interval_ms - slept).min(50);
-                        thread::sleep(Duration::from_millis(step));
-                        slept += step;
-                    }
+                        .flatten()
+                    });
+                    emit_side_effects(gw_fx);
                 }
-            })
-            .ok();
-        Some(SchedulerTickerGuard { stop, handle })
+
+                if !stop_flag.load(Ordering::Acquire) {
+                    let maint_fx = acquire_phase("maintenance_tick").and_then(|_lease| {
+                        let mut conn =
+                            tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
+                        maintenance_scheduler::run_supervised_tick(
+                            conn.conn_mut(),
+                            &tick_tracker,
+                        )
+                        .ok()
+                        .flatten()
+                    });
+                    emit_side_effects(maint_fx);
+                }
+            }
+        })?;
+        Some(ticker)
     } else {
         None
     };
@@ -5251,6 +5272,50 @@ fn main() {
 #[cfg(test)]
 mod request_classification_tests {
     use super::*;
+
+    #[test]
+    fn scheduler_can_commit_while_pi_supervision_waits_for_a_process() -> Result<()> {
+        use pi_host_supervisor::{AfterProcessEffect, PiHostPhase, PiHostWritePhase};
+        use std::sync::mpsc::channel;
+
+        let path = tempfile::tempdir()?;
+        let (engine, _) = database::DuckDbEngine::open_or_initialize(
+            path.path().join("app.duckdb"), Default::default(),
+        )?;
+        let gate = resource_gate::ResourceGate::new(32);
+        let mut ticker = SchedulerTickerGuard::new();
+        let (waiting, pi_waiting) = channel();
+        let (release, wait_for_release) = channel();
+        let (committed, work_committed) = channel();
+        let pi_engine = Arc::clone(&engine);
+        let pi_gate = Arc::clone(&gate);
+        ticker.start("test-pi-supervisor", 30_000, move |stop| {
+            let lease = acquire_scheduler_phase(&pi_gate, stop, "pi_host_tick").expect("Pi phase");
+            let mut phase = PiHostWritePhase::new(&pi_engine, lease, None, Duration::from_secs(2));
+            phase.connection().expect("Pi writer");
+            phase.process_effect(AfterProcessEffect::Resume, &mut || {
+                waiting.send(()).expect("report Pi wait");
+                let _ = wait_for_release.recv_timeout(Duration::from_secs(10));
+            }).expect("resume Pi phase");
+        })?;
+        pi_waiting.recv_timeout(Duration::from_secs(3))?;
+        let work_engine = Arc::clone(&engine);
+        ticker.start("test-work-scheduler", 30_000, move |stop| {
+            let _lease = acquire_scheduler_phase(&gate, stop, "work_tick").expect("work phase");
+            let mut writer = work_engine.checkout_writer(Duration::from_secs(2)).expect("work writer");
+            writer.conn_mut().execute(
+                "INSERT INTO tasks(id,title,updated_at) VALUES ('independent','Independent',1)", [],
+            ).expect("commit independent task");
+            committed.send(()).expect("report work commit");
+        })?;
+        work_committed.recv_timeout(Duration::from_secs(3))?;
+        release.send(())?;
+        drop(ticker);
+        let reader = engine.checkout_reader(Duration::from_secs(2))?;
+        assert_eq!(reader.conn().query_row("SELECT title FROM tasks WHERE id='independent'", [],
+            |row| row.get::<_, String>(0))?, "Independent");
+        Ok(())
+    }
 
     #[test]
     fn waiting_to_bind_one_durable_task_does_not_delay_an_independent_binding() -> Result<()> {

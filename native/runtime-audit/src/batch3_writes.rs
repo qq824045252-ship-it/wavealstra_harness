@@ -2190,7 +2190,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                          VALUES (?1,?2,?3,?4,?5,?6,?7)
                          ON CONFLICT(memory_id,model_id,model_version) DO UPDATE SET
                            content_hash=excluded.content_hash, dimension=excluded.dimension, embedding=excluded.embedding, created_at=excluded.created_at
-                         WHERE content_hash<>excluded.content_hash OR dimension<>excluded.dimension OR length(embedding)<>length(excluded.embedding)",
+                         WHERE content_hash<>excluded.content_hash OR dimension<>excluded.dimension OR octet_length(embedding)<>octet_length(excluded.embedding)",
                         params![memory_id, model_id, model_version, content_hash, dimension, bytes, created_at],
                     )?;
                     if c > 0 { "indexed" } else { "current" }

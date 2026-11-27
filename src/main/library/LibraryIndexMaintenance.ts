@@ -11,7 +11,8 @@ import type {
   RuntimeLibraryIndexStatus,
   RuntimeLibrarySourceVersion,
 } from "../platform/runtime-audit";
-import type { LibraryRepository } from "./LibraryRepository";
+import { toItem, type LibraryCatalogRows, type LibraryRepository } from "./LibraryRepository";
+import pLimit from "p-limit";
 import { hybridLibrarySpaceIds } from "./MaterialRetrievalSettings";
 import { chunkText, chunkTextParts, LIBRARY_CHUNK_DEFAULTS } from "./library-chunker";
 import { readUtf8Prefix } from "./library-file-io";
@@ -30,6 +31,7 @@ import {
 } from "../retrieval/SemanticModelManager";
 
 const TEXT_FTS_COVERAGE_VERSION = 4;
+const INDEX_CONCURRENCY = 4;
 
 const SEMANTIC_INDEX_JOIN = `
   LEFT JOIN library_chunk_embeddings e ON e.chunk_id = c.id AND e.chunk_hash = c.hash
@@ -69,6 +71,8 @@ export class LibraryIndexMaintenance {
   private readonly extractCache = new Map<string, { key: string; result: ExtractionResult }>();
   /** 进行中的异步抽取（写入后 fire-and-forget；测试/关闭前可 flush） */
   private readonly pendingIndexes = new Set<Promise<void>>();
+  private readonly indexWork = pLimit(INDEX_CONCURRENCY);
+  private readonly documentWork = pLimit(INDEX_CONCURRENCY);
   /** per-item in-flight 去重：同一条目并发 search/read 只解析一次 */
   private readonly inflightExtract = new Map<string, Promise<ExtractionResult>>();
   /** 仅保存需要文件级 targeted fallback 的文本条目；健康 FTS 搜索不做额外 DB 反查。 */
@@ -83,6 +87,20 @@ export class LibraryIndexMaintenance {
   }
 
   get pendingTextFtsIds(): ReadonlySet<string> { return this.textFtsFallbackIds; }
+
+  private async readIndexItem(id: string): Promise<LibraryItemDto | undefined> {
+    if (this.db.fixtureConnection) return this.repo.getItem(id) ?? undefined;
+    const catalog = await this.db.runtimeAuditReader?.libraryMetadata<LibraryCatalogRows>({ kind: "catalog", itemId: id });
+    if (!catalog) throw new Error("Core 未确认资料索引来源");
+    const item = catalog.items[0];
+    return item && toItem(item);
+  }
+
+  private async coreIndexPage(work: "documents" | "text" | "chunks", after: string | undefined, limit: number): Promise<LibraryItemDto[]> {
+    const rows = await this.db.runtimeAuditReader?.libraryMetadata<LibraryCatalogRows["items"]>({ kind: "indexCandidates", work, after, limit });
+    if (!rows) throw new Error("Core 未确认待恢复的资料索引");
+    return rows.map(toItem);
+  }
 
   forgetItem(id: string): void {
     this.extractCache.delete(id);
@@ -129,11 +147,7 @@ export class LibraryIndexMaintenance {
       this.repo.deleteFts(item.id);
       this.repo.deleteChunks(item.id);
       this.repo.updateExtractStatus(item.id, "pending");
-      const pending = this.indexExtractedText(item.id).catch((err) => {
-        console.warn(`[Library] 文档抽取索引失败 ${item.id}：`, err);
-      });
-      this.pendingIndexes.add(pending);
-      void pending.finally(() => this.pendingIndexes.delete(pending));
+      this.scheduleDocumentIndex(item.id);
       return;
     }
     this.repo.deleteFts(item.id);
@@ -163,7 +177,7 @@ export class LibraryIndexMaintenance {
     copy?: { copyTo: string; refuseMarkdownLinks: boolean },
   ): Promise<T> {
     const reader = this.db.runtimeAuditReader;
-    if (!reader || this.db.connection.inTransaction) return publish();
+    if (!reader || this.db.inTransaction) return publish();
     if (!copy) this.files.assertManagedFile(path);
     const before = statSync(path, { bigint: true });
     const stagingDir = await mkdtemp(join(tmpdir(), "mybuddy-library-index-"));
@@ -195,7 +209,8 @@ export class LibraryIndexMaintenance {
       if (current && (!onlyMissing || !this.repo.hasChunks(item.id))) return current;
     };
     return this.withLargeTextStage(path, async stage => {
-      const current = currentVersion();
+      if (signal?.aborted || !this.db.isOpen) return false;
+      const current = this.db.fixtureConnection ? currentVersion() : item;
       if (!current) return false;
       if (stage) {
         const status = await this.db.runtimeAuditReader?.publishLibraryIndex({
@@ -210,6 +225,7 @@ export class LibraryIndexMaintenance {
           this.completeTextIndex(current.id);
           return true;
         }
+        if (!this.db.fixtureConnection) throw new Error("Core 未确认大文本索引发布");
         // The fallback may run after another writer changed the source or item.
         if (!currentVersion()) return false;
         this.files.assertManagedFile(path);
@@ -218,6 +234,7 @@ export class LibraryIndexMaintenance {
           throw new Error("资料文件在索引期间已变化");
         }
       }
+      if (!this.db.fixtureConnection) throw new Error("Core 未确认大文本索引生成");
       this.indexLargeText(current, path, stage);
       return true;
     });
@@ -255,7 +272,7 @@ export class LibraryIndexMaintenance {
     item: LibraryItemDto, source: RuntimeLibrarySourceVersion | undefined,
     content: RuntimeLibraryDocumentContent, onlyMissing = false,
   ): Promise<RuntimeLibraryIndexStatus | undefined> | undefined {
-    if (this.db.connection.inTransaction) return;
+    if (this.db.inTransaction) return;
     if (content.kind === "extracted" && content.text !== null) {
       // A parser's UTF-16 truncation can leave an unpaired surrogate. SQLite uses UTF-8.
       content = { ...content, text: content.text.replace(/[\uD800-\uDFFF]/gu, "\uFFFD") };
@@ -269,10 +286,15 @@ export class LibraryIndexMaintenance {
     if (item.sizeBytes > LARGE_LIBRARY_TEXT_BYTES) return this.indexLargeTextAsync(item, false, signal);
     if (signal?.aborted) return false;
     const source = this.sourceVersion(item);
+    if (!source && !this.db.fixtureConnection) return false;
     const status = await this.publishDocument(item, source, { kind: "textFile" });
     if (status === "indexed") {
       this.completeTextIndex(item.id);
       return true;
+    }
+    if (!this.db.fixtureConnection) {
+      if (!status) throw new Error("Core 未确认文本全文索引发布");
+      return false;
     }
     if (status || signal?.aborted || !this.currentIndexItem(item) || !this.sourceUnchanged(item, source)) return false;
     this.refreshFts(item);
@@ -286,11 +308,17 @@ export class LibraryIndexMaintenance {
       const result = source ? await this.getIndexExtractedText(item).catch(() => undefined) : undefined;
       content = { kind: "extracted", status: result?.status ?? "unsupported", text: result?.text ?? null };
     }
-    if (signal?.aborted || !this.currentIndexItem(item) || !this.sourceUnchanged(item, source)) return false;
+    if (signal?.aborted || !this.db.isOpen || !this.sourceUnchanged(item, source)
+      || (this.db.fixtureConnection && !this.currentIndexItem(item))) return false;
+    if (!source && !this.db.fixtureConnection) return false;
     const status = await this.publishDocument(item, source, content, true);
     if (status === "indexed") {
       this.scheduleSemanticIndex();
       return true;
+    }
+    if (!this.db.fixtureConnection) {
+      if (!status) throw new Error("Core 未确认资料切片索引发布");
+      return false;
     }
     if (status || signal?.aborted || !this.currentIndexItem(item)
         || !this.sourceUnchanged(item, source) || this.repo.hasChunks(item.id)) return false;
@@ -412,6 +440,10 @@ export class LibraryIndexMaintenance {
    * FTS text recovery：分批补齐旧版限长索引和缺失的派生行，完成后记录覆盖版本。
    */
   async recoverTextFtsCoverageV2(opts?: { batchSize?: number; signal?: AbortSignal }): Promise<{ processed: number; failed: number }> {
+    if (!this.db.fixtureConnection) {
+      const { processed, failed } = await this.backfillCoreIndex("text", opts);
+      return { processed, failed };
+    }
     if (!this.repo.ftsAvailable()) return { processed: 0, failed: 0 };
     const stateKey = "text-fts-coverage-version";
     const needsCoverageUpgrade = Number(this.repo.getIndexState(stateKey) ?? 0) < TEXT_FTS_COVERAGE_VERSION;
@@ -423,7 +455,8 @@ export class LibraryIndexMaintenance {
     let deferred = false;
     for (let offset = 0; offset < ids.length; offset += batchSize) {
       if (opts?.signal?.aborted) return { processed, failed };
-      for (const id of ids.slice(offset, offset + batchSize)) {
+      await Promise.all(ids.slice(offset, offset + batchSize).map(id => this.indexWork(async () => {
+        if (opts?.signal?.aborted) return;
         try {
           const item = this.repo.getItem(id);
           if (item && this.repo.isTextSearchable(item.kind)) {
@@ -438,7 +471,7 @@ export class LibraryIndexMaintenance {
           failed += 1;
           console.warn(`[Library] FTS text recovery failed ${id}:`, error);
         }
-      }
+      })));
       await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 0));
     }
     if (!opts?.signal?.aborted && failed === 0 && !deferred && needsCoverageUpgrade) {
@@ -457,6 +490,7 @@ export class LibraryIndexMaintenance {
    * - 不自动注入 Prompt：仅维护索引，Search 仍只返回 lightweight hit
    */
   async backfillMissingChunks(opts?: { batchSize?: number; signal?: AbortSignal; onProgress?: (done: number, totalHint: number) => void }): Promise<{ processed: number; succeeded: number; failed: number; skipped: number }> {
+    if (!this.db.fixtureConnection) return this.backfillCoreIndex("chunks", opts);
     const batchSize = Math.max(1, Math.min(100, Math.round(opts?.batchSize ?? 20)));
     const signal = opts?.signal;
     let processed = 0, succeeded = 0, failed = 0, skipped = 0;
@@ -475,20 +509,20 @@ export class LibraryIndexMaintenance {
         break;
       }
       if (batch.length === 0) break;
-      for (const { id: itemId, rowId } of batch) {
-        if (signal?.aborted) break;
-        afterRowId = rowId;
+      afterRowId = batch.at(-1)!.rowId;
+      await Promise.all(batch.map(({ id: itemId }) => this.indexWork(async () => {
+        if (signal?.aborted) return;
         processed++;
         try {
-          if (this.repo.hasChunks(itemId)) { skipped++; continue; }
+          if (this.repo.hasChunks(itemId)) { skipped++; return; }
           const item = this.repo.getItem(itemId);
-          if (!item) { skipped++; continue; }
+          if (!item) { skipped++; return; }
           // URL/file/image 等无可索引正文的类型不产生 chunk
-          if (!this.repo.isTextSearchable(item.kind) && !extractableKind(item.kind)) { skipped++; continue; }
+          if (!this.repo.isTextSearchable(item.kind) && !extractableKind(item.kind)) { skipped++; return; }
           if (this.repo.isTextSearchable(item.kind) && item.sizeBytes > LARGE_LIBRARY_TEXT_BYTES) {
             if (await this.indexLargeTextAsync(item, true, signal)) succeeded++;
             else skipped++;
-            continue;
+            return;
           }
           if (await this.backfillDocumentChunks(item, signal)) succeeded++;
           else skipped++;
@@ -496,12 +530,40 @@ export class LibraryIndexMaintenance {
           failed++;
           console.warn(`[Library] chunk backfill 单项失败 ${itemId}，已跳过：`, err);
         }
-      }
+      })));
       opts?.onProgress?.(processed, totalHint);
       // 每批让出事件循环，避免老用户几千份文档卡主线程
       await new Promise<void>((r) => setTimeout(r, 0));
     }
     return { processed, succeeded, failed, skipped };
+  }
+
+  private async backfillCoreIndex(work: "text" | "chunks", opts?: Parameters<LibraryIndexMaintenance["backfillMissingChunks"]>[0]) {
+    const result = { processed: 0, succeeded: 0, failed: 0, skipped: 0 };
+    const batchSize = Math.max(1, Math.min(100, Math.round(opts?.batchSize ?? 20)));
+    let after: string | undefined;
+    while (!opts?.signal?.aborted && this.db.isOpen) {
+      const batch = await this.coreIndexPage(work, after, batchSize);
+      if (!batch.length) break;
+      after = batch.at(-1)!.id;
+      await Promise.all(batch.map(item => this.indexWork(async () => {
+        if (opts?.signal?.aborted || !this.db.isOpen) return;
+        result.processed++;
+        try {
+          const indexed = work === "text" ? await this.recoverTextIndex(item, opts?.signal)
+            : this.repo.isTextSearchable(item.kind) && item.sizeBytes > LARGE_LIBRARY_TEXT_BYTES
+              ? await this.indexLargeTextAsync(item, true, opts?.signal)
+              : await this.backfillDocumentChunks(item, opts?.signal);
+          if (indexed) result.succeeded++;
+          else result.skipped++;
+        } catch (error) {
+          result.failed++;
+          console.warn(`[Library] 恢复资料索引失败 ${item.id}：`, error);
+        }
+      })));
+      opts?.onProgress?.(result.processed, 0);
+    }
+    return result;
   }
 
   private semanticBackfillRunning = false;
@@ -554,6 +616,7 @@ export class LibraryIndexMaintenance {
 
   async readSemanticIndexStats() {
     const native = await this.db.runtimeAuditReader?.embeddingIndex({ kind: "libraryStats", model: SEMANTIC_INDEX_MODEL });
+    if (!native && !this.db.fixtureConnection) throw new Error("Core 未确认资料语义索引状态");
     return native ? this.semanticIndexState(native) : this.semanticIndexStats;
   }
 
@@ -578,9 +641,9 @@ export class LibraryIndexMaintenance {
       const totalHint = (await this.readSemanticIndexStats()).pending;
       if (totalHint === 0) return result;
       await runtime.ensureSession();
-      const conn = this.db.connection;
+      const conn = this.db.fixtureConnection;
       const reader = this.db.runtimeAuditReader;
-      const select = conn.prepare(`
+      const select = conn?.prepare(`
         SELECT c.id, c.hash
         FROM library_chunks c JOIN library_items i ON i.id = c.item_id
         ${SEMANTIC_INDEX_JOIN}
@@ -589,8 +652,8 @@ export class LibraryIndexMaintenance {
           AND (? IS NULL OR c.id > ?)
         ORDER BY c.id LIMIT ?
       `);
-      const readContent = conn.prepare("SELECT content FROM library_chunks WHERE id=? AND hash=?");
-      const store = conn.prepare(`
+      const readContent = conn?.prepare("SELECT content FROM library_chunks WHERE id=? AND hash=?");
+      const store = conn?.prepare(`
         INSERT OR REPLACE INTO library_chunk_embeddings
           (chunk_id, model_id, model_version, chunk_hash, dimension, embedding, created_at)
         SELECT c.id, ?, ?, c.hash, ?, ?, ?
@@ -600,17 +663,21 @@ export class LibraryIndexMaintenance {
       `);
       let cursor: string | null = null;
       type Chunk = { id: string; hash: string };
+      const embed = pLimit(INDEX_CONCURRENCY);
       while (!opts?.signal?.aborted) {
-        const nativePage = await reader?.embeddingIndex({
+        const nativePage: Chunk[] | undefined = await reader?.embeddingIndex({
           kind: "libraryPage", model: SEMANTIC_INDEX_MODEL, after: cursor, limit: batchSize,
         });
-        const batch: Chunk[] = nativePage ?? select.all(...SEMANTIC_INDEX_PARAMS,
-          JSON.stringify(hybridLibrarySpaceIds(this.db)), cursor, cursor, batchSize) as Chunk[];
+        const batch: Chunk[] | undefined = nativePage ?? select?.all(...SEMANTIC_INDEX_PARAMS,
+          JSON.stringify(hybridLibrarySpaceIds(this.db)), cursor, cursor, batchSize) as Chunk[] | undefined;
+        if (!batch) throw new Error("Core 未确认资料语义索引待处理片段");
         if (!batch.length) break;
+        cursor = batch.at(-1)!.id;
         const embeddings: Array<{ chunk: Chunk; bytes: Buffer }> = [];
         const staged: Array<{ chunk: Chunk; token: string }> = [];
         const computeFallback = async (chunk: Chunk) => {
           try {
+            if (!readContent) throw new Error("Core 未确认资料片段向量生成");
             const content = (readContent.get(chunk.id, chunk.hash) as { content: string } | undefined)?.content;
             if (content === undefined) { result.skipped++; return; }
             const vector = await runtime.embed(content);
@@ -622,10 +689,9 @@ export class LibraryIndexMaintenance {
           }
         };
         try {
-          for (const chunk of batch) {
-            if (opts?.signal?.aborted) return result;
+          await Promise.all(batch.map(chunk => embed(async () => {
+            if (opts?.signal?.aborted) return;
             result.processed++;
-            cursor = chunk.id;
             try {
               const native = await runtime.stageIndex({ kind: "library", id: chunk.id, hash: chunk.hash });
               if (native?.status === "staged") staged.push({ chunk, token: native.token });
@@ -636,7 +702,7 @@ export class LibraryIndexMaintenance {
               result.failed++;
               console.warn("[Library] 片段语义索引失败：", chunk.id, error);
             }
-          }
+          })));
           if (opts?.signal?.aborted) return result;
           if (staged.length) {
             const published = await reader?.publishEmbeddings(staged.map(entry => entry.token));
@@ -645,10 +711,10 @@ export class LibraryIndexMaintenance {
               result.skipped += published.skipped;
               staged.length = 0;
             } else {
-              for (const { chunk } of staged) {
-                if (opts?.signal?.aborted) return result;
-                await computeFallback(chunk);
-              }
+              if (!conn) throw new Error("Core 未确认资料片段语义索引发布");
+              await Promise.all(staged.map(({ chunk }) => embed(async () => {
+                if (!opts?.signal?.aborted) await computeFallback(chunk);
+              })));
             }
           }
         } finally {
@@ -679,7 +745,7 @@ export class LibraryIndexMaintenance {
             if (!res) throw new Error("资料向量写入未收到 Rust 核心确认");
             result.succeeded += res.succeeded;
             result.skipped += embeddings.length - res.succeeded;
-          } else {
+          } else if (conn && store) {
             const currentEligible = JSON.stringify(eligibleSpaceIds);
             conn.transaction(() => {
               for (const { chunk, bytes } of embeddings) {
@@ -707,10 +773,17 @@ export class LibraryIndexMaintenance {
    * 受管路径守卫前置：越界/symlink → unsupported + 清 FTS。
    */
   async indexExtractedText(itemId: string): Promise<void> {
-    const item = this.repo.getItem(itemId);
+    const item = await this.readIndexItem(itemId);
     if (!item || !extractableKind(item.kind) || item.trashedAt != null) return;
     const source = this.sourceVersion(item);
     const result = source ? await this.getIndexExtractedText(item) : { status: "unsupported" as const, text: null };
+    if (!this.db.fixtureConnection) {
+      if (!this.db.isOpen || !this.sourceUnchanged(item, source)) return;
+      const status = await this.publishDocument(item, source, { kind: "extracted", status: result.status, text: result.text });
+      if (!status) throw new Error("Core 未确认文档索引发布");
+      if (status === "indexed") this.scheduleSemanticIndex();
+      return;
+    }
     const currentSourceItem = (): LibraryItemDto | undefined => {
       if (!this.db.connection.open) return;
       const current = this.repo.getItem(itemId);
@@ -780,7 +853,16 @@ export class LibraryIndexMaintenance {
 
   /** 等待全部进行中的异步抽取完成（测试确定性 / 关库前收敛） */
   async flushPendingIndexes(): Promise<void> {
-    await Promise.allSettled([...this.pendingIndexes]);
+    while (this.pendingIndexes.size) await Promise.allSettled(this.pendingIndexes);
+  }
+
+  private scheduleDocumentIndex(id: string): void {
+    const pending = this.documentWork(async () => {
+      if (this.db.isOpen) await this.indexExtractedText(id);
+    })
+      .catch(error => console.warn(`[Library] 文档抽取索引失败 ${id}：`, error));
+    this.pendingIndexes.add(pending);
+    void pending.finally(() => this.pendingIndexes.delete(pending));
   }
 
   /**
@@ -790,18 +872,21 @@ export class LibraryIndexMaintenance {
    * 负责 library_chunks/library_chunks_fts；office/pdf 的“完整自愈”由两者先后触发共同覆盖。
    */
   async recoverPendingExtractions(): Promise<number> {
+    if (!this.db.fixtureConnection) {
+      let after: string | undefined;
+      let scheduled = 0;
+      while (this.db.isOpen) {
+        const items = await this.coreIndexPage("documents", after, 64);
+        if (!items.length) break;
+        after = items.at(-1)!.id;
+        for (const item of items) this.scheduleDocumentIndex(item.id);
+        scheduled += items.length;
+      }
+      return scheduled;
+    }
     this.repo.prepareLargeOfficeExtractionUpgrade(EXTRACT_MAX_OUTPUT_CHARS);
     const candidates = this.repo.listExtractionRecoveryCandidates();
-    if (candidates.length) {
-      const pending = (async () => {
-        for (const { id } of candidates) {
-          await this.indexExtractedText(id).catch((err) => console.warn(`[Library] 恢复抽取失败 ${id}：`, err));
-          await new Promise<void>(resolve => setImmediate(resolve));
-        }
-      })();
-      this.pendingIndexes.add(pending);
-      void pending.finally(() => this.pendingIndexes.delete(pending));
-    }
+    for (const { id } of candidates) this.scheduleDocumentIndex(id);
     return candidates.length;
   }
 

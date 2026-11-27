@@ -112,7 +112,7 @@ function saveConnected(db: AppDatabase, type: "telegram" | "wechat", config: Cha
 }
 
 for (const action of ["stop", "suspend"] as const) {
-  await fixture(async ({ db, gateway, counters, holdGetMe, track }) => {
+  await fixture(async ({ db, gateway, counters, holdGetMe, holdMpAuthorization, track }) => {
     saveConnected(db, "telegram", { botToken: "9001:lifecycle-first", allowUsers: ["1"] });
     saveConnected(db, "wechat", mpConfig);
     const journal = new GatewayDeliveryJournal(db.connection);
@@ -123,15 +123,20 @@ for (const action of ["stop", "suspend"] as const) {
       sessionKey: gatewaySessionQueueKey({ id: "wechat-default", type: "wechat" }, accountKey, pending),
       message: pending, replayNativeReceipts: true });
     const first = holdGetMe("9001:lifecycle-first");
+    const second = holdMpAuthorization();
     const restoring = track(gateway.restoreChannels());
-    await within(first.entered, "first restored provider authorization");
+    await within(Promise.all([first.entered, second.entered]), "independent provider authorizations while held");
+    const listener = (gateway as unknown as { webhookServer: unknown }).webhookServer;
+    assert(listener);
     await within(gateway[action](), action);
     first.release();
+    second.release();
     await within(restoring, "cancelled restore");
-    assert.equal(counters.mpAuthorizations, 0, `${action} must cancel the remaining restore loop`);
+    assert.equal(counters.mpAuthorizations, 1);
     assert.equal(gateway.status().running, false);
     assert(gateway.status().channels.every(channel => !channel.connected), "no late channel activation");
-    assert.equal((gateway as unknown as { webhookServer: unknown }).webhookServer, null, "no listener revival after cancellation");
+    assert.equal((gateway as unknown as { webhookServer: unknown }).webhookServer, action === "stop" ? null : listener,
+      "no listener revival after cancellation");
     assert.equal(counters.turns, 0, "a cancelled restore cannot execute the saved native input");
     assert.equal(counters.replies, 0);
     assert.equal(journal.get(entry.delivery_id)?.status, "pending", "the accepted input must remain recoverable");
@@ -141,7 +146,7 @@ for (const action of ["stop", "suspend"] as const) {
     assert.equal(counters.turns, 1, "a new authorized restore executes the retained input exactly once");
     assert.equal(counters.replies, 1);
   });
-  console.log(`PASS ${action} cancels stale multi-provider restore, listener and pending execution; explicit restore recovers once`);
+  console.log(`PASS ${action} cancels concurrent multi-provider restore and pending execution; explicit restore recovers once`);
 }
 
 await fixture(async ({ db, gateway, counters, holdMpAuthorization, track }) => {
