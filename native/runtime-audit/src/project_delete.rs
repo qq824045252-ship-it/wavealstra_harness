@@ -2,7 +2,7 @@ use crate::{
     Result, library_delete,
     project_memory_forget::{self, Withdrawal},
 };
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -13,8 +13,7 @@ pub fn delete(
     root: &Path,
     withdrawal: Withdrawal,
 ) -> Result<Value> {
-    let write_guard = crate::write_gate::enter()?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let prior: Option<String> = tx
         .query_row(
             "SELECT result_json FROM project_delete_receipts WHERE operation_id=?1",
@@ -35,12 +34,10 @@ pub fn delete(
     let job_ids = tx
         .prepare("SELECT id FROM cron_jobs WHERE project_id=?1 ORDER BY id")?
         .query_map([id], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    tx.execute(
-        "DELETE FROM cron_runs WHERE job_id IN (SELECT id FROM cron_jobs WHERE project_id=?1)",
-        [id],
-    )?;
-    tx.execute("DELETE FROM cron_jobs WHERE project_id=?1", [id])?;
+        .collect::<duckdb::Result<Vec<_>>>()?;
+    for job in &job_ids {
+        crate::cron_plan::remove_plan(&tx, job)?;
+    }
     tx.execute(
         "DELETE FROM work_graph_edges WHERE
            (from_type='project' AND from_id=?1) OR (to_type='project' AND to_id=?1)
@@ -56,10 +53,9 @@ pub fn delete(
         params![operation_id, result.to_string()],
     )?;
     tx.execute(
-        "DELETE FROM project_delete_receipts WHERE rowid <= last_insert_rowid()-2048",
+        "DELETE FROM project_delete_receipts WHERE rowid <= (SELECT COALESCE(MAX(rowid), 0) - 2048 FROM project_delete_receipts)",
         [],
     )?;
     crate::request_control::commit(tx)?;
-    drop(write_guard);
     Ok(result)
 }

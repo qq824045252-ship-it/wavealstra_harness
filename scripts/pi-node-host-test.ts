@@ -195,7 +195,7 @@ async function runMainClientSubprocess(input: {
         role: "ui",
         clientId: "sim-main-" + process.pid,
       });
-      const agent = new AgentService(db, undefined, {
+      const agent = await AgentService.open(db, undefined, {
         executionMode: "isolated-client",
         coreClient: () => client,
       });
@@ -471,7 +471,7 @@ async function main() {
       role: "ui",
       clientId: "test-main-ui",
     });
-    mainAgent = new AgentService(db, undefined, {
+    mainAgent = await AgentService.open(db, undefined, {
       executionMode: "isolated-client",
       coreClient: () => uiClient,
     });

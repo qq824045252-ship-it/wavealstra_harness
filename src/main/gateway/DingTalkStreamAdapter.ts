@@ -124,7 +124,10 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
   statusText(): string { return this.connected ? "已连接（钉钉 Stream，限定企业和员工）" + this.mediaStatus : this.stopped ? "未连接" : "钉钉连接恢复中"; }
   gatewayConnectionGeneration(): unknown { return this.socket; }
   workConnectionKey(): string | undefined {
-    return this.connected && this.activated && this.config
+    return this.activated ? this.gatewayPreparedConnectionKey() : undefined;
+  }
+  gatewayPreparedConnectionKey(): string | undefined {
+    return this.connected && this.config
       ? gatewayConnectionKey(this.type, [this.config.corpId, this.config.clientId, this.config.robotCode]) : undefined;
   }
   async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {

@@ -158,18 +158,31 @@ export interface LibraryCatalogRows {
   items: ItemRow[];
   recentIds: string[];
   usedBytes: number;
+  ownerName: string;
+  artifacts: LibraryArtifactRow[];
+}
+
+export interface LibraryArtifactRow {
+  id: string;
+  task_id: string;
+  space_id: string | null;
+  kind: string;
+  title: string | null;
+  updated_at: number;
+  task_title: string | null;
+  space_name: string | null;
 }
 
 export class LibraryRepository {
   private writeTail: Promise<void> = Promise.resolve();
   constructor(
-    private readonly db: Database,
+    private readonly fixture: Database | undefined,
     private readonly runtimeAuditReader?: import("../platform/runtime-audit").RuntimeAuditReader,
   ) {
     // Additive search-index metadata. No database schema-version bump: this table only
     // checkpoints derived-index format upgrades and can be rebuilt independently.
-    if (!this.db.readonly) {
-      this.db.exec(`CREATE TABLE IF NOT EXISTS library_index_state (
+    if (fixture && !fixture.readonly) {
+      fixture.exec(`CREATE TABLE IF NOT EXISTS library_index_state (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,
         updated_at INTEGER NOT NULL
@@ -178,7 +191,12 @@ export class LibraryRepository {
   }
 
   get requiresRustWrites(): boolean {
-    return Boolean(this.db.readonly || this.runtimeAuditReader?.supervised);
+    return !this.fixture || Boolean(this.fixture.readonly || this.runtimeAuditReader?.supervised);
+  }
+
+  private get db(): Database {
+    if (!this.fixture) throw new Error("此资料库操作需要通过 Rust Core 执行");
+    return this.fixture;
   }
 
   async flush(): Promise<void> {

@@ -7,6 +7,18 @@ mod batch4a_writes;
 mod batch4b_bot;
 mod batch4b_work;
 mod batch4b_writes;
+mod database;
+mod memory_versioning;
+mod native_hooks;
+mod read_hints;
+mod improvement_packages;
+mod improvement_review;
+mod outbox_publisher;
+mod relation_catalog;
+mod resource_gate;
+mod search_postings;
+mod snapshot_cut;
+mod trigger_effects;
 mod artifact_cleanup;
 mod artifact_content;
 mod artifact_snapshots;
@@ -15,6 +27,10 @@ mod blueprint_capture;
 mod blueprint_instance;
 mod blueprint_storage;
 mod bot_history_data;
+mod bot_registry_data;
+mod conversation_branch_data;
+mod conversation_goal_write;
+mod conversation_runtime_data;
 mod branch_title;
 mod business_protocol;
 mod code_review_data;
@@ -29,15 +45,25 @@ mod cron_scheduler;
 mod cron_write;
 mod db_schema;
 mod diagnostics;
+mod dots_delegation_data;
+mod dots_activity_data;
+mod dots_deferred_data;
 mod dots_file_revision;
 mod dots_file_watch;
+mod dots_file_watch_data;
+mod dots_followup_data;
+mod dots_foreground_data;
+mod dots_proactive_data;
+mod dots_reply_data;
 mod dots_scheduler;
 mod durable;
 mod durable_task_projection;
+mod task_workspace_authority;
 mod durable_workspace_move_data;
 mod embedding_index;
 mod execution_failures;
 mod expert_package;
+mod external_agent_history_data;
 mod file_backup_list;
 mod file_backup_restore;
 mod gadget_files;
@@ -45,7 +71,13 @@ mod gadget_http_host;
 mod gadget_materialize;
 mod gadget_source_save;
 mod gadget_state;
+mod goal_user_input;
+mod gateway_admission;
+mod gateway_channel_data;
+mod gateway_delivery_control;
+mod gateway_execution_authority;
 mod gateway_message_data;
+mod gateway_queue_data;
 mod gateway_scheduler;
 mod history_lane;
 mod library_backup;
@@ -56,6 +88,7 @@ mod library_note_changes;
 mod library_restore;
 mod library_text;
 mod library_text_save;
+mod loadout_observation_data;
 mod maintenance_scheduler;
 mod material_retrieval_data;
 mod memory_baselines;
@@ -67,6 +100,7 @@ mod memory_records_data;
 mod memory_turn_data;
 mod notification_data;
 mod pi_host_supervisor;
+mod pi_storage;
 mod plugin_catalog;
 mod plugin_config;
 mod project_delete;
@@ -81,6 +115,7 @@ mod project_write;
 mod remote_control;
 mod remote_image;
 mod request_control;
+mod writer_admission;
 mod scoped_notes;
 mod semantic;
 mod semantic_inference;
@@ -107,6 +142,7 @@ mod work_host_lease;
 mod work_queue_data;
 mod work_scheduler;
 mod workbench_data;
+mod python_project_bindings;
 mod workbench_write;
 mod workspace_binding_data;
 mod workspace_data;
@@ -117,9 +153,8 @@ mod workspace_persistence;
 mod workspace_preview;
 mod workspace_scan;
 mod workspace_shared_data;
-mod write_gate;
 
-use rusqlite::{Connection, OpenFlags, types::Value as SqlValue};
+use duckdb::{Connection, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -137,6 +172,8 @@ use std::{
 };
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+const DOTS_TASK_ID: &str = "mybuddy-dots";
+const DOTS_NO_CHANGE: &str = "[[dots:no-change]]";
 
 // ECMAScript whitespace, including BOM and excluding the Unicode NEL.
 fn javascript_whitespace(ch: char) -> bool {
@@ -163,7 +200,7 @@ impl SqlScope {
     fn parameters(self) -> impl Iterator<Item = SqlValue> {
         self.args.into_iter().map(|value| match value {
             ScopeParam::Text(text) => SqlValue::Text(text),
-            ScopeParam::Integer(integer) => SqlValue::Integer(integer),
+            ScopeParam::Integer(integer) => SqlValue::BigInt(integer),
         })
     }
 }
@@ -206,6 +243,58 @@ enum Request {
     RestoreTrashedTask {
         request: task_trash_restore::Restore,
     },
+    ReadGatewayChannels {
+        channel_id: Option<String>,
+    },
+    ReadGatewayChannelState {
+        channel_id: String,
+    },
+    ReadDotsDelegationData {
+        query: dots_delegation_data::Query,
+    },
+    ReadDotsReplyData {
+        query: dots_reply_data::Query,
+    },
+    WriteDotsReplyData {
+        command: dots_reply_data::Command,
+    },
+    ReadDotsActivityData { query: dots_activity_data::Query },
+    ReadDotsDeferredData { query: dots_deferred_data::Query },
+    WriteDotsDeferredData { command: dots_deferred_data::Command },
+    ReadDotsFollowupData { query: dots_followup_data::Query },
+    WriteDotsFollowupData { command: dots_followup_data::Command },
+    ReadDotsForegroundData { query: dots_foreground_data::Query },
+    WriteDotsForegroundData { command: dots_foreground_data::Command },
+    ReadDotsProactiveData { query: dots_proactive_data::Query },
+    WriteDotsProactiveData { command: dots_proactive_data::Command },
+    ReadDotsFileWatchData { query: dots_file_watch_data::Query },
+    WriteDotsFileWatchData { command: dots_file_watch_data::Command },
+    WriteGatewayChannel {
+        operation_id: String,
+        draft: gateway_channel_data::WriteChannel,
+    },
+    ReadGatewayOutbox {
+        delivery_id: String,
+    },
+    ReadGatewayInbox {
+        delivery_id: String,
+    },
+    ReadGatewayExecutionAuthority { task_id: String },
+    MaterializeGatewayTask { command: gateway_execution_authority::Materialize },
+    ReadGatewayAssignment {
+        origin: gateway_admission::Origin,
+    },
+    ReadGatewayQueue {
+        query: gateway_queue_data::Query,
+    },
+    GatewayAdmitInbound {
+        draft: gateway_admission::Admission,
+    },
+    GatewayDeliveryControl {
+        delivery_id: String,
+        operation_id: String,
+        command: gateway_delivery_control::Action,
+    },
     ReadGatewayMessages {
         query: gateway_message_data::Query,
     },
@@ -241,9 +330,11 @@ enum Request {
         limit: u32,
     },
     MutateSnapshot {
-        epoch: i64,
         write_id: String,
         mutation: snapshots::Mutation,
+    },
+    SnapshotReceipt {
+        write_id: String,
     },
     Diagnostics {
         task_id: String,
@@ -254,6 +345,13 @@ enum Request {
     TaskList {
         dots_task_id: String,
         include_expert_bindings: bool,
+    },
+    TaskRecord {
+        task_id: String,
+        include_expert_bindings: bool,
+    },
+    PythonProjectBindings {
+        ancestors: Option<Vec<String>>,
     },
     WorkspaceData {
         query: workspace_data::Query,
@@ -283,6 +381,10 @@ enum Request {
         query: memory_turn_data::Query,
         user_id: String,
     },
+    WriteMemoryTurnExtraction {
+        command: memory_turn_data::ExtractionCommand,
+        user_id: String,
+    },
     MemoryRecordsData {
         query: memory_records_data::Query,
     },
@@ -309,6 +411,29 @@ enum Request {
     WorkQueueSupported,
     ReadBotHistoryPage {
         query: bot_history_data::Query,
+    },
+    ReadBotRegistry {
+        query: bot_registry_data::Query,
+    },
+    ReadConversationRuntime {
+        query: conversation_runtime_data::Query,
+    },
+    ReadConversationBranchData {
+        query: conversation_branch_data::Query,
+        #[serde(rename = "__client")]
+        client: Option<business_protocol::ClientContext>,
+    },
+    ExternalAgentHistoryPage {
+        task_id: String,
+        after: Option<external_agent_history_data::Cursor>,
+    },
+    ReadLoadoutObservations {
+        task_id: String,
+        limit: i64,
+    },
+    CreateConversationGoal {
+        operation_id: String,
+        draft: conversation_goal_write::CreateGoal,
     },
     ReadWorkQueue {
         query: work_queue_data::Query,
@@ -344,11 +469,38 @@ enum Request {
     WriteNotification {
         mutation: notification_data::Mutation,
     },
+    ReadNativeHooks {
+        query: native_hooks::Query,
+    },
+    WriteNativeHooks {
+        mutation: native_hooks::Mutation,
+    },
+    ReadPathHints {
+        query: read_hints::Query,
+    },
+    WritePathHints {
+        mutation: read_hints::Mutation,
+    },
+    ReadImprovementPackages {
+        query: improvement_packages::Query,
+    },
+    WriteImprovementPackages {
+        mutation: improvement_packages::Mutation,
+    },
+    ReadImprovementReview {
+        query: improvement_review::Query,
+    },
+    WriteImprovementReview {
+        mutation: improvement_review::Mutation,
+    },
     UpsertWorkspace {
         mutation: workspace_persistence::Mutation,
     },
     DurableTaskProjectionSupported,
     DurableTaskOriginsSupported,
+    ReadDurableTaskProjection {
+        query: durable_task_projection::Query,
+    },
     WriteDurableTaskProjection {
         request: durable_task_projection::Request,
     },
@@ -452,8 +604,13 @@ enum Request {
         task_id: String,
         edit: task_metadata::SidebarEdit,
     },
+    ApplicationDatabaseIdentity,
+    TaskWorkspacePaths,
     ArtifactSnapshots {
         task_ids: Vec<String>,
+    },
+    ArtifactData {
+        query: artifact_snapshots::Query,
     },
     WriteArtifact {
         task_id: String,
@@ -667,7 +824,7 @@ enum Request {
         action: connector_market::Action,
     },
     WriteDiagnostics {
-        epoch: i64,
+        writer_id: String,
         sequence: i64,
         writes: Vec<diagnostics::Write>,
     },
@@ -709,6 +866,7 @@ enum Request {
         since: i64,
         coverage: bool,
     },
+    UsageSessionFiles,
     UsageHistory {
         job: usage_history::Job,
     },
@@ -789,6 +947,9 @@ enum Request {
         command: pi_host_supervisor::Command,
         #[serde(rename = "__client")]
         client: Option<business_protocol::ClientContext>,
+    },
+    PiStorage {
+        payload: pi_storage::Invocation,
     },
     CoreMaintenanceScheduler {
         #[serde(flatten)]
@@ -1045,7 +1206,7 @@ enum WorkspaceJob {
     FileBackupList(file_backup_list::Query),
     RestoreFileBackup(file_backup_restore::Request),
     SubagentSettings(subagent_settings_data::Request),
-    WorkGraphIntegrity(PathBuf),
+    WorkGraphIntegrity,
     FileRevision {
         root: PathBuf,
         file: PathBuf,
@@ -1070,6 +1231,7 @@ enum WorkspaceJob {
 
 #[derive(Default)]
 struct PoolMetrics {
+    queue_managed_by_admission: bool,
     workers: AtomicUsize,
     active: AtomicUsize,
     max_active: AtomicUsize,
@@ -1094,6 +1256,7 @@ impl PoolMetrics {
 }
 
 static READ_POOL_METRICS: PoolMetrics = PoolMetrics {
+    queue_managed_by_admission: false,
     workers: AtomicUsize::new(0),
     active: AtomicUsize::new(0),
     max_active: AtomicUsize::new(0),
@@ -1103,6 +1266,7 @@ static READ_POOL_METRICS: PoolMetrics = PoolMetrics {
     overloaded: AtomicU64::new(0),
 };
 static WORKSPACE_IO_METRICS: PoolMetrics = PoolMetrics {
+    queue_managed_by_admission: false,
     workers: AtomicUsize::new(0),
     active: AtomicUsize::new(0),
     max_active: AtomicUsize::new(0),
@@ -1112,6 +1276,7 @@ static WORKSPACE_IO_METRICS: PoolMetrics = PoolMetrics {
     overloaded: AtomicU64::new(0),
 };
 static GADGET_IO_METRICS: PoolMetrics = PoolMetrics {
+    queue_managed_by_admission: false,
     workers: AtomicUsize::new(0),
     active: AtomicUsize::new(0),
     max_active: AtomicUsize::new(0),
@@ -1120,8 +1285,16 @@ static GADGET_IO_METRICS: PoolMetrics = PoolMetrics {
     completed: AtomicU64::new(0),
     overloaded: AtomicU64::new(0),
 };
-static DB_WRITER_QUEUED: AtomicUsize = AtomicUsize::new(0);
-static DB_WRITER_MAX_QUEUED: AtomicUsize = AtomicUsize::new(0);
+static DB_WRITE_POOL_METRICS: PoolMetrics = PoolMetrics {
+    queue_managed_by_admission: true,
+    workers: AtomicUsize::new(0),
+    active: AtomicUsize::new(0),
+    max_active: AtomicUsize::new(0),
+    queued: AtomicUsize::new(0),
+    max_queued: AtomicUsize::new(0),
+    completed: AtomicU64::new(0),
+    overloaded: AtomicU64::new(0),
+};
 
 pub fn runtime_metrics_json() -> Value {
     let (intra, inter) = semantic_inference::configured_threads();
@@ -1129,10 +1302,7 @@ pub fn runtime_metrics_json() -> Value {
         "readPool": READ_POOL_METRICS.snapshot(),
         "workspaceIo": WORKSPACE_IO_METRICS.snapshot(),
         "gadgetIo": GADGET_IO_METRICS.snapshot(),
-        "databaseWriter": {
-            "queued": DB_WRITER_QUEUED.load(Ordering::Acquire),
-            "maxQueued": DB_WRITER_MAX_QUEUED.load(Ordering::Acquire),
-        },
+        "databaseWriter": DB_WRITE_POOL_METRICS.snapshot(),
         "gadgetHttp": gadget_http_host::metrics_json(),
         "ort": {
             "intraThreads": intra,
@@ -1207,7 +1377,9 @@ impl<J: Send + 'static> WorkerPool<J> {
                                 guard = cv.wait(guard).unwrap_or_else(|e| e.into_inner());
                             }
                             let popped = guard.items.pop_front();
-                            metrics.queued.store(guard.items.len(), Ordering::Release);
+                            if !metrics.queue_managed_by_admission {
+                                metrics.queued.store(guard.items.len(), Ordering::Release);
+                            }
                             popped
                         };
                         let Some((id, item)) = job else {
@@ -1244,9 +1416,11 @@ impl<J: Send + 'static> WorkerPool<J> {
             return Err((id, "OVERLOADED"));
         }
         guard.items.push_back((id, item));
-        let q = guard.items.len();
-        self.metrics.queued.store(q, Ordering::Release);
-        self.metrics.max_queued.fetch_max(q, Ordering::AcqRel);
+        if !self.metrics.queue_managed_by_admission {
+            let q = guard.items.len();
+            self.metrics.queued.store(q, Ordering::Release);
+            self.metrics.max_queued.fetch_max(q, Ordering::AcqRel);
+        }
         cv.notify_one();
         Ok(())
     }
@@ -1265,15 +1439,15 @@ impl<J: Send + 'static> WorkerPool<J> {
     }
 }
 
-fn start_workspace_scans() -> io::Result<WorkerPool<WorkspaceJob>> {
+fn start_workspace_scans(engine: Arc<database::DuckDbEngine>) -> io::Result<WorkerPool<WorkspaceJob>> {
     let workers = configured_workspace_io_workers();
     WorkerPool::spawn(
         "workspace-scan",
         workers,
         32,
         &WORKSPACE_IO_METRICS,
-        || (),
-        |(), id, job| {
+        move || Arc::clone(&engine),
+        |engine, id, job| {
             if !request_control::begin(&id) {
                 return true;
             }
@@ -1288,9 +1462,14 @@ fn start_workspace_scans() -> io::Result<WorkerPool<WorkspaceJob>> {
                 WorkspaceJob::SubagentSettings(request) => {
                     Data::PluginConfig(subagent_settings_data::run(request))
                 }
-                WorkspaceJob::WorkGraphIntegrity(path) => work_graph_integrity::scan(&path)
-                    .map(Data::WorkGraphIntegrity)
-                    .unwrap_or(Data::Json(Value::Null)),
+                WorkspaceJob::WorkGraphIntegrity => (|| -> Result<Data> {
+                    let mut pooled = engine.checkout_reader(Duration::from_secs(10))?;
+                    if let (Some(req_id), Some(ctrl)) = (id.as_deref(), request_control::shared()) {
+                        pooled.bind_request(req_id, ctrl.clone());
+                    }
+                    work_graph_integrity::scan(pooled.conn_mut()).map(Data::WorkGraphIntegrity)
+                })()
+                .unwrap_or(Data::Json(Value::Null)),
                 WorkspaceJob::FileRevision { root, file } => {
                     Data::DotsFileRevision(dots_file_revision::read(&root, &file))
                 }
@@ -1331,12 +1510,13 @@ fn start_workspace_scans() -> io::Result<WorkerPool<WorkspaceJob>> {
 
 fn dispatch_workspace(
     worker: &mut Option<WorkerPool<WorkspaceJob>>,
+    engine: &Arc<database::DuckDbEngine>,
     id: RequestId,
     job: WorkspaceJob,
     _fallback: Data,
 ) -> Result<()> {
     if worker.is_none() {
-        *worker = start_workspace_scans().ok();
+        *worker = start_workspace_scans(Arc::clone(engine)).ok();
     }
     match worker {
         Some(pool) => match pool.try_send(id, job) {
@@ -1349,11 +1529,13 @@ fn dispatch_workspace(
 }
 
 fn start_read_pool(
-    db_path: PathBuf,
+    engine: Arc<database::DuckDbEngine>,
+    gate: Arc<resource_gate::ResourceGate>,
+    outbox: Arc<outbox_publisher::OutboxPublisher>,
     staged: Arc<embedding_index::StagedVectors>,
     executor_tracker: Arc<business_protocol::ExecutorTracker>,
 ) -> io::Result<WorkerPool<Request>> {
-    let workers = configured_read_pool_workers();
+    let workers = engine.config().read_pool_size;
     WorkerPool::spawn(
         "read-pool",
         workers,
@@ -1361,34 +1543,53 @@ fn start_read_pool(
         &READ_POOL_METRICS,
         move || {
             (
-                None::<Connection>,
-                HashMap::<String, Connection>::new(),
-                None::<Connection>,
-                db_path.clone(),
+                Arc::clone(&engine),
+                Arc::clone(&gate),
+                Arc::clone(&outbox),
+                HashMap::<String, durable::HistorySession>::new(),
                 Arc::clone(&staged),
                 Arc::clone(&executor_tracker),
             )
         },
-        |(conn_opt, durable_sessions, writer_opt, db_path, staged, tracker), id, request| {
+        |(engine, gate, outbox, durable_sessions, staged, tracker), id, request| {
             if !request_control::begin(&id) {
                 return true;
             }
-            let result = (|| -> Result<Data> {
-                if conn_opt.is_none() {
-                    *conn_opt = Some(read_connection(db_path)?);
-                }
-                let mut side_effects = None;
-                read(
-                    conn_opt.as_mut().unwrap(),
-                    db_path,
-                    durable_sessions,
-                    writer_opt,
-                    staged,
-                    tracker,
-                    &mut side_effects,
-                    request,
-                )
-            })();
+            let result = if let Request::CoreEventsSnapshot { domain } = request {
+                (|| -> Result<Data> {
+                    let mut pinned = snapshot_cut::StrongSnapshotCut::acquire(
+                        engine,
+                        gate,
+                        outbox,
+                        &business_protocol::current_core_generation(),
+                        Duration::from_secs(30),
+                        Duration::from_secs(5),
+                    )?;
+                    let data = business_protocol::events_snapshot(pinned.conn(), domain.as_deref())
+                        .map(Data::Json);
+                    let _ = pinned.release_lease();
+                    data
+                })()
+            } else {
+                (|| -> Result<Data> {
+                    let mut pooled = engine.checkout_reader(Duration::from_secs(15))?;
+                    if let (Some(req_id), Some(ctrl)) = (id.as_deref(), request_control::shared()) {
+                        pooled.bind_request(req_id, ctrl.clone());
+                    }
+                    let mut side_effects = None;
+                    read(
+                        pooled.conn_mut(),
+                        engine,
+                        gate,
+                        outbox,
+                        durable_sessions,
+                        staged,
+                        tracker,
+                        &mut side_effects,
+                        request,
+                    )
+                })()
+            };
             write_reply(&id, result, false).is_ok()
         },
     )
@@ -1418,7 +1619,7 @@ enum InferenceJob {
 }
 
 fn start_inference(
-    db_path: PathBuf,
+    engine: Arc<database::DuckDbEngine>,
     staged: Arc<embedding_index::StagedVectors>,
 ) -> Result<(
     mpsc::SyncSender<(RequestId, InferenceJob)>,
@@ -1430,7 +1631,6 @@ fn start_inference(
         .spawn(move || {
             let mut model = semantic_inference::Inference::default();
             let mut verifier = semantic_model::Verifier::default();
-            let mut reader = None;
             for (id, request) in jobs {
                 if !request_control::begin(&id) {
                     continue;
@@ -1441,11 +1641,13 @@ fn start_inference(
                         Ok(Data::ModelInstallation(verifier.probe(probe)))
                     }
                     InferenceJob::Stage(request) => (|| {
-                        if reader.is_none() {
-                            reader = Some(read_connection(&db_path)?);
+                        let mut reader = engine.checkout_reader(Duration::from_secs(10))?;
+                        if let (Some(req_id), Some(ctrl)) = (id.as_deref(), request_control::shared())
+                        {
+                            reader.bind_request(req_id, ctrl.clone());
                         }
                         embedding_index::stage(
-                            reader.as_ref().unwrap(),
+                            reader.conn(),
                             &mut model,
                             &staged,
                             request,
@@ -1512,12 +1714,14 @@ type MaintenanceWorker = (
     thread::JoinHandle<()>,
 );
 
-fn start_maintenance(db_path: PathBuf) -> io::Result<MaintenanceWorker> {
+fn start_maintenance(
+    engine: Arc<database::DuckDbEngine>,
+    gate: Arc<resource_gate::ResourceGate>,
+) -> io::Result<MaintenanceWorker> {
     let (send, jobs) = mpsc::sync_channel::<(RequestId, MaintenanceJob)>(8);
     let worker = thread::Builder::new()
         .name("maintenance".into())
         .spawn(move || {
-            let mut writer = None;
             let mut prepared_restore = None;
             for (id, job) in jobs {
                 if !request_control::begin(&id) {
@@ -1526,14 +1730,12 @@ fn start_maintenance(db_path: PathBuf) -> io::Result<MaintenanceWorker> {
                 // A panicking job replies with an error and leaves the thread serving:
                 // it must never take the shared process (or a later job) with it.
                 let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_maintenance(&db_path, &mut writer, &mut prepared_restore, job)
+                    run_maintenance(&engine, &gate, id.as_deref(), &mut prepared_restore, job)
                 })) {
                     Ok(result) => result,
                     Err(_) => Err("maintenance job panicked".into()),
                 };
                 if result.is_err() {
-                    // A half-open transaction must not outlive its job.
-                    writer = None;
                     prepared_restore = None;
                 }
                 if write_maintenance_reply(&id, result).is_err() {
@@ -1546,12 +1748,13 @@ fn start_maintenance(db_path: PathBuf) -> io::Result<MaintenanceWorker> {
 
 fn dispatch_maintenance(
     worker: &mut Option<MaintenanceWorker>,
-    db_path: &Path,
+    engine: &Arc<database::DuckDbEngine>,
+    gate: &Arc<resource_gate::ResourceGate>,
     id: RequestId,
     job: MaintenanceJob,
 ) -> Result<()> {
     if worker.is_none() {
-        *worker = start_maintenance(db_path.to_path_buf()).ok();
+        *worker = start_maintenance(Arc::clone(engine), Arc::clone(gate)).ok();
     }
     match worker {
         Some((sender, _)) => match sender.try_send((id, job)) {
@@ -1569,31 +1772,55 @@ fn dispatch_maintenance(
 }
 
 fn run_maintenance(
-    db_path: &Path,
-    writer: &mut Option<Connection>,
+    engine: &database::DuckDbEngine,
+    gate: &resource_gate::ResourceGate,
+    req_id: Option<&str>,
     prepared_restore: &mut Option<(String, library_restore::Backup)>,
     job: MaintenanceJob,
 ) -> Result<Data> {
+    let checkout_with_gate = |domain_key: &str, also: Option<&str>| -> Result<(resource_gate::ResourceLease, database::PooledConnection)> {
+        use resource_gate::{ResourceKey, ResourceRequirement};
+        let mut plan = vec![
+            ResourceRequirement::shared(ResourceKey::DbLifecycle),
+            ResourceRequirement::shared(ResourceKey::CommitShare),
+            ResourceRequirement::exclusive(ResourceKey::MaintenanceCycle(domain_key.to_owned())),
+            ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), domain_key.to_owned())),
+        ];
+        plan.extend(also.map(|name| ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), name.to_owned()))));
+        let lease = gate
+            .acquire(plan, Duration::from_secs(30), || {
+                req_id
+                    .and_then(|id| request_control::shared().map(|c| c.is_cancelled_or_expired(id)))
+                    .unwrap_or(false)
+            })
+            .map_err(|e| -> Box<dyn Error> { format!("Maintenance gate acquire failed: {e:?}").into() })?;
+        let mut writer = engine.checkout_writer(Duration::from_secs(30))?;
+        if let (Some(id), Some(ctrl)) = (req_id, request_control::shared()) {
+            writer.bind_request(id, ctrl.clone());
+        }
+        Ok((lease, writer))
+    };
+
     match job {
         MaintenanceJob::CleanupArtifactFiles { root, cleanup } => {
-            artifact_cleanup::clean(write_connection(writer, db_path)?, &root, cleanup)
-                .map(Data::ArtifactCleanup)
+            let (_lease, mut writer) = checkout_with_gate("artifacts", None)?;
+            artifact_cleanup::clean(writer.conn_mut(), &root, cleanup).map(Data::ArtifactCleanup)
         }
         MaintenanceJob::DeleteLibrary { root, target } => {
-            library_delete::delete(write_connection(writer, db_path)?, &root, target)
-                .map(Data::Json)
+            let (_lease, mut writer) = checkout_with_gate("library", None)?;
+            library_delete::delete(writer.conn_mut(), &root, target).map(Data::Json)
         }
         MaintenanceJob::DrainLibraryCleanup { root } => {
-            library_delete::drain(write_connection(writer, db_path)?, &root)
-                .map(|completed| Data::Json(completed.into()))
+            let (_lease, mut writer) = checkout_with_gate("library", None)?;
+            library_delete::drain(writer.conn_mut(), &root).map(|completed| Data::Json(completed.into()))
         }
         MaintenanceJob::ExportLibraryBackup {
             root,
             owner,
             staging,
         } => {
-            let status =
-                library_backup::export(write_connection(writer, db_path)?, &root, owner, &staging)?;
+            let (_lease, mut writer) = checkout_with_gate("library", None)?;
+            let status = library_backup::export(writer.conn_mut(), &root, owner, &staging)?;
             Ok(Data::Json(serde_json::to_value(status)?))
         }
         // Preparing and discarding only touch files and this thread's own state.
@@ -1628,9 +1855,9 @@ fn run_maintenance(
             let (_, backup) = prepared_restore
                 .take()
                 .ok_or("missing prepared library backup")?;
+            let (_lease, mut writer) = checkout_with_gate("library", None)?;
             Ok(Data::Json(
-                match library_restore::restore(write_connection(writer, db_path)?, backup, restore)
-                {
+                match library_restore::restore(writer.conn_mut(), backup, restore) {
                     Ok(Some(receipt)) => {
                         serde_json::json!({ "status": "restored", "receipt": receipt })
                     }
@@ -1642,28 +1869,25 @@ fn run_maintenance(
             ))
         }
         MaintenanceJob::RecoverLibraryRestores { root } => {
-            library_restore::recover(write_connection(writer, db_path)?, &root, None)
-                .map(|count| Data::Json(count.into()))
+            let (_lease, mut writer) = checkout_with_gate("library", None)?;
+            library_restore::recover(writer.conn_mut(), &root, None).map(|count| Data::Json(count.into()))
         }
         MaintenanceJob::DeleteProject {
             operation_id,
             id,
             root,
             withdrawal,
-        } => project_delete::delete(
-            write_connection(writer, db_path)?,
-            &operation_id,
-            &id,
-            &root,
-            withdrawal,
-        )
-        .map(Data::Json),
+        } => {
+            let (_lease, mut writer) = checkout_with_gate("projects", Some("cron"))?;
+            project_delete::delete(writer.conn_mut(), &operation_id, &id, &root, withdrawal)
+                .map(Data::Json)
+        }
         MaintenanceJob::PromoteProjectEventToLibrary { promotion } => {
-            let result =
-                project_library_promotion::promote(write_connection(writer, db_path)?, promotion)
-                    .unwrap_or_else(|error| project_library_promotion::Reply::Rejected {
-                        message: error.to_string(),
-                    });
+            let (_lease, mut writer) = checkout_with_gate("library", None)?;
+            let result = project_library_promotion::promote(writer.conn_mut(), promotion)
+                .unwrap_or_else(|error| project_library_promotion::Reply::Rejected {
+                    message: error.to_string(),
+                });
             Ok(Data::Json(serde_json::to_value(result)?))
         }
     }
@@ -1671,9 +1895,10 @@ fn run_maintenance(
 
 fn read(
     db: &mut Connection,
-    db_path: &Path,
-    durable_sessions: &mut HashMap<String, Connection>,
-    writer: &mut Option<Connection>,
+    engine: &Arc<database::DuckDbEngine>,
+    gate: &Arc<resource_gate::ResourceGate>,
+    outbox: &Arc<outbox_publisher::OutboxPublisher>,
+    durable_sessions: &mut HashMap<String, durable::HistorySession>,
     staged: &embedding_index::StagedVectors,
     executor_tracker: &business_protocol::ExecutorTracker,
     side_effects: &mut Option<business_protocol::WriteSideEffects>,
@@ -1684,7 +1909,7 @@ fn read(
             business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
         });
         let fx = business_protocol::execute_command(
-            write_connection(writer, db_path)?,
+            db,
             executor_tracker,
             &ctx,
             command,
@@ -1702,6 +1927,7 @@ fn read(
                 owner_generation,
                 host_generation,
                 ephemeral: true,
+                ..
             },
         client,
     } = request
@@ -1736,7 +1962,7 @@ fn read(
             business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
         });
         let fx = business_protocol::execute_execution(
-            write_connection(writer, db_path)?,
+            db,
             executor_tracker,
             &ctx,
             action,
@@ -1753,7 +1979,7 @@ fn read(
             business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
         });
         let fx = work_scheduler::execute_write(
-            write_connection(writer, db_path)?,
+            db,
             executor_tracker,
             &ctx,
             command,
@@ -1770,7 +1996,7 @@ fn read(
             business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
         });
         let fx = cron_scheduler::execute_write(
-            write_connection(writer, db_path)?,
+            db,
             executor_tracker,
             &ctx,
             command,
@@ -1787,7 +2013,7 @@ fn read(
             business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
         });
         let fx = dots_scheduler::execute_write(
-            write_connection(writer, db_path)?,
+            db,
             executor_tracker,
             &ctx,
             command,
@@ -1804,7 +2030,7 @@ fn read(
             business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
         });
         let fx = gateway_scheduler::execute_write(
-            write_connection(writer, db_path)?,
+            db,
             executor_tracker,
             &ctx,
             command,
@@ -1821,7 +2047,7 @@ fn read(
             business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
         });
         let fx = remote_control::execute_write(
-            write_connection(writer, db_path)?,
+            db,
             &ctx,
             command,
         )?;
@@ -1837,7 +2063,7 @@ fn read(
             business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
         });
         let fx = pi_host_supervisor::execute_write(
-            write_connection(writer, db_path)?,
+            db,
             executor_tracker,
             &ctx,
             command,
@@ -1845,6 +2071,15 @@ fn read(
         let data = fx.data.clone();
         *side_effects = Some(fx);
         return Ok(Data::Json(data));
+    }
+    if let Request::PiStorage { payload } = request {
+        let may_publish_goal = matches!(&payload.action, pi_storage::Action::Commit { batches, .. }
+            if batches.iter().flatten().any(|write| pi_storage::goal_user_input_task(write).is_some()));
+        let result = payload.execute(db).map(Data::Json);
+        if result.is_ok() && may_publish_goal {
+            outbox.wake();
+        }
+        return result;
     }
     if let Request::CoreMaintenanceScheduler { command, client } = request {
         if command.is_read_only() {
@@ -1854,7 +2089,7 @@ fn read(
             business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
         });
         let fx = maintenance_scheduler::execute_write(
-            write_connection(writer, db_path)?,
+            db,
             executor_tracker,
             &ctx,
             command,
@@ -1864,7 +2099,17 @@ fn read(
         return Ok(Data::Json(data));
     }
     if let Request::CoreEventsSnapshot { domain } = request {
-        return business_protocol::events_snapshot(db, domain.as_deref()).map(Data::Json);
+        let mut pinned = snapshot_cut::StrongSnapshotCut::acquire(
+            engine,
+            gate,
+            outbox,
+            &business_protocol::current_core_generation(),
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+        )?;
+        let result = business_protocol::events_snapshot(pinned.conn(), domain.as_deref()).map(Data::Json);
+        let _ = pinned.release_lease();
+        return result;
     }
     if let Request::CoreEventsReplay {
         after_seq,
@@ -1877,7 +2122,7 @@ fn read(
     }
     if let Request::CoreEventsRetention { limit } = request {
         let fx = business_protocol::execute_command(
-            write_connection(writer, db_path)?,
+            db,
             executor_tracker,
             &business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation()),
             business_protocol::CommandInput::SetEventRetention { limit },
@@ -1896,7 +2141,7 @@ fn read(
             business_protocol::ClientContext::synthetic(&business_protocol::current_core_generation())
         });
         let fx = business_protocol::handle_lifecycle(
-            write_connection(writer, db_path)?,
+            db,
             &ctx,
             &action,
             resident_enabled,
@@ -1915,7 +2160,7 @@ fn read(
     } = request
     {
         let fx = business_protocol::handle_executor_presence(
-            write_connection(writer, db_path)?,
+            db,
             executor_tracker,
             online,
             epoch,
@@ -1928,7 +2173,7 @@ fn read(
     }
     if let Request::WorkHostLease { request } = request {
         return Ok(Data::Json(serde_json::to_value(work_host_lease::run(
-            write_connection(writer, db_path)?,
+            db,
             request,
         )?)?));
     }
@@ -1943,7 +2188,7 @@ fn read(
     }
     if let Request::PublishEmbeddings { tokens, at } = request {
         return staged
-            .publish(write_connection(writer, db_path)?, &tokens, at)
+            .publish(db, &tokens, at)
             .map(Data::EmbeddingCounts);
     }
     if let Request::DiscardEmbeddings { tokens } = request {
@@ -1951,15 +2196,14 @@ fn read(
         return Ok(Data::Json(true.into()));
     }
     if let Request::Durable { session, action } = request {
-        return durable::read(durable_sessions, session, action).map(Data::Json);
+        return durable::read(engine, durable_sessions, session, action).map(Data::Json);
     }
     if let Request::LibraryText { request } = request {
         return library_text::stage(request).map(Data::LibraryText);
     }
     if let Request::ReadGadgetSource { root, id, inspect } = request {
         return Ok(read_recovered_gadget_source(
-            writer,
-            db_path,
+            db,
             &root,
             &id,
             || gadget_files::read_source(&root, &id, inspect),
@@ -1967,8 +2211,7 @@ fn read(
     }
     if let Request::ReadGadgetManifest { root, id } = request {
         return Ok(read_recovered_gadget_source(
-            writer,
-            db_path,
+            db,
             &root,
             &id,
             || gadget_files::read_manifest(&root, &id),
@@ -1977,8 +2220,7 @@ fn read(
     if let Request::CaptureBlueprintGadget { root, id, deny } = request {
         let deny = blueprint_capture::deny_pattern(&deny)?;
         return Ok(read_recovered_gadget_source(
-            writer,
-            db_path,
+            db,
             &root,
             &id,
             || gadget_files::capture_blueprint(&root, &id, &deny),
@@ -1997,30 +2239,30 @@ fn read(
     }
     if let Request::RemoveGadgetFiles { root, id } = request {
         let removed =
-            gadget_files::remove_unregistered(write_connection(writer, db_path)?, &root, &id)?;
+            gadget_files::remove_unregistered(db, &root, &id)?;
         return Ok(Data::Json(removed.into()));
     }
     if let Request::ReconcileBlueprintStorage { root } = request {
-        let failures = blueprint_storage::reconcile(write_connection(writer, db_path)?, &root)?;
+        let failures = blueprint_storage::reconcile(db, &root)?;
         return Ok(Data::Json(serde_json::to_value(failures)?));
     }
     if let Request::CreateGadgetFiles { create } = request {
         return Ok(Data::GadgetFiles(gadget_materialize::create(
-            write_connection(writer, db_path)?,
+            db,
             create,
         )));
     }
     if let Request::ExportGadgetFiles { export } = request {
-        return Ok(Data::GadgetFiles(gadget_materialize::export(export)));
+        return Ok(Data::GadgetFiles(gadget_materialize::export(db, export)));
     }
     if let Request::SaveGadgetSource { save } = request {
         return Ok(Data::GadgetSourceSaved(gadget_source_save::save(
-            write_connection(writer, db_path)?,
+            db,
             save,
         )));
     }
     if let Request::ReconcileGadgetStorage { root } = request {
-        let failed = gadget_files::reconcile(write_connection(writer, db_path)?, &root)?;
+        let failed = gadget_files::reconcile(db, &root)?;
         return Ok(Data::Json(serde_json::to_value(failed)?));
     }
     if let Request::PluginCatalog { query } = request {
@@ -2043,7 +2285,7 @@ fn read(
     }
     if let Request::MoveWorkspaceTree { movement } = request {
         return Ok(Data::WorkspaceMove(workspace_move::write(
-            write_connection(writer, db_path)?,
+            db,
             movement,
         )));
     }
@@ -2052,7 +2294,7 @@ fn read(
     }
     if let Request::SetSidebarArchive { archive } = request {
         return Ok(Data::SidebarArchive(workspace_move::archive(
-            write_connection(writer, db_path)?,
+            db,
             archive,
         )));
     }
@@ -2094,13 +2336,13 @@ fn read(
     }
     if let Request::UpsertWorkspace { mutation } = request {
         return Ok(Data::WorkspacePersistence(workspace_persistence::write(
-            write_connection(writer, db_path)?,
+            db,
             mutation,
         )));
     }
     if let Request::DeleteWorkspace { mutation } = request {
         return Ok(Data::WorkspaceDelete(workspace_delete::write(
-            write_connection(writer, db_path)?,
+            db,
             mutation,
         )));
     }
@@ -2109,93 +2351,167 @@ fn read(
     }
     if let Request::WriteWorkspaceBinding { mutation } = request {
         return Ok(Data::WorkspaceBindingWrite(workspace_binding_data::write(
-            write_connection(writer, db_path)?,
+            db,
             mutation,
         )));
     }
     if let Request::MemoryTurnData { query, user_id } = request {
         return memory_turn_data::read(db, query, &user_id).map(Data::Json);
     }
+    if let Request::WriteMemoryTurnExtraction { command, user_id } = request {
+        return memory_turn_data::write_extraction(db, command, &user_id).map(Data::Json);
+    }
     if let Request::MemoryRecordsData { query } = request {
         return memory_records_data::read(db, query).map(Data::Json);
     }
     if let Request::WriteMemoryRecord { request } = request {
         return Ok(Data::MemoryRecordWrite(memory_record_write::write(
-            write_connection(writer, db_path)?,
+            db,
             request,
         )));
     }
     if let Request::ProjectPins { request } = request {
-        let conn = if request.is_read() {
-            db
-        } else {
-            write_connection(writer, db_path)?
-        };
-        return Ok(Data::ProjectPins(project_pins_data::run(conn, request)));
+        return Ok(Data::ProjectPins(project_pins_data::run(db, request)));
     }
     if let Request::ProjectPosts { request } = request {
-        let conn = if request.is_read() {
-            db
-        } else {
-            write_connection(writer, db_path)?
-        };
-        return Ok(Data::ProjectPosts(project_posts_data::run(conn, request)));
+        return Ok(Data::ProjectPosts(project_posts_data::run(db, request)));
     }
     if let Request::ProjectEventData { request } = request {
-        let conn = if request.is_read() {
-            db
-        } else {
-            write_connection(writer, db_path)?
-        };
         return Ok(Data::ProjectEventData(project_event_data::run(
-            conn, request,
+            db, request,
         )));
     }
     if let Request::AnswerRoutingData { request } = request {
-        let conn = if request.is_read() {
-            db
-        } else {
-            write_connection(writer, db_path)?
-        };
         return Ok(Data::AnswerRoutingData(answer_routing_data::run(
-            conn, request,
+            db, request,
         )));
     }
     if let Request::ReadWorkQueue { query } = request {
         return work_queue_data::read(db, query).map(Data::Json);
     }
+    if let Request::ReadGatewayChannels { channel_id } = request {
+        let channels = gateway_channel_data::read(db, channel_id)?;
+        return Ok(Data::Json(serde_json::to_value(channels)?));
+    }
+    if let Request::ReadGatewayChannelState { channel_id } = request {
+        return gateway_channel_data::read_state(db, &channel_id).map(Data::Json);
+    }
+    if let Request::ReadDotsDelegationData { query } = request {
+        return dots_delegation_data::read(db, query).map(Data::Json);
+    }
+    if let Request::ReadDotsReplyData { query } = request {
+        return dots_reply_data::read(db, query).map(Data::Json);
+    }
+    if let Request::WriteDotsReplyData { command } = request {
+        return dots_reply_data::write(db, command).map(Data::Json);
+    }
+    if let Request::ReadDotsActivityData { query } = request {
+        return dots_activity_data::read(db, query).map(Data::Json);
+    }
+    if let Request::ReadDotsDeferredData { query } = request {
+        return dots_deferred_data::read(db, query).map(Data::Json);
+    }
+    if let Request::WriteDotsDeferredData { command } = request {
+        return dots_deferred_data::write(db, command).map(Data::Json);
+    }
+    if let Request::ReadDotsFollowupData { query } = request {
+        return dots_followup_data::read(db, query).map(Data::Json);
+    }
+    if let Request::WriteDotsFollowupData { command } = request {
+        return dots_followup_data::write(db, command).map(Data::Json);
+    }
+    if let Request::ReadDotsForegroundData { query } = request {
+        return dots_foreground_data::read(db, query).map(Data::Json);
+    }
+    if let Request::WriteDotsForegroundData { command } = request {
+        return dots_foreground_data::write(db, command).map(Data::Json);
+    }
+    if let Request::ReadDotsProactiveData { query } = request {
+        return dots_proactive_data::read(db, query).map(Data::Json);
+    }
+    if let Request::WriteDotsProactiveData { command } = request {
+        return dots_proactive_data::write(db, command).map(Data::Json);
+    }
+    if let Request::ReadDotsFileWatchData { query } = request {
+        return dots_file_watch_data::read(db, query).map(Data::Json);
+    }
+    if let Request::WriteDotsFileWatchData { command } = request {
+        return dots_file_watch_data::write(db, command).map(Data::Json);
+    }
+    if let Request::WriteGatewayChannel { operation_id, draft } = request {
+        let reply = gateway_channel_data::write(db, &operation_id, draft)?;
+        return Ok(Data::Json(serde_json::to_value(reply)?));
+    }
+    if let Request::ReadGatewayOutbox { delivery_id } = request {
+        return Ok(Data::Json(serde_json::to_value(gateway_delivery_control::read_outbox(db, &delivery_id)?)?));
+    }
+    if let Request::ReadGatewayInbox { delivery_id } = request {
+        return gateway_admission::inbox(db, &delivery_id).map(Data::Json);
+    }
+    if let Request::ReadGatewayExecutionAuthority { task_id } = request {
+        return gateway_execution_authority::read(db, &task_id).map(Data::Json);
+    }
+    if let Request::MaterializeGatewayTask { command } = request {
+        return gateway_execution_authority::write(db, command).map(Data::Json);
+    }
+    if let Request::ReadGatewayAssignment { origin } = request {
+        let tx = db.transaction()?;
+        let value = gateway_admission::assignment(&tx, origin)?;
+        tx.commit()?;
+        return Ok(Data::Json(value));
+    }
+    if let Request::ReadGatewayQueue { query } = request {
+        return gateway_queue_data::read(db, query).map(Data::Json);
+    }
+    if let Request::GatewayAdmitInbound { draft } = request {
+        return gateway_admission::admit(db, draft).map(Data::Json);
+    }
+    if let Request::GatewayDeliveryControl { delivery_id, operation_id, command } = request {
+        return gateway_delivery_control::run(db, &delivery_id, &operation_id, command).map(Data::Json);
+    }
     if let Request::ReadGatewayMessages { query } = request {
         return gateway_message_data::read(db, query).map(Data::GatewayMessages);
     }
     if let Request::AppendGatewayMessage { message } = request {
-        return gateway_message_data::append(write_connection(writer, db_path)?, &message)
+        return gateway_message_data::append(db, &message)
             .map(Data::GatewayMessageWrite);
     }
     if let Request::CodeReviewData { query } = request {
         return code_review_data::read(db, query).map(Data::Json);
     }
     if let Request::MaterialRetrievalData { request } = request {
-        let conn = if request.is_read() {
-            db
-        } else {
-            write_connection(writer, db_path)?
-        };
         return Ok(Data::MaterialRetrievalData(material_retrieval_data::run(
-            conn, request,
+            db, request,
         )));
     }
     if let Request::RestoreTrashedTask { request } = request {
         return Ok(Data::TaskTrashRestore(task_trash_restore::restore(
-            write_connection(writer, db_path)?,
+            db,
             request,
         )));
     }
     if let Request::ReadBotHistoryPage { query } = request {
         return bot_history_data::read(db, query).map(Data::BotHistoryPage);
     }
+    if let Request::ReadBotRegistry { query } = request {
+        return bot_registry_data::read(db, query).map(Data::Json);
+    }
+    if let Request::ReadConversationRuntime { query } = request {
+        return conversation_runtime_data::read(db, query).map(Data::Json);
+    }
+    if let Request::ReadConversationBranchData { query, client } = request {
+        return conversation_branch_data::read(db, query, client.as_ref()).map(Data::Json);
+    }
+    if let Request::CreateConversationGoal { operation_id, draft } = request {
+        let result = conversation_goal_write::create(db, &operation_id, draft)?;
+        if result["replayed"].as_bool() == Some(false) {
+            outbox.wake();
+        }
+        return Ok(Data::Json(result));
+    }
     if let Request::MarkWorkCardRead { request } = request {
         return Ok(Data::WorkCardRead(work_queue_data::mark_read(
-            write_connection(writer, db_path)?,
+            db,
             request,
         )));
     }
@@ -2218,19 +2534,22 @@ fn read(
     }
     if let Request::WriteWorkGraph { mutation } = request {
         return Ok(Data::WorkGraphWrite(work_graph_data::write(
-            write_connection(writer, db_path)?,
+            db,
             mutation,
         )));
     }
+    if let Request::ReadDurableTaskProjection { query } = request {
+        return durable_task_projection::read(db, query).map(Data::Json);
+    }
     if let Request::WriteDurableTaskProjection { request } = request {
         return Ok(Data::DurableTaskProjection(durable_task_projection::write(
-            write_connection(writer, db_path)?,
+            db,
             &request,
         )));
     }
     if let Request::WriteDurableWorkspaceMove { request } = request {
         return Ok(Data::DurableWorkspaceMove(
-            durable_workspace_move_data::write(write_connection(writer, db_path)?, &request),
+            durable_workspace_move_data::write(db, &request),
         ));
     }
     if let Request::ReadTaskExpertBinding { task_id } = request {
@@ -2238,52 +2557,71 @@ fn read(
     }
     if let Request::WriteTaskExpertBinding { mutation } = request {
         return Ok(Data::TaskExpertBindingWrite(task_expert_binding::write(
-            write_connection(writer, db_path)?,
+            db,
             mutation,
         )));
     }
     if let Request::SoulProfile { request } = request {
-        let conn = if request.is_read() {
-            db
-        } else {
-            write_connection(writer, db_path)?
-        };
-        return Ok(Data::SoulProfile(soul_profile_data::run(conn, request)));
+        return Ok(Data::SoulProfile(soul_profile_data::run(db, request)));
     }
     if let Request::MemoryOrganizationLatest = request {
         return memory_organization_data::latest(db).map(|run| Data::Json(run.into()));
     }
     if let Request::WriteMemoryOrganizationProgress { progress } = request {
         return memory_organization_data::write_progress(
-            write_connection(writer, db_path)?,
+            db,
             progress,
         )
         .map(|written| Data::Json(written.into()));
     }
     if let Request::ApplyWorkGraphRepair { preview } = request {
         return Ok(Data::WorkGraphRepair(work_graph_integrity::repair(
-            write_connection(writer, db_path)?,
+            db,
             &preview,
         )));
     }
     if let Request::NotificationData { query } = request {
         return notification_data::read(db, query).map(Data::Json);
     }
+    if let Request::ReadNativeHooks { query } = request {
+        return native_hooks::read(db, query).map(Data::Json);
+    }
+    if let Request::WriteNativeHooks { mutation } = request {
+        return native_hooks::write(db, mutation).map(Data::Json);
+    }
+    if let Request::ReadPathHints { query } = request {
+        return read_hints::read(db, query).map(Data::Json);
+    }
+    if let Request::WritePathHints { mutation } = request {
+        return read_hints::write(db, mutation).map(Data::Json);
+    }
+    if let Request::ReadImprovementPackages { query } = request {
+        return improvement_packages::read(db, query).map(Data::Json);
+    }
+    if let Request::WriteImprovementPackages { mutation } = request {
+        return improvement_packages::write(db, mutation).map(Data::Json);
+    }
+    if let Request::ReadImprovementReview { query } = request {
+        return improvement_review::read(db, query).map(Data::Json);
+    }
+    if let Request::WriteImprovementReview { mutation } = request {
+        return improvement_review::write(db, mutation).map(Data::Json);
+    }
     if let Request::WriteNotification { mutation } = request {
         return Ok(Data::NotificationWrite(notification_data::write(
-            write_connection(writer, db_path)?,
+            db,
             mutation,
         )));
     }
     if let Request::UpsertTaskRecord { mutation } = request {
         return Ok(Data::TaskRecord(task_records::write(
-            write_connection(writer, db_path)?,
+            db,
             mutation,
         )));
     }
     if let Request::WriteTaskContextUsage { snapshots } = request {
         return Ok(Data::TaskContextUsage(task_context_usage::write(
-            write_connection(writer, db_path)?,
+            db,
             &snapshots,
         )));
     }
@@ -2292,34 +2630,34 @@ fn read(
     }
     if let Request::DismissExecutionFailure { task_id, id, at } = request {
         return Ok(Data::DismissExecutionFailure(execution_failures::dismiss(
-            write_connection(writer, db_path)?,
+            db,
             &task_id,
             &id,
             at,
         )));
     }
     if let Request::WriteExecutionFailures { request } = request {
-        return execution_failures::write(write_connection(writer, db_path)?, request)
+        return execution_failures::write(db, request)
             .map(Data::Json);
     }
     if let Request::Batch1Write { request } = request {
-        return batch1_writes::run(write_connection(writer, db_path)?, request).map(Data::Json);
+        return batch1_writes::run(db, request).map(Data::Json);
     }
     if let Request::Batch2Write { request } = request {
-        return batch2_writes::run(write_connection(writer, db_path)?, request).map(Data::Json);
+        return batch2_writes::run(db, request).map(Data::Json);
     }
     if let Request::Batch3Write { request } = request {
-        return batch3_writes::run(write_connection(writer, db_path)?, request).map(Data::Json);
+        return batch3_writes::run(db, request).map(Data::Json);
     }
     if let Request::Batch4aWrite { request } = request {
-        return batch4a_writes::run(write_connection(writer, db_path)?, request).map(Data::Json);
+        return batch4a_writes::run(db, request).map(Data::Json);
     }
     if let Request::Batch4bWrite { request } = request {
-        return batch4b_writes::run(write_connection(writer, db_path)?, request).map(Data::Json);
+        return batch4b_writes::run(db, request).map(Data::Json);
     }
     if let Request::WriteWorkspaceLabel { mutation } = request {
         return Ok(Data::WorkspaceLabel(workspace_labels::write(
-            write_connection(writer, db_path)?,
+            db,
             mutation,
         )));
     }
@@ -2348,7 +2686,7 @@ fn read(
     }
     if let Request::AlignTrashRetention { retention_ms } = request {
         return Ok(Data::TrashRetention(task_trash::align_retention(
-            write_connection(writer, db_path)?,
+            db,
             retention_ms,
         )));
     }
@@ -2357,7 +2695,7 @@ fn read(
     }
     if let Request::PurgeTrashedTask { purge } = request {
         return Ok(Data::TrashPurge(task_trash::purge(
-            write_connection(writer, db_path)?,
+            db,
             purge,
         )));
     }
@@ -2371,7 +2709,7 @@ fn read(
     } = request
     {
         return artifact_write::write(
-            write_connection(writer, db_path)?,
+            db,
             &task_id,
             &operation_id,
             mutation,
@@ -2389,7 +2727,7 @@ fn read(
     } = request
     {
         return artifact_write::write_managed(
-            write_connection(writer, db_path)?,
+            db,
             &task_id,
             &operation_id,
             row,
@@ -2401,30 +2739,30 @@ fn read(
         return Ok(Data::Json(true.into()));
     }
     if let Request::WriteCronRun { mutation } = request {
-        return cron_write::write(write_connection(writer, db_path)?, mutation)
+        return cron_write::write(db, mutation)
             .map(|saved| Data::Json(saved.into()));
     }
     if let Request::WriteCronPlan { mutation } = request {
-        return cron_plan::write(write_connection(writer, db_path)?, mutation)
+        return cron_plan::write(db, mutation)
             .map(|saved| Data::Json(saved.into()));
     }
     if let Request::SaveScopedNote { scope, id, save } = request {
-        return scoped_notes::save(write_connection(writer, db_path)?, scope, &id, save)
+        return scoped_notes::save(db, scope, &id, save)
             .map(Data::Json);
     }
     if let Request::WriteLibraryNote { change, updated_at } = request {
-        return library_note_changes::write(write_connection(writer, db_path)?, change, updated_at)
+        return library_note_changes::write(db, change, updated_at)
             .map(Data::Json);
     }
     if let Request::SaveLibraryText { save } = request {
-        return library_text_save::write(write_connection(writer, db_path)?, save).map(Data::Json);
+        return library_text_save::write(db, save).map(Data::Json);
     }
     if let Request::WriteTaskBoardAction { input } = request {
-        return task_board::write_action(write_connection(writer, db_path)?, input)
+        return task_board::write_action(db, input)
             .map(|()| Data::Json(true.into()));
     }
     if let Request::AcknowledgeTaskDone { task_id, at } = request {
-        return task_metadata::acknowledge(write_connection(writer, db_path)?, &task_id, at)
+        return task_metadata::acknowledge(db, &task_id, at)
             .map(|saved| Data::Json(saved.into()));
     }
     if let Request::SetTaskDueDate {
@@ -2434,7 +2772,7 @@ fn read(
     } = request
     {
         let result = task_metadata::set_due_date(
-            write_connection(writer, db_path)?,
+            db,
             &task_id,
             due_at,
             next_local_day,
@@ -2443,7 +2781,7 @@ fn read(
     }
     if let Request::EditTaskSidebar { task_id, edit } = request {
         let result =
-            task_metadata::edit_sidebar(write_connection(writer, db_path)?, &task_id, edit)?;
+            task_metadata::edit_sidebar(db, &task_id, edit)?;
         return Ok(Data::Json(serde_json::to_value(result)?));
     }
     if let Request::WriteWorkbench {
@@ -2451,7 +2789,7 @@ fn read(
         mutation,
     } = request
     {
-        return workbench_write::write(write_connection(writer, db_path)?, &operation_id, mutation)
+        return workbench_write::write(db, &operation_id, mutation)
             .and_then(|status| Ok(Data::Json(serde_json::to_value(status)?)));
     }
     if let Request::WriteProject {
@@ -2459,7 +2797,7 @@ fn read(
         mutation,
     } = request
     {
-        return project_write::write(write_connection(writer, db_path)?, &operation_id, mutation)
+        return project_write::write(db, &operation_id, mutation)
             .and_then(|status| Ok(Data::Json(serde_json::to_value(status)?)));
     }
     if let Request::InstantiateBlueprint {
@@ -2468,49 +2806,48 @@ fn read(
     } = request
     {
         return blueprint_instance::write(
-            write_connection(writer, db_path)?,
+            db,
             &operation_id,
             instance,
         )
         .and_then(|status| Ok(Data::Json(serde_json::to_value(status)?)));
     }
     if let Request::PublishLibraryIndex { publication } = request {
-        return library_index::publish(write_connection(writer, db_path)?, publication)
+        return library_index::publish(db, publication)
             .map(Data::LibraryIndex);
     }
     if let Request::PublishLibraryDocument { publication } = request {
-        return library_index::publish_document(write_connection(writer, db_path)?, publication)
+        return library_index::publish_document(db, publication)
             .map(Data::LibraryIndex);
     }
     if let Request::UsageReport { coverage, report } = request {
         return usage::read(db, coverage, report).map(Data::Json);
     }
     if let Request::UsageHistory { job } = request {
-        return usage_history::run(writer, db_path, job).map(Data::Json);
+        return usage_history::run(db, job).map(Data::Json);
     }
     if let Request::CaptureMemory { capture } = request {
-        return memory_capture::run(write_connection(writer, db_path)?, capture)
+        return memory_capture::run(db, capture)
             .map(|saved| Data::Json(saved.into()));
     }
     if let Request::CompactSnapshots { limit } = request {
-        return snapshots::compact(db_path, limit).map(|migrated| Data::Json(migrated.into()));
+        return snapshots::compact(db, limit).map(|migrated| Data::Json(migrated.into()));
     }
     if let Request::MutateSnapshot {
-        epoch,
         write_id,
         mutation,
     } = request
     {
-        return snapshots::mutate(db_path, epoch, &write_id, mutation)
+        return snapshots::mutate(db, &write_id, mutation)
             .map(|updated| Data::Json(updated.into()));
     }
     if let Request::WriteDiagnostics {
-        epoch,
+        writer_id,
         sequence,
         writes,
     } = request
     {
-        return diagnostics::write_batch(db_path, epoch, sequence, writes)
+        return diagnostics::write_batch(db, &writer_id, sequence, writes)
             .map(|()| Data::Json(true.into()));
     }
     let snapshot = db.transaction()?;
@@ -2519,6 +2856,7 @@ fn read(
         Request::Snapshots { task_id, limit } => {
             Data::Json(snapshots::read(&snapshot, &task_id, limit)?)
         }
+        Request::SnapshotReceipt { write_id } => Data::Json(serde_json::to_value(snapshots::receipt(&snapshot, &write_id)?)?),
         Request::Diagnostics {
             task_id,
             limit,
@@ -2539,9 +2877,24 @@ fn read(
             &dots_task_id,
             include_expert_bindings,
         )?),
+        Request::TaskRecord { task_id, include_expert_bindings } => Data::Json(serde_json::to_value(
+            task_list::read_task(&snapshot, &task_id, include_expert_bindings)?,
+        )?),
+        Request::ExternalAgentHistoryPage { task_id, after } => {
+            Data::Json(serde_json::to_value(external_agent_history_data::read(&snapshot, &task_id, after)?)?)
+        }
+        Request::ReadLoadoutObservations { task_id, limit } => {
+            Data::Json(loadout_observation_data::read(&snapshot, &task_id, limit)?)
+        }
+        Request::ApplicationDatabaseIdentity => Data::Json(serde_json::to_value(database::read_application_identity(&snapshot)?)?),
+        Request::TaskWorkspacePaths => Data::Json(batch2_writes::task_workspace_paths(&snapshot)?),
+        Request::PythonProjectBindings { ancestors } => {
+            Data::Json(python_project_bindings::read(&snapshot, ancestors)?)
+        }
         Request::ArtifactSnapshots { task_ids } => {
             Data::ArtifactSnapshots(artifact_snapshots::read(&snapshot, &task_ids)?)
         }
+        Request::ArtifactData { query } => Data::Json(artifact_snapshots::read_data(&snapshot, query)?),
         Request::LibraryMetadata { query } => Data::Json(library_metadata::read(&snapshot, query)?),
         Request::ExportLibraryBackup { .. } => unreachable!(),
         Request::ReadScopedNote { scope, id } => {
@@ -2601,6 +2954,7 @@ fn read(
         | Request::WorkspaceBindingSnapshot { .. }
         | Request::WriteWorkspaceBinding { .. }
         | Request::MemoryTurnData { .. }
+        | Request::WriteMemoryTurnExtraction { .. }
         | Request::MemoryRecordsData { .. }
         | Request::MemoryRecordWriteSupported
         | Request::WriteMemoryRecord { .. }
@@ -2614,6 +2968,31 @@ fn read(
         | Request::ProjectPosts { .. }
         | Request::WorkQueueSupported
         | Request::ReadWorkQueue { .. }
+        | Request::ReadGatewayChannels { .. }
+        | Request::ReadGatewayChannelState { .. }
+        | Request::ReadDotsDelegationData { .. }
+        | Request::ReadDotsReplyData { .. }
+        | Request::WriteDotsReplyData { .. }
+        | Request::ReadDotsActivityData { .. }
+        | Request::ReadDotsDeferredData { .. }
+        | Request::WriteDotsDeferredData { .. }
+        | Request::ReadDotsFollowupData { .. }
+        | Request::WriteDotsFollowupData { .. }
+        | Request::ReadDotsForegroundData { .. }
+        | Request::WriteDotsForegroundData { .. }
+        | Request::ReadDotsProactiveData { .. }
+        | Request::WriteDotsProactiveData { .. }
+        | Request::ReadDotsFileWatchData { .. }
+        | Request::WriteDotsFileWatchData { .. }
+        | Request::WriteGatewayChannel { .. }
+        | Request::ReadGatewayOutbox { .. }
+        | Request::ReadGatewayInbox { .. }
+        | Request::ReadGatewayExecutionAuthority { .. }
+        | Request::MaterializeGatewayTask { .. }
+        | Request::ReadGatewayAssignment { .. }
+        | Request::ReadGatewayQueue { .. }
+        | Request::GatewayAdmitInbound { .. }
+        | Request::GatewayDeliveryControl { .. }
         | Request::ReadGatewayMessages { .. }
         | Request::GatewayMessageWriteSupported
         | Request::AppendGatewayMessage { .. }
@@ -2623,6 +3002,10 @@ fn read(
         | Request::TaskTrashRestoreSupported
         | Request::RestoreTrashedTask { .. }
         | Request::ReadBotHistoryPage { .. }
+        | Request::ReadBotRegistry { .. }
+        | Request::ReadConversationRuntime { .. }
+        | Request::ReadConversationBranchData { .. }
+        | Request::CreateConversationGoal { .. }
         | Request::MarkWorkCardRead { .. }
         | Request::DeleteWorkspace { .. }
         | Request::WorkspaceSharedData { .. }
@@ -2636,9 +3019,18 @@ fn read(
         | Request::NotificationDataSupported
         | Request::NotificationData { .. }
         | Request::WriteNotification { .. }
+        | Request::ReadNativeHooks { .. }
+        | Request::WriteNativeHooks { .. }
+        | Request::ReadPathHints { .. }
+        | Request::WritePathHints { .. }
+        | Request::ReadImprovementPackages { .. }
+        | Request::WriteImprovementPackages { .. }
+        | Request::ReadImprovementReview { .. }
+        | Request::WriteImprovementReview { .. }
         | Request::UpsertWorkspace { .. }
         | Request::DurableTaskProjectionSupported
         | Request::DurableTaskOriginsSupported
+        | Request::ReadDurableTaskProjection { .. }
         | Request::WriteDurableTaskProjection { .. }
         | Request::DurableWorkspaceMoveSupported
         | Request::WriteDurableWorkspaceMove { .. }
@@ -2673,7 +3065,8 @@ fn read(
         | Request::PurgeTrashedTask { .. } => unreachable!(),
         Request::GadgetState { .. }
         | Request::CoreGadgetHost { .. }
-        | Request::CorePiHost { .. } => unreachable!(),
+        | Request::CorePiHost { .. }
+        | Request::PiStorage { .. } => unreachable!(),
         Request::WriteArtifact { .. }
         | Request::ManagedArtifactFilesSupported
         | Request::WriteManagedArtifact { .. }
@@ -2737,6 +3130,9 @@ fn read(
         Request::UsageCsv { since, coverage } => {
             Data::Json(usage::export_csv(&snapshot, since, coverage)?.into())
         }
+        Request::UsageSessionFiles => Data::Json(serde_json::json!(crate::sqlite_rows::records(
+            &snapshot, "SELECT DISTINCT session_file FROM tasks WHERE session_file IS NOT NULL ORDER BY session_file", [],
+        )?)),
         Request::CompactSnapshots { .. } => unreachable!(),
         Request::MutateSnapshot { .. } => unreachable!(),
         Request::WriteDiagnostics { .. } => unreachable!(),
@@ -2769,16 +3165,14 @@ fn read(
 }
 
 fn read_recovered_gadget_source(
-    writer: &mut Option<Connection>,
-    db_path: &Path,
+    db: &mut Connection,
     root: &Path,
     id: &str,
     read: impl FnOnce() -> gadget_files::SourceReply,
 ) -> Data {
     let mut recover = || -> Result<()> {
         if gadget_source_save::has_pending(root, id)? {
-            let db = write_connection(writer, db_path)?;
-            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             gadget_source_save::recover_if_pending(&tx, root, id)?;
             tx.commit()?;
         }
@@ -2790,40 +3184,6 @@ fn read_recovered_gadget_source(
             message: format!("Gadget 源码恢复失败：{error}"),
         },
     })
-}
-
-/// The one place a writer connection is configured. Both the main loop and the
-/// maintenance thread open their own connection through it, so busy_timeout and
-/// pragmas cannot drift between them.
-fn open_write_connection(path: &Path) -> Result<Connection> {
-    let db = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,
-    )?;
-    db.busy_timeout(Duration::from_millis(100))?;
-    db.pragma_update(None, "foreign_keys", true)?;
-    task_board::install_functions(&db)?;
-    Ok(db)
-}
-
-fn write_connection<'a>(
-    connection: &'a mut Option<Connection>,
-    path: &Path,
-) -> Result<&'a mut Connection> {
-    if connection.is_none() {
-        *connection = Some(open_write_connection(path)?);
-    }
-    connection
-        .as_mut()
-        .ok_or_else(|| "write connection unavailable".into())
-}
-
-fn read_connection(path: &Path) -> Result<Connection> {
-    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    db.busy_timeout(Duration::from_millis(500))?;
-    db.pragma_update(None, "query_only", true)?;
-    task_board::install_functions(&db)?;
-    Ok(db)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2946,6 +3306,13 @@ fn classify_request(request: &Request) -> RequestClassification {
                 class(ExecutionLane::ReadPool, false, false, true)
             }
         }
+        Request::PiStorage { payload } => {
+            if !payload.action.is_read_only() {
+                class(ExecutionLane::DatabaseWrite, true, true, true)
+            } else {
+                class(ExecutionLane::ReadPool, false, false, true)
+            }
+        }
         Request::CoreMaintenanceScheduler { command, .. } => {
             if !command.is_read_only() {
                 class(ExecutionLane::DatabaseWrite, true, true, true)
@@ -3012,7 +3379,7 @@ fn classify_request(request: &Request) -> RequestClassification {
             );
             class(ExecutionLane::GadgetIo, false, mutates, true)
         }
-        Request::LibraryText { .. } | Request::ExportGadgetFiles { .. } => {
+        Request::LibraryText { .. } => {
             class(ExecutionLane::InlineFast, false, true, false)
         }
         Request::WorkHostLease { .. }
@@ -3025,6 +3392,7 @@ fn classify_request(request: &Request) -> RequestClassification {
         | Request::ReadGadgetManifest { .. }
         | Request::CaptureBlueprintGadget { .. }
         | Request::RemoveGadgetFiles { .. }
+        | Request::ExportGadgetFiles { .. }
         | Request::ReconcileBlueprintStorage { .. }
         | Request::CreateGadgetFiles { .. }
         | Request::SaveGadgetSource { .. }
@@ -3035,7 +3403,17 @@ fn classify_request(request: &Request) -> RequestClassification {
         | Request::DeleteWorkspace { .. }
         | Request::WriteWorkspaceBinding { .. }
         | Request::WriteMemoryRecord { .. }
+        | Request::WriteMemoryTurnExtraction { .. }
         | Request::AppendGatewayMessage { .. }
+        | Request::WriteGatewayChannel { .. }
+        | Request::WriteDotsReplyData { .. }
+        | Request::WriteDotsDeferredData { .. }
+        | Request::WriteDotsFollowupData { .. }
+        | Request::WriteDotsForegroundData { .. }
+        | Request::WriteDotsProactiveData { .. }
+        | Request::WriteDotsFileWatchData { .. }
+        | Request::GatewayAdmitInbound { .. }
+        | Request::GatewayDeliveryControl { .. }
         | Request::RestoreTrashedTask { .. }
         | Request::MarkWorkCardRead { .. }
         | Request::WriteWorkGraph { .. }
@@ -3045,6 +3423,11 @@ fn classify_request(request: &Request) -> RequestClassification {
         | Request::WriteMemoryOrganizationProgress { .. }
         | Request::ApplyWorkGraphRepair { .. }
         | Request::WriteNotification { .. }
+        | Request::WriteNativeHooks { .. }
+        | Request::WritePathHints { .. }
+        | Request::WriteImprovementPackages { .. }
+        | Request::WriteImprovementReview { .. }
+        | Request::CreateConversationGoal { .. }
         | Request::UpsertTaskRecord { .. }
         | Request::WriteTaskContextUsage { .. }
         | Request::DismissExecutionFailure { .. }
@@ -3070,6 +3453,7 @@ fn classify_request(request: &Request) -> RequestClassification {
         | Request::EditTaskSidebar { .. }
         | Request::WriteWorkbench { .. }
         | Request::WriteProject { .. }
+        | Request::MaterializeGatewayTask { .. }
         | Request::InstantiateBlueprint { .. }
         | Request::PublishLibraryIndex { .. }
         | Request::PublishLibraryDocument { .. }
@@ -3079,17 +3463,32 @@ fn classify_request(request: &Request) -> RequestClassification {
         | Request::MutateSnapshot { .. }
         | Request::WriteDiagnostics { .. } => class(ExecutionLane::DatabaseWrite, true, true, true),
         Request::Snapshots { .. }
+        | Request::SnapshotReceipt { .. }
         | Request::Diagnostics { .. }
         | Request::TaskList { .. }
+        | Request::TaskRecord { .. }
+        | Request::ExternalAgentHistoryPage { .. }
+        | Request::ReadLoadoutObservations { .. }
+        | Request::ApplicationDatabaseIdentity
+        | Request::TaskWorkspacePaths
+        | Request::PythonProjectBindings { .. }
         | Request::WorkspaceData { .. }
         | Request::WorkspaceBindingSnapshot { .. }
         | Request::MemoryTurnData { .. }
         | Request::MemoryRecordsData { .. }
         | Request::ReadBotHistoryPage { .. }
+        | Request::ReadBotRegistry { .. }
+        | Request::ReadConversationRuntime { .. }
+        | Request::ReadConversationBranchData { .. }
         | Request::ReadWorkQueue { .. }
         | Request::WorkspaceSharedData { .. }
         | Request::ReadWorkGraph { .. }
         | Request::NotificationData { .. }
+        | Request::ReadNativeHooks { .. }
+        | Request::ReadPathHints { .. }
+        | Request::ReadImprovementPackages { .. }
+        | Request::ReadImprovementReview { .. }
+        | Request::ReadDurableTaskProjection { .. }
         | Request::ReadTaskExpertBinding { .. }
         | Request::MemoryOrganizationLatest
         | Request::ExecutionFailures { .. }
@@ -3097,9 +3496,25 @@ fn classify_request(request: &Request) -> RequestClassification {
         | Request::ArchivedTaskCandidates { .. }
         | Request::DueTrashedTasks { .. }
         | Request::CodeReviewData { .. }
+        | Request::ReadGatewayChannels { .. }
+        | Request::ReadGatewayChannelState { .. }
+        | Request::ReadDotsDelegationData { .. }
+        | Request::ReadDotsReplyData { .. }
+        | Request::ReadDotsActivityData { .. }
+        | Request::ReadDotsDeferredData { .. }
+        | Request::ReadDotsFollowupData { .. }
+        | Request::ReadDotsForegroundData { .. }
+        | Request::ReadDotsProactiveData { .. }
+        | Request::ReadDotsFileWatchData { .. }
+        | Request::ReadGatewayOutbox { .. }
+        | Request::ReadGatewayInbox { .. }
+        | Request::ReadGatewayExecutionAuthority { .. }
+        | Request::ReadGatewayAssignment { .. }
+        | Request::ReadGatewayQueue { .. }
         | Request::ReadGatewayMessages { .. }
         | Request::TaskBoard { .. }
         | Request::ArtifactSnapshots { .. }
+        | Request::ArtifactData { .. }
         | Request::WorkspaceFilePreview { .. }
         | Request::LibraryMetadata { .. }
         | Request::ReadScopedNote { .. }
@@ -3114,6 +3529,7 @@ fn classify_request(request: &Request) -> RequestClassification {
         | Request::MemoryBaselines { .. }
         | Request::UsageReport { .. }
         | Request::UsageCsv { .. }
+        | Request::UsageSessionFiles
         | Request::CoreEventsSnapshot { .. }
         | Request::CoreEventsReplay { .. } => class(ExecutionLane::ReadPool, false, false, true),
         Request::HistoryLaneSupported
@@ -3222,92 +3638,678 @@ fn emit_side_effects(effects: Option<business_protocol::WriteSideEffects>) {
     }
 }
 
-type DatabaseWriter = (
-    mpsc::SyncSender<(RequestId, Request)>,
-    thread::JoinHandle<()>,
-);
-fn start_database_writer(
-    db_path: PathBuf,
-    staged: Arc<embedding_index::StagedVectors>,
-    executor_tracker: Arc<business_protocol::ExecutorTracker>,
-) -> io::Result<DatabaseWriter> {
-    let (send, jobs) = mpsc::sync_channel::<(RequestId, Request)>(32);
-    let worker = thread::Builder::new()
-        .name("database-writer".into())
-        .spawn(move || {
-            let mut reader = None;
-            let mut writer = None;
-            let mut sessions = HashMap::new();
-            for (id, request) in jobs {
-                DB_WRITER_QUEUED.fetch_sub(1, Ordering::AcqRel);
-                // Wait outside the reader/input lanes. Admission remains queued until this
-                // shared write boundary is available, then the deadline is checked again.
-                let gate = match write_gate::enter() {
-                    Ok(gate) => gate,
-                    Err(error) => {
-                        let _ = write_reply(&id, Err(error), false);
-                        continue;
+fn resource_plan_for_request(request: &Request) -> Vec<resource_gate::ResourceRequirement> {
+    use resource_gate::{ResourceKey, ResourceRequirement};
+    let mut plan = vec![
+        ResourceRequirement::shared(ResourceKey::DbLifecycle),
+        ResourceRequirement::shared(ResourceKey::CommitShare),
+    ];
+    match request {
+        Request::CoreWorkScheduler { .. } | Request::WorkHostLease { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::PublisherOrder));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::ExecutionAdmission));
+        }
+        Request::CreateConversationGoal { operation_id, draft } => {
+            plan.push(ResourceRequirement::shared(ResourceKey::ExecutionAdmission));
+            for domain in ["tasks", "batch4b"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), draft.task_id.clone())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity(
+                format!("conversation-goal:{}", draft.user_id), operation_id.clone(),
+            )));
+        }
+        Request::CoreMaintenanceScheduler { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::PublisherOrder));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::MaintenanceCycle(
+                "maintenance_scheduler".into(),
+            )));
+        }
+        Request::PiStorage { payload } => {
+            if !payload.action.is_read_only() && !payload.action.store_id().is_empty() {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::PiStore(
+                    payload.action.store_id().to_string(),
+                )));
+            }
+            if let pi_storage::Action::Commit { batches, .. } = &payload.action {
+                if batches.iter().flatten().any(pi_storage::is_dots_cron_input) {
+                    for domain in ["cron", "batch4a", "batch2", "tasks", "workspaces", "projects"] {
+                        plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
                     }
-                };
-                if !request_control::begin(&id) {
-                    continue;
+                    plan.push(ResourceRequirement::shared(ResourceKey::Entity("task".into(), DOTS_TASK_ID.into())));
                 }
-                let mut gate_opt = Some(gate);
-                let mut side_effects = None;
-                let result = (|| -> Result<Data> {
-                    if let Request::CorePiHost { command, client } = request {
-                        if command.is_read_only() {
-                            if reader.is_none() {
-                                reader = Some(read_connection(&db_path)?);
-                            }
-                            return pi_host_supervisor::execute_read(reader.as_ref().unwrap(), command)
-                                .map(Data::Json);
-                        }
-                        let ctx = client.unwrap_or_else(|| {
-                            business_protocol::ClientContext::synthetic(
-                                &business_protocol::current_core_generation(),
-                            )
-                        });
-                        let fx = pi_host_supervisor::execute_write_with_gate(
-                            write_connection(&mut writer, &db_path)?,
-                            &executor_tracker,
-                            &ctx,
-                            command,
-                            |op| {
-                                drop(gate_opt.take());
-                                op();
-                                gate_opt = Some(write_gate::enter_unchecked());
-                            },
-                        )?;
-                        let data = fx.data.clone();
-                        side_effects = Some(fx);
-                        return Ok(Data::Json(data));
-                    }
-                    if reader.is_none() {
-                        reader = Some(read_connection(&db_path)?);
-                    }
-                    read(
-                        reader.as_mut().unwrap(),
-                        &db_path,
-                        &mut sessions,
-                        &mut writer,
-                        &staged,
-                        &executor_tracker,
-                        &mut side_effects,
-                        request,
-                    )
-                })();
-                drop(gate_opt);
-                let ok = result.is_ok();
-                if write_reply(&id, result, false).is_err() {
-                    break;
+                for task in batches.iter().flatten().filter_map(pi_storage::goal_user_input_task) {
+                    plan.extend(["batch4b", "tasks", "workspaces"].map(|domain|
+                        ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into()))));
+                    plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), task.into())));
                 }
-                if ok {
-                    emit_side_effects(side_effects);
+                for (event_key, record) in batches.iter().flatten().filter_map(pi_storage::dots_outbox_entry) {
+                    plan.extend(["batch2", "batch4a", "tasks", "workspaces", "work_graph"].map(|domain|
+                        ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into()))));
+                    if let Some(task) = record["data"]["taskId"].as_str() {
+                        plan.push(ResourceRequirement::shared(ResourceKey::Entity("task".into(), task.into())));
+                    }
+                    plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("dots_reply".into(), event_key.into())));
                 }
             }
-        })?;
-    Ok((send, worker))
+        }
+        Request::CoreCommand { .. }
+        | Request::CoreExecution { .. }
+        | Request::CoreEventsRetention { .. }
+        | Request::AssistantLifecycle { .. }
+        | Request::CoreExecutorPresence { .. }
+        | Request::CoreCronScheduler { .. }
+        | Request::CoreDotsScheduler { .. }
+        | Request::CoreGatewayScheduler { .. }
+        | Request::CoreRemoteControl { .. }
+        | Request::CorePiHost { .. } => {
+            let domain = match request {
+                Request::CoreCommand { .. } => "core_command",
+                Request::CoreExecution { .. } => "core_execution",
+                Request::CoreEventsRetention { .. } => "core_events",
+                Request::AssistantLifecycle { .. } => "assistant_lifecycle",
+                Request::CoreExecutorPresence { .. } => "executor_presence",
+                Request::CoreCronScheduler { .. } => "cron",
+                Request::CoreDotsScheduler { .. } => "dots_scheduler",
+                Request::CoreGatewayScheduler { .. } => "gateway_scheduler",
+                Request::CoreRemoteControl { command: remote_control::Command::PublishNotification { .. }, .. } => "notifications",
+                Request::CoreRemoteControl { .. } => "remote_control",
+                Request::CorePiHost { .. } => "pi_host",
+                _ => "core",
+            };
+            plan.push(ResourceRequirement::exclusive(ResourceKey::PublisherOrder));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                domain.into(),
+            )));
+            if matches!(request, Request::CorePiHost { command: pi_host_supervisor::Command::Bootstrap { .. }, .. }) {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "batch4b".into())));
+            }
+            if matches!(request, Request::CoreGatewayScheduler { command: gateway_scheduler::Command::Start { .. }, .. }) {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "gateway_delivery_recovery".into())));
+            }
+            if let Request::CoreExecution { action: business_protocol::ExecutionRequest::Submit { task_id, dots_recovery: Some(_), .. }, .. } = request {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "cron".into())));
+                plan.extend(["batch2", "batch4a", "tasks", "workspaces", "work_graph"].map(|name|
+                    ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), name.into()))));
+                plan.push(ResourceRequirement::shared(ResourceKey::Entity("task".into(), task_id.clone())));
+            }
+            if matches!(request, Request::CoreExecution { action: business_protocol::ExecutionRequest::ExecutorSettled { .. }, .. }
+                | Request::CoreExecutorPresence { .. }) {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "cron".into())));
+            }
+            if let Request::CoreGatewayScheduler { command: gateway_scheduler::Command::TrackOutbound { delivery_id, .. }
+                | gateway_scheduler::Command::SettleUnknown { delivery_id, .. }, .. } = request {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "batch4a".into())));
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("gateway_delivery".into(), delivery_id.clone())));
+            }
+        }
+        Request::AcknowledgeTaskDone { task_id, .. }
+        | Request::SetTaskDueDate { task_id, .. }
+        | Request::EditTaskSidebar { task_id, .. }
+        | Request::DismissExecutionFailure { task_id, .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity(
+                "task".into(),
+                task_id.clone(),
+            )));
+        }
+        Request::WriteArtifact { task_id, .. } | Request::WriteManagedArtifact { task_id, .. } => {
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "tasks".into())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), task_id.clone())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity(
+                "artifact_task".into(),
+                task_id.clone(),
+            )));
+            if matches!(request, Request::WriteManagedArtifact { .. }) {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "artifacts".into())));
+            }
+            if let Request::WriteManagedArtifact { content: artifact_content::Content::Gadget { id, .. }, .. } = request {
+                plan.extend(workbench_write::gadget_resources(id));
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "workspaces".into())));
+            }
+        }
+        Request::ReadGadgetSource { id, .. }
+        | Request::ReadGadgetManifest { id, .. }
+        | Request::CaptureBlueprintGadget { id, .. }
+        | Request::RemoveGadgetFiles { id, .. } => {
+            plan.extend(workbench_write::gadget_resources(id));
+        }
+        Request::UpsertTaskRecord { mutation } => {
+            plan.extend(["tasks", "projects"].map(|domain|
+                ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into()))));
+            let workspaces = ResourceKey::Namespace("domain".into(), "workspaces".into());
+            plan.push(if mutation.may_create_workspace() { ResourceRequirement::exclusive(workspaces) }
+                else { ResourceRequirement::shared(workspaces) });
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), mutation.task_id().into())));
+        }
+        Request::WriteTaskBoardAction { input } => {
+            for domain in ["tasks", "workspaces"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), input.id.clone())));
+            if input.id.starts_with("bot-request:") {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "batch4b".into())));
+            }
+        }
+        Request::WriteDurableTaskProjection { request } => {
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "tasks".into())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), request.task_id().into())));
+            if matches!(request, durable_task_projection::Request::BindWorkspaceCwd { .. }) {
+                for domain in ["workspaces", "batch2"] {
+                    plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+                }
+            }
+            for directory in request.directories().into_iter().flatten() {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("durable_directory".into(), directory.into())));
+            }
+        }
+        Request::WriteTaskContextUsage { .. }
+        | Request::WriteTaskExpertBinding { .. }
+        | Request::RestoreTrashedTask { .. }
+        | Request::AlignTrashRetention { .. }
+        | Request::WriteExecutionFailures { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "tasks".into(),
+            )));
+        }
+        Request::PurgeTrashedTask { purge } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "tasks".into())));
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "snapshots".into())));
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "conversation_interactions".into())));
+            if gateway_execution_authority::gateway_task_id(purge.task_id()) {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "gateway_admission".into())));
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "batch4a".into())));
+            }
+        }
+        Request::WriteMemoryRecord { .. }
+        | Request::CaptureMemory { .. }
+        | Request::WriteMemoryOrganizationProgress { .. }
+        | Request::PublishEmbeddings { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "memory".into(),
+            )));
+        }
+        Request::PublishLibraryIndex { .. }
+        | Request::PublishLibraryDocument { .. }
+        | Request::WriteLibraryNote { .. }
+        | Request::SaveLibraryText { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "library".into(),
+            )));
+        }
+        Request::WriteProject { .. }
+        | Request::ProjectPins { .. }
+        | Request::ProjectPosts { .. }
+        | Request::ProjectEventData { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "projects".into(),
+            )));
+        }
+        Request::UpsertWorkspace { .. }
+        | Request::DeleteWorkspace { .. }
+        | Request::MoveWorkspaceTree { .. }
+        | Request::SetSidebarArchive { .. }
+        | Request::WriteWorkspaceLabel { .. }
+        | Request::WriteWorkspaceBinding { .. }
+        | Request::WriteDurableWorkspaceMove { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "workspaces".into(),
+            )));
+        }
+        Request::WriteWorkGraph { .. }
+        | Request::ApplyWorkGraphRepair { .. }
+        | Request::MarkWorkCardRead { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "work_graph".into(),
+            )));
+        }
+        Request::WriteCronPlan { mutation } => {
+            plan.extend(["tasks", "projects", "workspaces"].map(|domain|
+                ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into()))));
+            plan.extend(mutation.guarded_tasks().map(|id| ResourceRequirement::shared(ResourceKey::Entity("task".into(), id.clone()))));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "cron".into())));
+        }
+        Request::WriteCronRun { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "cron".into(),
+            )));
+        }
+        Request::WriteGatewayChannel { draft, .. } => {
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "batch4a".into())));
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "gateway_scheduler".into())));
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "gateway_tick".into())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("gateway_channel".into(), draft.channel.id.clone())));
+        }
+        Request::WriteDotsReplyData { command } => {
+            plan.extend(["batch2", "batch4a", "tasks", "workspaces", "work_graph"].map(|domain|
+                ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into()))));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("dots_reply".into(), command.event_key().into())));
+        }
+        Request::WriteDotsForegroundData { command } => {
+            for domain in ["batch4a", "answer_routing"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("dots_foreground".into(), command.input_id().into())));
+        }
+        Request::WriteDotsDeferredData { command } => {
+            for domain in ["batch4a", "tasks", "workspaces"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), command.task_id().into())));
+        }
+        Request::WriteDotsFollowupData { command } => {
+            let batch = ResourceKey::Namespace("domain".into(), "batch4a".into());
+            plan.push(if command.links_delegation() { ResourceRequirement::exclusive(batch) } else { ResourceRequirement::shared(batch) });
+            for domain in ["tasks", "workspaces"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), command.task_id().into())));
+            if command.checks_dots_schedule() {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "cron".into())));
+            }
+        }
+        Request::WriteDotsProactiveData { .. } => {
+            for domain in ["batch4a", "tasks"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::shared(ResourceKey::Entity("task".into(), DOTS_TASK_ID.into())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "dots_proactive".into())));
+        }
+        Request::WriteDotsFileWatchData { command } => {
+            for domain in ["batch4a", "tasks", "workspaces"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), command.task_id().into())));
+        }
+        Request::GatewayDeliveryControl { delivery_id, .. } => {
+            for domain in ["batch4a", "gateway_delivery_recovery"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("gateway_delivery".into(), delivery_id.clone())));
+        }
+        Request::GatewayAdmitInbound { .. } => {
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "batch4a".into())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "gateway_admission".into())));
+        }
+        Request::MaterializeGatewayTask { command } => {
+            for domain in ["gateway_admission", "workspaces"] {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            for domain in ["batch4a", "batch4b", "tasks", "work_graph", "gateway_scheduler", "gateway_tick"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::shared(ResourceKey::Entity("gateway_channel".into(), command.channel_id().into())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), command.task_id().into())));
+        }
+        Request::AppendGatewayMessage { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "gateway".into(),
+            )));
+        }
+        Request::CompactSnapshots { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "snapshots".into(),
+            )));
+        }
+        Request::MutateSnapshot { write_id, mutation } => {
+            let scope = ResourceKey::Namespace("domain".into(), "snapshots".into());
+            if let Some(task_id) = mutation.task_id() {
+                plan.push(ResourceRequirement::shared(scope));
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "tasks".into())));
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), task_id.into())));
+            } else {
+                plan.push(ResourceRequirement::exclusive(scope));
+            }
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("snapshot_write".into(), write_id.clone())));
+            if let Some((id, execution_id)) = mutation.insertion_keys() {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("runtime_snapshot".into(), id.into())));
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("snapshot_execution".into(), execution_id.into())));
+            }
+        }
+        Request::WriteDiagnostics { writer_id, writes, .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("diagnostic_writer".into(), writer_id.clone())));
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "tasks".into())));
+            for write in writes {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("diagnostic_record".into(), write.record_key())));
+                plan.extend(write.task_ids().map(|id| ResourceRequirement::shared(ResourceKey::Entity("task".into(), id.into()))));
+            }
+        }
+        Request::UsageHistory { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "usage".into(),
+            )));
+        }
+        Request::WriteNotification { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "notifications".into(),
+            )));
+        }
+        Request::WriteNativeHooks { mutation } => {
+            plan.push(ResourceRequirement::exclusive(mutation.resource()));
+        }
+        Request::WritePathHints { mutation } => {
+            plan.push(ResourceRequirement::exclusive(mutation.resource()));
+        }
+        Request::WriteImprovementPackages { mutation } => {
+            plan.extend(mutation.resources().into_iter().map(ResourceRequirement::exclusive));
+        }
+        Request::WriteImprovementReview { .. } => {
+            plan.push(ResourceRequirement::exclusive(improvement_review::resource()));
+        }
+        Request::AnswerRoutingData { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "answer_routing".into(),
+            )));
+        }
+        Request::MaterialRetrievalData { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "material_retrieval".into(),
+            )));
+        }
+        Request::SoulProfile { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "soul_profile".into(),
+            )));
+        }
+        Request::SaveScopedNote { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "scoped_notes".into(),
+            )));
+        }
+        Request::WriteWorkbench { operation_id, mutation } => {
+            plan.extend(mutation.resources(operation_id));
+        }
+        Request::InstantiateBlueprint { operation_id, instance } => {
+            plan.extend(instance.resources(operation_id));
+        }
+        Request::CreateGadgetFiles { create } => plan.extend(create.resources()),
+        Request::SaveGadgetSource { save } => plan.extend(save.resources()),
+        Request::ExportGadgetFiles { export } => plan.extend(export.resources()),
+        Request::ReconcileBlueprintStorage { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "blueprint-storage".into(),
+            )));
+        }
+        Request::ReconcileGadgetStorage { .. } => {
+            plan.push(ResourceRequirement::exclusive(workbench_write::gadget_namespace()));
+        }
+        Request::Batch1Write { request: batch1_writes::Request::SavePythonBinding { dir_key, .. }
+            | batch1_writes::Request::RemovePythonBinding { dir_key }, } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity(
+                "python-project-binding".into(), dir_key.clone(),
+            )));
+        }
+        Request::Batch1Write { request: batch1_writes::Request::InteractionInsert { task_id, id, .. }
+          | batch1_writes::Request::InteractionSettle { task_id, id, .. } } => {
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "conversation_interactions".into())));
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "tasks".into())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), task_id.clone())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("conversation_interaction".into(), id.clone())));
+            if let Request::Batch1Write { request: batch1_writes::Request::InteractionInsert { execution_id, .. } } = request {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("interaction_execution".into(), execution_id.clone())));
+            }
+        }
+        Request::Batch1Write { request:
+            batch1_writes::Request::InteractionDeleteFrom { task_id, .. }
+            | batch1_writes::Request::InteractionCancelExecution { task_id, .. }
+        } => {
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "conversation_interactions".into())));
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "tasks".into())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), task_id.clone())));
+        }
+        Request::Batch1Write { request: batch1_writes::Request::InteractionExpireAllPending { .. } } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "conversation_interactions".into())));
+        }
+        Request::Batch1Write { request:
+            batch1_writes::Request::LoadoutRecordTurn { task_id, .. }
+            | batch1_writes::Request::LoadoutMarkSkillUsed { task_id, .. }
+            | batch1_writes::Request::LoadoutMarkOutcome { task_id, .. }
+            | batch1_writes::Request::LoadoutAbortPending { task_id, .. }
+            | batch1_writes::Request::LoadoutClear { task_id: Some(task_id) }
+        } => {
+            for domain in ["tasks", "batch1", "loadout_observations"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), task_id.clone())));
+        }
+        Request::Batch1Write { request: batch1_writes::Request::LoadoutClear { task_id: None } } => {
+            for domain in ["tasks", "loadout_observations"] {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+        }
+        Request::Batch1Write { request:
+            batch1_writes::Request::ExecutionAttemptInsert { task_id, .. }
+            | batch1_writes::Request::ExecutionAttemptUpdate { task_id, .. }
+            | batch1_writes::Request::ExecutionAttemptSettleDurable { task_id, .. }
+        } => {
+            for domain in ["tasks", "batch1", "execution_attempts"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), task_id.clone())));
+        }
+        Request::Batch1Write { request: batch1_writes::Request::ExecutionAttemptRecoverInterrupted { .. } } => {
+            for domain in ["tasks", "execution_attempts"] {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+        }
+        Request::Batch1Write { request:
+            batch1_writes::Request::GoalActivityAdmit { task_id, .. }
+            | batch1_writes::Request::GoalActivitySettle { task_id, .. }
+            | batch1_writes::Request::GoalActivityRecordTool { task_id, .. }
+            | batch1_writes::Request::GoalActivityRecordSkill { task_id, .. }
+        } => {
+            for domain in ["tasks", "batch1", "batch4b", "work_graph"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), task_id.clone())));
+        }
+        Request::Batch1Write { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "batch1".into(),
+            )));
+        }
+        Request::Batch2Write { request: batch2_writes::Request::OpenDots { .. } } => {
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "tasks".into())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), DOTS_TASK_ID.into())));
+        }
+        Request::Batch2Write { request: batch2_writes::Request::DeleteTask { id } } => {
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "tasks".into())));
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "snapshots".into())));
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "conversation_interactions".into())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), id.clone())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "memory".into())));
+            if gateway_execution_authority::gateway_task_id(id) {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "gateway_admission".into())));
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "batch4a".into())));
+            }
+        }
+        Request::Batch2Write { request: batch2_writes::Request::TaskBoardNote { id, .. } } => {
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "tasks".into())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), id.clone())));
+        }
+        Request::Batch2Write { request: batch2_writes::Request::CodeReviewUpsert { task_id, .. } } => {
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "tasks".into())));
+            plan.push(ResourceRequirement::shared(ResourceKey::Entity("task".into(), task_id.clone())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "batch2".into())));
+        }
+        Request::Batch2Write { request: batch2_writes::Request::RebindLegacyTaskWorkspacePaths { cwd_updates, trash_updates } } => {
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "tasks".into())));
+            plan.extend(batch2_writes::rebind_task_ids(cwd_updates, trash_updates).map(|id|
+                ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), id.into()))));
+        }
+        Request::Batch2Write { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "batch2".into(),
+            )));
+        }
+        Request::Batch3Write { request } => {
+            if let Some(task_ids) = request.artifact_tasks() {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "tasks".into())));
+                for id in task_ids {
+                    for domain in ["task", "artifact_task"] {
+                        plan.push(ResourceRequirement::exclusive(ResourceKey::Entity(domain.into(), id.into())));
+                    }
+                }
+            } else {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "batch3".into())));
+            }
+        }
+        Request::WriteMemoryTurnExtraction { command, .. } => {
+            for domain in ["memory", "batch3", "tasks", "workspaces", "batch2", "general_write"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), command.task_id().into())));
+        }
+        Request::Batch4aWrite { .. } => {
+            let domain = match request {
+                Request::Batch4aWrite { request: batch4a_writes::Request::CronStartupMigrate
+                    | batch4a_writes::Request::CronUpsertJob { .. }
+                    | batch4a_writes::Request::CronSetEnabled { .. }
+                    | batch4a_writes::Request::CronRemoveJob { .. }
+                    | batch4a_writes::Request::CronInsertRun { .. }
+                    | batch4a_writes::Request::CronRecoverRuns { .. }
+                    | batch4a_writes::Request::CronHoldDotsSchedule { .. }
+                    | batch4a_writes::Request::CronSaveDotsProvenance { .. }
+                    | batch4a_writes::Request::CronRecordDotsNotice { .. }, .. } => "cron",
+                _ => "batch4a",
+            };
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), domain.into())));
+            if let Request::Batch4aWrite { request: batch4a_writes::Request::DotsDelegationReconcile { task_id, .. }
+                | batch4a_writes::Request::DotsDelegationLink { task_id, .. }, .. } = request {
+                for domain in ["batch2", "tasks", "workspaces"] {
+                    plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+                }
+                plan.push(ResourceRequirement::shared(ResourceKey::Entity("task".into(), task_id.clone())));
+            }
+            if matches!(request, Request::Batch4aWrite { request:
+                batch4a_writes::Request::DotsDelegationLink { source_message_id, .. }
+                | batch4a_writes::Request::DotsFollowupGoalAccepted { source_message_id, .. }, ..
+            } if cron_scheduler::dots_run_id(source_message_id).is_some()) {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "cron".into())));
+            }
+            if matches!(request, Request::Batch4aWrite { request: batch4a_writes::Request::GatewayDeliveryOp { op, .. } } if op == "recoverInterrupted") {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "gateway_delivery_recovery".into())));
+            }
+        }
+        Request::Batch4bWrite { request: batch4b_writes::Request::Single(batch4b_writes::BatchOp::Bot(
+            batch4b_bot::BotOp::BotUpsert(registration),
+        )) } => {
+            plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "batch4b".into())));
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("bot".into(), registration.bot_id.clone())));
+            if registration.primary {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("bot_primary_user".into(), registration.user_id.clone())));
+            }
+        }
+        Request::Batch4bWrite { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "batch4b".into(),
+            )));
+        }
+        _ => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "general_write".into(),
+            )));
+        }
+    }
+    plan
+}
+
+fn start_database_writer(
+    engine: Arc<database::DuckDbEngine>,
+    gate: Arc<resource_gate::ResourceGate>,
+    outbox: Arc<outbox_publisher::OutboxPublisher>,
+    staged: Arc<embedding_index::StagedVectors>,
+    executor_tracker: Arc<business_protocol::ExecutorTracker>,
+) -> io::Result<writer_admission::DatabaseWriter> {
+    let workers = engine.config().write_pool_size;
+    writer_admission::DatabaseWriter::spawn(
+        gate.clone(),
+        workers,
+        move || {
+            (
+                Arc::clone(&engine),
+                Arc::clone(&gate),
+                Arc::clone(&outbox),
+                HashMap::<String, durable::HistorySession>::new(),
+                Arc::clone(&staged),
+                Arc::clone(&executor_tracker),
+            )
+        },
+        |(engine, gate, outbox, sessions, staged, tracker), id, request, lease| {
+            if !request_control::begin(&id) {
+                return true;
+            }
+            let mut side_effects = None;
+            let result = (|| -> Result<Data> {
+                if let Request::CorePiHost { command, client } = request {
+                    let ctx = client.unwrap_or_else(|| {
+                        business_protocol::ClientContext::synthetic(
+                            &business_protocol::current_core_generation(),
+                        )
+                    });
+                    let mut phase = pi_host_supervisor::PiHostWritePhase::new(
+                        engine, lease, id.as_deref(), Duration::from_secs(30),
+                    );
+                    let fx = pi_host_supervisor::execute_write_in_phase(
+                        &mut phase,
+                        tracker,
+                        &ctx,
+                        command,
+                    )?;
+                    if fx.data["deferredGoals"].as_u64().is_some_and(|count| count > 0) {
+                        outbox.wake();
+                    }
+                    let data = fx.data.clone();
+                    side_effects = Some(fx);
+                    return Ok(Data::Json(data));
+                }
+                let _lease = lease;
+                let mut pooled = engine.checkout_writer(Duration::from_secs(30))?;
+                if let (Some(req_id), Some(ctrl)) = (id.as_deref(), request_control::shared()) {
+                    pooled.bind_request(req_id, ctrl.clone());
+                }
+                read(
+                    pooled.conn_mut(),
+                    engine,
+                    gate,
+                    outbox,
+                    sessions,
+                    staged,
+                    tracker,
+                    &mut side_effects,
+                    request,
+                )
+            })();
+            let ok = result.is_ok();
+            if write_reply(&id, result, false).is_err() {
+                return false;
+            }
+            if ok {
+                emit_side_effects(side_effects);
+            }
+            true
+        },
+    )
 }
 
 fn run() -> Result<()> {
@@ -3364,20 +4366,29 @@ fn run() -> Result<()> {
         return Err("unexpected argument".into());
     }
     if argument == "--protocol-version" {
-        println!("89");
+        println!("115");
         return Ok(());
     }
     let db_path = PathBuf::from(argument);
     let worker_lease = core_lease::WorkerLease::from_environment(&db_path)?;
-    let mut db = read_connection(&db_path)?;
+    let pool_cfg = database::DuckDbPoolConfig {
+        read_pool_size: configured_read_pool_workers(),
+        ..Default::default()
+    };
+    let (engine, _open_report) = database::DuckDbEngine::open_or_initialize(&db_path, pool_cfg)?;
+    {
+        let mut init_writer = engine.checkout_writer(Duration::from_secs(10))?;
+        db_schema::materialize_seeds_and_repairs(init_writer.conn_mut())?;
+    }
+    let gate = resource_gate::ResourceGate::new(256);
+    let outbox = outbox_publisher::OutboxPublisher::new();
     let control = request_control::Control::open(&db_path)?;
     request_control::install(control.clone());
     let host_control = control.clone();
-    let mut database_writer = None;
+    let mut database_writer: Option<writer_admission::DatabaseWriter> = None;
     let mut read_pool: Option<WorkerPool<Request>> = None;
     let mut gadget_io_pool: Option<WorkerPool<gadget_state::Request>> = None;
     let mut durable_sessions = HashMap::new();
-    let mut writer = None;
     let mut inference = None;
     let mut maintenance = None;
     let mut workspace_scans: Option<WorkerPool<WorkspaceJob>> = None;
@@ -3391,7 +4402,8 @@ fn run() -> Result<()> {
         let mut output = io::stdout().lock();
         let handshake = serde_json::json!({
             "historyReady": true,
-            "parallelReads": configured_read_pool_workers(),
+            "parallelReads": engine.config().read_pool_size,
+            "parallelWrites": engine.config().write_pool_size,
             "parallelWorkspaceIo": configured_workspace_io_workers(),
         });
         serde_json::to_writer(&mut output, &handshake)?;
@@ -3400,7 +4412,14 @@ fn run() -> Result<()> {
     }
     // The input thread owns stdin so history reads cannot queue behind the main loop. It
     // forwards the transport id with each request, which is what lets replies be correlated.
-    let (requests, input) = history_lane::route_input(control)?;
+    let (requests, input) = history_lane::route_input(Arc::clone(&engine), control)?;
+    outbox.subscribe(Arc::new(|events| {
+        for event in events {
+            let _ = request_control::emit(&serde_json::json!({ "coreEvent": event }));
+        }
+    }));
+    let publisher_worker = outbox.start_worker(Arc::clone(&engine), Arc::clone(&gate),
+        business_protocol::current_core_generation())?;
     struct SchedulerTickerGuard {
         stop: Arc<std::sync::atomic::AtomicBool>,
         handle: Option<thread::JoinHandle<()>>,
@@ -3413,7 +4432,7 @@ fn run() -> Result<()> {
             }
         }
     }
-    let _scheduler_ticker = if std::env::var_os("MYBUDDY_CORE_SUPERVISED").is_some()
+    let scheduler_ticker = if std::env::var_os("MYBUDDY_CORE_SUPERVISED").is_some()
         && std::env::var("MYBUDDY_WORK_AUTO_TICK_MS").ok().as_deref() != Some("0")
     {
         let interval_ms = std::env::var("MYBUDDY_WORK_AUTO_TICK_MS")
@@ -3423,29 +4442,45 @@ fn run() -> Result<()> {
             .clamp(50, 30_000);
         let stop = Arc::new(AtomicBool::new(false));
         let stop_flag = stop.clone();
-        let tick_db_path = db_path.clone();
+        let tick_engine = Arc::clone(&engine);
+        let tick_gate = Arc::clone(&gate);
         let tick_tracker = executor_tracker.clone();
         let handle = thread::Builder::new()
             .name("work-scheduler-tick".into())
             .spawn(move || {
-                let mut writer_conn: Option<rusqlite::Connection> = None;
+                use resource_gate::{ResourceKey, ResourceRequirement};
+                let acquire_phase = |phase: &str| {
+                    tick_gate
+                        .acquire(
+                            vec![
+                                ResourceRequirement::shared(ResourceKey::DbLifecycle),
+                                ResourceRequirement::shared(ResourceKey::CommitShare),
+                                ResourceRequirement::exclusive(ResourceKey::PublisherOrder),
+                                ResourceRequirement::exclusive(ResourceKey::Namespace(
+                                    "domain".into(),
+                                    phase.into(),
+                                )),
+                            ],
+                            Duration::from_secs(5),
+                            || stop_flag.load(Ordering::Acquire),
+                        )
+                        .ok()
+                };
                 while !stop_flag.load(Ordering::Acquire) {
-                    let lease_held = if let Ok(_gate) = write_gate::enter() {
-                        write_connection(&mut writer_conn, &tick_db_path)
-                            .ok()
-                            .and_then(|conn| work_scheduler::claim_supervised_core_lease(conn).ok())
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    };
+                    let lease_held = acquire_phase("work_lease")
+                        .and_then(|_lease| {
+                            let mut conn = tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
+                            work_scheduler::claim_supervised_core_lease(conn.conn_mut()).ok()
+                        })
+                        .unwrap_or(false);
                     if lease_held {
                         let core_gen = business_protocol::current_core_generation();
                         let ctx = business_protocol::ClientContext::synthetic(&core_gen);
 
-                        let work_fx = write_gate::enter().ok().and_then(|_gate| {
-                            let conn = write_connection(&mut writer_conn, &tick_db_path).ok()?;
+                        let work_fx = acquire_phase("work_tick").and_then(|_lease| {
+                            let mut conn = tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
                             work_scheduler::execute_write(
-                                conn,
+                                conn.conn_mut(),
                                 &tick_tracker,
                                 &ctx,
                                 work_scheduler::Command::Tick {
@@ -3464,14 +4499,14 @@ fn run() -> Result<()> {
                         }
 
                         if !stop_flag.load(Ordering::Acquire) {
-                            let pi_fx = write_gate::enter().ok().and_then(|gate| {
-                                let mut gate_opt = Some(gate);
-                                let conn = write_connection(&mut writer_conn, &tick_db_path).ok()?;
-                                pi_host_supervisor::supervise_tick(conn, &tick_tracker, |op| {
-                                    drop(gate_opt.take());
-                                    op();
-                                    gate_opt = Some(write_gate::enter_unchecked());
-                                })
+                            let pi_fx = acquire_phase("pi_host_tick").and_then(|lease| {
+                                let mut phase = pi_host_supervisor::PiHostWritePhase::new(
+                                    &tick_engine, lease, None, Duration::from_secs(5),
+                                );
+                                pi_host_supervisor::supervise_tick_in_phase(
+                                    &mut phase,
+                                    &tick_tracker,
+                                )
                                 .ok()
                                 .flatten()
                             });
@@ -3479,9 +4514,10 @@ fn run() -> Result<()> {
                         }
 
                         if !stop_flag.load(Ordering::Acquire) {
-                            let cron_fx = write_gate::enter().ok().and_then(|_gate| {
-                                let conn = write_connection(&mut writer_conn, &tick_db_path).ok()?;
-                                cron_scheduler::run_supervised_tick(conn, &tick_tracker)
+                            let cron_fx = acquire_phase("cron_tick").and_then(|_lease| {
+                                let mut conn =
+                                    tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
+                                cron_scheduler::run_supervised_tick(conn.conn_mut(), &tick_tracker)
                                     .ok()
                                     .flatten()
                             });
@@ -3489,9 +4525,10 @@ fn run() -> Result<()> {
                         }
 
                         if !stop_flag.load(Ordering::Acquire) {
-                            let dots_fx = write_gate::enter().ok().and_then(|_gate| {
-                                let conn = write_connection(&mut writer_conn, &tick_db_path).ok()?;
-                                dots_scheduler::run_supervised_tick(conn, &tick_tracker)
+                            let dots_fx = acquire_phase("dots_tick").and_then(|_lease| {
+                                let mut conn =
+                                    tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
+                                dots_scheduler::run_supervised_tick(conn.conn_mut(), &tick_tracker)
                                     .ok()
                                     .flatten()
                             });
@@ -3499,21 +4536,29 @@ fn run() -> Result<()> {
                         }
 
                         if !stop_flag.load(Ordering::Acquire) {
-                            let gw_fx = write_gate::enter().ok().and_then(|_gate| {
-                                let conn = write_connection(&mut writer_conn, &tick_db_path).ok()?;
-                                gateway_scheduler::run_supervised_tick(conn, &tick_tracker)
-                                    .ok()
-                                    .flatten()
+                            let gw_fx = acquire_phase("gateway_tick").and_then(|_lease| {
+                                let mut conn =
+                                    tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
+                                gateway_scheduler::run_supervised_tick(
+                                    conn.conn_mut(),
+                                    &tick_tracker,
+                                )
+                                .ok()
+                                .flatten()
                             });
                             emit_side_effects(gw_fx);
                         }
 
                         if !stop_flag.load(Ordering::Acquire) {
-                            let maint_fx = write_gate::enter().ok().and_then(|_gate| {
-                                let conn = write_connection(&mut writer_conn, &tick_db_path).ok()?;
-                                maintenance_scheduler::run_supervised_tick(conn, &tick_tracker)
-                                    .ok()
-                                    .flatten()
+                            let maint_fx = acquire_phase("maintenance_tick").and_then(|_lease| {
+                                let mut conn =
+                                    tick_engine.checkout_writer(Duration::from_secs(5)).ok()?;
+                                maintenance_scheduler::run_supervised_tick(
+                                    conn.conn_mut(),
+                                    &tick_tracker,
+                                )
+                                .ok()
+                                .flatten()
                             });
                             emit_side_effects(maint_fx);
                         }
@@ -3538,31 +4583,25 @@ fn run() -> Result<()> {
         if request.as_ref().is_ok_and(database_write) {
             if database_writer.is_none() {
                 database_writer = Some(start_database_writer(
-                    db_path.clone(),
+                    Arc::clone(&engine),
+                    Arc::clone(&gate),
+                    Arc::clone(&outbox),
                     staged.clone(),
                     executor_tracker.clone(),
                 )?);
             }
             let request = request.expect("validated write request");
-            let q = DB_WRITER_QUEUED.fetch_add(1, Ordering::AcqRel) + 1;
-            DB_WRITER_MAX_QUEUED.fetch_max(q, Ordering::AcqRel);
-            match database_writer.as_ref().unwrap().0.try_send((id, request)) {
-                Ok(()) => {}
-                Err(mpsc::TrySendError::Full((id, _))) => {
-                    DB_WRITER_QUEUED.fetch_sub(1, Ordering::AcqRel);
-                    request_control::overload(&id, "OVERLOADED")?
-                }
-                Err(mpsc::TrySendError::Disconnected((id, _))) => {
-                    DB_WRITER_QUEUED.fetch_sub(1, Ordering::AcqRel);
-                    request_control::overload(&id, "UNAVAILABLE")?
-                }
+            if let Err((id, code)) = database_writer.as_ref().unwrap().try_send(id, request) {
+                request_control::reject_pending(&id, code)?;
             }
             continue;
         }
         if request.as_ref().is_ok_and(read_pool_op) {
             if read_pool.is_none() {
                 read_pool = Some(start_read_pool(
-                    db_path.clone(),
+                    Arc::clone(&engine),
+                    Arc::clone(&gate),
+                    Arc::clone(&outbox),
                     staged.clone(),
                     executor_tracker.clone(),
                 )?);
@@ -3608,6 +4647,7 @@ fn run() -> Result<()> {
             Ok(Request::ScanPluginCatalog { query }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    &engine,
                     id,
                     WorkspaceJob::PluginCatalog(query),
                     Data::Json(Value::Null),
@@ -3617,6 +4657,7 @@ fn run() -> Result<()> {
             Ok(Request::ReadPluginConfig { target }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    &engine,
                     id,
                     WorkspaceJob::ReadPluginConfig(target),
                     Data::PluginConfig(plugin_config::Reply::NeedsHost),
@@ -3630,6 +4671,7 @@ fn run() -> Result<()> {
             }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    &engine,
                     id,
                     WorkspaceJob::ReplacePluginConfig {
                         target,
@@ -3643,6 +4685,7 @@ fn run() -> Result<()> {
             Ok(Request::InstallConnector { install }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    &engine,
                     id,
                     WorkspaceJob::InstallConnector(install),
                     Data::ConnectorInstall(connector_install::Reply::NeedsHost),
@@ -3652,6 +4695,7 @@ fn run() -> Result<()> {
             Ok(Request::RecoverConnectorInstalls { root }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    &engine,
                     id,
                     WorkspaceJob::RecoverConnectorInstalls(root),
                     Data::ConnectorInstall(connector_install::Reply::NeedsHost),
@@ -3661,6 +4705,7 @@ fn run() -> Result<()> {
             Ok(Request::MaintainConnectorStorage { task }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    &engine,
                     id,
                     WorkspaceJob::MaintainConnectorStorage(task),
                     Data::ConnectorInstall(connector_install::Reply::NeedsHost),
@@ -3670,6 +4715,7 @@ fn run() -> Result<()> {
             Ok(Request::ImportConnectorMarket { request }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    &engine,
                     id,
                     WorkspaceJob::ImportConnectorMarket(request),
                     Data::ConnectorImport(connector_import::Reply::NeedsHost),
@@ -3679,6 +4725,7 @@ fn run() -> Result<()> {
             Ok(Request::MutateConnectorMarket { action }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    &engine,
                     id,
                     WorkspaceJob::MutateConnectorMarket(action),
                     Data::ConnectorMarket(connector_market::Reply::NeedsHost),
@@ -3717,6 +4764,7 @@ fn run() -> Result<()> {
             Ok(Request::WorkspaceScan { query }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    &engine,
                     id,
                     WorkspaceJob::Scan(query),
                     Data::WorkspaceScan(workspace_scan::Scan::NeedsHost),
@@ -3726,6 +4774,7 @@ fn run() -> Result<()> {
             Ok(Request::FileBackupList { query }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    &engine,
                     id,
                     WorkspaceJob::FileBackupList(query),
                     Data::FileBackupList(None),
@@ -3735,6 +4784,7 @@ fn run() -> Result<()> {
             Ok(Request::RestoreFileBackup { request }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    &engine,
                     id,
                     WorkspaceJob::RestoreFileBackup(request),
                     Data::FileBackupRestore(file_backup_restore::Reply::NeedsHost),
@@ -3744,6 +4794,7 @@ fn run() -> Result<()> {
             Ok(Request::SubagentSettings { request }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    &engine,
                     id,
                     WorkspaceJob::SubagentSettings(request),
                     Data::PluginConfig(plugin_config::Reply::NeedsHost),
@@ -3753,17 +4804,23 @@ fn run() -> Result<()> {
             Ok(Request::ScanWorkGraphIntegrity) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    &engine,
                     id,
-                    WorkspaceJob::WorkGraphIntegrity(db_path.clone()),
+                    WorkspaceJob::WorkGraphIntegrity,
                     Data::Json(Value::Null),
                 )?;
                 continue;
             }
             Ok(Request::ListTrashedTasks { trash_root }) => {
                 let null = Data::Json(Value::Null);
-                match task_trash::list(&db) {
+                let rows_res = (|| -> Result<Vec<task_trash::TrashedTask>> {
+                    let reader = engine.checkout_reader(Duration::from_secs(10))?;
+                    task_trash::list(reader.conn())
+                })();
+                match rows_res {
                     Ok(rows) => dispatch_workspace(
                         &mut workspace_scans,
+                        &engine,
                         id,
                         WorkspaceJob::CheckTrashedDirectories {
                             root: trash_root,
@@ -3778,6 +4835,7 @@ fn run() -> Result<()> {
             Ok(Request::DotsFileRevision { root, file }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    &engine,
                     id,
                     WorkspaceJob::FileRevision { root, file },
                     Data::DotsFileRevision(dots_file_revision::Revision::NeedsHost),
@@ -3902,17 +4960,20 @@ fn run() -> Result<()> {
                 continue;
             }
             Ok(Request::EmbeddingIndex { query }) => {
-                write_reply(
-                    &id,
-                    index_queues.query(&mut db, query).map(Data::EmbeddingIndex),
-                    false,
-                )?;
+                let res = (|| -> Result<Data> {
+                    let mut reader = engine.checkout_reader(Duration::from_secs(10))?;
+                    index_queues
+                        .query(reader.conn_mut(), query)
+                        .map(Data::EmbeddingIndex)
+                })();
+                write_reply(&id, res, false)?;
                 continue;
             }
             Ok(Request::CleanupArtifactFiles { root, cleanup }) => {
                 dispatch_maintenance(
                     &mut maintenance,
-                    &db_path,
+                    &engine,
+                    &gate,
                     id,
                     MaintenanceJob::CleanupArtifactFiles { root, cleanup },
                 )?;
@@ -3921,7 +4982,8 @@ fn run() -> Result<()> {
             Ok(Request::DeleteLibrary { root, target }) => {
                 dispatch_maintenance(
                     &mut maintenance,
-                    &db_path,
+                    &engine,
+                    &gate,
                     id,
                     MaintenanceJob::DeleteLibrary { root, target },
                 )?;
@@ -3930,7 +4992,8 @@ fn run() -> Result<()> {
             Ok(Request::DrainLibraryCleanup { root }) => {
                 dispatch_maintenance(
                     &mut maintenance,
-                    &db_path,
+                    &engine,
+                    &gate,
                     id,
                     MaintenanceJob::DrainLibraryCleanup { root },
                 )?;
@@ -3943,7 +5006,8 @@ fn run() -> Result<()> {
             }) => {
                 dispatch_maintenance(
                     &mut maintenance,
-                    &db_path,
+                    &engine,
+                    &gate,
                     id,
                     MaintenanceJob::ExportLibraryBackup {
                         root,
@@ -3959,7 +5023,8 @@ fn run() -> Result<()> {
             }) => {
                 dispatch_maintenance(
                     &mut maintenance,
-                    &db_path,
+                    &engine,
+                    &gate,
                     id,
                     MaintenanceJob::PrepareLibraryRestore {
                         operation_id,
@@ -3971,7 +5036,8 @@ fn run() -> Result<()> {
             Ok(Request::DiscardLibraryRestore { operation_id }) => {
                 dispatch_maintenance(
                     &mut maintenance,
-                    &db_path,
+                    &engine,
+                    &gate,
                     id,
                     MaintenanceJob::DiscardLibraryRestore { operation_id },
                 )?;
@@ -3980,7 +5046,8 @@ fn run() -> Result<()> {
             Ok(Request::RestoreLibraryBackup { restore }) => {
                 dispatch_maintenance(
                     &mut maintenance,
-                    &db_path,
+                    &engine,
+                    &gate,
                     id,
                     MaintenanceJob::RestoreLibraryBackup { restore },
                 )?;
@@ -3989,7 +5056,8 @@ fn run() -> Result<()> {
             Ok(Request::RecoverLibraryRestores { root }) => {
                 dispatch_maintenance(
                     &mut maintenance,
-                    &db_path,
+                    &engine,
+                    &gate,
                     id,
                     MaintenanceJob::RecoverLibraryRestores { root },
                 )?;
@@ -4003,7 +5071,8 @@ fn run() -> Result<()> {
             }) => {
                 dispatch_maintenance(
                     &mut maintenance,
-                    &db_path,
+                    &engine,
+                    &gate,
                     id,
                     MaintenanceJob::DeleteProject {
                         operation_id,
@@ -4017,7 +5086,8 @@ fn run() -> Result<()> {
             Ok(Request::PromoteProjectEventToLibrary { promotion }) => {
                 dispatch_maintenance(
                     &mut maintenance,
-                    &db_path,
+                    &engine,
+                    &gate,
                     id,
                     MaintenanceJob::PromoteProjectEventToLibrary { promotion },
                 )?;
@@ -4025,16 +5095,23 @@ fn run() -> Result<()> {
             }
             Ok(request) => {
                 let mut side_effects = None;
-                let res = read(
-                    &mut db,
-                    &db_path,
-                    &mut durable_sessions,
-                    &mut writer,
-                    &staged,
-                    &executor_tracker,
-                    &mut side_effects,
-                    request,
-                );
+                let res = (|| -> Result<Data> {
+                    let mut pooled = engine.checkout_reader(Duration::from_secs(10))?;
+                    if let (Some(req_id), Some(ctrl)) = (id.as_deref(), request_control::shared()) {
+                        pooled.bind_request(req_id, ctrl.clone());
+                    }
+                    read(
+                        pooled.conn_mut(),
+                        &engine,
+                        &gate,
+                        &outbox,
+                        &mut durable_sessions,
+                        &staged,
+                        &executor_tracker,
+                        &mut side_effects,
+                        request,
+                    )
+                })();
                 let ok = res.is_ok();
                 write_reply(&id, res, false)?;
                 if ok {
@@ -4048,7 +5125,7 @@ fn run() -> Result<()> {
             }
         };
         if inference.is_none() {
-            inference = Some(start_inference(db_path.clone(), staged.clone())?);
+            inference = Some(start_inference(Arc::clone(&engine), staged.clone())?);
         }
         match inference.as_ref().unwrap().0.try_send((id, job)) {
             Ok(()) => {}
@@ -4059,9 +5136,9 @@ fn run() -> Result<()> {
         }
     }
     input.join().map_err(|_| "input dispatcher panicked")??;
-    if let Some((sender, worker)) = database_writer {
-        drop(sender);
-        worker.join().map_err(|_| "database writer panicked")?;
+    drop(scheduler_ticker);
+    if let Some(pool) = database_writer {
+        pool.shutdown()?;
     }
     if let Some((sender, worker)) = inference {
         drop(sender);
@@ -4083,6 +5160,9 @@ fn run() -> Result<()> {
         worker.join().map_err(|_| "maintenance worker panicked")?;
     }
     gadget_http_host::stop_all();
+    outbox.close();
+    publisher_worker.join().map_err(|_| "domain outbox publisher panicked")?;
+    engine.close();
     Ok(())
 }
 
@@ -4096,6 +5176,578 @@ fn main() {
 #[cfg(test)]
 mod request_classification_tests {
     use super::*;
+
+    #[test]
+    fn waiting_to_bind_one_durable_task_does_not_delay_an_independent_binding() -> Result<()> {
+        use resource_gate::{ResourceKey, ResourceRequirement};
+
+        let now = request_control::now_ms();
+        let dir = std::env::temp_dir().join(format!("mybuddy-binding-admission-{}-{now}", std::process::id()));
+        let config = database::DuckDbPoolConfig { read_pool_size: 1, write_pool_size: 2, ..Default::default() };
+        let (engine, _) = database::DuckDbEngine::open_or_initialize(dir.join("app.duckdb"), config)?;
+        {
+            let db = engine.checkout_writer(Duration::from_secs(1))?;
+            db.conn().execute("INSERT INTO tasks(id,title,updated_at) VALUES ('held','Held',?1),('free','Free',?1)", [now])?;
+        }
+        let gate = resource_gate::ResourceGate::new(32);
+        let hold = gate.acquire(vec![ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), "held".into()))],
+            Duration::from_secs(1), || false).expect("hold the first task");
+        let writer = start_database_writer(engine.clone(), gate, outbox_publisher::OutboxPublisher::new(),
+            Arc::new(embedding_index::StagedVectors::default()), Arc::new(business_protocol::ExecutorTracker::new()))?;
+        for id in ["held", "free"] {
+            let request = Request::WriteDurableTaskProjection { request: durable_task_projection::Request::BindBot {
+                task_id: id.into(), directory: format!("store-{id}"), cwd: format!("cwd-{id}"), update_cwd_if_exists: false,
+            }};
+            writer.try_send(Some(format!("bind-{id}")), request).expect("enqueue binding");
+        }
+        let saved = || -> Result<(bool, bool)> {
+            let db = engine.checkout_reader(Duration::from_secs(1))?;
+            Ok(db.conn().query_row(
+                "SELECT EXISTS(SELECT 1 FROM durable_bot_bindings WHERE task_id='held'),
+                        EXISTS(SELECT 1 FROM durable_bot_bindings WHERE task_id='free')",
+                [], |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        };
+        let until = std::time::Instant::now() + Duration::from_secs(4);
+        let before_release = loop {
+            let found = saved()?;
+            if found.1 || std::time::Instant::now() >= until { break found; }
+            thread::sleep(Duration::from_millis(10));
+        };
+        drop(hold);
+        writer.shutdown()?;
+        let after_release = saved()?;
+        drop(engine);
+        std::fs::remove_dir_all(dir)?;
+        assert_eq!(before_release, (false, true));
+        assert_eq!(after_release, (true, true));
+        Ok(())
+    }
+
+    #[test]
+    fn goal_waiting_for_its_task_does_not_hold_another_goals_write() -> Result<()> {
+        use resource_gate::{ResourceKey, ResourceRequirement};
+
+        let now = request_control::now_ms();
+        let dir = std::env::temp_dir().join(format!("mybuddy-goal-admission-{}-{now}", std::process::id()));
+        let config = database::DuckDbPoolConfig { read_pool_size: 1, write_pool_size: 2, ..Default::default() };
+        let (engine, _) = database::DuckDbEngine::open_or_initialize(dir.join("app.duckdb"), config)?;
+        {
+            let mut db = engine.checkout_writer(Duration::from_secs(1))?;
+            db.conn().execute("INSERT INTO tasks(id,title,updated_at) VALUES ('held','Held',?1),('free','Free',?1)", [now])?;
+            let bot = serde_json::from_value(serde_json::json!({
+                "op":"botUpsert", "botId":"bot", "userId":"user", "primary":true, "operationId":"register",
+                "displayName":"Bot", "responsibilitySummary":"", "expertProfileJson":"{}", "memoryScopeJson":"{}",
+                "authorizationJson":"{}", "foregroundAllowedToolsJson":"[]", "notificationPolicyJson":"{}",
+                "status":"active", "now":now, "activeVersion":1, "expertId":"expert", "sourceRevision":"v1",
+                "systemPromptHash":"hash", "allowedMcpIdsJson":"[]", "allowedSkillIdsJson":"[]",
+                "allowedConnectorIdsJson":"[]", "skillPackagesJson":"[]"
+            }))?;
+            assert_eq!(batch4b_writes::run(db.conn_mut(), bot)?["ok"], true);
+            db.conn().execute(
+                "INSERT INTO bot_message_execution_settings VALUES ('from-history','bot','{}',?1)",
+                [r#"{"expertId":"frozen-expert","version":2}"#],
+            )?;
+            db.conn().execute("INSERT INTO conversation_goal_usage_events VALUES ('old-turn','free',137,?1)", [now])?;
+        }
+        let gate = resource_gate::ResourceGate::new(32);
+        let hold = gate.acquire(vec![ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), "held".into()))],
+            Duration::from_secs(1), || false).expect("hold the first task");
+        let writer = start_database_writer(engine.clone(), gate, outbox_publisher::OutboxPublisher::new(),
+            Arc::new(embedding_index::StagedVectors::default()), Arc::new(business_protocol::ExecutorTracker::new()))?;
+        for id in ["held", "free"] {
+            let source = (id == "free").then(|| serde_json::json!({
+                "taskId":id, "conversationId":"history", "messageId":"from-history", "role":"user", "text":"Check the snapshot"
+            }));
+            let request: Request = serde_json::from_value(serde_json::json!({
+                "operation":"createConversationGoal", "operationId":format!("create-{id}"),
+                "draft":{"userId":"user", "taskId":id, "defaultBotId":"bot", "title":id, "criteria":[], "source":source}
+            }))?;
+            writer.try_send(Some(format!("goal-{id}")), request).expect("enqueue goal");
+        }
+        let states = || -> Result<(bool, bool)> {
+            let db = engine.checkout_reader(Duration::from_secs(1))?;
+            Ok(db.conn().query_row("SELECT EXISTS(SELECT 1 FROM work_conversations WHERE conversation_id='held'),
+                EXISTS(SELECT 1 FROM work_conversations WHERE conversation_id='free')",
+                [], |row| Ok((row.get(0)?, row.get(1)?)))?)
+        };
+        let until = std::time::Instant::now() + Duration::from_secs(4);
+        let before_release = loop {
+            let committed = states()?;
+            if committed.1 || std::time::Instant::now() >= until { break committed; }
+            thread::sleep(Duration::from_millis(10));
+        };
+        drop(hold);
+        writer.shutdown()?;
+        let after_release = states()?;
+        let (expert, usage): (String, i64) = {
+            let db = engine.checkout_reader(Duration::from_secs(1))?;
+            db.conn().query_row(
+                "SELECT json_extract_string(s.expert_snapshot_json, '$.expertId'), g.usage_cursor
+                 FROM conversation_goal_continuations g JOIN work_intent_snapshots s USING (work_id)
+                 WHERE g.task_id='free'",
+                [], |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+        };
+        drop(engine);
+        std::fs::remove_dir_all(dir)?;
+        assert_eq!(before_release, (false, true));
+        assert_eq!(after_release, (true, true));
+        assert_eq!((expert.as_str(), usage), ("frozen-expert", 137));
+        Ok(())
+    }
+
+    #[test]
+    fn blocked_gateway_channel_leaves_another_channel_free_to_commit() -> Result<()> {
+        use resource_gate::{ResourceKey, ResourceRequirement};
+
+        let now = request_control::now_ms();
+        let dir = std::env::temp_dir().join(format!("mybuddy-gateway-channel-admission-{}-{now}", std::process::id()));
+        let config = database::DuckDbPoolConfig { read_pool_size: 1, write_pool_size: 2, ..Default::default() };
+        let (engine, _) = database::DuckDbEngine::open_or_initialize(dir.join("app.duckdb"), config)?;
+        let gate = resource_gate::ResourceGate::new(32);
+        let hold = gate.acquire(
+            vec![ResourceRequirement::exclusive(ResourceKey::Entity("gateway_channel".into(), "held".into()))],
+            Duration::from_secs(1), || false,
+        ).expect("hold the first channel");
+        let writer = start_database_writer(engine.clone(), gate, outbox_publisher::OutboxPublisher::new(),
+            Arc::new(embedding_index::StagedVectors::default()), Arc::new(business_protocol::ExecutorTracker::new()))?;
+        for id in ["held", "free"] {
+            let request: Request = serde_json::from_value(serde_json::json!({
+                "operation": "writeGatewayChannel", "operationId": format!("save-{id}"),
+                "draft": { "channel": { "id": id, "type": "telegram", "name": id, "connected": true, "configJson": "{}" }, "expected": null },
+            }))?;
+            writer.try_send(Some(format!("channel-{id}")), request).expect("enqueue channel write");
+        }
+        let states = || -> Result<(bool, bool)> {
+            let reader = engine.checkout_reader(Duration::from_secs(1))?;
+            Ok(reader.conn().query_row(
+                "SELECT EXISTS(SELECT 1 FROM gateway_channels WHERE id='held'), EXISTS(SELECT 1 FROM gateway_channels WHERE id='free')",
+                [], |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        let before_release = loop {
+            let committed = states()?;
+            if committed.1 || std::time::Instant::now() >= deadline { break committed; }
+            thread::sleep(Duration::from_millis(10));
+        };
+        drop(hold);
+        writer.shutdown()?;
+        let after_release = states()?;
+        drop(engine);
+        std::fs::remove_dir_all(dir)?;
+        assert_eq!(before_release, (false, true));
+        assert_eq!(after_release, (true, true));
+        Ok(())
+    }
+
+    #[test]
+    fn blocked_gateway_execution_claim_leaves_another_delivery_ready() -> Result<()> {
+        use resource_gate::{ResourceKey, ResourceRequirement};
+
+        let dir = std::env::temp_dir().join(format!("mybuddy-gateway-delivery-{}-{}", std::process::id(), request_control::now_ms()));
+        let config = database::DuckDbPoolConfig { read_pool_size: 1, write_pool_size: 2, ..Default::default() };
+        let (engine, _) = database::DuckDbEngine::open_or_initialize(dir.join("app.duckdb"), config)?;
+        {
+            let db = engine.checkout_writer(Duration::from_secs(1))?;
+            for id in ["held", "free"] {
+                db.conn().execute(
+                    "INSERT INTO gateway_inbox(delivery_id,platform,channel_id,account_key,chat_id,session_key,message_id,
+                        payload_json,payload_hash,status,receipt_mode,created_at,updated_at)
+                     VALUES (?1,'telegram','channel','account','chat','chat',?1,'{}','fixture','pending','pi-durable',1,1)", [id],
+                )?;
+            }
+        }
+        let gate = resource_gate::ResourceGate::new(32);
+        let hold = gate.acquire(vec![ResourceRequirement::exclusive(ResourceKey::Entity("gateway_delivery".into(), "held".into()))],
+            Duration::from_secs(1), || false).expect("hold candidate delivery");
+        let writer = start_database_writer(engine.clone(), gate, outbox_publisher::OutboxPublisher::new(),
+            Arc::new(embedding_index::StagedVectors::default()), Arc::new(business_protocol::ExecutorTracker::new()))?;
+        for id in ["held", "free"] {
+            let request = serde_json::from_value(serde_json::json!({
+                "operation": "gatewayDeliveryControl", "deliveryId": id, "operationId": "claim",
+                "command": { "action": "claimExecution" },
+            }))?;
+            writer.try_send(Some(format!("delivery-{id}")), request).expect("enqueue delivery claim");
+        }
+        let states = || -> Result<(i64, i64)> {
+            let reader = engine.checkout_reader(Duration::from_secs(1))?;
+            Ok(reader.conn().query_row("SELECT sum(retry_count) FILTER (WHERE delivery_id='held')::BIGINT,
+                     sum(retry_count) FILTER (WHERE delivery_id='free')::BIGINT FROM gateway_inbox",
+                [], |r| Ok((r.get(0)?,r.get(1)?)))?)
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        let before_release = loop {
+            let count = states()?;
+            if count.1 == 1 || std::time::Instant::now() >= deadline { break count; }
+            thread::sleep(Duration::from_millis(10));
+        };
+        drop(hold);
+        writer.shutdown()?;
+        let after_release = states()?;
+        drop(engine);
+        std::fs::remove_dir_all(dir)?;
+        assert_eq!(before_release, (0, 1));
+        assert_eq!(after_release, (1, 1));
+        Ok(())
+    }
+
+    #[test]
+    fn interaction_waiting_for_its_task_does_not_hold_the_writer() -> Result<()> {
+        use resource_gate::{ResourceKey, ResourceRequirement};
+
+        let now = request_control::now_ms();
+        let dir = std::env::temp_dir().join(format!("mybuddy-interaction-admission-{}-{now}", std::process::id()));
+        let config = database::DuckDbPoolConfig { read_pool_size: 1, write_pool_size: 2, ..Default::default() };
+        let (engine, _) = database::DuckDbEngine::open_or_initialize(dir.join("app.duckdb"), config)?;
+        {
+            let db = engine.checkout_writer(Duration::from_secs(1))?;
+            db.conn().execute("INSERT INTO tasks(id,title,updated_at) VALUES ('held','Held',?1),('free','Free',?1)", [now])?;
+        }
+        let gate = resource_gate::ResourceGate::new(32);
+        let hold = gate.acquire(vec![ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), "held".into()))],
+            Duration::from_secs(1), || false).expect("hold the first task");
+        let writer = start_database_writer(engine.clone(), gate, outbox_publisher::OutboxPublisher::new(),
+            Arc::new(embedding_index::StagedVectors::default()), Arc::new(business_protocol::ExecutorTracker::new()))?;
+        for id in ["held", "free"] {
+            let request: Request = serde_json::from_value(serde_json::json!({
+                "operation":"batch1Write", "request": { "kind":"interactionInsert", "id":id, "taskId":id,
+                    "executionId":id, "assistantMessageId":"message", "kindName":"short_text", "title":id,
+                    "optionsJson":"[]", "allowCustom":1, "status":"pending", "version":1, "createdAt":now }
+            }))?;
+            writer.try_send(Some(format!("interaction-{id}")), request).expect("enqueue interaction");
+        }
+        let states = || -> Result<(bool, bool)> {
+            let db = engine.checkout_reader(Duration::from_secs(1))?;
+            Ok(db.conn().query_row("SELECT EXISTS(SELECT 1 FROM conversation_interactions WHERE task_id='held'),
+                EXISTS(SELECT 1 FROM conversation_interactions WHERE task_id='free')", [], |row| Ok((row.get(0)?, row.get(1)?)))?)
+        };
+        let until = std::time::Instant::now() + Duration::from_secs(4);
+        let before_release = loop {
+            let committed = states()?;
+            if committed.1 || std::time::Instant::now() >= until { break committed; }
+            thread::sleep(Duration::from_millis(10));
+        };
+        drop(hold);
+        writer.shutdown()?;
+        let after_release = states()?;
+        drop(engine);
+        std::fs::remove_dir_all(dir)?;
+        assert_eq!(before_release, (false, true));
+        assert_eq!(after_release, (true, true));
+        Ok(())
+    }
+
+    #[test]
+    fn one_bot_waiting_for_its_role_does_not_delay_another_users_registration() -> Result<()> {
+        use resource_gate::{ResourceKey, ResourceRequirement};
+
+        let now = request_control::now_ms();
+        let dir = std::env::temp_dir().join(format!("mybuddy-bot-admission-{}-{now}", std::process::id()));
+        let config = database::DuckDbPoolConfig { read_pool_size: 1, write_pool_size: 2, ..Default::default() };
+        let (engine, _) = database::DuckDbEngine::open_or_initialize(dir.join("app.duckdb"), config)?;
+        let gate = resource_gate::ResourceGate::new(32);
+        let hold = gate.acquire(vec![ResourceRequirement::exclusive(ResourceKey::Entity("bot_primary_user".into(), "held".into()))],
+            Duration::from_secs(1), || false).expect("hold the first user's primary role");
+        let writer = start_database_writer(engine.clone(), gate, outbox_publisher::OutboxPublisher::new(),
+            Arc::new(embedding_index::StagedVectors::default()), Arc::new(business_protocol::ExecutorTracker::new()))?;
+        for id in ["held", "free"] {
+            let request: Request = serde_json::from_value(serde_json::json!({
+                "operation":"batch4bWrite", "request": { "op":"botUpsert", "botId":id, "userId":id, "primary":true, "operationId":format!("op-{id}"),
+                    "displayName":id, "responsibilitySummary":"", "expertProfileJson":"{}", "memoryScopeJson":"{}",
+                    "authorizationJson":"{}", "foregroundAllowedToolsJson":"[]", "notificationPolicyJson":"{}",
+                    "status":"active", "now":now, "activeVersion":1, "expertId":"expert", "sourceRevision":"v1",
+                    "systemPromptHash":"hash", "allowedMcpIdsJson":"[]", "allowedSkillIdsJson":"[]",
+                    "allowedConnectorIdsJson":"[]", "skillPackagesJson":"[]" }
+            }))?;
+            writer.try_send(Some(format!("register-{id}")), request).expect("enqueue bot registration");
+        }
+        let roles = || -> Result<(Option<bool>, Option<bool>)> {
+            let db = engine.checkout_reader(Duration::from_secs(1))?;
+            Ok((bot_registry_data::bot(db.conn(), "held")?["is_primary"].as_bool(),
+                bot_registry_data::bot(db.conn(), "free")?["is_primary"].as_bool()))
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        let before_release = loop {
+            let registered = roles()?;
+            if registered.1.is_some() || std::time::Instant::now() >= deadline { break registered; }
+            thread::sleep(Duration::from_millis(10));
+        };
+        drop(hold);
+        writer.shutdown()?;
+        let after_release = roles()?;
+        drop(engine);
+        std::fs::remove_dir_all(dir)?;
+        assert_eq!(before_release, (None, Some(true)));
+        assert_eq!(after_release, (Some(true), Some(true)));
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_waiting_on_one_task_does_not_hold_the_writer_for_another() -> Result<()> {
+        use resource_gate::{ResourceKey, ResourceRequirement};
+        use serde_json::json;
+
+        let now = request_control::now_ms();
+        let dir = std::env::temp_dir().join(format!("mybuddy-snapshot-admission-{}-{now}", std::process::id()));
+        let config = database::DuckDbPoolConfig { write_pool_size: 2, read_pool_size: 1, ..Default::default() };
+        let (engine, _) = database::DuckDbEngine::open_or_initialize(dir.join("app.duckdb"), config)?;
+        {
+            let db = engine.checkout_writer(Duration::from_secs(1))?;
+            db.conn().execute("INSERT INTO tasks(id,title,updated_at) VALUES ('held','Held',?1),('free','Free',?1)", [now])?;
+        }
+        let gate = resource_gate::ResourceGate::new(32);
+        let held = gate.acquire(vec![ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), "held".into()))],
+            Duration::from_secs(1), || false).expect("hold the original task's write scope");
+        let writer = start_database_writer(engine.clone(), gate, outbox_publisher::OutboxPublisher::new(),
+            Arc::new(embedding_index::StagedVectors::default()), Arc::new(business_protocol::ExecutorTracker::new()))?;
+        for id in ["held", "free"] {
+            let request: Request = serde_json::from_value(json!({
+                "operation":"mutateSnapshot", "writeId": format!("save-{id}"),
+                "mutation": { "kind":"insert", "snapshot": { "id":id, "executionId":id, "taskId":id,
+                    "userMessageId":"u", "assistantMessageId":"a", "createdAt":now, "startedAt":now, "schemaVersion":3,
+                    "mode":"general", "instructions":"[]", "capabilities":"[]", "warnings":"[]",
+                    "materialUsage":"{}", "status":"running", "assemblyHash":"hash", "storageBytes":0 } }
+            }))?;
+            writer.try_send(Some(format!("save-{id}")), request).expect("enqueue snapshot mutation");
+        }
+        let read_receipts = || -> Result<(Option<usize>, Option<usize>)> {
+            let db = engine.checkout_reader(Duration::from_secs(1))?;
+            Ok((snapshots::receipt(db.conn(), "save-held")?, snapshots::receipt(db.conn(), "save-free")?))
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        let before_release = loop {
+            let receipts = read_receipts()?;
+            if receipts.1.is_some() || std::time::Instant::now() >= deadline { break receipts; }
+            thread::sleep(Duration::from_millis(10));
+        };
+        drop(held);
+        writer.shutdown()?;
+        let after_release = read_receipts()?;
+        drop(engine);
+        std::fs::remove_dir_all(dir)?;
+        assert_eq!(before_release, (None, Some(1)));
+        assert_eq!(after_release, (Some(1), Some(1)));
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_writer_admits_an_independent_task_while_one_is_held() -> Result<()> {
+        use resource_gate::{ResourceKey, ResourceRequirement};
+        use serde_json::json;
+
+        let now = request_control::now_ms();
+        let dir = std::env::temp_dir().join(format!("mybuddy-artifact-admission-{}-{now}", std::process::id()));
+        let config = database::DuckDbPoolConfig { write_pool_size: 2, read_pool_size: 1, ..Default::default() };
+        let (engine, _) = database::DuckDbEngine::open_or_initialize(dir.join("app.duckdb"), config)?;
+        {
+            let db = engine.checkout_writer(Duration::from_secs(1))?;
+            db.conn().execute("INSERT INTO tasks(id,title,updated_at) VALUES ('held','Held',?1),('free','Free',?1)", [now])?;
+        }
+        let gate = resource_gate::ResourceGate::new(32);
+        let make_request = |task_id: &str| -> Result<Request> {
+            Ok(serde_json::from_value(json!({
+                "operation": "writeManagedArtifact", "taskId": task_id, "operationId": format!("register-{task_id}"),
+                "content": { "kind": "text", "content": format!("artifact for {task_id}") },
+                "row": { "id": task_id, "task_id": task_id, "kind": "markdown", "source_type": "managed-content",
+                    "root_dir": dir.join("artifacts"), "storage_path": format!("{task_id}/{task_id}/index.md"),
+                    "version": 1, "capabilities_json": "{}", "created_at": now, "updated_at": now },
+            }))?)
+        };
+        let held = make_request("held")?;
+        let hold = gate.acquire(resource_plan_for_request(&held), Duration::from_secs(1), || false)
+            .expect("hold the first task's managed write resources");
+        let gc_key = ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "artifacts".into()));
+        assert!(gate.acquire(vec![gc_key], Duration::from_millis(15), || false).is_err());
+        let writer = start_database_writer(engine.clone(), gate, outbox_publisher::OutboxPublisher::new(),
+            Arc::new(embedding_index::StagedVectors::default()), Arc::new(business_protocol::ExecutorTracker::new()))?;
+        writer.try_send(Some("held-artifact-write".into()), held).expect("enqueue held write");
+        writer.try_send(Some("free-artifact-write".into()), make_request("free")?).expect("enqueue unrelated write");
+        let read_receipts = || -> Result<(bool, bool)> {
+            let db = engine.checkout_reader(Duration::from_secs(1))?;
+            Ok((artifact_write::read_receipt(db.conn(), "held", "register-held")?.is_some(),
+                artifact_write::read_receipt(db.conn(), "free", "register-free")?.is_some()))
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        let before_release = loop {
+            let receipts = read_receipts()?;
+            if receipts.1 || std::time::Instant::now() >= deadline { break receipts; }
+            thread::sleep(Duration::from_millis(10));
+        };
+        drop(hold);
+        writer.shutdown()?;
+        let after_release = read_receipts()?;
+        let saved = std::fs::read_to_string(dir.join("artifacts/free/free/index.md"))?;
+        drop(engine);
+        std::fs::remove_dir_all(dir)?;
+        assert_eq!(before_release, (false, true));
+        assert_eq!(after_release, (true, true));
+        assert_eq!(saved, "artifact for free");
+        Ok(())
+    }
+
+    #[test]
+    fn independent_gadget_metadata_commits_while_a_source_lock_is_held() -> Result<()> {
+        let now = request_control::now_ms();
+        let dir = std::env::temp_dir().join(format!("mybuddy-workbench-admission-{}-{now}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let config = database::DuckDbPoolConfig { write_pool_size: 2, read_pool_size: 1, ..Default::default() };
+        let (engine, _) = database::DuckDbEngine::open_or_initialize(dir.join("app.duckdb"), config)?;
+        {
+            let db = engine.checkout_writer(Duration::from_secs(1))?;
+            db.conn().execute("INSERT INTO gadgets(id,name,scope_type,type,manifest_path,source_path,created_at,updated_at)
+                VALUES ('gdt-held','Original','global','web','manifest-a','source-a',?1,?1),
+                       ('gdt-free','Original','global','web','manifest-b','source-b',?1,?1)", [now])?;
+        }
+        let gate = resource_gate::ResourceGate::new(32);
+        let source: Request = serde_json::from_value(serde_json::json!({
+            "operation": "saveGadgetSource", "save": { "root": "unused", "id": "gdt-held", "operationId": "pending-save",
+                "updatedAt": now, "token": "test-token", "files": [] },
+        }))?;
+        let lock = gate.acquire(resource_plan_for_request(&source), Duration::from_secs(1), || false)
+            .expect("hold the resources held by a source write");
+        let writer = start_database_writer(engine.clone(), gate, outbox_publisher::OutboxPublisher::new(),
+            Arc::new(embedding_index::StagedVectors::default()), Arc::new(business_protocol::ExecutorTracker::new()))?;
+        for (id, name) in [("gdt-held", "Held edit"), ("gdt-free", "Independent edit")] {
+            let request: Request = serde_json::from_value(serde_json::json!({
+                "operation": "writeWorkbench", "operationId": format!("patch-{id}"),
+                "mutation": { "kind": "updateGadget", "id": id, "name": name, "updatedAt": now },
+            }))?;
+            writer.try_send(Some(format!("patch-{id}")), request).expect("enqueue Gadget edit");
+        }
+        let get_names = || -> Result<(String,String)> {
+            let db = engine.checkout_reader(Duration::from_secs(1))?;
+            Ok(db.conn().query_row("SELECT (SELECT name FROM gadgets WHERE id='gdt-held'),
+                (SELECT name FROM gadgets WHERE id='gdt-free')", [], |row| Ok((row.get(0)?, row.get(1)?)))?)
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        let before_release = loop {
+            let names = get_names()?;
+            if names.1 == "Independent edit" || std::time::Instant::now() >= deadline { break names; }
+            thread::sleep(Duration::from_millis(10));
+        };
+        drop(lock);
+        writer.shutdown()?;
+        let after_release = get_names()?;
+        drop(engine);
+        std::fs::remove_dir_all(dir)?;
+        assert_eq!(before_release, ("Original".into(), "Independent edit".into()));
+        assert_eq!(after_release, ("Held edit".into(), "Independent edit".into()));
+        Ok(())
+    }
+
+    #[test]
+    fn board_action_waiting_on_one_task_does_not_block_another_task() -> Result<()> {
+        use resource_gate::{ResourceKey, ResourceRequirement};
+
+        let now = request_control::now_ms();
+        let dir = std::env::temp_dir().join(format!("mybuddy-board-admission-{}-{now}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let config = database::DuckDbPoolConfig { write_pool_size: 2, read_pool_size: 1, ..Default::default() };
+        let (engine, _) = database::DuckDbEngine::open_or_initialize(dir.join("app.duckdb"), config)?;
+        {
+            let database = engine.checkout_writer(Duration::from_secs(1))?;
+            database.conn().execute(
+                "INSERT INTO tasks(id,title,updated_at) VALUES ('board-busy','Busy',?1),('board-free','Free',?1)", [now],
+            )?;
+        }
+        let gate = resource_gate::ResourceGate::new(32);
+        let hold = gate.acquire(vec![ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), "board-busy".into()))],
+            Duration::from_secs(1), || false).expect("hold the original task's write scope");
+        let writer = start_database_writer(engine.clone(), gate.clone(), outbox_publisher::OutboxPublisher::new(),
+            Arc::new(embedding_index::StagedVectors::default()), Arc::new(business_protocol::ExecutorTracker::new()))?;
+        for (index, (id, action)) in [("board-busy", "today"), ("board-busy", "clear"), ("board-busy", "visit"),
+            ("board-free", "today")].into_iter().enumerate() {
+            let request: Request = serde_json::from_value(serde_json::json!({
+                "operation": "writeTaskBoardAction", "input": { "id": id, "action": action, "now": now },
+            }))?;
+            writer.try_send(Some(format!("board-action-{index}")), request).expect("enqueue board action");
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        let plans_at_barrier = loop {
+            let reader = engine.checkout_reader(Duration::from_secs(1))?;
+            let plans: (i64, i64) = reader.conn().query_row(
+                "SELECT count(*) FILTER (WHERE id='board-free'),count(*) FILTER (WHERE id='board-busy') FROM task_board_plans",
+                [], |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            if plans.0 != 0 || std::time::Instant::now() >= deadline { break plans; }
+            drop(reader);
+            thread::sleep(Duration::from_millis(10));
+        };
+        drop(hold);
+        writer.shutdown()?;
+        let after_release: (i64, i64) = {
+            let reader = engine.checkout_reader(Duration::from_secs(1))?;
+            reader.conn().query_row("SELECT (SELECT count(*) FROM task_board_plans WHERE id='board-busy'),
+                (SELECT count(*) FROM task_board_days WHERE id='board-busy' AND kind='visit')", [],
+                |row| Ok((row.get(0)?, row.get(1)?)))?
+        };
+        drop(engine);
+        std::fs::remove_dir_all(dir)?;
+        assert_eq!(plans_at_barrier, (1, 0), "independent plan must commit before the conflicting action begins");
+        assert_eq!(after_release, (0, 1), "clear follows today and the same task records a visit after release");
+        Ok(())
+    }
+
+    #[test]
+    fn blocked_store_writes_leave_a_worker_available_for_an_independent_store() -> Result<()> {
+        use resource_gate::{ResourceKey, ResourceRequirement};
+
+        let dir = std::env::temp_dir().join(format!(
+            "mybuddy-writer-admission-{}-{}",
+            std::process::id(),
+            request_control::now_ms(),
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let config = database::DuckDbPoolConfig {
+            write_pool_size: 2,
+            read_pool_size: 1,
+            ..Default::default()
+        };
+        let (engine, _) = database::DuckDbEngine::open_or_initialize(dir.join("app.duckdb"), config)?;
+        let gate = resource_gate::ResourceGate::new(32);
+        let hold = gate.acquire(
+            vec![ResourceRequirement::exclusive(ResourceKey::PiStore("busy".into()))],
+            Duration::from_secs(1),
+            || false,
+        ).expect("hold the busy store until the independent write commits");
+        let writer = start_database_writer(
+            engine.clone(),
+            gate.clone(),
+            outbox_publisher::OutboxPublisher::new(),
+            Arc::new(embedding_index::StagedVectors::default()),
+            Arc::new(business_protocol::ExecutorTracker::new()),
+        )?;
+        for (index, store) in ["busy", "busy", "busy", "independent"].into_iter().enumerate() {
+            let request: Request = serde_json::from_value(serde_json::json!({
+                "operation": "piStorage",
+                "payload": { "action": "openWriter", "storeId": store },
+            }))?;
+            writer.try_send(Some(format!("writer-admission-{index}")), request)
+                .expect("writes fit in the admission queue");
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        let committed_before_release = loop {
+            let reader = engine.checkout_reader(Duration::from_secs(1))?;
+            let stores: i64 = reader.conn().query_row(
+                "SELECT COUNT(*) FROM durable_stores WHERE store_id = 'independent'",
+                [],
+                |row| row.get(0),
+            )?;
+            if stores == 1 || std::time::Instant::now() >= deadline {
+                break stores;
+            }
+            drop(reader);
+            thread::sleep(Duration::from_millis(10));
+        };
+        drop(hold);
+        writer.shutdown()?;
+        drop(engine);
+        std::fs::remove_dir_all(dir)?;
+        assert_eq!(committed_before_release, 1);
+        Ok(())
+    }
 
     #[test]
     fn library_staging_has_durable_receipt_without_application_writer() {

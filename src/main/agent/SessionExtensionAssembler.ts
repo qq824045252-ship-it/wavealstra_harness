@@ -44,7 +44,7 @@ import { createPermissionExtension } from "./permission-extension";
 import type { LibraryWorkspaceContextService } from "./LibraryWorkspaceContextService";
 import type { ExecutionAttemptRepository } from "./ExecutionAttemptRepository";
 import type { ExecutionFailureRepository } from "./ExecutionFailureRepository";
-import { currentDurableExecutionContext, currentDurableExecutionCwd, currentDurableInvocation, currentDurableRunId } from "./durable/DurableExecutionContext";
+import { currentDurableExecutionContext, currentDurableExecutionCwd, currentDurableInvocation, currentDurableRunId, type DurableToolTaskScope } from "./durable/DurableExecutionContext";
 
 export type SessionApprovalRequest = Parameters<Parameters<typeof createPermissionExtension>[0]["requestApproval"]>[0];
 export type SessionBuiltinCapabilityBridge = Omit<
@@ -62,7 +62,9 @@ export interface SessionExtensionAssemblerDependencies {
   libraryWorkspace: LibraryWorkspaceContextService;
   resolveLibraryEvidenceJudge?: () => Promise<LibraryEvidenceJudge>;
   conversationInteractions: ConversationInteractionService;
-  conversationGoals: ConversationGoalService;
+  conversationGoals?: ConversationGoalService;
+  readConversationGoal?: Parameters<typeof createConversationRuntimeExtension>[0]["readGoal"];
+  createConversationGoal?: Parameters<typeof createConversationRuntimeExtension>[0]["createGoal"];
   executionAttempts: ExecutionAttemptRepository;
   executionFailures: ExecutionFailureRepository;
   mcpRuntime: McpRuntimeService;
@@ -91,7 +93,8 @@ export interface SessionExtensionAssemblyInput {
 }
 
 export type DurableExtensionAssemblyInput = Pick<SessionExtensionAssemblyInput,
-  "taskId" | "taskRoot" | "memoryEnabled" | "gadgetService" | "getPermissionMode" | "requestApproval" | "builtinCapability">;
+  "taskId" | "taskRoot" | "memoryEnabled" | "gadgetService" | "getPermissionMode" | "requestApproval" | "builtinCapability">
+  & { taskScope?: DurableToolTaskScope };
 
 /**
  * Single owner for main-session extension registration and ordering.
@@ -112,9 +115,14 @@ export class SessionExtensionAssembler {
 
   /** Product operations and evidence use native call identity; Durable owns their lifecycle. */
   durableExtensions(input: DurableExtensionAssemblyInput): InlineExtension[] {
+    const scope = () => {
+      const current = currentDurableInvocation()?.taskScope;
+      return current?.id === input.taskId ? current : input.taskScope;
+    };
     return [
       ...this.conversationCapabilityFactories({ ...input, resolveConversationContext: currentDurableExecutionContext }, true),
-      ...this.domainExtensions(input.taskId, input.memoryEnabled, input.gadgetService, input),
+      ...(input.taskScope ? this.domainFactories(input, () => scope()?.projectId ?? null, () => scope()?.spaceId ?? null)
+        : this.domainExtensions(input.taskId, input.memoryEnabled, input.gadgetService, input)),
     ];
   }
 
@@ -131,12 +139,17 @@ export class SessionExtensionAssembler {
   }
 
   private conversationCapabilityFactories(input: Pick<SessionExtensionAssemblyInput,
-    "taskId" | "taskRoot" | "resolveConversationContext" | "builtinCapability" | "getPermissionMode">, durable = false): InlineExtension[] {
+    "taskId" | "taskRoot" | "resolveConversationContext" | "builtinCapability" | "getPermissionMode"> & { taskScope?: DurableToolTaskScope }, durable = false): InlineExtension[] {
     const officeUseEnabled = () => input.builtinCapability.runtime.config().officeUse?.enabled !== false;
     const cadUseEnabled = () => input.builtinCapability.runtime.config().cadUse?.enabled !== false;
     const drawioUseEnabled = () => input.builtinCapability.runtime.config().drawioUse?.enabled !== false;
     const getPermissionMode = durable
-      ? () => this.deps.db.getTask(input.taskId)?.permissionMode ?? input.getPermissionMode()
+      ? () => {
+        const current = currentDurableInvocation()?.taskScope;
+        if (current?.id === input.taskId) return current.permissionMode ?? input.getPermissionMode();
+        if (input.taskScope) return input.taskScope.permissionMode ?? input.getPermissionMode();
+        return this.deps.db.getTask(input.taskId)?.permissionMode ?? input.getPermissionMode();
+      }
       : input.getPermissionMode;
     const ask = async (request: Parameters<NonNullable<SessionBuiltinCapabilityBridge["browserHandoff"]>>[0],
       key: string, signal: AbortSignal) => {
@@ -161,6 +174,8 @@ export class SessionExtensionAssembler {
         resolveContext: input.resolveConversationContext,
         interaction: this.deps.conversationInteractions,
         goal: this.deps.conversationGoals,
+        readGoal: this.deps.readConversationGoal,
+        createGoal: this.deps.createConversationGoal,
         ...(durable ? { requestInteraction: async (context, request, signal, toolCallId) => {
           const active = currentDurableInvocation();
           if (!active || active.execution.taskId !== input.taskId) throw new Error("交互缺少当前任务的持久执行身份");

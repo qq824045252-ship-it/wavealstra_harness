@@ -1,7 +1,7 @@
 use crate::Result;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::{collections::HashMap, path::Path, time::Duration};
+use std::collections::HashMap;
 
 fn nullable<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
 where
@@ -215,6 +215,25 @@ pub enum Write {
     Tool { event: ToolEvent },
 }
 
+impl Write {
+    pub(crate) fn record_key(&self) -> String {
+        match self {
+            Self::Trace { request } => format!("request:{}", request.id),
+            Self::Tool { event } => format!("tool:{}:{}:{}",
+                event.execution_scope.as_deref().or(event.task_id.as_deref()).unwrap_or(""),
+                event.conversation_id, event.tool_task_id),
+        }
+    }
+
+    pub(crate) fn task_ids(&self) -> impl Iterator<Item = &str> {
+        let (trace, task) = match self {
+            Self::Trace { request } => (request.events.as_slice(), None),
+            Self::Tool { event } => (&[][..], event.task_id.as_deref()),
+        };
+        trace.iter().filter_map(|event| event.task_id.as_deref()).chain(task)
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceRequest {
@@ -372,7 +391,7 @@ fn reduce_trace(row: &mut Request, event: TraceEvent) {
 
 fn write_trace(db: &Connection, request: TraceRequest) -> Result<()> {
     let stored: Option<String> = db
-        .prepare_cached("SELECT record_json FROM task_request_diagnostics WHERE request_id=?1")?
+        .prepare("SELECT record_json FROM task_request_diagnostics WHERE request_id=?1")?
         .query_row([&request.id], |row| row.get(0))
         .optional()?;
     let mut row = if let Some(stored) = stored {
@@ -425,14 +444,14 @@ fn write_trace(db: &Connection, request: TraceRequest) -> Result<()> {
     }
     row.execution_id = None;
     row.ensure_execution_id();
-    db.prepare_cached(
+    db.prepare(
         "INSERT INTO task_request_diagnostics VALUES(?1,?2,?3,?4)
          ON CONFLICT(request_id) DO UPDATE SET record_json=excluded.record_json,task_id=excluded.task_id",
     )?.execute(params![row.id, row.task_id, row.started_at, serde_json::to_string(&row)?])?;
     Ok(())
 }
 
-fn task_exists(db: &Connection, task_id: &str) -> rusqlite::Result<bool> {
+fn task_exists(db: &Connection, task_id: &str) -> duckdb::Result<bool> {
     db.query_row(
         "SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1)",
         [task_id],
@@ -476,7 +495,7 @@ fn write_tool(db: &Connection, event: ToolEvent) -> Result<()> {
         }
     };
     let raw: Option<String> = db
-        .prepare_cached(&format!("SELECT record_json FROM {table} WHERE id=?1"))?
+        .prepare(&format!("SELECT record_json FROM {table} WHERE id=?1"))?
         .query_row([&id], |row| row.get(0))
         .optional()?;
     let mut tool = if let Some(raw) = raw {
@@ -530,7 +549,7 @@ fn write_tool(db: &Connection, event: ToolEvent) -> Result<()> {
             tool.diagnostics = event.diagnostics;
         }
     }
-    db.prepare_cached(&format!(
+    db.prepare(&format!(
         "INSERT INTO {table} VALUES(?1,?2,?3,?4)
          ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json"
     ))?
@@ -543,17 +562,15 @@ fn write_tool(db: &Connection, event: ToolEvent) -> Result<()> {
     Ok(())
 }
 
-pub fn write_batch(path: &Path, epoch: i64, sequence: i64, writes: Vec<Write>) -> Result<()> {
-    if writes.is_empty() || writes.len() > 64 {
+pub fn write_batch(db: &mut Connection, writer_id: &str, sequence: i64, writes: Vec<Write>) -> Result<()> {
+    if writes.is_empty() || writes.len() > 64 || writer_id.is_empty() || writer_id.len() > 128 || sequence < 1 {
         return Err("invalid diagnostic batch size".into());
     }
-    let mut db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    db.busy_timeout(Duration::from_millis(100))?;
-    db.pragma_update(None, "foreign_keys", true)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let claimed = tx.execute(
-        "UPDATE runtime_diagnostic_writer SET sequence=?1 WHERE id=1 AND epoch=?2 AND sequence<?1",
-        params![sequence, epoch],
+        "INSERT INTO runtime_diagnostic_writers(writer_id,sequence) VALUES(?,?)
+         ON CONFLICT(writer_id) DO UPDATE SET sequence=excluded.sequence WHERE runtime_diagnostic_writers.sequence<excluded.sequence",
+        params![writer_id, sequence],
     )?;
     if claimed > 0 {
         for write in writes {
@@ -563,7 +580,7 @@ pub fn write_batch(path: &Path, epoch: i64, sequence: i64, writes: Vec<Write>) -
             }
         }
     }
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
     Ok(())
 }
 
@@ -670,7 +687,7 @@ pub fn read(
     now: f64,
 ) -> Result<DiagnosticPage> {
     let limit = limit.map(|value| value.clamp(1, 500) as i64);
-    let page_size = limit.map_or(-1, |value| value + 1);
+    let page_size = limit.map(|value| value + 1);
     let skip = if limit.is_some() { offset } else { 0 };
     let mut request_statement = db.prepare(
         "SELECT record_json FROM task_request_diagnostics WHERE task_id=?1

@@ -8,7 +8,7 @@ use crate::{
     library_text::is_link,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use rusqlite::{Connection, TransactionBehavior};
+use duckdb::{Connection};
 use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
@@ -236,13 +236,13 @@ pub fn reconcile(db: &mut Connection, path: &Path) -> Result<Vec<String>> {
         return Err("Blueprint 工作空间目录必须是绝对路径".into());
     }
     let root = fs::canonicalize(path)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let paths = {
         let mut query =
             tx.prepare("SELECT path FROM spaces WHERE path IS NOT NULL AND path <> ''")?;
         query
             .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
+            .collect::<duckdb::Result<Vec<_>>>()?
     };
     let registered: HashSet<_> = paths.iter().map(|path| path_key(Path::new(path))).collect();
     let mut real_paths = None;

@@ -472,10 +472,57 @@ export class MemorySkillLearningService {
 
   isInstalledSkillRunnable(installedSkillId: string, sourceMemoryIds: readonly string[]): boolean {
     const candidate = this.findByInstalledSkillId(installedSkillId);
+    return this.isInstalledCandidateRunnable(candidate, [...new Set(sourceMemoryIds)].sort());
+  }
+
+  /** Check the installed package's provenance against the current Core snapshot. */
+  async readInstalledSkillRunnable(
+    installedSkillId: string,
+    sourceMemoryIds: readonly string[],
+    expected: LearnableScope & { candidateId: string },
+  ): Promise<boolean> {
+    const normalizedId = installedSkillId.trim().toLowerCase();
+    const packageSources = [...new Set(sourceMemoryIds)].sort();
+    if (!normalizedId || !expected.candidateId || !packageSources.length) return false;
+    if (this.db.fixtureConnection) {
+      const candidate = this.findByInstalledSkillId(normalizedId);
+      return candidate !== undefined && candidate.scopeType === expected.scopeType
+        && (candidate.scopeId ?? null) === (expected.scopeId ?? null)
+        && this.isInstalledCandidateRunnable(candidate, packageSources)
+        && this.approvedFixtureRevision(normalizedId, candidate.id, packageSources) === expected.candidateId;
+    }
+    const result = await this.db.runtimeAuditReader?.memoryRecordsData({
+      kind: "installedSkillGrounding", installedSkillId: normalizedId,
+      candidateId: expected.candidateId, sourceMemoryIds: packageSources,
+    });
+    if (result?.kind !== "installedSkillGrounding") throw new Error("Core 未确认已安装技能的来源记忆");
+    const grounded = result.grounded;
+    return grounded?.candidateId === expected.candidateId && grounded.scopeType === expected.scopeType
+      && grounded.scopeId === (expected.scopeId ?? null);
+  }
+
+  private isInstalledCandidateRunnable(candidate: MemorySkillCandidateDto | undefined, sortedPackageSources: string[]): boolean {
     if (!candidate || candidate.status !== "materialized" || !this.isCandidateGrounded(candidate)) return false;
     const candidateSources = [...candidate.sourceMemoryIds].sort();
-    const packageSources = [...new Set(sourceMemoryIds)].sort();
-    return candidateSources.length === packageSources.length && candidateSources.every((id, index) => id === packageSources[index]);
+    return candidateSources.length === sortedPackageSources.length
+      && candidateSources.every((id, index) => id === sortedPackageSources[index]);
+  }
+
+  private approvedFixtureRevision(skillId: string, baseId: string, packageSources: readonly string[]): string | undefined {
+    const next = this.conn.prepare(`SELECT id,source_memory_ids_json FROM memory_skill_revision_candidates
+      WHERE lower(skill_id)=? AND base_candidate_id=? AND status='materialized'
+        AND materialized_candidate_id=id AND materialized_version IS NOT NULL AND resolved_at IS NOT NULL
+      ORDER BY resolved_at DESC,id ASC LIMIT 1`);
+    const seen = new Set<string>();
+    let current = baseId;
+    while (!seen.has(current)) {
+      seen.add(current);
+      const child = next.get(skillId, current) as { id: string; source_memory_ids_json: string } | undefined;
+      if (!child) return current;
+      const sources = parseStringArray(child.source_memory_ids_json).sort();
+      if (sources.length !== packageSources.length || sources.some((id, index) => id !== packageSources[index])) return;
+      current = child.id;
+    }
   }
 
   reject(id: string): MemorySkillCandidateDto {

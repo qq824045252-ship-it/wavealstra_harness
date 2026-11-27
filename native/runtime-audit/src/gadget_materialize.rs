@@ -1,3 +1,4 @@
+use crate::resource_gate::{ResourceKey, ResourceRequirement};
 use crate::{
     Result,
     gadget_files::{
@@ -7,7 +8,7 @@ use crate::{
     library_text::is_link,
     workbench_write::{Gadget, GadgetOrigin, create_gadget},
 };
-use rusqlite::{Connection, TransactionBehavior};
+use duckdb::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
@@ -28,6 +29,22 @@ pub struct Create {
     backend_entry: Option<String>,
 }
 
+impl Create {
+    pub(crate) fn resources(&self) -> Vec<ResourceRequirement> {
+        use crate::workbench_write::{gadget_resources, scope_namespaces};
+        let mut plan = gadget_resources(self.gadget.id());
+        plan.extend(scope_namespaces());
+        plan.extend(self.gadget.scope_resources());
+        if let Material::Copy { source_id, .. } = &self.source {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity(
+                "gadget".into(),
+                source_id.clone(),
+            )));
+        }
+        plan
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(
     tag = "kind",
@@ -44,12 +61,25 @@ enum Material {
 pub struct Export {
     root: PathBuf,
     id: String,
+    task_id: Option<String>,
     token: String,
     task_directory: PathBuf,
     basename: String,
     manifest: String,
     entry: String,
     readme: String,
+}
+
+impl Export {
+    pub(crate) fn resources(&self) -> Vec<ResourceRequirement> {
+        use crate::workbench_write::{gadget_resources, scope_namespaces, shared_task};
+        let mut plan = gadget_resources(&self.id);
+        if let Some(task_id) = &self.task_id {
+            plan.extend(scope_namespaces());
+            plan.push(shared_task(task_id));
+        }
+        plan
+    }
 }
 
 #[derive(Serialize)]
@@ -76,8 +106,15 @@ pub fn create(db: &mut Connection, input: Create) -> Reply {
     finish(create_files(db, input))
 }
 
-pub fn export(input: Export) -> Reply {
-    finish(export_files(input))
+pub fn export(db: &Connection, input: Export) -> Reply {
+    finish((|| {
+        if let Some(task_id) = &input.task_id {
+            if !crate::workbench_data::task_can_access_gadget(db, &input.id, task_id)? {
+                return Ok(Reply::ScopeChanged);
+            }
+        }
+        export_files(input)
+    })())
 }
 
 fn finish(result: Result<Reply>) -> Reply {
@@ -92,7 +129,7 @@ fn finish(result: Result<Reply>) -> Reply {
 fn create_files(db: &mut Connection, input: Create) -> Result<Reply> {
     let id = input.gadget.id().to_owned();
     let target = gadget_path(&input.root, &id)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     if exists_in_database(&tx, &id)? {
         // The generated ID is stable when a worker reply was lost.
         gadget_root(&input.root, &id)?;
@@ -121,14 +158,14 @@ fn create_files(db: &mut Connection, input: Create) -> Result<Reply> {
             &input.entry,
             input.backend_entry.as_deref(),
         )?;
-        tx.commit()?;
+        crate::request_control::commit(tx)?;
         Ok(())
     })();
     if attempt.is_ok() {
         remove_owner(&target, &id);
         return Ok(Reply::Created);
     }
-    let recovery = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let recovery = db.transaction()?;
     if exists_in_database(&recovery, &id)? {
         remove_owner(&target, &id);
         return Ok(Reply::Created);

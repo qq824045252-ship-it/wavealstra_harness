@@ -4,6 +4,7 @@
 - Git workflow: use `main` as the only active local branch. When a commit is explicitly requested, commit directly to it. Do not create additional branches or worktrees unless the user explicitly requests them. Commit and push only when explicitly requested; there is no standing release authorization.
 - **推送 GitHub 默认合入 main**（用户 2026-11-10 明确要求）：用户说「提交并推送」时，不要只推临时分支，而是先 `git fetch` 并 rebase 到 `origin/main`，再在主仓库 `git merge --ff-only <branch>` 后 `git push origin main`；临时分支内容进 main 后删除远端同名分支。只在用户明确要求 PR/分支评审时才推分支。
 - Typecheck: `pnpm -s typecheck`
+- Node.js 26 is the MyBuddy development and verification baseline.
 - Focused tests are `pnpm -s test:<name>` scripts in package.json (e.g. `test:memory`, `test:project-memory-extraction`, `test:pi-native-control`, `test:project-materials-ui`).
 - **只支持当前 Pi 版本（1.5.0）**：旧版本（0.99.x / 0.99.2 / 1.0.x）的迁移与兼容测试已删除，不要为旧版本重新引入兼容层或迁移用例。版本 pin 在 `src/main/capabilities/subagent/worker-launcher.mjs` 的 `EXPECTED_PI_VERSION`，测试从那里读取，不要硬编码。
 - **Full gate: `pnpm -s test:all`**（default 套件 = headless；当前数量以 `--list` 为准）。`scripts/test-all.mjs` 把 `test:*` 显式分为 headless / GUI / NETWORK / DATASET（+ pending 桶，当前为空），default 只跑 headless；`node scripts/test-all.mjs --list` 看分类，`--audit` 做分类自检。它是**棘轮**：`scripts/test-baseline.json` 里的已知失败会被打印但放行，任何*新增*失败都会让门禁失败；修好后删掉基线条目（`pnpm -s test:all:update-baseline` 会重写，但不要用它掩盖回归）。
@@ -14,8 +15,8 @@
 - Electron UI 测试在继承 `ELECTRON_RUN_AS_NODE=1` 时会以 `app` undefined 失败：`env -u ELECTRON_RUN_AS_NODE pnpm -s test:<ui>`。截图落在 `out/tests/*.png`。GUI 测试必须使用临时 `userData`/HOME，不允许读真实 `~/.mybuddy` 凭据（`consult-entry` 默认空夹具，深层流程需 `CONSULT_ENTRY_SEED_USER_PROFILE=1` opt-in）。
 - 聊天标题和操作按钮验收使用 `pnpm -s test:desktop-task-title`，`--list` 列出用例，修复后用 `--case=<id>` 复验。收到 `blocked_same_failure` 时读取报告的预期值和实测值，先定位断言或修复相关代码，再重跑对应单例。用户明确要求复验时可加 `--fresh`。过滤 Bash 验收日志时用 `set -o pipefail` 保留失败退出码。
 - Run esbuild via the pnpm scripts, not by hand in Git Bash: MSYS path conversion mangles `--alias:@/store/appStore=...`。
-- Live app data: `~/.mybuddy/app.db`（SQLite，只读诊断）、`~/.mybuddy/logs/main-YYYYMMDD.log`（主进程日志，按天 + 4MB 轮转、保留 7 份）、`~/.mybuddy/crashdumps/`（crashReporter 本地 dump，不上传）；Chromium 状态使用 Electron 的 `userData` 路径：Linux 默认 `~/.config/wavealstra_harness`（dev）或 `~/.config/MyBuddy`（打包版），Windows 默认在 `%APPDATA%` 下的对应应用目录；隔离测试或定制启动以实际 `app.getPath("userData")` 为准，不能把 Linux 路径套到所有平台。
-- 旧数据策略（用户 2026-11-12 明确要求）：仅支持当前数据格式，不维护旧数据库或旧日志格式的兼容迁移。`AppDatabase` 确认 `user_version` 不等于当前 schema 时直接删除旧库及其 sidecar 后重建，不生成 discarded 备份；Durable 旧格式同样直接清理。当前有效数据库的幂等、崩溃恢复和单写者保护仍须保留。读库权限或 I/O 失败不能冒充已确认的旧格式。`test:db-schema-discard` 保护该契约。
+- 生产数据由 Core 管理，位于 `~/.mybuddy/app.duckdb`，运行期间通过领域 IPC 诊断。主进程日志位于 `~/.mybuddy/logs/main-YYYYMMDD.log`，按天和 4 MB 轮转并保留 7 份。本地崩溃转储位于 `~/.mybuddy/crashdumps/`。Chromium 状态使用 Electron 的 `userData` 路径。Linux 默认使用 `~/.config/wavealstra_harness`（开发）或 `~/.config/MyBuddy`（打包）。Windows 默认使用 `%APPDATA%` 下的应用目录。隔离测试和定制启动以实际 `app.getPath("userData")` 为准。
+- 旧数据策略（用户 2026-11-12 明确要求）：仅支持当前数据格式。确认格式或 schema 不兼容后才删除目标旧库及其 sidecar 并重建。不迁移旧数据，不生成 discarded 备份。当前有效数据库的幂等、崩溃恢复和单写者保护仍须保留。权限、I/O 和损坏错误不能冒充已确认的旧格式。DuckDB 引擎测试覆盖重开、确认旧格式重建和损坏文件保留。
 - Sandbox: run unsandboxed by default — `danger-full-access` with approval `never`; do not propose or fall back to sandboxed/approval-gated commands. This is pinned in the DSH desktop profile patch `~/.dsh/profiles/desktop/cordis.patch.yml` (`sandbox-policy.mode=danger-full-access`, `approval.policy=never`; `permission.defaultPreset=danger-full-access`). `DSH_*` variables are bootstrap-only: set them in the launching shell, never in `~/.dsh/.env`, or dsh refuses to boot.
 
 ## Linux（Omarchy / Wayland）

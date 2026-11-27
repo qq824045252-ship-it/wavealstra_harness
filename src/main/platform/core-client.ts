@@ -2,9 +2,9 @@ import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { constants, createReadStream } from "node:fs";
-import { chmod, copyFile, link, mkdir, readFile, realpath, stat, unlink } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, readFile, realpath, stat, unlink } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { promisify } from "node:util";
 
@@ -208,6 +208,21 @@ function samePath(a: string, b: string): boolean {
   return process.platform === "win32" ? normal(a).toLowerCase() === normal(b).toLowerCase() : normal(a) === normal(b);
 }
 
+async function resolveCoreDatabasePath(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  try {
+    await lstat(path);
+    return realpath(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return join(await realpath(dirname(path)), basename(path));
+}
+
 async function readEndpoint(dataDirectory: string, database: string): Promise<CoreEndpoint | undefined> {
   let value: Partial<CoreEndpoint>;
   try { value = JSON.parse(await readFile(join(dataDirectory, "core.json"), "utf8")) as Partial<CoreEndpoint>; }
@@ -283,21 +298,27 @@ function connectEndpoint(endpoint: CoreEndpoint, signal?: AbortSignal, timeoutMs
 }
 
 const binaryFingerprints = new Map<string, { stamp: string; hash: string }>();
-async function fingerprint(file: string): Promise<string> {
-  const before = await stat(file, { bigint: true });
-  const stamp = `${before.dev}:${before.ino}:${before.size}:${before.mtimeNs}:${before.ctimeNs}`;
-  const cached = binaryFingerprints.get(file);
-  if (cached?.stamp === stamp) return cached.hash;
-  const digest = createHash("sha256");
-  for await (const chunk of createReadStream(file)) digest.update(chunk as Buffer);
-  const after = await stat(file, { bigint: true });
-  if (`${after.dev}:${after.ino}:${after.size}:${after.mtimeNs}:${after.ctimeNs}` !== stamp) {
-    throw new Error("Core executable changed while its fingerprint was being read");
+async function fingerprint(file: string, published = false): Promise<string> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const before = await stat(file, { bigint: true });
+    const stamp = `${before.dev}:${before.ino}:${before.size}:${before.mtimeNs}:${before.ctimeNs}`;
+    const cached = binaryFingerprints.get(file);
+    if (cached?.stamp === stamp) return cached.hash;
+    const digest = createHash("sha256");
+    for await (const chunk of createReadStream(file)) digest.update(chunk as Buffer);
+    const after = await stat(file, { bigint: true });
+    if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs) break;
+    if (after.ctimeNs !== before.ctimeNs) {
+      // Publishing a hard link and removing its temporary name changes the inode metadata.
+      if (published) continue;
+      break;
+    }
+    const hash = digest.digest("hex");
+    if (binaryFingerprints.size >= 32) binaryFingerprints.delete(binaryFingerprints.keys().next().value!);
+    binaryFingerprints.set(file, { stamp, hash });
+    return hash;
   }
-  const hash = digest.digest("hex");
-  if (binaryFingerprints.size >= 32) binaryFingerprints.delete(binaryFingerprints.keys().next().value!);
-  binaryFingerprints.set(file, { stamp, hash });
-  return hash;
+  throw new Error("Core executable changed while its fingerprint was being read");
 }
 
 function immutableBinaryPath(dataDirectory: string, hash: string): string {
@@ -319,7 +340,7 @@ export async function prepareCoreBinary(executable: string, dataDirectory: strin
   const hash = await fingerprint(source);
   const destination = immutableBinaryPath(dataDirectory, hash);
   try {
-    if (await fingerprint(destination) !== hash) throw new Error("Immutable Core executable fingerprint mismatch");
+    if (await fingerprint(destination, true) !== hash) throw new Error("Immutable Core executable fingerprint mismatch");
     return { executable: destination, hash };
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   await mkdir(join(dataDirectory, "core-binaries", hash), { recursive: true });
@@ -334,8 +355,8 @@ export async function prepareCoreBinary(executable: string, dataDirectory: strin
       // the executable another client has already started.
       await link(temporary, destination);
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-    if (await fingerprint(destination) !== hash) throw new Error("Immutable Core executable fingerprint mismatch");
   } finally { await unlink(temporary).catch(() => {}); }
+  if (await fingerprint(destination, true) !== hash) throw new Error("Immutable Core executable fingerprint mismatch");
   return { executable: destination, hash };
 }
 
@@ -373,9 +394,8 @@ async function stopEndpoint(endpoint: CoreEndpoint, dataDirectory: string, guard
 /** Starts only a detached supervisor. Its OS guards arbitrate concurrent launches; the
  * client never removes a lease or guesses owner death from an unreachable TCP port. */
 export async function connectCoreWorker(executable: string, dbPath: string, options: ConnectCoreOptions): Promise<RuntimeCoreClient> {
-  const database = await realpath(dbPath);
   await mkdir(options.dataDirectory, { recursive: true });
-  const directory = await realpath(options.dataDirectory);
+  const [database, directory] = await Promise.all([resolveCoreDatabasePath(dbPath), realpath(options.dataDirectory)]);
   const binary = await prepareCoreBinary(executable, directory);
   const deadline = Date.now() + (options.timeoutMs ?? CONNECT_TIMEOUT_MS);
   let nextLaunch = 0;
@@ -433,7 +453,7 @@ export async function connectCoreWorker(executable: string, dbPath: string, opti
 /** Explicit lifecycle endpoint for isolated acceptance fixtures and application teardown
  * commands. Ordinary RuntimeAuditReader.close() must only disconnect its own client. */
 export async function shutdownCoreWorker(dataDirectory: string, dbPath: string, timeoutMs = 4_000): Promise<void> {
-  const database = await realpath(dbPath);
+  const database = await resolveCoreDatabasePath(dbPath);
   const endpoint = await readEndpoint(dataDirectory, database);
   if (!endpoint) return;
   const executable = immutableBinaryPath(dataDirectory, endpoint.binaryHash);

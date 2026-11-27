@@ -1,4 +1,5 @@
 import type {
+  ProjectContextPinDto,
   ProjectDetailsDto,
   ProjectPlanSummaryDto,
   ProjectResourceHealthDto,
@@ -49,19 +50,39 @@ export class ProjectContextResolver {
   /** Recheck revocation without rereading resource file contents during a frozen turn. */
   assertEvidenceAvailable(projectId: string, resourceIds: readonly string[] = [], pinIds: readonly string[] = []): void {
     const project = this.projects.get(projectId);
-    if (!project) throw new Error("本轮引用的项目已移除");
-    if (resourceIds.some((id) => !project.resources.some((resource) => resource.id === id && resource.enabled))) {
+    const enabledResourceIds = project?.resources.filter((resource) => resource.enabled).map((resource) => resource.id);
+    this.assertResourceEvidence(enabledResourceIds, resourceIds);
+    if (pinIds.length) this.assertPinEvidence(this.projects.listPins(projectId).map((pin) => pin.itemId), pinIds);
+  }
+
+  async readEvidenceAvailable(projectId: string, resourceIds: readonly string[] = [], pinIds: readonly string[] = []): Promise<void> {
+    const witness = await this.projects.readContextWitness(projectId);
+    this.assertResourceEvidence(witness?.enabledResourceIds, resourceIds);
+    if (pinIds.length) this.assertPinEvidence(witness?.pinnedItemIds ?? [], pinIds);
+  }
+
+  private assertResourceEvidence(enabledResourceIds: readonly string[] | undefined, resourceIds: readonly string[]): void {
+    if (!enabledResourceIds) throw new Error("本轮引用的项目已移除");
+    if (resourceIds.some((id) => !enabledResourceIds.includes(id))) {
       throw new Error("本轮引用的项目资源已移除或停用");
     }
-    if (pinIds.length) {
-      const pins = new Set(this.projects.listPins(projectId).map((pin) => pin.itemId));
-      if (pinIds.some((id) => !pins.has(id))) throw new Error("本轮引用的项目固定资料已移除");
-    }
+  }
+
+  private assertPinEvidence(pinnedItemIds: readonly string[], pinIds: readonly string[]): void {
+    if (pinIds.some((id) => !pinnedItemIds.includes(id))) throw new Error("本轮引用的项目固定资料已移除");
   }
 
   resolveProject(projectId: string): ResolvedProjectContext | null {
     const project = this.projects.get(projectId);
-    if (!project) return null;
+    return project ? this.resolve(project, this.projects.listTodos(projectId), this.projects.listPins(projectId)) : null;
+  }
+
+  async readResolvedProject(projectId: string): Promise<ResolvedProjectContext | null> {
+    const context = await this.projects.readContextSnapshot(projectId);
+    return context ? this.resolve(context.project, context.todos, context.pins) : null;
+  }
+
+  private resolve(project: ProjectDetailsDto, todos: ProjectTodoDto[], pins: ProjectContextPinDto[]): ResolvedProjectContext {
     // Archived Projects remain a dynamic context source for Tasks that were
     // already bound. Archive only hides the Project and blocks new bindings.
     const { policies, resources: _storedResources, ...summary } = project;
@@ -72,8 +93,8 @@ export class ProjectContextResolver {
       policies,
       resources: resolved.resources,
       resourceWarnings: resolved.warnings,
-      planSummary: this.buildPlanSummary(project.id),
-      sharedContext: this.buildSharedContext(project.id),
+      planSummary: this.buildPlanSummary(project.id, todos),
+      sharedContext: this.buildSharedContext(project, pins),
       version: `${project.id}:${project.updatedAt}`,
       source: "project",
       sourceId: project.id,
@@ -81,15 +102,13 @@ export class ProjectContextResolver {
   }
 
   /** Shared Context 摘要：goal/currentStage（显式字段）+ pinned library refs（只引用不复制） */
-  private buildSharedContext(projectId: string): ProjectSharedContextSummary | null {
-    const project = this.projects.get(projectId);
-    if (!project) return null;
+  private buildSharedContext(project: ProjectDetailsDto, pins: ProjectContextPinDto[]): ProjectSharedContextSummary {
     return {
-      projectId,
+      projectId: project.id,
       goal: project.goal?.trim() || null,
       currentStage: project.currentStage?.trim() || null,
       instructions: project.instructions?.trim() || null,
-      pinned: this.projects.listPins(projectId),
+      pinned: pins,
     };
   }
 
@@ -103,8 +122,7 @@ export class ProjectContextResolver {
    * 只输出状态计数 + 预算内 active slice（doing/高优先/临近截止，不含 done），
    * 绝不把全量计划塞入上下文。
    */
-  private buildPlanSummary(projectId: string): ProjectPlanSummaryDto {
-    const todos = this.projects.listTodos(projectId);
+  private buildPlanSummary(projectId: string, todos: ProjectTodoDto[]): ProjectPlanSummaryDto {
     const byStatus: Record<ProjectTodoStatus, number> = { todo: 0, doing: 0, paused: 0, done: 0 };
     for (const todo of todos) byStatus[todo.status] += 1;
     const active: ProjectTodoDto[] = [];

@@ -1,7 +1,7 @@
 use crate::{Result, library_text::is_link};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use regex_lite::Regex;
-use rusqlite::{Connection, TransactionBehavior};
+use duckdb::{Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -348,12 +348,12 @@ pub(crate) fn checked_directory(path: &Path, root: &Path, label: &str) -> Result
 
 pub fn reconcile(db: &mut Connection, root: &Path) -> Result<Vec<String>> {
     let root = physical_root(root)?;
-    let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let transaction = db.transaction()?;
     let ids = {
         let mut query = transaction.prepare("SELECT id FROM gadgets")?;
         query
             .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<HashSet<_>>>()?
+            .collect::<duckdb::Result<HashSet<_>>>()?
     };
     let mut failed = Vec::new();
     for entry in fs::read_dir(&root)? {
@@ -414,7 +414,7 @@ pub(crate) fn remove_orphan(path: &Path, metadata: &Metadata) -> std::io::Result
 
 pub(crate) fn remove_unregistered(db: &mut Connection, root: &Path, id: &str) -> Result<bool> {
     let target = gadget_path(root, id)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let registered: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM gadgets WHERE id=?1)",
         [id],

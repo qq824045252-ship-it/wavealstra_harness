@@ -2,7 +2,7 @@ use crate::{
     Result, artifact_content::physical_directory, gadget_files::remove_orphan,
     library_text::is_link,
 };
-use rusqlite::{Connection, TransactionBehavior};
+use duckdb::{Connection};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -50,10 +50,7 @@ pub fn clean(db: &mut Connection, root: &Path, cleanup: Cleanup) -> Result<Repor
         return Ok(report);
     }
 
-    // The walk does not hold the writer lock. Recheck ownership under the same lock
-    // used to publish new managed files before removing any candidate.
-    let _write_guard = crate::write_gate::enter()?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let live = registered(&tx)?;
     let mut live_targets = None;
     let mut seen = HashSet::new();

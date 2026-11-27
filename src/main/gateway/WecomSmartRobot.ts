@@ -114,7 +114,7 @@ export class WecomSmartRobot {
   isConnected(): boolean { return this.connected; }
   statusText(): string { if (this.lastError) return this.lastError; return this.connected ? '已连接（企微 Smart Robot）' : this.stopped ? '未连接' : '企微 Smart Robot 重连中'; }
   gatewayConnectionGeneration(): unknown { return this.socket; }
-  workConnectionKey(): string | undefined { return this.connected && this.activated ? gatewayConnectionKey('wecom', ['smart', this.botId]) : undefined; }
+  gatewayPreparedConnectionKey(): string | undefined { return this.connected ? gatewayConnectionKey('wecom', ['smart', this.botId]) : undefined; }
   async connect(config: ChannelConfig): Promise<void> {
     await this.disconnect();
     this.lastError = "";

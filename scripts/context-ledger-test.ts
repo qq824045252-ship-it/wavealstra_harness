@@ -53,6 +53,7 @@ let beforePayload: (() => void) | undefined;
 let abortReady: (() => void) | undefined;
 let phase = "normal";
 let supplementalRevision = 1, supplementalAvailable = true;
+let waitForSupplementalCheck: (() => Promise<void>) | undefined;
 let enabled = true;
 const response = (content: AssistantMessage["content"], stopReason: AssistantMessage["stopReason"]): AssistantMessage => ({
   role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), content, stopReason,
@@ -113,7 +114,10 @@ async function boot(file?: string, supplemental = false) {
       text: `SUPPLEMENT_v${supplementalRevision} ` + "calibration detail ".repeat(500) + "END_OF_PROJECT_REFERENCE",
       explicitProjectReference: true,
       access: { kind: "project", projectId: "calibration", resourceIds: ["original-resource"] },
-      validate: () => { if (!supplementalAvailable) throw new Error("SUPPLEMENT_REVOKED"); } }] : [],
+      validate: async () => {
+        await waitForSupplementalCheck?.();
+        if (!supplementalAvailable) throw new Error("SUPPLEMENT_REVOKED");
+      } }] : [],
     validateEvidenceAccess: access => {
       assert.equal(access.kind, "project");
       if (!supplementalAvailable) throw new Error("SUPPLEMENT_REVOKED");
@@ -251,6 +255,32 @@ try {
   assert.match(session.state.errorMessage ?? "", /SUPPLEMENT_REVOKED/);
   assert.equal(captures.length, denied);
   session.dispose(); supplementalAvailable = true;
+
+  current = await boot(undefined, true); session = current.session;
+  let entered: () => void;
+  let release: () => void;
+  const checking = new Promise<void>(resolve => { entered = resolve; });
+  const pendingAccess = new Promise<void>(resolve => { release = resolve; });
+  beforePayload = () => {
+    waitForSupplementalCheck = () => { entered(); return pendingAccess; };
+  };
+  const beforeAsyncRevoke = captures.length;
+  const waitingForProvider = session.prompt("calibration revoke during async payload check");
+  try {
+    await Promise.race([checking, waitingForProvider.then(() => { throw new Error("Provider did not wait for access validation"); })]);
+    supplementalAvailable = false;
+    release!();
+    await waitingForProvider;
+    assert.match(session.state.errorMessage ?? "", /SUPPLEMENT_REVOKED/);
+    assert.equal(captures.length, beforeAsyncRevoke, "awaited validation blocks the serialized payload");
+  } finally {
+    release!();
+    await waitingForProvider.catch(() => undefined);
+    waitForSupplementalCheck = undefined;
+    supplementalAvailable = true;
+    session.dispose();
+  }
+  console.log("PASS async evidence revocation during payload admission blocks dispatch");
 
   // Damaged references are rejected before source text reaches serialization.
   for (const damage of ["hash", "renderer", "version"] as const) {

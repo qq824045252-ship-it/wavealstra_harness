@@ -35,7 +35,21 @@ function mapRow(row: BlueprintRow): BlueprintDescriptor {
 }
 
 export class BlueprintRepository {
-  constructor(private readonly db: Database.Database, private readonly native?: RuntimeAuditReader) {}
+  private readonly fixture?: Database.Database;
+  private readonly native?: RuntimeAuditReader;
+
+  constructor(source: { core: RuntimeAuditReader } | Database.Database, reader?: RuntimeAuditReader) {
+    if ("core" in source) this.native = source.core;
+    else {
+      this.fixture = source;
+      this.native = reader;
+    }
+  }
+
+  private get db(): Database.Database {
+    if (!this.fixture || this.native?.supervised) throw new Error("Blueprint 需要通过 Rust Core 访问");
+    return this.fixture;
+  }
 
   async create(request: BlueprintCreateRequest): Promise<BlueprintDescriptor> {
     const name = request.name.trim();
@@ -57,7 +71,7 @@ export class BlueprintRepository {
     const serialized = {
       kind: definition.kind, schemaVersion: definition.schemaVersion, definitionJson: JSON.stringify(definition),
     };
-    const result = await writeWorkbench(this.db, this.native, {
+    const result = await writeWorkbench(this.fixture, this.native, {
       kind: "createBlueprint",
       blueprint: { id: descriptor.id, name, description: descriptor.description ?? null, definition: serialized, createdAt: now, updatedAt: now },
     });
@@ -83,7 +97,7 @@ export class BlueprintRepository {
   }
 
   async read(id: string): Promise<BlueprintDescriptor | null> {
-    if (this.db.inTransaction) return this.get(id);
+    if (!this.native?.supervised && this.fixture?.inTransaction) return this.get(id);
     const rows = await this.native?.workbenchData<BlueprintRow>({ kind: "blueprint", id });
     if (rows === undefined) return this.get(id);
     return rows[0] ? mapRow(rows[0]) : null;
@@ -103,7 +117,7 @@ export class BlueprintRepository {
     };
     const updatedAt = Date.now();
     const changedName = request.name === undefined ? undefined : name;
-    const result = await writeWorkbench(this.db, this.native, {
+    const result = await writeWorkbench(this.fixture, this.native, {
       kind: "patchBlueprint", id: current.id, name: changedName, description, definition: serialized, updatedAt,
     });
     if (result === undefined) {
@@ -129,7 +143,7 @@ export class BlueprintRepository {
   }
 
   async delete(id: string): Promise<boolean> {
-    const result = await writeWorkbench(this.db, this.native, { kind: "deleteBlueprint", id });
+    const result = await writeWorkbench(this.fixture, this.native, { kind: "deleteBlueprint", id });
     return result === undefined ? this.db.prepare("DELETE FROM blueprints WHERE id = ?").run(id).changes === 1 : result === "changed";
   }
 }

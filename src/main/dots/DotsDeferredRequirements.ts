@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
-import type { RuntimeAuditReader } from "../platform/runtime-audit";
+import { RuntimeAuditUnknownOperationError, type RuntimeAuditReader } from "../platform/runtime-audit";
 
-interface DeferredRequirement {
+export interface DeferredRequirement {
   id: string;
   conversationId: number;
   taskId: string;
@@ -9,20 +9,41 @@ interface DeferredRequirement {
   text: string;
 }
 
-type DeferredRow = DeferredRequirement & { operationId: string | null; applied: number };
-type DotsNative = Pick<RuntimeAuditReader, "batch4aWrite" | "supervised">;
+export type DeferredRow = DeferredRequirement & { operationId: string | null; applied: number };
+export type DeferredReservation = Pick<DeferredRequirement, "id" | "conversationId"> & { originalTaskId: string };
+export type DeferredPending = Pick<DeferredRequirement, "id" | "text" | "prerequisiteId"> & { status: string };
+export type DeferredRouting = {
+  requirement: DeferredRow;
+  prerequisiteStatus: string | null;
+  attempt: { sourceMessageId: string; status: string } | null;
+};
+export type DeferredRequirementsQuery =
+  | { kind: "get"; id: string; conversationId: number }
+  | { kind: "pending"; taskId: string; conversationId: number }
+  | { kind: "candidates"; conversationId: number; sourceId: string; taskId?: string; spaceId?: string };
+export type DeferredRequirementsCommand =
+  | { kind: "save"; requirement: DeferredRequirement; sourceId: string }
+  | { kind: "accept"; taskId: string; operationId: string; submissionId: number };
+type SaveResult = { status: "saved"; row: DeferredRow } | { status: "conflict" | "scopeChanged" };
+type AcceptResult = { status: "accepted" | "unreserved" | "receiptMissing" };
+type DotsNative = Pick<RuntimeAuditReader, "batch4aWrite" | "supervised" | "dotsDeferredRead" | "dotsDeferredWrite">;
 
 export class DotsDeferredRequirements {
   private writeTail = Promise.resolve();
   private pendingWriteCount = 0;
   private readonly pendingRows = new Map<string, DeferredRow>();
 
-  constructor(private readonly db: Database.Database, private readonly native?: DotsNative) {
-    if (!db.readonly) {
-      db.exec("CREATE TABLE IF NOT EXISTS dots_deferred_requirements (" +
+  constructor(private readonly fixture: Database.Database | undefined, private readonly native?: DotsNative) {
+    if (fixture && !fixture.readonly) {
+      fixture.exec("CREATE TABLE IF NOT EXISTS dots_deferred_requirements (" +
         "id TEXT PRIMARY KEY, conversationId INTEGER NOT NULL, taskId TEXT NOT NULL, prerequisiteId TEXT NOT NULL, " +
         "text TEXT NOT NULL, operationId TEXT, applied INTEGER NOT NULL DEFAULT 0)");
     }
+  }
+
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("Dots 待办需要 Core 数据库");
+    return this.fixture;
   }
 
   private get requiresRustWrites(): boolean {
@@ -31,6 +52,63 @@ export class DotsDeferredRequirements {
 
   flush(): Promise<void> {
     return this.writeTail;
+  }
+
+  private async readCore<T>(query: DeferredRequirementsQuery): Promise<T> {
+    const reply = await this.native?.dotsDeferredRead<T>(query);
+    if (reply === undefined) throw new Error("Core 未确认 Dots 待办状态");
+    return reply;
+  }
+
+  private async writeCore<T>(command: DeferredRequirementsCommand): Promise<T> {
+    const write = () => this.native?.dotsDeferredWrite<T>(command) ?? Promise.resolve(undefined);
+    const reply = await write().catch(error => {
+      if (error instanceof RuntimeAuditUnknownOperationError) return write();
+      throw error;
+    });
+    if (reply === undefined) throw new Error("Core 未确认 Dots 待办写入");
+    return reply;
+  }
+
+  async read(id: string, conversationId: number): Promise<DeferredRow | undefined> {
+    if (this.fixture) return this.get(id, conversationId);
+    return (await this.readCore<DeferredRouting | null>({ kind: "get", id, conversationId }))?.requirement;
+  }
+
+  async readRouting(id: string, conversationId: number): Promise<DeferredRouting | undefined> {
+    if (!this.fixture) return (await this.readCore<DeferredRouting | null>({ kind: "get", id, conversationId })) ?? undefined;
+    const requirement = this.get(id, conversationId);
+    if (!requirement) return undefined;
+    const prerequisiteStatus = this.fixture.prepare("SELECT status FROM dots_delegations WHERE operation_id=?").pluck()
+      .get(requirement.prerequisiteId) as string | undefined;
+    const attempt = this.fixture.prepare("SELECT source_message_id AS sourceMessageId,status FROM dots_delegations WHERE operation_id=?")
+      .get(requirement.operationId) as DeferredRouting["attempt"] | undefined;
+    return { requirement, prerequisiteStatus: prerequisiteStatus ?? null, attempt: attempt ?? null };
+  }
+
+  async readPending(taskId: string, conversationId: number | undefined): Promise<DeferredPending[]> {
+    if (conversationId === undefined) return [];
+    if (this.fixture) return this.pending(taskId, conversationId);
+    return this.readCore({ kind: "pending", taskId, conversationId });
+  }
+
+  async readCandidates(conversationId: number, sourceId: string, taskId?: string, spaceId?: string): Promise<string[]> {
+    if (this.fixture) return this.candidates(conversationId, sourceId, taskId, spaceId);
+    return this.readCore({ kind: "candidates", conversationId, sourceId, taskId, spaceId });
+  }
+
+  async saveConfirmed(requirement: DeferredRequirement, sourceId: string): Promise<DeferredRow> {
+    if (this.fixture) return this.save(requirement);
+    const reply = await this.writeCore<SaveResult>({ kind: "save", requirement, sourceId });
+    if (reply.status === "saved") return reply.row;
+    if (reply.status === "scopeChanged") throw new Error("原交办或工作空间已变化，请核对后保存待办。");
+    throw new Error("这条待办已属于其他对话或任务。");
+  }
+
+  async acceptConfirmed(operationId: string, taskId: string, submissionId: number): Promise<void> {
+    if (this.fixture) return this.accepted(operationId);
+    const reply = await this.writeCore<AcceptResult>({ kind: "accept", taskId, operationId, submissionId });
+    if (reply.status === "receiptMissing") throw new Error("Core 尚未确认带有待办的原任务受理回执。");
   }
 
   private enqueue(request: Record<string, unknown>, label: string): void {

@@ -27,6 +27,7 @@ export type CronPlanProvenance = {
 export type CronPlanGuard = {
   tasks: string[];
   projects: string[];
+  targetTaskId?: string;
   enabledLimitForTask?: string;
   dots?: { spaceId?: string; taskId?: string; ignoreManualHold: boolean };
 };

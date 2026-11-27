@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -46,9 +46,9 @@ fn apply(db: &mut Connection, request: &Request) -> Result<()> {
         to_cwd,
         action,
     } = request;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let state = tx
-        .prepare_cached(
+        .prepare(
             "SELECT t.cwd, b.cwd, m.from_cwd, m.to_cwd
              FROM tasks t
              LEFT JOIN durable_bot_bindings b ON b.task_id = t.id
@@ -79,7 +79,7 @@ fn apply(db: &mut Connection, request: &Request) -> Result<()> {
     match action {
         Action::Stage if bound == Some(from_cwd) => {
             if pending.is_none() {
-                tx.prepare_cached(
+                tx.prepare(
                     "INSERT INTO durable_bot_workspace_moves(task_id,from_cwd,to_cwd)
                      VALUES (?1,?2,?3)",
                 )?
@@ -92,10 +92,10 @@ fn apply(db: &mut Connection, request: &Request) -> Result<()> {
         Action::Commit { cwd, at }
             if pending.is_some() && (bound == Some(from_cwd) || bound == Some(cwd)) =>
         {
-            tx.prepare_cached("UPDATE durable_bot_bindings SET cwd = ?2 WHERE task_id = ?1")?
+            tx.prepare("UPDATE durable_bot_bindings SET cwd = ?2 WHERE task_id = ?1")?
                 .execute(params![task_id, cwd])?;
-            tx.prepare_cached(
-                "UPDATE tasks SET cwd = ?2, updated_at = max(updated_at, ?3) WHERE id = ?1",
+            tx.prepare(
+                "UPDATE tasks SET cwd = ?2, updated_at = GREATEST(updated_at, ?3) WHERE id = ?1",
             )?
             .execute(params![task_id, cwd, at])?;
             delete_intent(&tx, request)?;
@@ -108,8 +108,8 @@ fn apply(db: &mut Connection, request: &Request) -> Result<()> {
     Ok(())
 }
 
-fn delete_intent(db: &Connection, request: &Request) -> rusqlite::Result<()> {
-    db.prepare_cached(
+fn delete_intent(db: &Connection, request: &Request) -> duckdb::Result<()> {
+    db.prepare(
         "DELETE FROM durable_bot_workspace_moves WHERE task_id = ?1 AND from_cwd = ?2 AND to_cwd = ?3",
     )?
     .execute(params![request.task_id, request.from_cwd, request.to_cwd])?;

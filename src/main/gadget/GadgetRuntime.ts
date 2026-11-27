@@ -650,13 +650,13 @@ export class GadgetRuntime {
   async request(descriptor: GadgetDescriptor, route: string, input?: unknown, options: {
     signal?: AbortSignal;
     start?: boolean;
-    authorize?: () => void;
+    authorize?: () => void | Promise<void>;
   } = {}): Promise<GadgetJson> {
     const { signal } = options;
-    options.authorize?.();
+    await options.authorize?.();
     signal?.throwIfAborted();
     const state = options.start === false ? this.registry.runtime(descriptor.id) : await this.start(descriptor);
-    options.authorize?.();
+    await options.authorize?.();
     signal?.throwIfAborted();
 
     const rustStatic = this.rustStaticInstances.get(descriptor.id);
@@ -668,7 +668,7 @@ export class GadgetRuntime {
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(125_000)]) : AbortSignal.timeout(125_000),
       });
       const result: unknown = await response.json();
-      options.authorize?.();
+      await options.authorize?.();
       if (this.rustStaticInstances.get(descriptor.id) !== rustStatic || !rustStatic.active) {
         throw new Error("Gadget 已重启或停止；本次操作不会自动重放");
       }
@@ -699,7 +699,7 @@ export class GadgetRuntime {
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(125_000)]) : AbortSignal.timeout(125_000),
       });
       const result: unknown = await response.json();
-      options.authorize?.();
+      await options.authorize?.();
       if (this.instances.get(descriptor.id) !== instance || !this.isAlive(instance)) throw new Error("Gadget 已重启或停止；本次操作不会自动重放");
       if (!result || typeof result !== "object") throw new Error("Gadget 返回无效结果");
       if (!response.ok) {

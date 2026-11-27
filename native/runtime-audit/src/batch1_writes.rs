@@ -4,7 +4,7 @@
 //! artifact verification.
 
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -16,8 +16,6 @@ use std::collections::HashSet;
     rename_all_fields = "camelCase"
 )]
 pub enum Request {
-    ClaimSnapshotEpoch,
-    ClaimDiagnosticEpoch,
     SavePythonBinding {
         dir_key: String,
         project_dir: String,
@@ -40,6 +38,8 @@ pub enum Request {
         status: String,
         record_json: String,
         created_at: i64,
+        #[serde(default)]
+        if_absent: bool,
     },
     ExecutionAttemptUpdate {
         id: String,
@@ -92,8 +92,15 @@ pub enum Request {
     },
     InteractionSettle {
         id: String,
+        task_id: String,
         status: String,
         answer_json: Option<String>,
+        resolved_at: i64,
+    },
+    InteractionCancelExecution {
+        task_id: String,
+        execution_id: String,
+        assistant_message_id: String,
         resolved_at: i64,
     },
     InteractionExpireAllPending {
@@ -114,6 +121,8 @@ pub enum Request {
         at: i64,
         cutoff: i64,
         max_records: i64,
+        #[serde(default)]
+        if_absent: bool,
     },
     LoadoutMarkSkillUsed {
         task_id: String,
@@ -135,10 +144,12 @@ pub enum Request {
         task_id: Option<String>,
     },
     GoalActivityAdmit {
+        user_id: String,
         task_id: String,
         conversation_id: String,
         generation_id: i64,
-        work_id: String,
+        work_id: Option<String>,
+        parent: Option<GoalGenerationIdentity>,
         metadata_json: String,
     },
     GoalActivityRecordAuxiliaryScope {
@@ -148,6 +159,7 @@ pub enum Request {
         generation_id: i64,
     },
     GoalActivitySettle {
+        user_id: String,
         task_id: String,
         conversation_id: String,
         generation_id: i64,
@@ -182,6 +194,13 @@ pub enum Request {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GoalGenerationIdentity {
+    conversation_id: String,
+    generation_task_id: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GoalToolReturn {
     native_conversation_id: i64,
     subagent_id: String,
@@ -189,7 +208,7 @@ pub struct GoalToolReturn {
     outcome: Option<String>,
 }
 
-fn interaction_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+fn interaction_row(row: &duckdb::Row<'_>) -> duckdb::Result<Value> {
     Ok(json!({
         "id": row.get::<_, String>(0)?,
         "task_id": row.get::<_, String>(1)?,
@@ -214,32 +233,8 @@ fn interaction_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
 const SELECT_INTERACTION: &str = "SELECT id,task_id,execution_id,assistant_message_id,kind,title,description,options_json,min_selections,max_selections,allow_custom,custom_placeholder,status,answer_json,version,created_at,resolved_at FROM conversation_interactions";
 
 pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let out = match request {
-        Request::ClaimSnapshotEpoch => {
-            tx.execute(
-                "INSERT OR IGNORE INTO runtime_snapshot_writer VALUES (1, 0, '', 0)",
-                [],
-            )?;
-            let epoch: i64 = tx.query_row(
-                "UPDATE runtime_snapshot_writer SET epoch=epoch+1, write_id='', result=0 WHERE id=1 RETURNING epoch",
-                [],
-                |row| row.get(0),
-            )?;
-            json!({ "epoch": epoch })
-        }
-        Request::ClaimDiagnosticEpoch => {
-            tx.execute(
-                "INSERT OR IGNORE INTO runtime_diagnostic_writer VALUES (1, 0, 0)",
-                [],
-            )?;
-            let epoch: i64 = tx.query_row(
-                "UPDATE runtime_diagnostic_writer SET epoch=epoch+1, sequence=0 WHERE id=1 RETURNING epoch",
-                [],
-                |row| row.get(0),
-            )?;
-            json!({ "epoch": epoch })
-        }
         Request::SavePythonBinding {
             dir_key,
             project_dir,
@@ -300,24 +295,21 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             status,
             record_json,
             created_at,
+            if_absent,
         } => {
-            tx.execute(
-                "INSERT INTO execution_attempts
+            const INSERT_ATTEMPT: &str = "INSERT INTO execution_attempts
                  (id,task_id,execution_id,assistant_message_id,tool_call_id,target,status,record_json,created_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                params![
-                    id,
-                    task_id,
-                    execution_id,
-                    assistant_message_id,
-                    tool_call_id,
-                    target,
-                    status,
-                    record_json,
-                    created_at
-                ],
-            )?;
-            json!({ "ok": true })
+                 SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9 WHERE EXISTS(SELECT 1 FROM tasks WHERE id=?2)";
+            let conflict = if if_absent { " ON CONFLICT(id) DO NOTHING" } else { "" };
+            tx.execute(&format!("{INSERT_ATTEMPT}{conflict}"), params![
+                id, task_id, execution_id, assistant_message_id, tool_call_id, target, status, record_json, created_at,
+            ])?;
+            let saved: String = tx.query_row(
+                "SELECT record_json FROM execution_attempts WHERE id=?1 AND task_id=?2
+                 AND execution_id=?3 AND assistant_message_id=?4 AND tool_call_id=?5 AND target=?6",
+                params![id, task_id, execution_id, assistant_message_id, tool_call_id, target], |row| row.get(0),
+            ).optional()?.ok_or("Execution attempt has no matching task and tool identity")?;
+            if if_absent { json!({ "ok": true, "recordJson": saved }) } else { json!({ "ok": true }) }
         }
         Request::ExecutionAttemptUpdate {
             id,
@@ -364,38 +356,30 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
         } => {
             let current: Option<(String, String)> = tx
                 .query_row(
-                    "SELECT status, record_json FROM execution_attempts WHERE id=?1",
-                    [&id],
+                    "SELECT status, record_json FROM execution_attempts WHERE id=?1 AND task_id=?2
+                     AND execution_id=?3 AND assistant_message_id=?4 AND tool_call_id=?5 AND target=?6",
+                    params![id, task_id, execution_id, assistant_message_id, tool_call_id, target],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
-            let Some((prior_status, _prior_json)) = current else {
+            let Some((prior_status, prior_json)) = current else {
                 return Err("Durable execution attempt is missing".into());
             };
-            if prior_status == "running" {
-                let exists: Option<i64> = tx
-                    .query_row(
-                        "SELECT 1 FROM execution_attempts WHERE id=?1 AND task_id=?2 AND execution_id=?3 AND assistant_message_id=?4 AND tool_call_id=?5 AND target=?6 AND status='running'",
-                        params![id, task_id, execution_id, assistant_message_id, tool_call_id, target],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                if exists.is_none() {
-                    return Err("Stale execution attempt update".into());
-                }
+            let prior: Value = serde_json::from_str(&prior_json)?;
+            let replacement: Value = serde_json::from_str(&record_json)?;
+            if !prior["nativeReceipt"].is_null() && prior["nativeReceipt"] != replacement["nativeReceipt"] {
+                return Err("Durable execution receipt cannot be replaced".into());
+            }
+            if prior_status == "running" || (prior_status == "inconclusive" && allow_inconclusive_settle
+                && prior["causeCode"] == "application-restarted") {
                 let changes = tx.execute(
                     "UPDATE execution_attempts SET status=?1,record_json=?2,finished_at=?3
-                     WHERE id=?4 AND task_id=?5 AND execution_id=?6 AND assistant_message_id=?7 AND status='running'",
-                    params![status, record_json, finished_at, id, task_id, execution_id, assistant_message_id],
+                     WHERE id=?4 AND status=?5 AND record_json=?6",
+                    params![status, record_json, finished_at, id, prior_status, prior_json],
                 )?;
                 if changes != 1 {
                     return Err("Stale execution attempt update".into());
                 }
-            } else if prior_status == "inconclusive" && allow_inconclusive_settle {
-                tx.execute(
-                    "UPDATE execution_attempts SET status=?1,record_json=?2,finished_at=?3 WHERE id=?4 AND status='inconclusive'",
-                    params![status, record_json, finished_at, id],
-                )?;
             }
             json!({ "ok": true })
         }
@@ -403,7 +387,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             let mut stmt = tx.prepare("SELECT record_json FROM execution_attempts WHERE status='running'")?;
             let rows = stmt
                 .query_map([], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+                .collect::<duckdb::Result<Vec<_>>>()?;
             drop(stmt);
             let mut update = tx.prepare(
                 "UPDATE execution_attempts SET status='inconclusive',record_json=?1,finished_at=?2
@@ -464,11 +448,13 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             created_at,
             resolved_at,
         } => {
-            tx.execute(
+            let inserted = tx.execute(
                 "INSERT INTO conversation_interactions
                  (id,task_id,execution_id,assistant_message_id,kind,title,description,options_json,min_selections,
                   max_selections,allow_custom,custom_placeholder,status,answer_json,version,created_at,resolved_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                 SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17
+                 WHERE EXISTS(SELECT 1 FROM tasks WHERE id=?2)
+                   AND (?13<>'pending' OR NOT EXISTS(SELECT 1 FROM conversation_interactions WHERE execution_id=?3 AND status='pending'))",
                 params![
                     id,
                     task_id,
@@ -489,6 +475,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                     resolved_at
                 ],
             )?;
+            if inserted == 0 { return Ok(json!({ "row": null })); }
             let row = tx.query_row(
                 &format!("{SELECT_INTERACTION} WHERE id=?1"),
                 [&id],
@@ -508,6 +495,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
         }
         Request::InteractionSettle {
             id,
+            task_id,
             status,
             answer_json,
             resolved_at,
@@ -515,8 +503,8 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             let changes = tx.execute(
                 "UPDATE conversation_interactions
                  SET status=?1, answer_json=?2, version=version+1, resolved_at=?3
-                 WHERE id=?4 AND status='pending'",
-                params![status, answer_json, resolved_at, id],
+                 WHERE id=?4 AND task_id=?5 AND status='pending'",
+                params![status, answer_json, resolved_at, id, task_id],
             )?;
             let row = if changes > 0 {
                 tx.query_row(
@@ -528,13 +516,27 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             } else {
                 None
             };
+            if let Some(title) = row.as_ref().filter(|_| status == "resolved").and_then(|row| row["title"].as_str()) {
+                crate::trigger_effects::on_interaction_answered_in_tx(&tx, &task_id, resolved_at, title)?;
+            }
             json!({ "row": row })
+        }
+        Request::InteractionCancelExecution { task_id, execution_id, assistant_message_id, resolved_at } => {
+            let mut update = tx.prepare(
+                "UPDATE conversation_interactions SET status='cancelled', version=version+1, resolved_at=?1
+                 WHERE task_id=?2 AND execution_id=?3 AND assistant_message_id=?4 AND status='pending'
+                 RETURNING id,task_id,execution_id,assistant_message_id,kind,title,description,options_json,min_selections,
+                 max_selections,allow_custom,custom_placeholder,status,answer_json,version,created_at,resolved_at",
+            )?;
+            let rows = update.query_map(params![resolved_at, task_id, execution_id, assistant_message_id], interaction_row)?
+                .collect::<duckdb::Result<Vec<_>>>()?;
+            json!({ "rows": rows })
         }
         Request::InteractionExpireAllPending { resolved_at } => {
             let mut stmt = tx.prepare("SELECT id FROM conversation_interactions WHERE status='pending'")?;
             let ids = stmt
                 .query_map([], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+                .collect::<duckdb::Result<Vec<_>>>()?;
             drop(stmt);
             tx.execute(
                 "UPDATE conversation_interactions SET status='expired', version=version+1, resolved_at=?1 WHERE status='pending'",
@@ -565,14 +567,12 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             at,
             cutoff,
             max_records,
+            if_absent,
         } => {
-            tx.execute(
-                "INSERT INTO agent_loadout_observations (
-                   id,task_id,user_message_id,assistant_message_id,query_hash,context_json,
-                   recommended_json,actual_json,matched_actual_json,not_selected_json,blocked_json,used_skill_ids_json,
-                   outcome,created_at,updated_at
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'[]','pending',?12,?12)
-                 ON CONFLICT(task_id, assistant_message_id) DO UPDATE SET
+            let on_conflict = if if_absent {
+                "DO NOTHING"
+            } else {
+                "DO UPDATE SET
                    user_message_id=excluded.user_message_id,
                    query_hash=excluded.query_hash,
                    context_json=excluded.context_json,
@@ -585,7 +585,16 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                    outcome='pending',
                    completed_at=NULL,
                    created_at=excluded.created_at,
-                   updated_at=excluded.updated_at",
+                   updated_at=excluded.updated_at"
+            };
+            let changed = tx.execute(
+                &format!("INSERT INTO agent_loadout_observations (
+                   id,task_id,user_message_id,assistant_message_id,query_hash,context_json,
+                   recommended_json,actual_json,matched_actual_json,not_selected_json,blocked_json,used_skill_ids_json,
+                   outcome,created_at,updated_at
+                 ) SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'[]','pending',?12,?12
+                   WHERE EXISTS (SELECT 1 FROM tasks WHERE id=?2)
+                 ON CONFLICT(task_id, assistant_message_id) {on_conflict}"),
                 params![
                     id,
                     task_id,
@@ -601,18 +610,20 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                     at
                 ],
             )?;
-            tx.execute(
-                "DELETE FROM agent_loadout_observations WHERE task_id=?1 AND created_at<?2",
-                params![task_id, cutoff],
-            )?;
-            tx.execute(
-                "DELETE FROM agent_loadout_observations
-                 WHERE task_id=?1 AND id NOT IN (
-                   SELECT id FROM agent_loadout_observations WHERE task_id=?1
-                   ORDER BY created_at DESC,rowid DESC LIMIT ?2
-                 )",
-                params![task_id, max_records],
-            )?;
+            if changed > 0 {
+                tx.execute(
+                    "DELETE FROM agent_loadout_observations WHERE task_id=?1 AND created_at<?2",
+                    params![task_id, cutoff],
+                )?;
+                tx.execute(
+                    "DELETE FROM agent_loadout_observations
+                     WHERE task_id=?1 AND id NOT IN (
+                       SELECT id FROM agent_loadout_observations WHERE task_id=?1
+                       ORDER BY created_at DESC,rowid DESC LIMIT ?2
+                     )",
+                    params![task_id, max_records],
+                )?;
+            }
             json!({ "ok": true })
         }
         Request::LoadoutMarkSkillUsed {
@@ -675,27 +686,52 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             json!({ "changes": changes })
         }
         Request::GoalActivityAdmit {
+            user_id,
             task_id,
             conversation_id,
             generation_id,
             work_id,
+            parent,
             metadata_json,
         } => {
-            let linked: Option<i64> = tx
-                .query_row(
-                    "SELECT 1 FROM work_conversations WHERE work_id=?1 AND conversation_id=?2",
-                    params![work_id, task_id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if linked.is_some() {
-                tx.execute(
-                    "INSERT OR IGNORE INTO conversation_goal_generations
-                     (task_id, conversation_id, generation_id, work_id, metadata) VALUES (?1,?2,?3,?4,?5)",
-                    params![task_id, conversation_id, generation_id, work_id, metadata_json],
-                )?;
+            let mut metadata: Value = serde_json::from_str(&metadata_json)?;
+            if !metadata.is_object() {
+                return Err("Goal generation metadata must be an object".into());
             }
-            json!({ "ok": true })
+            let work_id = if let Some(parent) = parent {
+                let previous: Option<(String, String)> = tx.query_row(
+                    "SELECT g.work_id,g.metadata FROM conversation_goal_generations g
+                     JOIN works w ON w.work_id=g.work_id AND w.user_id=?4
+                     WHERE g.task_id=?1 AND g.conversation_id=?2 AND g.generation_id=?3",
+                    params![task_id, parent.conversation_id, parent.generation_task_id, user_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                ).optional()?;
+                previous.map(|(id, encoded)| -> Result<String> {
+                    let parent_metadata: Value = serde_json::from_str(&encoded)?;
+                    metadata["intentRevision"] = parent_metadata["intentRevision"].clone();
+                    metadata["ownerEpoch"] = parent_metadata["ownerEpoch"].clone();
+                    metadata["assistantMessageIds"] = json!([]);
+                    metadata["parent"] = json!({ "conversationId": parent.conversation_id, "generationTaskId": parent.generation_task_id });
+                    Ok(id)
+                }).transpose()?
+            } else {
+                work_id
+            };
+            if let (Some(work_id), Some(intent), Some(epoch)) = (work_id, metadata["intentRevision"].as_i64(), metadata["ownerEpoch"].as_i64()) {
+                let changes = tx.execute(
+                    "INSERT INTO conversation_goal_generations
+                     (task_id, conversation_id, generation_id, work_id, metadata)
+                     SELECT ?1,?2,?3,w.work_id,?5 FROM works w
+                     JOIN work_conversations c ON c.work_id=w.work_id AND c.conversation_id=?1
+                     JOIN tasks t ON t.id=c.conversation_id
+                     WHERE w.work_id=?4 AND w.user_id=?6 AND w.intent_revision=?7 AND w.owner_epoch=?8 AND w.lifecycle='active'
+                     ON CONFLICT DO NOTHING",
+                    params![task_id, conversation_id, generation_id, work_id, serde_json::to_string(&metadata)?, user_id, intent, epoch],
+                )?;
+                json!({ "ok": true, "admitted": changes > 0 })
+            } else {
+                json!({ "ok": true, "admitted": false })
+            }
         }
         Request::GoalActivityRecordAuxiliaryScope {
             scope,
@@ -704,51 +740,56 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             generation_id,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO conversation_goal_auxiliary_scopes(execution_scope,task_id,conversation_id,generation_id)
+                "INSERT INTO conversation_goal_auxiliary_scopes(execution_scope,task_id,conversation_id,generation_id)
                  SELECT ?1,task_id,conversation_id,generation_id FROM conversation_goal_generations
-                 WHERE task_id=?2 AND conversation_id=?3 AND generation_id=?4",
+                 WHERE task_id=?2 AND conversation_id=?3 AND generation_id=?4
+                 ON CONFLICT DO NOTHING",
                 params![scope, task_id, conversation_id, generation_id],
             )?;
             json!({ "ok": true })
         }
         Request::GoalActivitySettle {
+            user_id,
             task_id,
             conversation_id,
             generation_id,
             outcome,
             message_id,
         } => {
-            let row: Option<(String, String)> = tx
+            let row: Option<(String, String, i64, i64)> = tx
                 .query_row(
-                    "SELECT work_id, metadata FROM conversation_goal_generations WHERE task_id=?1 AND conversation_id=?2 AND generation_id=?3",
-                    params![task_id, conversation_id, generation_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    "SELECT g.work_id,g.metadata,w.intent_revision,w.owner_epoch FROM conversation_goal_generations g
+                     JOIN works w ON w.work_id=g.work_id AND w.user_id=?4
+                     JOIN work_conversations c ON c.work_id=g.work_id AND c.conversation_id=g.task_id
+                     WHERE g.task_id=?1 AND g.conversation_id=?2 AND g.generation_id=?3",
+                    params![task_id, conversation_id, generation_id, user_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()?;
             let mut owner = Value::Null;
-            if let Some((goal_id, raw_meta)) = row {
+            if let Some((goal_id, raw_meta, intent_revision, owner_epoch)) = row {
                 let mut meta: Value = serde_json::from_str(&raw_meta)?;
-                if let Some(msg_id) = message_id
-                    && let Some(obj) = meta.as_object_mut()
+                if meta["intentRevision"].as_i64() == Some(intent_revision)
+                    && meta["ownerEpoch"].as_i64() == Some(owner_epoch)
                 {
-                    let ids = obj
-                        .entry("assistantMessageIds")
-                        .or_insert_with(|| json!([]))
-                        .as_array_mut();
-                    if let Some(list) = ids
-                        && !list.iter().any(|item| item.as_str() == Some(&msg_id))
+                    if let Some(msg_id) = message_id
+                        && let Some(obj) = meta.as_object_mut()
                     {
-                        list.push(Value::String(msg_id));
+                        let ids = obj.entry("assistantMessageIds").or_insert_with(|| json!([])).as_array_mut();
+                        if let Some(list) = ids
+                            && !list.iter().any(|item| item.as_str() == Some(&msg_id))
+                        {
+                            list.push(Value::String(msg_id));
+                        }
                     }
+                    let encoded = serde_json::to_string(&meta)?;
+                    tx.execute(
+                        "UPDATE conversation_goal_generations SET outcome=COALESCE(outcome,?1), metadata=?2
+                         WHERE task_id=?3 AND conversation_id=?4 AND generation_id=?5",
+                        params![outcome, encoded, task_id, conversation_id, generation_id],
+                    )?;
+                    owner = json!({ "goalId": goal_id, "intentRevision": intent_revision, "ownerEpoch": owner_epoch });
                 }
-                let intent_revision = meta["intentRevision"].as_i64().unwrap_or(0);
-                let encoded = serde_json::to_string(&meta)?;
-                tx.execute(
-                    "UPDATE conversation_goal_generations SET outcome=COALESCE(outcome,?1), metadata=?2
-                     WHERE task_id=?3 AND conversation_id=?4 AND generation_id=?5",
-                    params![outcome, encoded, task_id, conversation_id, generation_id],
-                )?;
-                owner = json!({ "goalId": goal_id, "intentRevision": intent_revision });
             }
             json!({ "owner": owner })
         }
@@ -767,12 +808,16 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                 )
                 .optional()?;
             if let Some(goal_id) = goal_id {
-                let mut stmt = tx.prepare(
-                    "UPDATE conversation_goal_generations SET metadata=json_set(metadata,'$.returned',json(?1))
-                     WHERE task_id=?2 AND conversation_id=?3 AND work_id=?4
-                     AND json_extract(metadata,'$.child.id')=?5
-                     AND json_extract(metadata,'$.parent.conversationId')=?6
-                     AND json_extract(metadata,'$.parent.generationTaskId')=?7",
+                let mut select = tx.prepare(
+                    "SELECT generation_id, metadata FROM conversation_goal_generations
+                     WHERE task_id=?1 AND conversation_id=?2 AND work_id=?3
+                     AND json_extract_string(metadata,'$.child.id')=?4
+                     AND json_extract_string(metadata,'$.parent.conversationId')=?5
+                     AND json_extract_string(metadata,'$.parent.generationTaskId')=?6",
+                )?;
+                let mut update = tx.prepare(
+                    "UPDATE conversation_goal_generations SET metadata=?1
+                     WHERE task_id=?2 AND conversation_id=?3 AND generation_id=?4",
                 )?;
                 for item in results {
                     let returned = json!({
@@ -780,15 +825,27 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                         "outcome": item.outcome,
                         "toolCallId": tool_call_id,
                     });
-                    stmt.execute(params![
-                        serde_json::to_string(&returned)?,
-                        task_id,
-                        item.native_conversation_id.to_string(),
-                        goal_id,
-                        item.subagent_id,
-                        parent_conversation_id,
-                        parent_generation_id
-                    ])?;
+                    let conv_id = item.native_conversation_id.to_string();
+                    let matches: Vec<(i64, String)> = select
+                        .query_map(
+                            params![
+                                task_id,
+                                conv_id,
+                                goal_id,
+                                item.subagent_id,
+                                parent_conversation_id,
+                                parent_generation_id
+                            ],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )?
+                        .collect::<duckdb::Result<_>>()?;
+                    for (gen_id, meta_raw) in matches {
+                        let patched = crate::database::patch_json_fields(
+                            &meta_raw,
+                            &[("returned", returned.clone())],
+                        );
+                        update.execute(params![patched, task_id, conv_id, gen_id])?;
+                    }
                 }
             }
             json!({ "ok": true })
@@ -809,7 +866,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                 .optional()?;
             if exists.is_some() {
                 tx.execute(
-                    "INSERT OR IGNORE INTO conversation_goal_learned_skills VALUES (?1,?2,?3,?4,?5)",
+                    "INSERT INTO conversation_goal_learned_skills VALUES (?1,?2,?3,?4,?5) ON CONFLICT DO NOTHING",
                     params![task_id, conversation_id, generation_id, key, evidence_json],
                 )?;
             }
@@ -820,12 +877,29 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             fingerprint,
             at,
         } => {
-            tx.execute(
-                "UPDATE conversation_goal_learned_skills SET evidence_json=json_set(evidence_json,'$.laterInvokedAt',?1)
-                 WHERE json_extract(evidence_json,'$.pathKey')=?2 AND json_extract(evidence_json,'$.installedFingerprint')=?3
-                 AND json_extract(evidence_json,'$.createdAt')<=?1 AND json_extract(evidence_json,'$.laterInvokedAt') IS NULL",
-                params![at, path_key, fingerprint],
+            let matching: Vec<(String, String, i64, String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT task_id, conversation_id, generation_id, skill_key, evidence_json
+                     FROM conversation_goal_learned_skills
+                     WHERE json_extract_string(evidence_json,'$.pathKey')=?1
+                       AND json_extract_string(evidence_json,'$.installedFingerprint')=?2
+                       AND TRY_CAST(json_extract(evidence_json,'$.createdAt') AS BIGINT)<=?3
+                       AND json_extract(evidence_json,'$.laterInvokedAt') IS NULL",
+                )?;
+                stmt.query_map(params![path_key, fingerprint, at], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                })?
+                .collect::<duckdb::Result<_>>()?
+            };
+            let mut upd = tx.prepare(
+                "UPDATE conversation_goal_learned_skills SET evidence_json=?1
+                 WHERE task_id=?2 AND conversation_id=?3 AND generation_id=?4 AND skill_key=?5",
             )?;
+            for (tid, cid, gid, key, raw) in matching {
+                let patched =
+                    crate::database::patch_json_fields(&raw, &[("laterInvokedAt", json!(at))]);
+                upd.execute(params![patched, tid, cid, gid, key])?;
+            }
             json!({ "ok": true })
         }
         Request::GoalSavedArtifactConfirm {
@@ -834,7 +908,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             verified_at,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO conversation_goal_saved_artifact_verification VALUES (?1,?2,?3)",
+                "INSERT INTO conversation_goal_saved_artifact_verification VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",
                 params![work_id, artifact_id, verified_at],
             )?;
             let stored: i64 = tx.query_row(
@@ -845,6 +919,6 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             json!({ "verifiedAt": stored })
         }
     };
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
     Ok(out)
 }

@@ -1,31 +1,61 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { ModelRuntime, VERSION } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTool, Harness } from "@earendil-works/pi-durable";
-import { openDurableStorage, openDurablePassiveStorage } from "./DurableStorage";
+import {
+  durableStorageExists,
+  getDefaultPiStorageClient,
+  openDurablePassiveStorage,
+  openDurableStorage,
+  setDefaultPiStorageClient,
+} from "./DurableStorage";
 import type { DurableStorageLease } from "./DurableStorageLease";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type } from "typebox";
+import { CURRENT_DATABASE_SCHEMA_VERSION } from "../../db/AppDatabase";
+import { initializeCoreDatabase } from "../../platform/core-client";
+import { locateRuntimeAudit, RuntimeAuditReader } from "../../platform/runtime-audit";
 import { createDurableSubagentTools, resolveDurableExecutionCwd } from "./DurableSubagents";
 
 export { VERSION };
+
+function resolveProbeRuntimeAuditExecutable(): string {
+  const candidates = [
+    process.env.MYBUDDY_RUNTIME_AUDIT_EXE?.trim(),
+    locateRuntimeAudit(process.cwd(), process.resourcesPath),
+    locateRuntimeAudit(process.cwd()),
+    locateRuntimeAudit(resolve(dirname(process.execPath), "resources"), process.resourcesPath),
+  ];
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  throw new Error("Unable to locate mybuddy-runtime-audit binary for packaged durable probe");
+}
 
 /** Invoked only by the isolated package verifier; never reads real credentials or uses a network. */
 export async function verifyPackagedDurable() {
   const directory = await mkdtemp(join(tmpdir(), "mybuddy-native-package-"));
   const agentDir = join(directory, "profile"), cwd = join(directory, "workspace");
+  const coreDir = join(directory, "core-data"), coreDbPath = join(coreDir, "app.db");
   const savedProfile = process.env.PI_CODING_AGENT_DIR;
+  const previousClient = getDefaultPiStorageClient();
   process.env.PI_CODING_AGENT_DIR = agentDir;
   let harness: Harness | undefined;
   let lease: DurableStorageLease | undefined;
+  let probeReader: RuntimeAuditReader | undefined;
   let writes = 0;
   try {
-    await mkdir(join(agentDir, "agents"), { recursive: true }); await mkdir(cwd);
+    await mkdir(join(agentDir, "agents"), { recursive: true }); await mkdir(cwd); await mkdir(coreDir, { recursive: true });
+    const exe = resolveProbeRuntimeAuditExecutable();
+    await initializeCoreDatabase(exe, coreDir, coreDbPath, CURRENT_DATABASE_SCHEMA_VERSION);
+    probeReader = new RuntimeAuditReader(exe, coreDbPath);
+    setDefaultPiStorageClient(probeReader);
     await writeFile(join(agentDir, "settings.json"), JSON.stringify({ enabledModels: ["probe/parent", "probe/child"] }));
     await writeFile(join(agentDir, "agents", "worker.md"), "---\nname: worker\ndescription: Offline package probe\ntools: package_proof\n---\nWrite proof once.\n");
     const models = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: null,
@@ -68,14 +98,15 @@ export async function verifyPackagedDurable() {
     const restored = await conversation.submit({ type: "input", content: "Run offline probe", requestId: "package-operation" }, context);
     assert.equal(restored.id, receipt.id); assert.equal((await restored.wait(context)).status, "done");
     assert.equal(writes, 1); assert.equal(await readFile(join(cwd, "proof.txt"), "utf8"), "1");
-    const passive = await openDurablePassiveStorage(join(directory, "state"), context);
+    const passive = await openDurablePassiveStorage(join(directory, "state"), context, probeReader);
     assert(passive); await passive.close(context);
-    const selector = JSON.parse(await readFile(join(directory, "state", ".mybuddy-storage.json"), "utf8"));
-    assert.equal(selector.backend, "sqlite");
-    return { version: VERSION, runtime: "pi-durable", backend: "sqlite", ownedChild: true, recoveredReceipt: true, effectCount: writes };
+    assert.equal(await durableStorageExists(join(directory, "state"), probeReader), true);
+    return { version: VERSION, runtime: "pi-durable", backend: "duckdb", ownedChild: true, recoveredReceipt: true, effectCount: writes };
   } finally {
     await harness?.close(context);
     lease?.release();
+    setDefaultPiStorageClient(previousClient);
+    await probeReader?.close().catch(() => undefined);
     if (savedProfile === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = savedProfile;
     await rm(directory, { recursive: true, force: true });
   }

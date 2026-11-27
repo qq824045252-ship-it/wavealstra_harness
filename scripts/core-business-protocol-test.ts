@@ -263,6 +263,20 @@ async function verifyEventSnapshotCursorAndGapResync(): Promise<void> {
     assert.equal(snap.notes.every(n => n.revision === 1), true);
 
     await sub.close();
+    const subscribe = ui.subscribeCursor.bind(ui);
+    ui.subscribeCursor = async (...args) => {
+      await bg!.upsertNote({ commandId: "before-live-attachment", entityId: "note-8", title: "Before attachment" });
+      const attached = await subscribe(...args);
+      await bg!.upsertNote({ commandId: "after-live-attachment", entityId: "note-9", title: "After attachment" });
+      return attached;
+    };
+    const overlap: CoreDomainEvent[] = [];
+    sub = await ui.openEventSubscription({ domain: "domainNote", onEvent: event => overlap.push(event) });
+    assert.equal(sub.initialSnapshot.headSeq, 7);
+    await waitUntil(() => overlap.some(event => event.seq === 9), "live and replayed events delivered");
+    assert.deepEqual(overlap.map(event => [event.seq, event.entityId]), [[8, "note-8"], [9, "note-9"]]);
+    assert.equal(sub.getCursor().lastSeq, 9);
+    await sub.close();
     console.log("PASS RC-07 atomic snapshot watermark, incremental cursor catch-up, dedup, and retention-gap full resync");
   } finally {
     await ui?.close().catch(() => undefined);
@@ -485,10 +499,153 @@ async function verifyExecutionBridgeAndWatchdogRecovery(): Promise<void> {
   console.log("PASS RC-08 offline wait, execution bridge, unknown/reconcile, unattended watchdog/circuit-breaker, and explicit stop fence");
 }
 
+async function verifyDurableExecutionProgress(): Promise<void> {
+  const dir = mkdtempSync(join(sandbox, "durable-progress-"));
+  const dbPath = join(dir, "app.duckdb");
+  let releaseBuffered!: () => void;
+  const buffered = new Promise<void>(resolve => { releaseBuffered = resolve; });
+  let releaseCancelledRun!: () => void;
+  const cancelledRun = new Promise<void>(resolve => { releaseCancelledRun = resolve; });
+  let allowCancelProgress!: () => void;
+  const pendingCancelProgress = new Promise<void>(resolve => { allowCancelProgress = resolve; });
+  let releaseDisconnected!: () => void;
+  const pendingDisconnect = new Promise<void>(resolve => { releaseDisconnected = resolve; });
+  let cancelRequested = false;
+  let reports: Promise<unknown>[] = [];
+  const bridge = new ExecutionHostBridge(executable!, dbPath, dir, {
+    async start({ execution }, { reportProgress }) {
+      const count = execution.executionId === "overflow" ? 193 : execution.executionId === "buffered" ? 70 : 1;
+      reports = Array.from({ length: count }, (_, index) => reportProgress({ index }).catch(error => error));
+      if (execution.executionId === "cancelled-run") await cancelledRun;
+      return { status: "completed" };
+    },
+    async cancel() { cancelRequested = true; },
+  });
+  let ui: CoreBusinessClient | undefined;
+  try {
+    ui = await CoreBusinessClient.connect(executable!, dbPath, { dataDirectory: dir, role: "ui", clientId: "progress-ui" });
+    const initial = await ui.eventsSnapshot();
+    const executor = await bridge.connect();
+    const send = executor.executorProgress.bind(executor);
+    let firstBuffered = false;
+    let cancelProgress = false;
+    let lostReply = false;
+    let disconnectProgress = false;
+    const lost: { request?: Parameters<CoreBusinessClient["executorProgress"]> } = {};
+    const exhaustedIds: (string | undefined)[] = [];
+    executor.executorProgress = async (...args) => {
+      if (args[0] === "buffered") {
+        firstBuffered = true;
+        await buffered;
+      }
+      if (args[0] === "cancelled-run") {
+        cancelProgress = true;
+        await pendingCancelProgress;
+      }
+      if (args[0] === "disconnected-run") {
+        disconnectProgress = true;
+        await pendingDisconnect;
+      }
+      if (args[0] === "retry-exhausted") {
+        exhaustedIds.push(args[5]?.progressId);
+        throw new Error("fixture transport failure");
+      }
+      // Exercise the real Core rejection path with an invalid attempt.
+      if (args[0] === "rejected") args[1] = 0;
+      const reply = await send(...args);
+      if (args[0] === "lost-reply" && !lostReply) {
+        assert.equal(reply.status, "ok");
+        lostReply = true;
+        lost.request = args;
+        throw new Error("fixture lost reply after Core committed the progress");
+      }
+      return reply;
+    };
+    const submit = (id: string) => ui!.submitExecution({
+      executionId: id, idempotencyKey: id, taskId: id, kind: "pi_turn",
+    });
+    const status = async (id: string) => (await ui!.executionStatus(id)).execution;
+    const eventsFor = async (id: string) => {
+      const replay = await ui!.eventsReplay(initial.headSeq, initial.coreGeneration, 1000);
+      assert.equal(replay.gap, false);
+      return replay.events.filter(ev => ev.entityId === id);
+    };
+
+    await submit("buffered");
+    await waitUntil(() => firstBuffered, "first durable progress reached the transport");
+    assert.equal((await status("buffered"))?.status, "running");
+    releaseBuffered();
+    await waitUntil(async () => (await status("buffered"))?.status === "completed", "settlement waits for the entire burst");
+    await Promise.all(reports);
+    const bufferedEvents = await eventsFor("buffered");
+    assert.deepEqual(
+      bufferedEvents.filter(ev => ev.kind === "execution.progress").map(ev => ev.payload?.progress),
+      Array.from({ length: 70 }, (_, index) => ({ index })),
+    );
+    assert.equal(bufferedEvents.at(-1)?.kind, "execution.completed");
+
+    await submit("overflow");
+    await waitUntil(async () => ["completed", "unknown"].includes((await status("overflow"))?.status ?? ""), "overflow settled");
+    assert.equal((await status("overflow"))?.status, "unknown", "A synchronous burst must respect admission bounds");
+    assert((await Promise.all(reports)).some(error => error instanceof Error && /overloaded/i.test(error.message)));
+
+    await submit("rejected");
+    await waitUntil(async () => ["completed", "unknown"].includes((await status("rejected"))?.status ?? ""), "Core rejection settled");
+    assert.equal((await status("rejected"))?.status, "unknown", "Core's rejected reply cannot confirm durable progress");
+    assert.match(String((await Promise.all(reports))[0]), /STALE_EXECUTOR_OWNER/);
+
+    await submit("lost-reply");
+    await waitUntil(async () => (await status("lost-reply"))?.status === "completed", "committed progress reply is recovered");
+    assert(lostReply);
+    assert.deepEqual((await eventsFor("lost-reply")).filter(ev => ev.kind === "execution.progress").map(ev => ev.payload?.progress), [{ index: 0 }]);
+    const firstAttempt = lost.request;
+    assert(firstAttempt?.[5]?.progressId);
+    firstAttempt[2] = { index: 100 };
+    assert.equal((await send(...firstAttempt)).code, "PROGRESS_ID_CONFLICT");
+
+    await submit("retry-exhausted");
+    await waitUntil(async () => ["completed", "unknown"].includes((await status("retry-exhausted"))?.status ?? ""), "retry exhaustion settled");
+    assert.equal((await status("retry-exhausted"))?.status, "unknown");
+    assert.equal(exhaustedIds.length, 3);
+    assert(exhaustedIds[0]);
+    assert.equal(new Set(exhaustedIds).size, 1);
+    assert.match(String((await Promise.all(reports))[0]), /after 3 attempts/);
+
+    await submit("cancelled-run");
+    await waitUntil(() => cancelProgress, "cancellable run queued its durable progress");
+    assert.equal((await ui.cancelExecution("cancelled-run")).execution?.status, "cancel_requested");
+    await waitUntil(() => cancelRequested, "Host received the cancel dispatch");
+    assert.equal((await status("cancelled-run"))?.status, "cancel_requested");
+    allowCancelProgress();
+    await waitUntil(async () => (await status("cancelled-run"))?.status === "cancelled", "cancel waits for progress confirmation");
+    releaseCancelledRun();
+    const cancelledEvents = await eventsFor("cancelled-run");
+    assert.deepEqual(cancelledEvents.slice(-2).map(ev => ev.kind), ["execution.progress", "execution.cancelled"]);
+    assert.equal((await status("cancelled-run"))?.status, "cancelled");
+
+    await submit("disconnected-run");
+    await waitUntil(() => disconnectProgress, "disconnected run has unconfirmed durable progress");
+    await bridge.close();
+    releaseDisconnected();
+    await waitUntil(async () => (await status("disconnected-run"))?.status === "unknown", "Core records disconnect before settlement");
+    assert((await Promise.all(reports))[0] instanceof Error);
+    console.log("PASS IN-11 bounded bursts, ordered settlement/cancel, Core rejection, stable retries, disconnect, and lost-reply replay");
+  } finally {
+    releaseBuffered();
+    releaseCancelledRun();
+    allowCancelProgress();
+    releaseDisconnected();
+    await bridge.close().catch(() => undefined);
+    await ui?.close().catch(() => undefined);
+    await shutdownCoreWorker(dir, dbPath).catch(() => undefined);
+  }
+}
+
 try {
   await verifyMultiRoleIsolationAndDomainCommands();
   await verifyEventSnapshotCursorAndGapResync();
   await verifyExecutionBridgeAndWatchdogRecovery();
+  await verifyDurableExecutionProgress();
 } finally {
   for (const pid of trackedPids) {
     try { process.kill(pid, "SIGKILL"); } catch { /* exited */ }

@@ -39,8 +39,8 @@ export class WorkspaceLibraryBindingService {
     if (!librarySpaceId) throw new Error("资料库空间不能为空");
     const mutation = { kind, workspaceId, librarySpaceId, collectionId, at: Date.now() };
     const worker = this.db.runtimeAuditReader;
-    const rustRequired = Boolean(this.db.connection.readonly || worker?.supervised);
-    if (!worker || this.db.connection.inTransaction) {
+    const rustRequired = this.db.readonly;
+    if (!worker || this.db.inTransaction) {
       if (rustRequired) throw new Error("工作空间资料关联需要通过 Rust 核心执行");
       return this.writeTargetOnHost(mutation);
     }

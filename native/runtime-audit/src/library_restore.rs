@@ -4,7 +4,7 @@ use base64::{
     engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
 };
 use flate2::read::MultiGzDecoder;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -490,8 +490,7 @@ pub fn restore(db: &mut Connection, backup: Backup, request: Restore) -> Result<
     if interrupted {
         recover(db, &request.root, None)?;
     }
-    let write_guard = crate::write_gate::enter()?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let planned = plan(&tx, &backup, &order, &request)?;
     // Reserve exact paths before handing any files to the managed library.
     for destination in &planned.items {
@@ -508,7 +507,6 @@ pub fn restore(db: &mut Connection, backup: Backup, request: Restore) -> Result<
         }
     }
     crate::request_control::commit(tx)?;
-    drop(write_guard);
 
     let applied = verify_history(&backup, &planned)
         .and_then(|()| apply(db, backup, &order, &planned, &request));
@@ -540,8 +538,7 @@ fn apply(
         let entry = &mut backup.items[destination.index];
         prepared.push(prepare_item(entry, &destination.space, request)?);
     }
-    let write_guard = crate::write_gate::enter()?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     if plan(&tx, &backup, order, request)? != *planned {
         return Err("资料位置或内容已变化，请刷新后重试".into());
     }
@@ -576,7 +573,6 @@ fn apply(
         params![request.root.to_str(), &request.operation_id, serde_json::to_string(&receipt)?],
     )?;
     crate::request_control::commit(tx)?;
-    drop(write_guard);
     Ok(receipt)
 }
 
@@ -731,13 +727,13 @@ pub(crate) fn reserve_file(
     space: &str,
     item: &str,
     filename: &str,
-) -> rusqlite::Result<()> {
+) -> duckdb::Result<()> {
     let inserted = db.execute(
         "INSERT INTO library_restore_files(root,operation_id,space_id,item_id,filename) VALUES(?1,?2,?3,?4,?5)",
         params![root, operation, space, item, filename],
     )?;
     if inserted != 1 {
-        return Err(rusqlite::Error::StatementChangedRows(inserted));
+        return Err(duckdb::Error::StatementChangedRows(inserted));
     }
     Ok(())
 }
@@ -861,8 +857,7 @@ pub fn recover(db: &mut Connection, root: &Path, operation: Option<&str>) -> Res
         return Err("恢复清理根目录无效".into());
     }
     let root_key = root.to_str().ok_or("恢复清理路径无效")?;
-    let write_guard = crate::write_gate::enter()?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let jobs = tx
         .prepare(
             "SELECT operation_id,space_id,item_id,filename FROM library_restore_files
@@ -876,7 +871,7 @@ pub fn recover(db: &mut Connection, root: &Path, operation: Option<&str>) -> Res
                 filename: row.get(3)?,
             })
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .collect::<duckdb::Result<Vec<_>>>()?;
     let mut retained = 0;
     for job in jobs {
         match cleanup_file(&tx, root, &job) {
@@ -893,7 +888,6 @@ pub fn recover(db: &mut Connection, root: &Path, operation: Option<&str>) -> Res
         }
     }
     crate::request_control::commit(tx)?;
-    drop(write_guard);
     Ok(retained)
 }
 
@@ -929,9 +923,9 @@ mod tests {
     fn reservation_db(root: &Path) -> Connection {
         let db = Connection::open_in_memory().expect("open memory database");
         db.execute_batch(
-            "CREATE TABLE library_items(id TEXT PRIMARY KEY);
-             CREATE TABLE library_spaces(id TEXT PRIMARY KEY);
-             CREATE TABLE library_restore_files(root TEXT, operation_id TEXT, space_id TEXT, item_id TEXT, filename TEXT);
+            "CREATE TABLE library_items(id VARCHAR PRIMARY KEY);
+             CREATE TABLE library_spaces(id VARCHAR PRIMARY KEY);
+             CREATE TABLE library_restore_files(root VARCHAR, operation_id VARCHAR, space_id VARCHAR, item_id VARCHAR, filename VARCHAR);
              INSERT INTO library_spaces VALUES ('space-1');",
         )
         .expect("create schema");

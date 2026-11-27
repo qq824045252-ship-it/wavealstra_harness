@@ -177,3 +177,30 @@ await fixture(async ({ db, gateway, holdGetMe, track }) => {
   assert.match(gateway.checkWorkTarget({ ...target, senderId: "1" }) ?? "", /允许名单/);
 });
 console.log("PASS superseded connect failure preserves the newer account, encrypted credentials and allowlist");
+
+await fixture(async ({ db, gateway, counters, track }) => {
+  saveConnected(db, "telegram", { botToken: "9001:delayed-read", allowUsers: ["1"] });
+  saveConnected(db, "wechat", mpConfig);
+  const read = db.readGatewayChannels.bind(db);
+  const entered = deferred();
+  const release = deferred();
+  db.readGatewayChannels = async channelId => {
+    const rows = await read(channelId);
+    entered.release();
+    await release.promise;
+    return rows;
+  };
+  const reconnect = track(gateway.runCoreControlCycle("reconnect", "telegram-default"));
+  try {
+    await within(entered.promise, "reconnect configuration read");
+    await gateway.suspend();
+  } finally {
+    release.release();
+    db.readGatewayChannels = read;
+  }
+  assert.equal(await within(reconnect, "reconnect after suspend"), undefined);
+  assert.equal(gateway.status().running, false);
+  assert(gateway.status().channels.every(channel => !channel.connected));
+  assert.equal(counters.mpAuthorizations, 0);
+});
+console.log("PASS a reconnect waiting on channel configuration cannot restart a suspended Gateway");

@@ -61,24 +61,24 @@ async function main(): Promise<void> {
     runningAgent = agent;
 
     // [1] Runtime failure is only corroborating evidence and cannot independently create a revision.
-    let refresh = agent.refreshKernelSkillRevisionCandidates();
+    let refresh = await agent.refreshKernelSkillRevisionCandidates();
     assert.equal(refresh.evaluated, 1);
     assert.equal(agent.kernelSkillRevisionCandidates(undefined, 20).length, 0, "failed outcome alone must not create Revision Candidate");
 
     // [2] Explicit negative feedback without concrete note is reviewable but cannot be approved.
     effectiveness.setFeedback(invocation.id, "needs_revision");
-    refresh = agent.refreshKernelSkillRevisionCandidates();
+    refresh = await agent.refreshKernelSkillRevisionCandidates();
     assert.equal(refresh.created, 1);
     let revisions = agent.kernelSkillRevisionCandidates(undefined, 20);
     const draft = revisions.find((item) => item.skillId === installed.id && item.baseCandidateId === baseCandidateId && item.status === "draft");
     assert.ok(draft, "note-less negative feedback creates draft revision");
     assert.equal(draft!.failedInvocationCount, 1, "failed invocation is retained as corroborating evidence");
     assert.equal(draft!.proposedInstructions, draft!.baseInstructions, "without a concrete note the draft must not invent changes");
-    assert.throws(() => agent.approveKernelSkillRevisionCandidate(draft!.id), /不可批准/);
+    await assert.rejects(agent.approveKernelSkillRevisionCandidate(draft!.id), /不可批准/);
 
     // [3] A concrete correction creates a ready candidate and preserves the full v1 snapshot.
     effectiveness.setFeedback(invocation.id, "needs_revision", "输出前必须校验输入单位，单位不一致时先转换，不能直接计算。");
-    refresh = agent.refreshKernelSkillRevisionCandidates();
+    refresh = await agent.refreshKernelSkillRevisionCandidates();
     revisions = agent.kernelSkillRevisionCandidates(undefined, 20);
     const ready = revisions.find((item) => item.skillId === installed.id && item.baseCandidateId === baseCandidateId && item.status === "ready");
     assert.ok(ready, "explicit feedback note promotes a new revision candidate to ready");
@@ -87,13 +87,13 @@ async function main(): Promise<void> {
     assert.ok(revisions.some((item) => item.id === draft!.id && item.status === "stale"), "older draft is staled when feedback signature changes");
     const stableReadyId = ready!.id;
     effectiveness.setFeedback(invocation.id, "needs_revision", "输出前必须校验输入单位，单位不一致时先转换，不能直接计算。");
-    const sameFeedbackRefresh = agent.refreshKernelSkillRevisionCandidates();
+    const sameFeedbackRefresh = await agent.refreshKernelSkillRevisionCandidates();
     const sameReady = agent.kernelSkillRevisionCandidates(undefined, 20).find((item) => item.id === stableReadyId);
     assert.equal(sameFeedbackRefresh.created, 0, "re-saving identical negative feedback must not churn Revision Candidate ids");
     assert.equal(sameReady?.status, "ready", "same evidence content keeps the same ready candidate");
 
     // [4] Human approval atomically installs v1.0.1 and leaves the replacement disabled.
-    const approved = agent.approveKernelSkillRevisionCandidate(ready!.id);
+    const approved = await agent.approveKernelSkillRevisionCandidate(ready!.id);
     assert.equal(approved.candidate.status, "materialized");
     assert.equal(approved.candidate.materializedVersion, "1.0.1");
     const v2 = skills.getLearnedSkillRevisionSource(installed.id);
@@ -127,8 +127,8 @@ async function main(): Promise<void> {
 
     const skillPath = skills.getLearnedSkillMetadata(installed.id)!.filePath;
     writeFileSync(skillPath, `${readFileSync(skillPath, "utf-8")}\n\n## Manual operator edit\nDo not overwrite me.\n`, "utf-8");
-    assert.throws(
-      () => agent.approveKernelSkillRevisionCandidate(v3Ready!.id),
+    await assert.rejects(
+      agent.approveKernelSkillRevisionCandidate(v3Ready!.id),
       /已发生变化/,
       "manual Skill edits after candidate generation must block approval",
     );
@@ -156,7 +156,7 @@ async function main(): Promise<void> {
     const orphanReady = agent.kernelSkillRevisionCandidates(undefined, 50).find((item) => item.skillId === orphan.id && item.status === "ready");
     assert.ok(orphanReady);
     skills.uninstall(orphan.id);
-    agent.refreshKernelSkillRevisionCandidates();
+    await agent.refreshKernelSkillRevisionCandidates();
     assert.equal(agent.kernelSkillRevisionCandidates(undefined, 50).find((item) => item.id === orphanReady!.id)?.status, "stale", "uninstalling learned Skill stales open revision candidates");
 
     // [8] Crash recovery: file replacement already happened while DB candidate is still ready.
@@ -192,7 +192,7 @@ async function main(): Promise<void> {
       scopeType: "global",
     });
     assert.equal(agent.kernelSkillRevisionCandidates(undefined, 50).find((item) => item.id === crashReady!.id)?.status, "ready");
-    const recovered = agent.approveKernelSkillRevisionCandidate(crashReady!.id);
+    const recovered = await agent.approveKernelSkillRevisionCandidate(crashReady!.id);
     assert.equal(recovered.candidate.status, "materialized", "approval recovers file-swapped/DB-unmarked crash window");
     assert.equal(recovered.candidate.materializedVersion, "1.0.1", "crash recovery must not bump to an accidental second patch version");
     assert.equal(skills.getLearnedSkillRevisionSource(crash.id)?.version, "1.0.1");

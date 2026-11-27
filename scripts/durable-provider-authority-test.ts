@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -8,23 +8,29 @@ import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/opena
 import { streamSimple as streamBedrock } from "@earendil-works/pi-ai/api/bedrock-converse-stream";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { DurableBotRuntime, durableAuthorityRequestOptions, type DurableBotOptions } from "../src/main/agent/durable/DurableBotRuntime";
-import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
+import { setDefaultPiStorageClient } from "../src/main/agent/durable/DurableStorage";
 import { AppDatabase } from "../src/main/db/AppDatabase";
-import { BotRegistry } from "../src/main/agent/work/BotRegistry";
-import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
-import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor } from "../src/shared/bot-work";
+import { MemoryService } from "../src/main/memory/MemoryService";
+import { shutdownCoreWorker } from "../src/main/platform/core-client";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 
 assert.deepEqual(durableAuthorityRequestOptions("openai-codex-responses", true), { maxRetries: 0 });
 assert.deepEqual({ transport: "auto", maxRetries: 7, ...durableAuthorityRequestOptions("openai-codex-responses", false) }, { transport: "auto", maxRetries: 7 });
 assert.deepEqual(durableAuthorityRequestOptions("openai-responses", true), { maxRetries: 0 });
-const root = await mkdtemp(join(tmpdir(), "durable-authority-"));
+const executable = locateRuntimeAudit(process.cwd());
+assert(executable, "Provider admission requires the Core worker");
+const root = await mkdtemp(join(await realpath(tmpdir()), "durable-authority-"));
+const database = join(root, "app.duckdb");
 const previous = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = join(root, "agent");
 await mkdir(process.env.PI_CODING_AGENT_DIR);
 let sends = 0;
+let lastRequestBody = "";
 let failNext: (() => void) | undefined;
 const server = createServer(async (request, response) => {
-  for await (const _ of request) { /* drain local fixture request */ }
+  const body: Buffer[] = [];
+  for await (const part of request) body.push(part);
+  lastRequestBody = Buffer.concat(body).toString("utf8");
   sends++;
   if (request.url?.includes("converse-stream")) {
     response.writeHead(400, { "content-type": "application/json", "x-amzn-errortype": "ValidationException" });
@@ -42,13 +48,13 @@ const server = createServer(async (request, response) => {
   for (const type of ["response.output_item.added", "response.output_item.done"]) response.write(`data: ${JSON.stringify({ type, output_index: 0, item })}\n\n`);
   response.end(`data: ${JSON.stringify({ type: "response.completed", response: { id: `resp_${sends}`, model: "fixture", status: "completed", output: [item], usage: { input_tokens: 3, output_tokens: 2 } } })}\n\n`);
 });
-const db = new AppDatabase(join(root, "business.db"));
-const bots = new BotRegistry(db.connection);
-bots.registerBot({ userId: LOCAL_USER_ID, botId: DEFAULT_BOT_ID, displayName: "fixture", authorization: DESKTOP_USER_GRANTS });
-const works = new WorkService(db.connection, { bots });
-const user: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: DESKTOP_USER_GRANTS };
+let db: AppDatabase | undefined;
 const runtimes: DurableBotRuntime[] = [];
 try {
+  db = await AppDatabase.open(database, { runtimeAuditExecutable: executable, runtimeAuditSupervised: true });
+  const app = db;
+  const reader = app.runtimeAuditReader!;
+  setDefaultPiStorageClient(reader);
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address(); assert(address && typeof address !== "string");
   const models = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: null, modelsStorePath: join(root, "models.json"), allowModelNetwork: false, refreshOnCreate: false });
@@ -63,21 +69,21 @@ try {
   });
   await models.refresh({ allowNetwork: false });
   const usage: Array<{ conversationId: string; generationTaskId: number; reported: boolean; inputTokens: number; outputTokens: number }> = [];
-  const setup = async (id: string, provider = "fixture") => {
-    const created = works.createWork(user, { operationId: id, title: id, inputSnapshotId: id, authorization: DESKTOP_USER_GRANTS, workspacePath: root });
-    assert(created.ok); const workId = created.work.workId;
-    const dispatched = works.dispatchExecution(user, { operationId: `dispatch:${id}`, workId, botId: DEFAULT_BOT_ID, taskId: id, durableStoreKey: id, conversationId: id, workspaceBinding: root });
-    assert(dispatched.ok);
+  const setup = async (id: string, provider = "fixture", duringCheck?: () => Promise<void>) => {
+    await app.writeTaskRecord({ id, title: id, updatedAt: Date.now() });
     let block = false;
     const options: DurableBotOptions = { directory: join(root, id), cwd: root, models, model: { provider, modelId: "fixture" }, toolMode: "native", instructions: () => "isolated authority fixture", onSnapshot: () => {}, executionIdentity: { taskId: id, sourceKind: "main", executionScope: id },
-      providerAuthorityGuarded: () => Boolean(works.repo.bindingForTask(id)),
       initialHistory: { messages: Array.from({ length: 4 }, (_, i) => ({ role: "user" as const, content: `old ${i} ` + "context ".repeat(4000), timestamp: i })), context: [] },
-      beforeProviderRequest: () => { if (block) throw Error("fixture task revoked"); },
+      beforeProviderRequest: async () => {
+        const access = await reader.readWorkTaskAccess(id);
+        await duringCheck?.();
+        if (!access?.taskExists || access.hasWorkBinding || block) throw new Error("fixture task revoked");
+      },
       onProviderUsage: input => { usage.push(input); },
     };
     const runtime = await DurableBotRuntime.open(options);
     runtimes.push(runtime);
-    return { runtime, workId, revoke: () => { block = true; }, reopen: async () => {
+    return { runtime, revoke: () => { block = true; }, reopen: async () => {
       await runtime.close(); runtimes.splice(runtimes.indexOf(runtime), 1);
       const reopened = await DurableBotRuntime.open(options); runtimes.push(reopened); return reopened;
     } };
@@ -124,11 +130,11 @@ try {
   failNext = retried.revoke;
   assert.notEqual((await (await retried.runtime.submit("try once", "503-input")).wait(ctx)).status, "done");
   assert.equal(sends, before503 + 1, "503 must not retry inside the provider after authority is revoked");
-  const bedrock = await setup("bedrock-bound", "fixture-bedrock");
+  const bedrock = await setup("bedrock-checked", "fixture-bedrock");
   const beforeBedrock = sends;
-  assert.notEqual((await (await bedrock.runtime.submit("blocked Work Bedrock", "bedrock-input")).wait(ctx)).status, "done");
+  assert.notEqual((await (await bedrock.runtime.submit("checked Bedrock", "bedrock-input")).wait(ctx)).status, "done");
   await assert.rejects(bedrock.runtime.compact());
-  assert.equal(sends, beforeBedrock + 2, "Work-bound Bedrock generation and compaction reach the local provider without application approval");
+  assert.equal(sends, beforeBedrock + 2, "Bedrock generation and compaction support the same awaited authority check");
   let ordinaryAdmissions = 0;
   const ordinary = await DurableBotRuntime.open({ directory: join(root, "bedrock-ordinary"), cwd: root, models,
     model: { provider: "fixture-bedrock", modelId: "fixture" }, toolMode: "native", instructions: () => "isolated ordinary chat", onSnapshot: () => {},
@@ -139,43 +145,96 @@ try {
   await (await ordinary.submit("ordinary Bedrock remains enabled", "ordinary-input")).wait(ctx);
   assert.equal(ordinaryAdmissions, 1);
   assert.equal(sends, beforeBedrock + 3, "unbound ordinary Bedrock reaches the real native SDK's local HTTP endpoint");
-  // Use the actual service wiring: callbacks exist for both ordinary and Work tasks.
-  const serviceAdmissions = new Map<string, number>();
-  let revokedServiceTask = "";
-  const service = new DurableBotService({ db, models, agentDir: join(root, "service-agent"), mcpDir: join(root, "service-mcp"),
-    resolveCwd: () => root, instructions: () => "isolated service fixture", toolMode: () => "native", defaultModel: () => "fixture/fixture", emit: () => {},
-    providerAuthorityGuarded: taskId => Boolean(works.repo.bindingForTask(taskId)),
-    beforeModelRequest: taskId => {
-      if (taskId === revokedServiceTask) throw Error("fixture service authority revoked");
-      serviceAdmissions.set(taskId, (serviceAdmissions.get(taskId) ?? 0) + 1);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const suspended = await setup("suspended-authority", "fixture", async () => {
+    entered.resolve();
+    await release.promise;
+  });
+  const free = await setup("independent-authority");
+  const beforeSuspended = sends;
+  const pending = (await suspended.runtime.submit("await authority", "suspended")).wait(ctx);
+  try {
+    await entered.promise;
+    assert.equal(sends, beforeSuspended, "the provider must wait for the async authority decision");
+    assert.equal((await (await free.runtime.submit("independent", "free")).wait(ctx)).status, "done");
+    suspended.revoke();
+  } finally {
+    release.resolve();
+  }
+  assert.notEqual((await pending).status, "done");
+  assert.equal(sends, beforeSuspended + 1, "revocation only blocks the task waiting for confirmation");
+
+  const evidenceTask = "suspended-evidence";
+  await app.writeTaskRecord({ id: evidenceTask, title: evidenceTask, updatedAt: Date.now() });
+  const memory = new MemoryService(app, { semantic: false });
+  const marker = "CORE_EVIDENCE_CALIBRATION_L1";
+  await memory.createSettingsMemory({ kind: "constraint", title: "Calibration rule", content: marker,
+    sourceType: "manual", scopeType: "global", explicit: true });
+  const evidenceCheck = Promise.withResolvers<void>();
+  const releaseEvidence = Promise.withResolvers<void>();
+  let checkingPayload = false;
+  let suspendEvidence = false;
+  let startedEvidenceCheck = false;
+  const verifyEvidence = async () => {
+    if (checkingPayload) {
+      startedEvidenceCheck = true;
+      evidenceCheck.resolve();
+      await releaseEvidence.promise;
+    }
+    const task = await app.readTask(evidenceTask);
+    if (!task || task.archived) throw new Error("fixture evidence revoked");
+  };
+  const evidenceRuntime = await DurableBotRuntime.open({ directory: join(root, evidenceTask), cwd: root,
+    models, model: { provider: "fixture", modelId: "fixture" }, toolMode: "native", instructions: () => "isolated evidence fixture",
+    onSnapshot: () => {}, executionIdentity: { taskId: evidenceTask, sourceKind: "main", executionScope: evidenceTask },
+    beforeProviderRequest: () => { checkingPayload = suspendEvidence; },
+    evidenceProjection: {
+      memory, enabled: () => true,
+      scope: async () => ({ taskId: (await app.readTask(evidenceTask))?.id }),
+      supplementalEvidence: async () => [{ id: "local-evidence", kind: "project", revision: "1", text: "Private fixture evidence",
+        access: { kind: "project-note", projectId: "fixture" }, validate: verifyEvidence }],
+      validateEvidenceAccess: verifyEvidence,
     },
   });
+  runtimes.push(evidenceRuntime);
+  const beforeRecall = sends;
+  assert.equal((await (await evidenceRuntime.submit("Which calibration rule applies?", "recall-input")).wait(ctx)).status, "done");
+  assert.equal(sends, beforeRecall + 1);
+  assert(lastRequestBody.includes(marker), "an authorized persisted Core L1 appears in the HTTP payload");
+  console.log("PASS default-enabled ordinary Pi sends a verified, persisted Core L1");
+  suspendEvidence = true;
+  const beforeEvidence = sends;
+  const waitingEvidence = (await evidenceRuntime.submit("check live evidence", "evidence-input")).wait(ctx);
   try {
-    for (const taskId of ["service-ordinary", "service-work", "service-bedrock"]) db.upsertTask({ id: taskId, title: taskId, modelId: taskId === "service-bedrock" ? "fixture-bedrock/fixture" : "fixture/fixture", updatedAt: Date.now() });
-    const bound = works.createWork(user, { operationId: "service-work", title: "service work", inputSnapshotId: "service-work", authorization: DESKTOP_USER_GRANTS, workspacePath: root });
-    assert(bound.ok);
-    assert(works.dispatchExecution(user, { operationId: "service-dispatch", workId: bound.work.workId, botId: DEFAULT_BOT_ID, taskId: "service-work", durableStoreKey: "service-work", conversationId: "service-work", workspaceBinding: root }).ok);
-    const prompt = (taskId: string) => service.prompt({ taskId, text: "local service fixture", userMessageId: `${taskId}-input`, assistantMessageId: `${taskId}-answer` }, false);
-    const beforeOrdinary = sends;
-    failNext = () => {};
-    assert.equal((await prompt("service-ordinary")).receipt?.status, "done");
-    assert.equal(sends, beforeOrdinary + 2, "ordinary service may retry through the lifecycle-checked outer runtime");
-    assert.equal(serviceAdmissions.get("service-ordinary"), 2, "every outer retry rechecks task lifecycle");
-    const beforeWork = sends;
-    failNext = () => { revokedServiceTask = "service-work"; };
-    assert.notEqual((await prompt("service-work")).receipt?.status, "done");
-    assert.equal(sends, beforeWork + 1, "Work service disables internal retry; outer retry rechecks authority");
-    const beforeOrdinaryBedrock = sends;
-    await prompt("service-bedrock");
-    assert.equal(sends, beforeOrdinaryBedrock + 1, "ordinary Bedrock remains enabled through actual service wiring");
-  } finally { await service.close(); }
+    await Promise.race([evidenceCheck.promise, waitingEvidence.then(async outcome => {
+      if (startedEvidenceCheck) return;
+      await evidenceRuntime.conversation.waitForIdle(ctx);
+      const entries = (await evidenceRuntime.conversation.entries({ order: "descending" }, 8, undefined, ctx)).items;
+      const errors = entries.flatMap(entry => (entry.model ?? []).flatMap(message =>
+        message.role === "assistant" && message.errorMessage ? [message.errorMessage] : []));
+      throw new Error(`Provider did not wait for evidence validation (${JSON.stringify(outcome)}) ${errors.join("; ")}`);
+    })]);
+    await app.archiveTaskAsync(evidenceTask, true);
+    assert.equal((await app.readTask(evidenceTask))?.archived, true);
+    assert.equal(sends, beforeEvidence, "provider has not sent while authorization is pending");
+  } finally {
+    releaseEvidence.resolve();
+  }
+  assert.notEqual((await waitingEvidence).status, "done");
+  assert.equal(sends, beforeEvidence, "evidence revoked during provider admission never reaches HTTP");
+  console.log("PASS real Pi provider awaits Core evidence validation after authentication");
   console.log("PASS lifecycle-checked tasks avoid hidden retries and Bedrock is available");
-  console.log("PASS Work-bound and ordinary Bedrock reach the provider without an approval gate");
+  console.log("PASS Bedrock supports both the awaited authority check and ordinary execution");
   console.log("PASS successful compact/reopen/compact keeps two reported receipts and 503 retry cannot bypass revocation");
   console.log("PASS real Pi provider gate: denied/retried/concurrent/revoked/compaction HTTP counts and raw compaction telemetry");
 } finally {
   for (const runtime of runtimes) await runtime.close();
-  db.close(); server.closeAllConnections();
+  setDefaultPiStorageClient(undefined);
+  await db?.runtimeAuditReader?.close();
+  db?.close();
+  await shutdownCoreWorker(root, database);
+  server.closeAllConnections();
   await new Promise<void>(resolve => server.close(() => resolve()));
   if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
   await rm(root, { recursive: true, force: true });

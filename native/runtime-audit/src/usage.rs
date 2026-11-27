@@ -1,5 +1,5 @@
 use crate::{Result, usage_skills};
-use rusqlite::{Connection, params};
+use duckdb::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -124,7 +124,7 @@ struct ObservedUsage {
 }
 
 impl ObservedUsage {
-    fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+    fn read(row: &duckdb::Row<'_>) -> duckdb::Result<Self> {
         // Offsets match the common SELECT projection in scan().
         let tokens: f64 = row.get(5)?;
         let legacy_known = tokens > 0.0;
@@ -186,7 +186,7 @@ struct Row {
 }
 
 impl Row {
-    fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+    fn read(row: &duckdb::Row<'_>) -> duckdb::Result<Self> {
         // The full report appends identity and performance columns to the shared projection.
         Ok(Self {
             usage: ObservedUsage::read(row)?,
@@ -481,7 +481,7 @@ fn scan<T>(
     coverage: bool,
     time: RangeInclusive<i64>,
     details: &str,
-    decode: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    decode: impl Fn(&duckdb::Row<'_>) -> duckdb::Result<T>,
     mut consume: impl FnMut(T) -> Result<()>,
 ) -> Result<()> {
     let (columns, join) = if coverage {
@@ -497,7 +497,7 @@ fn scan<T>(
     };
     let mut query = db.prepare(&format!(
         "SELECT ts,input_tokens,output_tokens,cache_read,cache_write,total_tokens,cost_total,
-            source_kind IN ('main','btw','subagent','auxiliary') AND stop_reason IS NOT 'disposed',
+            source_kind IN ('main','btw','subagent','auxiliary') AND stop_reason IS DISTINCT FROM 'disposed',
             {columns}{details}
          FROM usage_events e {join} WHERE ts>=?1 AND ts<=?2 ORDER BY ts ASC"
     ))?;
@@ -519,7 +519,7 @@ fn scan_details(
         coverage,
         since..=i64::MAX,
         ",e.entry_id,task_id,session_file,provider,model,response_model,user_turn,
-          stop_reason IS 'error' OR COALESCE(error_message,'')<>'',
+          stop_reason IS NOT DISTINCT FROM 'error' OR COALESCE(error_message,'')<>'',
           cache_write_1h,reasoning_tokens,ttft_ms,generation_tps,model_wall_ms",
         Row::read,
         |row| {
@@ -627,7 +627,7 @@ struct CsvRow {
 }
 
 impl CsvRow {
-    fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+    fn read(row: &duckdb::Row<'_>) -> duckdb::Result<Self> {
         Ok(Self {
             usage: ObservedUsage::read(row)?,
             time: row.get(13)?,
@@ -698,8 +698,8 @@ pub fn export_csv(db: &Connection, since: i64, coverage: bool) -> Result<String>
         "ts_utc_iso,source_kind,provider,model,input,output,cache_read,cache_write,reasoning,total_tokens,cost,stop_reason,error,ttft_ms,generation_tps,model_wall_ms",
     );
     scan(db, coverage, since..=i64::MAX,
-        ",strftime('%Y-%m-%dT%H:%M:%fZ',ts/1000.0,'unixepoch'),source_kind,provider,model,reasoning_tokens,
-          stop_reason,stop_reason IS 'error' OR COALESCE(error_message,'')<>'',ttft_ms,generation_tps,model_wall_ms",
+        ",strftime(epoch_ms(CAST(ts AS BIGINT)), '%Y-%m-%dT%H:%M:%S.%gZ'),source_kind,provider,model,reasoning_tokens,
+          stop_reason,stop_reason IS NOT DISTINCT FROM 'error' OR COALESCE(error_message,'')<>'',ttft_ms,generation_tps,model_wall_ms",
         CsvRow::read, |row| {
             row.write(&mut csv);
             if csv.len() > 16 * 1024 * 1024 { return Err("usage CSV exceeds native reply limit".into()); }

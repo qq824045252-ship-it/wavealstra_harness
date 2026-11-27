@@ -141,6 +141,38 @@ async function duplicateEnqueueIsIgnored(): Promise<void> {
   assert.equal(report.delivered.length, 2);
 }
 
+async function asyncAuthorityCheckDoesNotResumeAfterCancellation(): Promise<void> {
+  const paused = Promise.withResolvers<void>();
+  const checked = Promise.withResolvers<void>();
+  const independent = Promise.withResolvers<void>();
+  const ran: string[] = [];
+  const admission = new ResumeAdmission({
+    concurrency: 2,
+    shouldSkip: async taskId => {
+      if (taskId === "unconfirmed") throw new Error("Core unavailable");
+      if (taskId === "held") {
+        checked.resolve();
+        await paused.promise;
+      }
+      return undefined;
+    },
+    run: async taskId => {
+      ran.push(taskId);
+      if (taskId === "independent") independent.resolve();
+    },
+  });
+  admission.enqueue(["held", "unconfirmed", "independent"]);
+  const draining = admission.drain();
+  await checked.promise;
+  await independent.promise;
+  admission.cancel();
+  paused.resolve();
+  const report = await draining;
+  assert.deepEqual(ran, ["independent"]);
+  assert.deepEqual(report.failed, [{ taskId: "unconfirmed", reason: "Core unavailable" }]);
+  assert.deepEqual(report.skipped, [{ taskId: "held", reason: "cancelled" }]);
+}
+
 async function main(): Promise<void> {
   const tests = [
     boundedWidthAndFifoOrder,
@@ -150,6 +182,7 @@ async function main(): Promise<void> {
     shutdownStopsScheduling,
     drainIsSharedAndWidthIsClamped,
     duplicateEnqueueIsIgnored,
+    asyncAuthorityCheckDoesNotResumeAfterCancellation,
   ];
   for (const test of tests) {
     await test();

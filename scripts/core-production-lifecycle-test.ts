@@ -5,6 +5,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentService } from "../src/main/agent/AgentService";
+import { ExecutionAttemptRepository } from "../src/main/agent/ExecutionAttemptRepository";
+import { BotRegistry } from "../src/main/agent/work/BotRegistry";
+import { MemoryService } from "../src/main/memory/MemoryService";
+import { DEFAULT_BOT_ID, LOCAL_USER_ID } from "../src/shared/bot-work";
 import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
 import { ensurePiNodeHostScript } from "../src/main/host/pi-node-host-bundle";
 import { assertExpectedPiVersion } from "../src/main/host/pi-version";
@@ -40,6 +44,9 @@ function startStoryLlmServer() {
   let stallOnSlow = false;
   let slowSeen = false;
   let toolCallReturned = false;
+  const providerRequests: Array<{ lastRole?: string; hasWriteTool: boolean }> = [];
+  let memoryExpectation: { ownRef: string; ownText: string; foreignRef: string } | undefined;
+  let writeRequestMemory: { own: boolean; foreign: boolean } | undefined;
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? "/";
@@ -69,6 +76,7 @@ function startStoryLlmServer() {
       ? (body.tools as Array<{ function?: { name?: string }; name?: string }>).map(t => t.function?.name ?? t.name).filter(Boolean)
       : [];
     const hasWriteTool = toolNames.includes("write");
+    providerRequests.push({ lastRole, hasWriteTool });
 
     res.writeHead(200, {
       "content-type": "text/event-stream",
@@ -110,6 +118,11 @@ function startStoryLlmServer() {
     }
 
     if (lastRole === "user" && !slowMode && hasWriteTool) {
+      if (!toolCallReturned && memoryExpectation) {
+        const modelMessages = JSON.stringify(messages);
+        writeRequestMemory = { own: modelMessages.includes(memoryExpectation.ownRef) && modelMessages.includes(memoryExpectation.ownText),
+          foreign: modelMessages.includes(memoryExpectation.foreignRef) };
+      }
       await new Promise(resolve => setTimeout(resolve, 180));
       toolCallReturned = true;
       writeChunk({
@@ -163,6 +176,9 @@ function startStoryLlmServer() {
     },
     isSlowSeen: () => slowSeen,
     isToolCallReturned: () => toolCallReturned,
+    requestSummary: () => providerRequests,
+    expectMemory: (memory: NonNullable<typeof memoryExpectation>) => { memoryExpectation = memory; },
+    writeRequestMemory: () => writeRequestMemory,
     getEffectCount: () => effectCount,
     async close() {
       await new Promise<void>(resolve => server.close(() => resolve()));
@@ -171,12 +187,12 @@ function startStoryLlmServer() {
 }
 
 async function main(): Promise<void> {
-  const runtimeAuditExecutable = locateRuntimeAudit(process.cwd());
+  const runtimeAuditExecutable = process.env.RUNTIME_AUDIT_BINARY ?? locateRuntimeAudit(process.cwd());
   if (!runtimeAuditExecutable) throw new Error("Native runtime-audit binary missing");
 
   const tempRoot = mkdtempSync(join(tmpdir(), "mybuddy-story-lifecycle-"));
   const dataDir = join(tempRoot, ".mybuddy");
-  const dbPath = join(dataDir, "app.db");
+  const dbPath = join(dataDir, "app.duckdb");
   const storageRoot = join(dataDir, "durable-bots");
   const workspaceDir = join(tempRoot, "workspace");
   const gadgetDir = join(tempRoot, "static-gadget");
@@ -226,13 +242,15 @@ async function main(): Promise<void> {
 
   try {
     // §6 Step 1: Boot real Core supervisor/worker + Pi Node Host, record PIDs, generations, binary SHA-256
-    await initializeCoreDatabase(runtimeAuditExecutable, dataDir, dbPath, CURRENT_DATABASE_SCHEMA_VERSION);
-    db = await AppDatabase.open(dbPath, {
+    db = await AppDatabase.open(undefined, {
       runtimeAuditExecutable,
       runtimeAuditSupervised: true,
       readonly: true,
     });
     assert.equal(db.readonly, true, "Story Step 1: Main AppDatabase strictly readonly");
+    assert.equal(db.databasePath, dbPath);
+    assert.ok(db.coreIdentity?.databaseGeneration, "Story Step 1: Core opened and identified the application database");
+    console.log("PASS Story Step 1: Core opened the application database without a local SQL connection");
 
     const launchRes = await db.runtimeAuditReader!.piHost<{ launched?: boolean; pid?: number; hostGeneration?: string }>({
       action: "launch",
@@ -244,11 +262,18 @@ async function main(): Promise<void> {
       piVersion: versions.actual,
       expectedPiVersion: versions.expected,
       runtimeAuditExecutable,
-      extraEnv: { MYBUDDY_APP_PATH: process.cwd() },
+      extraEnv: { MYBUDDY_APP_PATH: process.cwd(), ...(process.env.MYBUDDY_ADMISSION_TRACE === "1" ? { MYBUDDY_ADMISSION_TRACE: "1" } : {}) },
     });
     assert(launchRes?.launched && launchRes.pid && launchRes.hostGeneration, "Story Step 1: Detached Pi Node Host started");
     const piPid1 = launchRes.pid!;
     const piGen1 = launchRes.hostGeneration!;
+
+    const botRegistry = new BotRegistry(undefined, db.runtimeAuditReader);
+    await until(async () => {
+      const bot = await botRegistry.readBot(DEFAULT_BOT_ID);
+      return bot?.userId === LOCAL_USER_ID && bot.organizationRole === "primary";
+    }, "Pi Host default Bot registration through Core");
+    console.log("PASS Story Step 1: Pi Host registered the local primary Bot through Core");
 
     await until(async () => {
       const st = await db!.runtimeAuditReader!.piHost<{ activeHost?: { status?: string; pid?: number } }>({ action: "status" });
@@ -288,15 +313,30 @@ async function main(): Promise<void> {
       welcomeMode: "general",
       updatedAt: now,
     });
+    const memory = new MemoryService(db, { semantic: false });
+    const memoryTitle = "Aurora Indigo execution marker";
+    const memoryText = "The Aurora Indigo execution marker is bright cerulean.";
+    const ownMemory = await memory.createSettingsMemory({ kind: "fact", title: memoryTitle, content: memoryText,
+      scopeType: "task", scopeId: "task-story-1", sourceType: "user", explicit: true });
+    const foreignMemory = await memory.createSettingsMemory({ kind: "fact", title: memoryTitle,
+      content: "The other task's Aurora Indigo execution marker is dark magenta.", scopeType: "task", scopeId: "task-story-cancel",
+      sourceType: "user", explicit: true });
+    llm.expectMemory({ ownRef: `L1 ${ownMemory.id}@1`, ownText: memoryText, foreignRef: `L1 ${foreignMemory.id}@1` });
 
-    mainAgent = new AgentService(db, undefined, {
+    mainAgent = await AgentService.open(db, undefined, {
       executionMode: "isolated-client",
       coreClient: () => ui?.getClient(),
     });
     ui.addHooks({
       onEvent: ev => mainAgent?.handleCoreExecutionEvent(ev),
     });
+    const attempts = new ExecutionAttemptRepository(undefined, db.runtimeAuditReader);
+    const activeAttempt = await attempts.beginDurableAsync({ taskId: "task-story-1", executionId: "durable:task-story-1:11:42",
+      assistantMessageId: "durable-41", toolCallId: "story-live-ui-reconnect", toolName: "write", target: join(workspaceDir, "active-write.txt") });
     await mainAgent.init();
+    assert.equal((await attempts.findDurableAsync(activeAttempt, activeAttempt.toolCallId))?.status, "running",
+      "Story Step 1: UI attach leaves the running host's attempts active");
+    console.log("PASS Story Step 1: UI attach leaves the running host's attempts active");
 
     // §6 Step 2: Launch Pi Work, Cron, Gateway, Static Gadget, Backend Gadget
     await bgClient.cronScheduler({ action: "start" });
@@ -322,7 +362,7 @@ async function main(): Promise<void> {
       taskId: "task-story-1",
       userMessageId: "story-u-1",
       assistantMessageId: "story-a-1",
-      text: "Produce story artifact",
+      text: "Produce story artifact, using the Aurora Indigo execution marker.",
       modelId: "fixture/model",
     }, { durableAdmissionOnly: true });
     assert(promptReceipt.receipt, "Story Step 2: Pi Work admitted with receipt");
@@ -356,10 +396,12 @@ async function main(): Promise<void> {
     await until(() => existsSync(join(workspaceDir, "story-artifact.txt")), "Pi Node Host completes work while UI closed");
     assert.equal(llm.isToolCallReturned(), true, "Story Step 4: story-artifact.txt must be produced via real Agent write tool call");
     assert.equal(readFileSync(join(workspaceDir, "story-artifact.txt"), "utf8"), "story-step4-offline-output\n");
-    await until(() => {
-      const row = db!.connection.prepare("SELECT id, kind, title FROM artifacts WHERE task_id = 'task-story-1' LIMIT 1").get() as { id: string; kind: string; title: string } | undefined;
-      return Boolean(row?.id);
-    }, "Pi Node Host persisted real artifact row to SQLite while UI closed");
+    assert.deepEqual(llm.writeRequestMemory(), { own: true, foreign: false }, "Story Step 4: the write request carries only the task's own scoped L1 memory");
+    console.log("PASS Story Step 4: fixture model received scoped memory and the write tool produced the expected bytes while UI was closed");
+    await until(async () => {
+      const snapshots = await db!.runtimeAuditReader!.artifactSnapshots(["task-story-1"]);
+      return snapshots?.some(snapshot => snapshot.artifacts.some(artifact => artifact.id)) ?? false;
+    }, "Pi Node Host persisted an artifact in Core while UI closed");
 
     // §6 Step 5: Offline domain activity (notification, note, unknown gateway reconciliation)
     await bgClient.upsertNote({
@@ -521,12 +563,17 @@ async function main(): Promise<void> {
       autostartEnabled: false,
       reason: "explicit_restart_after_stop",
     });
-    const taskCheck = db.getTask("task-story-1");
+    const taskCheck = await db.readTask("task-story-1");
     assert.equal(taskCheck?.title, "Story Main Work", "Story Step 10: Pre-upgrade task & workspace persisted across stop + binary upgrade");
     await uiUpgraded.closeUiSession();
 
     console.log(`PASS Step 10 Story (§6 Steps 1-10): coreSha256=${coreHash.slice(0, 12)}, effectCount=${llm.getEffectCount()}, ctrlMs=${ctrlElapsedMs.toFixed(2)}`);
   } catch (err) {
+    if (process.env.MYBUDDY_ADMISSION_TRACE === "1") {
+      const history = await mainAgent?.loadTaskHistory("task-story-1").catch(() => undefined);
+      console.error("[Story fixtures]", JSON.stringify({ writeReturned: llm.isToolCallReturned(), requests: llm.requestSummary(),
+        memory: llm.writeRequestMemory(), outcome: history?.durable?.outcome, error: history?.durable?.error }));
+    }
     const logPath = join(dataDir, "logs", "pi-node-host.log");
     if (existsSync(logPath)) console.error("--- pi-node-host.log ---\n" + readFileSync(logPath, "utf8"));
     throw err;

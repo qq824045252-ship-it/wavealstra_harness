@@ -1,5 +1,5 @@
 use crate::{Result, sqlite_rows::records};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -79,7 +79,7 @@ fn insert(db: &Connection, run: &Run) -> Result<()> {
 fn identified(db: &Connection, run: &Run) -> Result<bool> {
     Ok(db.query_row(
         "SELECT EXISTS(SELECT 1 FROM cron_runs WHERE id = ?1 AND job_id = ?2 AND started_at = ?3
-        AND finished_at IS ?4 AND status = ?5 AND error IS ?6 AND task_id IS ?7)",
+        AND finished_at IS NOT DISTINCT FROM ?4 AND status = ?5 AND error IS NOT DISTINCT FROM ?6 AND task_id IS NOT DISTINCT FROM ?7)",
         params![
             run.id,
             run.job_id,
@@ -102,7 +102,7 @@ fn existing(db: &Connection, id: &str) -> Result<bool> {
 }
 
 fn active(db: &Connection, sql: &str, ids: &[String]) -> Result<bool> {
-    let mut statement = db.prepare_cached(sql)?;
+    let mut statement = db.prepare(sql)?;
     for id in ids {
         if statement.query_row([id], |_| Ok(())).optional()?.is_none() {
             return Ok(false);
@@ -221,7 +221,7 @@ fn finish(
         };
         db.execute(
             "UPDATE tasks SET title = CASE WHEN ?1 = '' THEN title ELSE ?1 END, status = ?2,
-            updated_at = MAX(updated_at, ?3) WHERE id = ?4",
+            updated_at = GREATEST(updated_at, ?3) WHERE id = ?4",
             params![title, task_status, finished_at, task_id],
         )?;
     }
@@ -229,7 +229,7 @@ fn finish(
 }
 
 pub fn write(db: &mut Connection, mutation: Mutation) -> Result<bool> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let committed = match mutation {
         Mutation::Start {
             run,

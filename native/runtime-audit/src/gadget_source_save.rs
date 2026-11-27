@@ -6,7 +6,7 @@ use crate::{
     },
     library_text::is_link,
 };
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -22,20 +22,25 @@ const PREPARED: &str = "prepared.json";
 pub struct Save {
     root: PathBuf,
     id: String,
+    task_id: Option<String>,
     operation_id: String,
     token: String,
     updated_at: i64,
     files: Vec<InputFile>,
     manifest: Option<String>,
-    update: Option<GadgetMetadata>,
+    update: Option<crate::workbench_write::GadgetPatch>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GadgetMetadata {
-    name: String,
-    description: Option<String>,
-    metadata_json: String,
+impl Save {
+    pub(crate) fn resources(&self) -> Vec<crate::resource_gate::ResourceRequirement> {
+        use crate::workbench_write::{gadget_resources, scope_namespaces, shared_task};
+        let mut plan = gadget_resources(&self.id);
+        if let Some(task_id) = &self.task_id {
+            plan.extend(scope_namespaces());
+            plan.push(shared_task(task_id));
+        }
+        plan
+    }
 }
 
 #[derive(Serialize)]
@@ -44,6 +49,7 @@ pub enum Reply {
     Saved { source: Source },
     ManifestSaved,
     Conflict,
+    ScopeChanged,
     Failed { message: String },
     NeedsHost,
 }
@@ -104,7 +110,12 @@ pub fn save(db: &mut Connection, save: Save) -> Reply {
 
 fn apply_save(db: &mut Connection, save: Save) -> Result<Reply> {
     let gadget = gadget_root(&save.root, &save.id)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
+    if let Some(task_id) = &save.task_id {
+        if !crate::workbench_data::task_can_access_gadget(&tx, &save.id, task_id)? {
+            return Ok(Reply::ScopeChanged);
+        }
+    }
     let committed = committed_operation(&tx, &save.id)?;
     let journal_dir = gadget.join(JOURNAL);
     recover(&gadget, &journal_dir, committed.as_deref())?;
@@ -144,16 +155,11 @@ fn apply_save(db: &mut Connection, save: Save) -> Result<Reply> {
         apply(&gadget, &journal_dir, &journal)?;
         let current = Current::read(&gadget, manifest_only)?;
         let changed = match save.update {
-            Some(update) => crate::workbench_write::update_gadget(
-                &tx,
-                &save.id,
-                &update.name,
-                update.description.as_deref(),
-                &update.metadata_json,
-                save.updated_at,
-            )?,
+            Some(update) => {
+                crate::workbench_write::update_gadget(&tx, &save.id, &update, save.updated_at)?
+            }
             None => tx.execute(
-                "UPDATE gadgets SET updated_at=max(updated_at,?2) WHERE id=?1",
+                "UPDATE gadgets SET updated_at=GREATEST(updated_at, ?2) WHERE id=?1",
                 params![save.id, save.updated_at],
             )?,
         };
@@ -165,19 +171,19 @@ fn apply_save(db: &mut Connection, save: Save) -> Result<Reply> {
              ON CONFLICT(gadget_id) DO UPDATE SET operation_id=excluded.operation_id",
             params![save.id, save.operation_id],
         )?;
-        tx.commit()?;
+        crate::request_control::commit(tx)?;
         Ok(current)
     })();
 
     if let Ok(tree) = attempt {
-        // Once SQLite commits, an interrupted cleanup must still acknowledge the saved edit.
+        // Interrupted journal cleanup still acknowledges the committed edit.
         if let Err(error) = cleanup_saved(db, &gadget, &journal_dir, &save.id) {
             eprintln!("[GadgetSource] journal cleanup deferred: {error}");
         }
         return Ok(tree.saved());
     }
 
-    let recovery = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let recovery = db.transaction()?;
     let committed = committed_operation(&recovery, &save.id)?;
     let cleanup = recover(&gadget, &journal_dir, committed.as_deref());
     if committed.as_deref() == Some(save.operation_id.as_str()) {
@@ -193,7 +199,7 @@ fn apply_save(db: &mut Connection, save: Save) -> Result<Reply> {
 }
 
 fn cleanup_saved(db: &mut Connection, gadget: &Path, journal: &Path, id: &str) -> Result<()> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     recover(gadget, journal, committed_operation(&tx, id)?.as_deref())
 }
 
@@ -390,9 +396,9 @@ mod tests {
         let db_path = root.0.join("app.db");
         let db = Connection::open(&db_path)?;
         db.execute_batch(
-            "CREATE TABLE gadgets (id TEXT PRIMARY KEY);
+            "CREATE TABLE gadgets (id VARCHAR PRIMARY KEY);
              INSERT INTO gadgets VALUES ('gdt-fixture');
-             CREATE TABLE gadget_source_commits (gadget_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL);",
+             CREATE TABLE gadget_source_commits (gadget_id VARCHAR PRIMARY KEY, operation_id VARCHAR NOT NULL);",
         )?;
         drop(db);
 
@@ -413,7 +419,7 @@ mod tests {
             )
             .map_err(|error| format!("prepare fixture: {error}"))?;
             let mut db = Connection::open(&db_path)?;
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             apply(&gadget, &journal_dir, &journal)
                 .map_err(|error| format!("apply fixture: {error}"))?;
             tx.execute(

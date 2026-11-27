@@ -37,9 +37,9 @@ export interface SupplementalEvidence {
   /** Explicit project references are projected in full, independently of the automatic evidence budget. */
   explicitProjectReference?: boolean;
   /** Current access/deletion only; ordinary content changes wait for the next user turn. */
-  validate: () => void;
+  validate: () => void | Promise<void>;
   /** Historical permission check, separate from an optional stricter in-turn freshness check. */
-  validateAccess?: () => void;
+  validateAccess?: () => void | Promise<void>;
   /** Access witness only, never a claim that the original body can be restored. */
   access?: EvidenceAccess;
 }

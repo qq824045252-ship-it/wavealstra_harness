@@ -6,7 +6,7 @@ use crate::business_protocol::{
     current_core_generation, dispatch_waiting_executions, ensure_tables as ensure_protocol_tables,
 };
 use crate::work_scheduler::{now_ms, sha256_hex};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -70,6 +70,7 @@ pub enum Command {
     },
     TrackOutbound {
         delivery_id: String,
+        attempt: i64,
         channel_id: String,
         channel_type: String,
         account_key: Option<String>,
@@ -81,6 +82,7 @@ pub enum Command {
     },
     SettleUnknown {
         delivery_id: String,
+        attempt: i64,
         outcome: String,
         provider_message_id: Option<String>,
         detail: Option<String>,
@@ -97,58 +99,12 @@ impl Command {
     }
 }
 
-pub fn ensure_gateway_scheduler_tables(db: &Connection) -> crate::Result<()> {
-    db.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS core_gateway_config (
-            key TEXT PRIMARY KEY,
-            value_json TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS core_gateway_channels (
-            channel_id TEXT PRIMARY KEY,
-            channel_type TEXT NOT NULL,
-            account_key TEXT,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            paused INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL,
-            generation INTEGER NOT NULL DEFAULT 1,
-            offline_attempts INTEGER NOT NULL DEFAULT 0,
-            next_reconnect_at_ms INTEGER,
-            next_recover_at_ms INTEGER,
-            last_connected_at_ms INTEGER,
-            error_message TEXT,
-            in_flight INTEGER NOT NULL DEFAULT 0,
-            updated_at_ms INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS core_gateway_outbound_reconcile (
-            delivery_id TEXT PRIMARY KEY,
-            channel_id TEXT NOT NULL,
-            channel_type TEXT NOT NULL,
-            account_key TEXT,
-            provider_message_id TEXT,
-            queryable INTEGER NOT NULL DEFAULT 0,
-            state TEXT NOT NULL,
-            last_checked_at_ms INTEGER,
-            check_attempts INTEGER NOT NULL DEFAULT 0,
-            detail TEXT,
-            updated_at_ms INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_core_gw_reconcile_state
-            ON core_gateway_outbound_reconcile(state, queryable, updated_at_ms);
-        ",
-    )?;
+pub fn ensure_gateway_scheduler_tables(_db: &Connection) -> crate::Result<()> {
     Ok(())
 }
 
 fn table_exists(db: &Connection, name: &str) -> crate::Result<bool> {
-    Ok(db
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
-            [name],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
+    crate::database::table_exists(db, name)
 }
 
 fn load_config(db: &Connection) -> crate::Result<RuntimeGatewayConfig> {
@@ -294,8 +250,8 @@ fn tick_tx(
                                OR (o.status = 'pending' AND o.next_attempt_at <= ?2))
                      )",
                     params![channel_id, now],
-                    |r| r.get::<_, i64>(0),
-                )? != 0);
+                    |r| crate::database::row_bool(r, 0),
+                )?);
             if due_recover
                 && dispatch_gateway_cycle(tx, core_gen, client_gen, &channel_id, "recoverOutbox", json!({}), now, events)?
             {
@@ -308,34 +264,32 @@ fn tick_tx(
 
             // Reconcile queryable unknown outbound sends; NEVER retry or touch unknown_unqueryable.
             let mut rstmt = tx.prepare(
-                "SELECT delivery_id, provider_message_id, check_attempts
-                 FROM core_gateway_outbound_reconcile
-                 WHERE channel_id = ?1 AND queryable = 1 AND state = 'pending_reconcile' AND check_attempts < ?2
-                 ORDER BY updated_at_ms ASC LIMIT 16",
+                "SELECT r.delivery_id,r.provider_message_id,o.retry_count,r.account_key
+                 FROM core_gateway_outbound_reconcile r JOIN gateway_outbox o ON o.delivery_id=r.delivery_id AND o.status='unknown'
+                 WHERE r.channel_id=?1 AND r.queryable=1 AND r.state='pending_reconcile' AND r.check_attempts<?2
+                 ORDER BY r.updated_at_ms ASC LIMIT 16",
             )?;
-            let unknowns: Vec<(String, Option<String>, i64)> = rstmt
+            let unknowns: Vec<(String, Option<String>, i64, Option<String>)> = rstmt
                 .query_map(params![channel_id, MAX_RECONCILE_ATTEMPTS], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             drop(rstmt);
-            for (delivery_id, provider_msg_id, _attempts) in unknowns {
-                tx.execute(
-                    "UPDATE core_gateway_outbound_reconcile
-                     SET check_attempts = check_attempts + 1, last_checked_at_ms = ?1, updated_at_ms = ?1
-                     WHERE delivery_id = ?2",
-                    params![now, delivery_id],
-                )?;
+            for (delivery_id, provider_msg_id, attempt, account_key) in unknowns {
                 if dispatch_gateway_cycle(
                     tx,
                     core_gen,
                     client_gen,
                     &channel_id,
                     "reconcileUnknown",
-                    json!({ "deliveryId": delivery_id, "providerMessageId": provider_msg_id }),
+                    json!({ "deliveryId": delivery_id, "providerMessageId": provider_msg_id, "attempt": attempt, "accountKey": account_key }),
                     now,
                     events,
                 )? {
+                    tx.execute(
+                        "UPDATE core_gateway_outbound_reconcile SET check_attempts=check_attempts+1,
+                         last_checked_at_ms=?1,updated_at_ms=?1 WHERE delivery_id=?2", params![now, delivery_id],
+                    )?;
                     dispatched.push(format!("{channel_id}:reconcileUnknown:{delivery_id}"));
                 }
             }
@@ -476,7 +430,7 @@ pub fn execute_write(
     ensure_protocol_tables(db, &core_gen)?;
     ensure_gateway_scheduler_tables(db)?;
 
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let mut events = Vec::new();
     let mut dispatches = Vec::new();
 
@@ -508,16 +462,7 @@ pub fn execute_write(
                 }
             }
             if table_exists(&tx, "gateway_outbox")? && table_exists(&tx, "gateway_inbox")? {
-                tx.execute(
-                    "UPDATE gateway_outbox SET status = 'unknown', updated_at = ?1, last_error = COALESCE(last_error, 'interrupted_before_receipt')
-                     WHERE status = 'sending'",
-                    [now],
-                )?;
-                tx.execute(
-                    "UPDATE gateway_inbox SET status = 'unknown', updated_at = ?1, last_error = COALESCE(last_error, 'interrupted_before_receipt')
-                     WHERE delivery_id IN (SELECT delivery_id FROM gateway_outbox WHERE status = 'unknown') AND status IN ('running', 'reply_pending')",
-                    [now],
-                )?;
+                crate::gateway_delivery_control::recover_interrupted(&tx, &core_gen, now)?;
             }
             let res = tick_tx(&tx, &core_gen, &client.generation, now, &mut events)?;
             dispatch_waiting_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
@@ -561,7 +506,7 @@ pub fn execute_write(
                    enabled = 1,
                    paused = 0,
                    status = 'connected',
-                   generation = MAX(core_gateway_channels.generation + 1, excluded.generation),
+                   generation = GREATEST(core_gateway_channels.generation + 1, excluded.generation),
                    offline_attempts = 0,
                    next_reconnect_at_ms = NULL,
                    last_connected_at_ms = excluded.last_connected_at_ms,
@@ -712,7 +657,7 @@ pub fn execute_write(
                     "INSERT INTO gateway_inbox (
                         delivery_id, platform, channel_id, account_key, session_key, message_id,
                         chat_id, payload_json, payload_hash, status, retry_count, receipt_mode, created_at, updated_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, COALESCE(json_extract(?7, '$.chatId'), ''), ?7, ?8, 'pending', 0, ?9, ?10, ?10)",
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, COALESCE(json_extract_string(?7, '$.chatId'), ''), ?7, ?8, 'pending', 0, ?9, ?10, ?10)",
                     params![
                         delivery_id,
                         platform,
@@ -747,6 +692,7 @@ pub fn execute_write(
         }
         Command::TrackOutbound {
             delivery_id,
+            attempt,
             channel_id,
             channel_type,
             account_key,
@@ -757,6 +703,16 @@ pub fn execute_write(
             now_ms: at,
         } => {
             let now = at.unwrap_or_else(now_ms);
+            let allowed: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM gateway_outbox o JOIN gateway_inbox i USING(delivery_id)
+                    WHERE o.delivery_id=?1 AND o.status='unknown' AND o.retry_count=?2
+                      AND i.channel_id=?3 AND i.platform=?4 AND (?5 IS NULL OR i.account_key=?5))",
+                params![delivery_id, attempt, channel_id, channel_type, account_key], |r| r.get(0),
+            )?;
+            if !allowed || state != "unknown" {
+                return Ok(WriteSideEffects { data: json!({ "status": "rejected", "code": "STALE_OUTBOUND_ATTEMPT" }),
+                    events, dispatches, shutdown_after_reply: false });
+            }
             let mapped_state = if state == "unknown" {
                 if queryable {
                     "pending_reconcile".to_owned()
@@ -772,9 +728,12 @@ pub fn execute_write(
                     queryable, state, last_checked_at_ms, check_attempts, detail, updated_at_ms
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 0, ?8, ?9)
                  ON CONFLICT(delivery_id) DO UPDATE SET
-                   provider_message_id = COALESCE(excluded.provider_message_id, core_gateway_outbound_reconcile.provider_message_id),
+                   provider_message_id = CASE WHEN core_gateway_outbound_reconcile.state IN ('pending_reconcile','unknown_unqueryable')
+                     THEN COALESCE(excluded.provider_message_id,core_gateway_outbound_reconcile.provider_message_id) ELSE excluded.provider_message_id END,
                    queryable = excluded.queryable,
                    state = excluded.state,
+                   check_attempts = CASE WHEN core_gateway_outbound_reconcile.state IN ('pending_reconcile','unknown_unqueryable')
+                     THEN core_gateway_outbound_reconcile.check_attempts ELSE 0 END,
                    detail = COALESCE(excluded.detail, core_gateway_outbound_reconcile.detail),
                    updated_at_ms = excluded.updated_at_ms",
                 params![
@@ -789,18 +748,6 @@ pub fn execute_write(
                     now,
                 ],
             )?;
-            if state == "unknown" && table_exists(&tx, "gateway_outbox")? {
-                tx.execute(
-                    "UPDATE gateway_outbox SET status = 'unknown', last_error = COALESCE(?1, last_error), updated_at = ?2
-                     WHERE delivery_id = ?3",
-                    params![detail, now, delivery_id],
-                )?;
-                tx.execute(
-                    "UPDATE gateway_inbox SET status = 'unknown', last_error = COALESCE(?1, last_error), updated_at = ?2
-                     WHERE delivery_id = ?3",
-                    params![detail, now, delivery_id],
-                )?;
-            }
             events.push(append_event(
                 &tx,
                 &core_gen,
@@ -816,19 +763,22 @@ pub fn execute_write(
         }
         Command::SettleUnknown {
             delivery_id,
+            attempt,
             outcome,
             provider_message_id,
             detail,
             now_ms: at,
         } => {
             let now = at.unwrap_or_else(now_ms);
-            let current_rec: Option<(i64, String)> = tx
-                .query_row(
-                    "SELECT queryable, state FROM core_gateway_outbound_reconcile WHERE delivery_id = ?1",
-                    [&delivery_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?;
+            let current: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM core_gateway_outbound_reconcile r JOIN gateway_outbox o USING(delivery_id)
+                    WHERE r.delivery_id=?1 AND r.queryable=1 AND r.state='pending_reconcile'
+                      AND o.status='unknown' AND o.retry_count=?2)", params![delivery_id, attempt], |r| r.get(0),
+            )?;
+            if !current {
+                return Ok(WriteSideEffects { data: json!({ "status": "rejected", "code": "STALE_OUTBOUND_ATTEMPT" }),
+                    events, dispatches, shutdown_after_reply: false });
+            }
             let mut next_state = outcome.clone();
             match outcome.as_str() {
                 "confirmed_sent" => {
@@ -844,28 +794,18 @@ pub fn execute_write(
                     }
                 }
                 "confirmed_not_sent" => {
-                    // Only queryable proof of non-delivery may safely requeue once.
-                    if current_rec.as_ref().is_some_and(|(q, _)| *q != 0)
-                        && table_exists(&tx, "gateway_outbox")?
-                    {
-                        tx.execute(
-                            "UPDATE gateway_outbox SET status = 'pending', next_attempt_at = ?1, last_error = ?2, updated_at = ?1 WHERE delivery_id = ?3",
-                            params![now, detail, delivery_id],
-                        )?;
-                        tx.execute(
-                            "UPDATE gateway_inbox SET status = 'reply_pending', updated_at = ?1 WHERE delivery_id = ?2",
-                            params![now, delivery_id],
-                        )?;
-                    } else {
-                        next_state = "unknown_unqueryable".to_owned();
-                    }
+                    tx.execute(
+                        "UPDATE gateway_outbox SET status = 'pending', next_attempt_at = ?1, last_error = ?2, updated_at = ?1 WHERE delivery_id = ?3",
+                        params![now, detail, delivery_id],
+                    )?;
+                    tx.execute(
+                        "UPDATE gateway_inbox SET status = 'reply_pending', updated_at = ?1 WHERE delivery_id = ?2",
+                        params![now, delivery_id],
+                    )?;
                 }
+                "unqueryable" => next_state = "unknown_unqueryable".to_owned(),
                 _ => {
-                    next_state = if current_rec.as_ref().is_some_and(|(q, _)| *q == 0) {
-                        "unknown_unqueryable".to_owned()
-                    } else {
-                        "pending_reconcile".to_owned()
-                    };
+                    next_state = "pending_reconcile".to_owned();
                 }
             }
             tx.execute(
@@ -898,6 +838,7 @@ pub fn execute_write(
     };
 
     crate::request_control::commit(tx)?;
+    crate::work_scheduler::apply_committed_promotion_dispatches(tracker, &dispatches);
     Ok(WriteSideEffects {
         data,
         events,
@@ -930,11 +871,11 @@ pub fn run_supervised_tick(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db_schema::CANONICAL_SCHEMA_SQL;
+    use crate::database::CANONICAL_DUCKDB_SCHEMA_SQL;
 
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().expect("open memory db");
-        conn.execute_batch(CANONICAL_SCHEMA_SQL).expect("schema");
+        conn.execute_batch(CANONICAL_DUCKDB_SCHEMA_SQL).expect("schema");
         let core_gen = current_core_generation();
         ensure_protocol_tables(&conn, &core_gen).expect("protocol tables");
         ensure_gateway_scheduler_tables(&conn).expect("gateway tables");
@@ -1023,6 +964,15 @@ mod tests {
         )
         .unwrap();
 
+        for delivery in ["del-1", "del-unq"] {
+            let result = crate::gateway_delivery_control::run(&mut conn, delivery, "reply-unknown",
+                crate::gateway_delivery_control::Action::FinishReply {
+                    attempt: 1, outcome: crate::gateway_delivery_control::ReplyOutcome::Unknown,
+                    reason: Some("receipt_lost".into()), next_attempt_at: None,
+                }).unwrap();
+            assert_eq!(result["status"], "applied");
+        }
+
         execute_write(
             &mut conn,
             &tracker,
@@ -1043,7 +993,7 @@ mod tests {
             Command::ChannelConnected {
                 channel_id: "wecom-default".into(),
                 channel_type: "wecom".into(),
-                account_key: Some(acct),
+                account_key: Some(acct.clone()),
                 generation: Some(1),
                 now_ms: Some(t0 + 1000),
             },
@@ -1056,9 +1006,10 @@ mod tests {
             &ctx,
             Command::TrackOutbound {
                 delivery_id: "del-1".into(),
+                attempt: 1,
                 channel_id: "slack-default".into(),
                 channel_type: "slack".into(),
-                account_key: None,
+                account_key: Some(acct.clone()),
                 provider_message_id: Some("ts-1".into()),
                 queryable: true,
                 state: "unknown".into(),
@@ -1075,9 +1026,10 @@ mod tests {
             &ctx,
             Command::TrackOutbound {
                 delivery_id: "del-unq".into(),
+                attempt: 1,
                 channel_id: "wecom-default".into(),
                 channel_type: "wecom".into(),
-                account_key: None,
+                account_key: Some(acct.clone()),
                 provider_message_id: None,
                 queryable: false,
                 state: "unknown".into(),
@@ -1092,6 +1044,11 @@ mod tests {
         let dispatches = t_res.data["dispatched"].as_array().unwrap();
         assert!(dispatches.iter().any(|v| v == "slack-default:reconcileUnknown:del-1"));
         assert!(!dispatches.iter().any(|v| v.as_str().unwrap().contains("del-unq")));
+        let query: String = conn.query_row("SELECT payload_json FROM core_execution_runs
+            WHERE json_extract_string(payload_json,'$.extra.deliveryId')='del-1'", [], |r| r.get(0)).unwrap();
+        let query: Value = serde_json::from_str(&query).unwrap();
+        assert_eq!(query["extra"]["attempt"], 1);
+        assert_eq!(query["extra"]["accountKey"], acct);
 
         // Settle queryable delivery as confirmed_sent without blind re-send
         execute_write(
@@ -1100,6 +1057,7 @@ mod tests {
             &ctx,
             Command::SettleUnknown {
                 delivery_id: "del-1".into(),
+                attempt: 1,
                 outcome: "confirmed_sent".into(),
                 provider_message_id: Some("ts-1".into()),
                 detail: Some("found_via_conversations_history".into()),

@@ -1,5 +1,5 @@
 use crate::{Result, javascript_whitespace};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -40,7 +40,7 @@ pub enum Capture {
     },
 }
 
-fn capture_turn(db: &Connection, turn: Turn) -> rusqlite::Result<bool> {
+fn capture_turn(db: &Connection, turn: Turn) -> duckdb::Result<bool> {
     let user = turn.user_text.trim_matches(javascript_whitespace);
     let assistant = turn.assistant_text.trim_matches(javascript_whitespace);
     let mut hash = Sha256::new();
@@ -83,7 +83,7 @@ fn capture_turn(db: &Connection, turn: Turn) -> rusqlite::Result<bool> {
 }
 
 pub fn run(db: &mut Connection, capture: Capture) -> Result<usize> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let saved = match capture {
         Capture::Turn { turn } => usize::from(capture_turn(&tx, turn)?),
         Capture::Durable { task_id, entries } => {

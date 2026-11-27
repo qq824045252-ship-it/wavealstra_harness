@@ -37,9 +37,11 @@ import { MemoryService } from "../memory/MemoryService";
 import { NotificationService } from "../notification/NotificationService";
 import { getMyBuddyBinDir, getMyBuddyDir } from "../paths";
 import type { CoreBusinessClient, CoreExecutionDispatch } from "../platform/core-business-client";
+import type { RuntimeDotsRecoveryGuard } from "../platform/runtime-audit";
 import { ProjectAttentionTracker } from "../project/ProjectAttention";
 import { ProjectRepository } from "../project/ProjectRepository";
 import { ProjectService } from "../project/ProjectService";
+import { PythonProjectBindingStore } from "../runtime/PythonProjectBindingStore";
 import { TaskBoardRepository } from "../task/TaskBoardRepository";
 import { TaskExecutionWorkspace } from "../task/TaskExecutionWorkspace";
 import { TaskExecutionWorkspaceLifecycle } from "../task/TaskExecutionWorkspaceLifecycle";
@@ -54,6 +56,7 @@ import {
 import { buildHostCapabilities, type HostCapabilityFlags } from "./HostCapabilities";
 import { PlatformRpcClient } from "./PlatformRpcClient";
 import { assertExpectedPiVersion } from "./pi-version";
+import { setDefaultPiHostGeneration } from "../agent/durable/DurableStorage";
 
 export interface PiNodeHostOptions {
   hostId?: string;
@@ -111,6 +114,8 @@ export class PiNodeHost {
   private notificationService?: NotificationService;
   private platformRpc?: PlatformRpcClient;
   private bridge?: ExecutionHostBridge;
+  private dotsRecoveryCursor = 0;
+  private dotsReplyCursor?: string;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private offPatch?: () => void;
   private offReconnect?: () => void;
@@ -190,6 +195,7 @@ export class PiNodeHost {
   }> {
     if (this.closed) throw new Error("PiNodeHost has been closed");
     const { expected, actual } = assertExpectedPiVersion(this.options.repoRoot);
+    setDefaultPiHostGeneration(this.hostGeneration);
 
     this.db = await AppDatabase.open(this.options.dbPath, {
       runtimeAuditExecutable: this.options.runtimeAuditExecutable,
@@ -200,22 +206,24 @@ export class PiNodeHost {
     const platformRpc = new PlatformRpcClient(() => this.bridge?.connection);
     this.platformRpc = platformRpc;
 
-    const agent = new AgentService(this.db, this.options.taskWorkspace, {
+    const agent = await AgentService.open(this.db, this.options.taskWorkspace, {
       models: this.options.models,
       executionMode: "host",
     });
     this.agentService = agent;
+    if (this.db.runtimeAuditReader) agent.pythonRuntime.setProjectBindingStore(new PythonProjectBindingStore(this.db.runtimeAuditReader));
     agent.setPlatformRpcClient(platformRpc);
     agent.setAuthEventForwarder((kind, data) => {
       this.pushProgressToTask("__models__", { kind, data });
     });
 
-    const notifications = new NotificationService(this.db);
+    if (!this.db.runtimeAuditReader) throw new Error("通知服务需要 Rust Core");
+    const notifications = new NotificationService({ core: this.db.runtimeAuditReader });
     this.notificationService = notifications;
 
     // 1. Artifact Domain (isolated under dataDirectory/artifacts; writes route through Rust runtimeAuditReader)
     const artifactDomain = createArtifactDomain(
-      this.db.connection,
+      this.db.fixtureConnection,
       undefined,
       this.db.runtimeAuditReader,
       join(this.dataDirectory, "artifacts"),
@@ -224,7 +232,7 @@ export class PiNodeHost {
     agent.setArtifactDomain(artifactDomain.service, artifactDomain.coordinator);
 
     // 2. Gadget Domain (shared Core runtimeAuditReader + storage in dataDirectory/gadgets)
-    const gadgetRepository = new GadgetRepository(this.db.connection, this.db.runtimeAuditReader);
+    const gadgetRepository = new GadgetRepository({ core: this.db.runtimeAuditReader });
     const gadgetStorage = new GadgetStorage(join(this.dataDirectory, "gadgets"), this.db.runtimeAuditReader);
     const gadgetRegistry = new GadgetRegistry();
     const gadgetRuntime = new GadgetRuntime(
@@ -248,7 +256,7 @@ export class PiNodeHost {
       workspaceAncestors: id => this.db?.getSpaceAncestors(id).filter(s => !s.effectiveArchived).map(s => s.id) ?? [],
       artifacts: {
         read: async artifactId => {
-          const descriptor = artifactDomain.service.get(artifactId);
+          const descriptor = await artifactDomain.service.readDescriptor(artifactId);
           const content = await artifactDomain.service.readContent(artifactId);
           if (!descriptor || !content) return null;
           return {
@@ -329,9 +337,9 @@ export class PiNodeHost {
     });
 
     // 4. Dots runtime & Core-controlled monitors (zero local polling timers)
-    const taskBoard = new TaskBoardRepository(this.db.connection, this.db.runtimeAuditReader);
+    const taskBoard = new TaskBoardRepository({ core: this.db.runtimeAuditReader });
     const dotsDelegations = new DotsDelegations(
-      this.db.connection,
+      this.db.fixtureConnection,
       (id, operation) => agent.dotsSubmission(id, operation),
       () => undefined,
       () => resolveDotsPreferences(agent.getAppSettings().dotsSettings).summaryIntervalSeconds * 1_000,
@@ -350,7 +358,7 @@ export class PiNodeHost {
         changed: () => { dotsDelegations.refresh(); },
         failed: (...args) => dotsDelegations.failed(...args),
         preferences: () => resolveDotsPreferences(agent.getAppSettings().dotsSettings),
-        fileNotice: event => notifications.post({
+        fileNotice: event => notifications.publishPersisted({
           type: "reminder.due",
           level: "info",
           title: "Dots 文件订阅",
@@ -385,16 +393,16 @@ export class PiNodeHost {
     );
     this.dotsActions = dotsActions;
     const dotsReporting = new DotsReporting(
-      this.db.connection,
+      this.db.fixtureConnection,
       () => agent.isTaskBusy(DOTS_TASK_ID),
       (prompt, signal, onText) => agent.generateDotsReport(prompt, signal, onText),
-      (reply, current) => agent.appendDotsReply(reply, current),
+      (reply, current, eventKey) => agent.appendDotsReply(reply, current, eventKey),
       () => undefined,
       this.db.runtimeAuditReader,
     );
     this.dotsReporting = dotsReporting;
     agent.setDotsForeground(() => dotsReporting.beginForeground());
-    dotsDelegations.connect(
+    if (this.db.fixtureConnection) dotsDelegations.connect(
       (job, request) => dotsActions.followup(job, request),
       (reply, current) => dotsReporting.append(reply, current),
       taskId => dotsActions.allowsResult(taskId),
@@ -403,7 +411,7 @@ export class PiNodeHost {
     agent.setDotsActions(dotsActions);
 
     const dotsProactive = new DotsProactiveDelivery(
-      this.db.connection,
+      this.db.fixtureConnection,
       () => agent.getAppSettings().dotsSettings?.followupMode === "paused",
       (key, text, current) => agent.appendDotsProactive(key, text, current),
       this.db.runtimeAuditReader,
@@ -506,15 +514,56 @@ export class PiNodeHost {
       google: new DotsGoogleReads(dotsGoogleAccounts, () => normalizeDotsGoogleRules(agent.getAppSettings().dotsSettings?.google)),
     });
 
+    // Phase 1: enter bootstrapping readiness (blocks new dispatches while recovering) & start heartbeat.
+    const bootstrapReply = await this.db.runtimeAuditReader?.piHost<{
+      accepted?: boolean;
+      fenced?: boolean;
+      reason?: string;
+    }>({
+      action: "bootstrap",
+      hostId: this.hostId,
+      pid: process.pid,
+      hostGeneration: this.hostGeneration,
+      storageRoot: this.storageRoot,
+      dbPath: this.options.dbPath,
+      piVersion: actual,
+      expectedPiVersion: expected,
+    });
+    if ((this.db.coreIdentity || bootstrapReply) && (!bootstrapReply?.accepted || bootstrapReply.fenced)) {
+      throw new Error(`PiNodeHost bootstrap rejected: ${bootstrapReply?.reason ?? "missing or fenced receipt"}`);
+    }
+
+    const heartbeatMs = Math.max(500, this.options.heartbeatIntervalMs ?? 5_000);
+    this.heartbeatTimer = setInterval(() => {
+      const bridgeClient = this.bridge?.connection;
+      const client = bridgeClient && !bridgeClient.isClosed ? bridgeClient : this.db?.runtimeAuditReader;
+      if (this.closed || !client) return;
+      void client.piHost<{ accepted?: boolean; fenced?: boolean }>({
+        action: "heartbeat",
+        hostId: this.hostId,
+        pid: process.pid,
+        hostGeneration: this.hostGeneration,
+      }).then(reply => {
+        if (reply && (!reply.accepted || reply.fenced)) {
+          console.warn("[PiNodeHost] Generation fenced or lost ownership; shutting down host", this.hostGeneration);
+          void this.close().catch(() => undefined);
+        }
+      }).catch(() => undefined);
+    }, heartbeatMs);
+    this.heartbeatTimer.unref?.();
+
+    // Phase 2: controlled recovery under bootstrapping fence before admitting new work.
     await agent.init();
-    await agent.resumePersistedTasks();
+    const recoveredTaskIds = await agent.resumePersistedTasks();
+    await dotsProactive.restoreNotifications(key => dotsDiscovery.retainedLinks(key));
+    dotsProactive.start();
 
     // 5. Background maintenance services owned strictly under Core's maintenance_control dispatches.
     const libraryService = new LibraryService(this.db, {
       libraryRoot: this.options.libraryRoot ?? join(this.dataDirectory, "library"),
     });
     this.libraryService = libraryService;
-    const projectRepository = new ProjectRepository(this.db.connection, this.db.runtimeAuditReader);
+    const projectRepository = new ProjectRepository(this.db.fixtureConnection, this.db.runtimeAuditReader);
     const memoryKernel = new MemoryService(this.db);
     const projectService = new ProjectService(projectRepository, memoryKernel);
     this.projectService = projectService;
@@ -538,6 +587,7 @@ export class PiNodeHost {
     });
 
     this.offPatch = agent.onPatch((patch: AgentUiPatch) => {
+      dotsDelegations.onPatch(patch);
       if ("taskId" in patch && typeof patch.taskId === "string") {
         const ephemeral = patch.type === "text_delta" || patch.type === "thinking_delta";
         this.pushProgressToTask(patch.taskId, { kind: "ui_patch", patch }, ephemeral ? { ephemeral: true } : undefined);
@@ -549,6 +599,12 @@ export class PiNodeHost {
 
     const runDotsControlCycle = async (cycleKey: string): Promise<void> => {
       switch (cycleKey) {
+        case "delegation_delivery":
+          await this.deliverDotsReplies(agent, dotsReporting);
+          return;
+        case "delegation_recover":
+          await this.recoverDotsDelegations(agent);
+          return;
         case "google":
           await dotsGoogleMonitor.runCycle();
           return;
@@ -556,12 +612,13 @@ export class PiNodeHost {
           await dotsDiscovery.runCycle();
           return;
         case "proactive":
-          dotsProactive.refresh();
+        case "proactive_delivery":
+          await dotsProactive.refresh();
           await dotsProactive.flushWrites();
           return;
         case "file_watch":
         case "watches":
-          dotsDelegations.refresh();
+          await dotsActions.runCoreFileWatchCycle();
           return;
         default:
           throw new Error(`Unsupported Dots control cycle: ${cycleKey}`);
@@ -627,7 +684,11 @@ export class PiNodeHost {
     );
     this.bridge = bridge;
 
-    const registerWithCore = async (client: CoreBusinessClient, closeOnFence: boolean): Promise<boolean> => {
+    const registerWithCore = async (
+      client: CoreBusinessClient,
+      closeOnFence: boolean,
+      recovered: string[],
+    ): Promise<boolean> => {
       platformRpc.attach(client);
       const registration = await client.piHost<{
         accepted?: boolean;
@@ -643,6 +704,8 @@ export class PiNodeHost {
         piVersion: actual,
         expectedPiVersion: expected,
         capabilities: this.declaredCapabilities,
+        recoveredTaskIds: recovered,
+        requireManifest: true,
       });
       if (!registration?.accepted || registration.fenced) {
         if (closeOnFence) {
@@ -657,34 +720,16 @@ export class PiNodeHost {
 
     this.offReconnect = bridge.onReconnected(async reconnectedClient => {
       if (this.closed) return;
-      await registerWithCore(reconnectedClient, true);
+      await registerWithCore(reconnectedClient, true, []);
     });
 
     const initialClient = await bridge.connect();
     try {
-      await registerWithCore(initialClient, false);
+      await registerWithCore(initialClient, false, recoveredTaskIds);
     } catch (error) {
       await this.close().catch(() => undefined);
       throw error;
     }
-
-    const heartbeatMs = Math.max(500, this.options.heartbeatIntervalMs ?? 5_000);
-    this.heartbeatTimer = setInterval(() => {
-      const activeClient = this.bridge?.connection;
-      if (this.closed || !activeClient || activeClient.isClosed) return;
-      void activeClient.piHost<{ accepted?: boolean; fenced?: boolean }>({
-        action: "heartbeat",
-        hostId: this.hostId,
-        pid: process.pid,
-        hostGeneration: this.hostGeneration,
-      }).then(reply => {
-        if (reply && (!reply.accepted || reply.fenced)) {
-          console.warn("[PiNodeHost] Generation fenced or lost ownership; shutting down host", this.hostGeneration);
-          void this.close().catch(() => undefined);
-        }
-      }).catch(() => undefined);
-    }, heartbeatMs);
-    this.heartbeatTimer.unref?.();
 
     return {
       hostId: this.hostId,
@@ -695,27 +740,80 @@ export class PiNodeHost {
     };
   }
 
+  private async recoverDotsDelegations(agent: AgentService): Promise<void> {
+    const core = this.db?.runtimeAuditReader;
+    const client = this.bridge?.connection;
+    if (!core || !client) throw new Error("Core Dots 委派恢复通道未就绪");
+    const page = await core.readDotsRecoveryPage(this.dotsRecoveryCursor);
+    if (!page || !Array.isArray(page.rows)) throw new Error("Core 未确认 Dots 待恢复委派");
+    if (page.nextAfterSeq !== null && (!Number.isSafeInteger(page.nextAfterSeq) || page.nextAfterSeq <= this.dotsRecoveryCursor)) {
+      throw new Error("Core 的 Dots 恢复分页位置无效");
+    }
+    for (const candidate of page.rows) {
+      if (this.closed || this.bridge?.connection !== client) return;
+      const preferences = resolveDotsPreferences(agent.getAppSettings().dotsSettings);
+      const reply = await client.submitExecution({ executionId: `pi:${candidate.taskId}:${candidate.operationId}`,
+        idempotencyKey: candidate.operationId, taskId: candidate.taskId, kind: "pi_turn",
+        dotsRecovery: { sequence: candidate.sequence, spaceIds: preferences.spaceIds,
+          allowAutomatic: preferences.followupMode === "continue" },
+      });
+      if (reply.code === "OVERLOADED") return;
+      if (reply.status !== "ok" && reply.code !== "DOTS_RECOVERY_NOT_CURRENT") {
+        console.warn("[Dots] Core 拒绝恢复委派", candidate.operationId, reply.code);
+      }
+    }
+    this.dotsRecoveryCursor = page.nextAfterSeq ?? 0;
+  }
+
+  private async deliverDotsReplies(agent: AgentService, reporting: DotsReporting): Promise<void> {
+    const db = this.db, core = db?.runtimeAuditReader;
+    if (!db || !core) throw new Error("Core Dots 回传未就绪");
+    const page = await core.readDotsPendingReplies(this.dotsReplyCursor);
+    if (!page) throw new Error("Core 未确认 Dots 待回传结果");
+    for (const { eventKey, taskId } of page.rows) {
+      if (this.closed) return;
+      const state = await core.inspectDotsReply(eventKey);
+      if (state?.status !== "prepared") continue;
+      const reply = state.reply;
+      const task = await db.readTask(taskId, { includeExpertBinding: false });
+      if (!task) continue;
+      const current = () => {
+        const prefs = resolveDotsPreferences(agent.getAppSettings().dotsSettings);
+        return !this.closed && (prefs.spaceIds === null || Boolean(task.spaceId && prefs.spaceIds.includes(task.spaceId)))
+          && (reply.kind !== "progress" || prefs.followupMode !== "paused");
+      };
+      if (!current()) continue;
+      try { await reporting.append(reply, current, eventKey); }
+      catch (error) { console.warn("[Dots] 已保存回传等待重试", eventKey, error); }
+    }
+    this.dotsReplyCursor = page.nextKey ?? undefined;
+  }
+
   private async runPiTurnDispatch(
     agent: AgentService,
     dispatch: CoreExecutionDispatch,
     helpers: ActiveProgressReporter,
   ): Promise<{ status: "completed" | "failed" | "cancelled" | "paused" | "unknown"; result?: unknown; errorMessage?: string }> {
-    const payload = dispatch.execution.payload as Partial<AgentPromptRequest> & {
+    const { dotsRecovery, ...payload } = dispatch.execution.payload as Partial<AgentPromptRequest> & {
       prompt?: string;
       durableAdmissionOnly?: boolean;
       waitForSettled?: boolean;
+      dotsRecovery?: RuntimeDotsRecoveryGuard;
     };
     const req: AgentPromptRequest = {
+      ...payload,
       taskId: dispatch.execution.taskId,
       userMessageId: payload.userMessageId ?? dispatch.execution.idempotencyKey,
       assistantMessageId: payload.assistantMessageId ?? `asst-${dispatch.execution.idempotencyKey}`,
       text: typeof payload.text === "string"
         ? payload.text
         : (typeof payload.prompt === "string" ? payload.prompt : ""),
-      ...payload,
     } as AgentPromptRequest;
 
-    const existing = await agent.findSubmission(req.taskId, req.userMessageId).catch(() => undefined);
+    const deferred = { status: "paused" as const, result: { dotsRecoveryDeferred: true } };
+    let existing: Awaited<ReturnType<AgentService["findSubmission"]>>;
+    try { existing = await agent.findSubmission(req.taskId, req.userMessageId); }
+    catch { if (dotsRecovery) return deferred; }
     if (existing?.receipt) {
       await helpers.reportProgress({ kind: "submission_receipt", result: existing }).catch(() => undefined);
       if (existing.receipt.status === "done") return { status: "completed", result: existing };
@@ -725,7 +823,18 @@ export class PiNodeHost {
       return this.settledResult(settled);
     }
 
-    const accepted = await agent.prompt(req, { durableAdmissionOnly: payload.durableAdmissionOnly ?? true });
+    if (dotsRecovery) {
+      const core = this.db?.runtimeAuditReader;
+      const preferences = resolveDotsPreferences(agent.getAppSettings().dotsSettings);
+      try {
+        const current = await core?.dotsRecoveryCurrent(req.taskId, req.userMessageId,
+          { sequence: dotsRecovery.sequence, spaceIds: preferences.spaceIds, allowAutomatic: preferences.followupMode === "continue" });
+        if (!current || this.closed) return deferred;
+      } catch { return deferred; }
+    }
+
+    const accepted = await agent.prompt(req, { durableAdmissionOnly: payload.durableAdmissionOnly ?? true,
+      foregroundUser: dispatch.execution.sourceRole === "ui" && !dotsRecovery });
     await helpers.reportProgress({ kind: "submission_receipt", result: accepted }).catch(() => undefined);
     if (accepted.cancelled) return { status: "cancelled", result: accepted };
     if (accepted.error) return { status: "failed", result: accepted, errorMessage: accepted.error.message };
@@ -917,6 +1026,7 @@ export class PiNodeHost {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    setDefaultPiHostGeneration(undefined);
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;

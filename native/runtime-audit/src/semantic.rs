@@ -1,5 +1,5 @@
 use crate::{Result, SqlScope};
-use rusqlite::{Connection, params_from_iter, types::Value as Param};
+use duckdb::{Connection, params_from_iter, types::Value as Param};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -73,8 +73,8 @@ pub fn search(db: &Connection, request: Search) -> Result<Vec<Hit>> {
     let mut parameters = vec![
         Param::Text(request.model_id),
         Param::Text(request.model_version),
-        Param::Integer(request.dimension as i64),
-        Param::Integer((request.dimension * 4) as i64),
+        Param::BigInt(request.dimension as i64),
+        Param::BigInt((request.dimension * 4) as i64),
     ];
     parameters.extend(request.scope.parameters());
     let mut statement = db.prepare(&sql)?;
@@ -88,7 +88,7 @@ pub fn search(db: &Connection, request: Search) -> Result<Vec<Hit>> {
         if !value.is_finite() || value < request.threshold {
             continue;
         }
-        let hit = || -> rusqlite::Result<Hit> {
+        let hit = || -> duckdb::Result<Hit> {
             Ok(Hit {
                 id: row.get(0)?,
                 hash: row.get(1)?,

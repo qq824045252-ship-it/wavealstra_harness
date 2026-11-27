@@ -1,5 +1,5 @@
-use crate::{Result, memory_records_data};
-use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
+use crate::{DOTS_TASK_ID, Result, memory_records_data};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -7,8 +7,6 @@ use serde_json::Value;
 pub(crate) mod forget;
 #[path = "memory_record_scopes.rs"]
 mod scopes;
-
-const DOTS_TASK_ID: &str = "mybuddy-dots";
 
 #[derive(Deserialize)]
 #[serde(
@@ -129,11 +127,8 @@ pub fn write(db: &mut Connection, request: Request) -> Reply {
         Ok(reply) => reply,
         Err(error) => {
             if error
-                .downcast_ref::<rusqlite::Error>()
-                .and_then(rusqlite::Error::sqlite_error_code)
-                .is_some_and(|code| {
-                    matches!(code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
-                })
+                .downcast_ref::<duckdb::Error>()
+                .is_some_and(|e| matches!(crate::database::classify_duckdb_error(&e.to_string()), crate::database::DbError::Busy(_)))
             {
                 return Reply::NeedsHost;
             }
@@ -170,7 +165,7 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
         memory_records_data::candidates::reject(db, &id, at)?;
         return Ok(Reply::CandidateRejected);
     }
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let (record, revision, number, is_update, procedure_changed) = match request {
         Request::Create {
             record,
@@ -189,7 +184,7 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
             revision,
         } => {
             let previous = tx
-                .prepare_cached("SELECT kind,status,content_hash FROM memory_records WHERE id=?1")?
+                .prepare("SELECT kind,status,content_hash FROM memory_records WHERE id=?1")?
                 .query_row([&record.id], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -204,7 +199,7 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
                 return Ok(Reply::Stale);
             }
             let archived: bool = tx
-                .prepare_cached(
+                .prepare(
                     "SELECT EXISTS(SELECT 1 FROM memory_scopes s JOIN projects p ON p.id=s.scope_id
                  WHERE s.memory_id=?1 AND s.scope_type='project' AND p.archived=1)",
                 )?
@@ -224,23 +219,76 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
         | Request::DetachScope { .. }
         | Request::RejectCandidate { .. } => unreachable!(),
     };
-    tx.prepare_cached(
+    tx.prepare(
         "INSERT INTO memory_revisions(id,memory_id,revision,kind,title,content,status,importance,
          confidence,valid_from,valid_until,changed_by,change_reason,created_at)
          SELECT ?1,id,?2,kind,title,content,status,importance,confidence,valid_from,valid_until,?3,?4,?5
          FROM memory_records WHERE id=?6",
     )?.execute(params![revision.revision_id, number, revision.changed_by, revision.reason, revision.changed_at, record.id])?;
+    {
+        let scopes: Vec<(String, Option<String>)> = {
+            let mut stmt = tx.prepare("SELECT scope_type, scope_id FROM memory_scopes WHERE memory_id=?1")?;
+            stmt.query_map([&record.id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<duckdb::Result<_>>()?
+        };
+        let scope_key = scopes
+            .first()
+            .map(|(st, sid)| match sid.as_deref() {
+                Some(id) => format!("{st}:{id}"),
+                None => st.clone(),
+            })
+            .unwrap_or_else(|| "global".to_owned());
+        let doc = crate::search_postings::SearchDocumentInput {
+            doc_key: format!("memory:{}", record.id),
+            domain: "memory".to_owned(),
+            scope: scope_key,
+            entity_id: record.id.clone(),
+            title: record.title.clone(),
+            body: record.content.clone(),
+            content_revision: number,
+            content_hash: record.content_hash.clone(),
+            metadata_json: Some(record.metadata_json.clone()),
+        };
+        crate::trigger_effects::on_memory_record_changed_in_tx(
+            &tx,
+            &record.id,
+            &scopes,
+            Some(&doc),
+            &revision.revision_id,
+            revision.changed_at,
+        )
+        .map_err(|e| e.to_string())?;
+    }
     invalidate_projections(&tx, &record.id, revision.changed_at, is_update)?;
     if procedure_changed {
-        tx.prepare_cached(
-            "UPDATE memory_skill_candidates SET status='stale',updated_at=?2
-             WHERE status IN ('draft','ready','materialized')
-               AND EXISTS (SELECT 1 FROM json_each(source_memory_ids_json) WHERE value=?1)",
-        )?
-        .execute(params![record.id, revision.changed_at])?;
+        let skill_ids: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT id, source_memory_ids_json FROM memory_skill_candidates
+                 WHERE status IN ('draft','ready','materialized')",
+            )?;
+            let mut rows = stmt.query([])?;
+            let mut matched = Vec::new();
+            while let Some(row) = rows.next()? {
+                let cid: String = row.get(0)?;
+                let raw: String = row.get(1)?;
+                if serde_json::from_str::<Vec<String>>(&raw)
+                    .map(|v| v.iter().any(|x| x == &record.id))
+                    .unwrap_or(false)
+                {
+                    matched.push(cid);
+                }
+            }
+            matched
+        };
+        for cid in skill_ids {
+            tx.execute(
+                "UPDATE memory_skill_candidates SET status='stale',updated_at=?2 WHERE id=?1",
+                params![cid, revision.changed_at],
+            )?;
+        }
     }
-    tx.prepare_cached(
-        "UPDATE projects SET updated_at=MAX(updated_at+1,?2)
+    tx.prepare(
+        "UPDATE projects SET updated_at=GREATEST(updated_at+1, ?2)
          WHERE id IN (SELECT scope_id FROM memory_scopes WHERE memory_id=?1 AND scope_type='project')",
     )?.execute(params![record.id, record.updated_at])?;
     let mut detail = memory_records_data::detail(&tx, &record.id)?;
@@ -268,8 +316,8 @@ fn assert_scope(db: &Connection, scope: &Scope, user_id: &str) -> Result<()> {
     };
     if scope.scope_type == "project" {
         let archived = db
-            .prepare_cached("SELECT archived FROM projects WHERE id=?1")?
-            .query_row([id], |row| row.get::<_, bool>(0))
+            .prepare("SELECT archived FROM projects WHERE id=?1")?
+            .query_row([id], |row| crate::database::row_bool(row, 0))
             .optional()?;
         return match archived {
             Some(false) => Ok(()),
@@ -289,7 +337,7 @@ fn assert_scope(db: &Connection, scope: &Scope, user_id: &str) -> Result<()> {
         "task" => ("SELECT 1 FROM tasks WHERE id=?1", format!("任务不存在：{id}")),
         _ => return Err("记忆作用域类型非法".into()),
     };
-    let mut statement = db.prepare_cached(sql)?;
+    let mut statement = db.prepare(sql)?;
     let exists = if statement.parameter_count() == 2 {
         statement.exists(params![id, user_id])?
     } else {
@@ -298,16 +346,16 @@ fn assert_scope(db: &Connection, scope: &Scope, user_id: &str) -> Result<()> {
     if exists { Ok(()) } else { Err(message.into()) }
 }
 
-fn insert(db: &Connection, create: &CreateRecord, scope: &Scope) -> rusqlite::Result<()> {
+fn insert(db: &Connection, create: &CreateRecord, scope: &Scope) -> duckdb::Result<()> {
     let r = &create.record;
-    db.prepare_cached(
+    db.prepare(
         "INSERT INTO memory_records(id,kind,title,content,status,importance,confidence,explicit,source_type,
          source_id,source_task_id,valid_from,valid_until,content_hash,created_at,updated_at,metadata_json)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
     )?.execute(params![r.id, r.kind, r.title, r.content, r.status, r.importance, r.confidence, r.explicit,
         create.source_type, create.source_id, create.source_task_id, r.valid_from, r.valid_until, r.content_hash,
         create.created_at, r.updated_at, r.metadata_json])?;
-    db.prepare_cached(
+    db.prepare(
         "INSERT INTO memory_scopes(id,memory_id,scope_type,scope_id,binding,created_at)
          VALUES (?1,?2,?3,?4,'owned',?5)",
     )?
@@ -318,7 +366,7 @@ fn insert(db: &Connection, create: &CreateRecord, scope: &Scope) -> rusqlite::Re
         scope.scope_id,
         create.created_at
     ])?;
-    let mut evidence = db.prepare_cached(
+    let mut evidence = db.prepare(
         "INSERT INTO memory_evidence(id,memory_id,evidence_kind,ref_id,ref_title,excerpt,created_at)
          VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(memory_id,evidence_kind,ref_id) DO NOTHING",
     )?;
@@ -336,8 +384,8 @@ fn insert(db: &Connection, create: &CreateRecord, scope: &Scope) -> rusqlite::Re
     Ok(())
 }
 
-fn update(db: &Connection, r: &Record) -> rusqlite::Result<()> {
-    db.prepare_cached(
+fn update(db: &Connection, r: &Record) -> duckdb::Result<()> {
+    db.prepare(
         "UPDATE memory_records SET kind=?2,title=?3,content=?4,status=?5,importance=?6,confidence=?7,
          explicit=?8,valid_from=?9,valid_until=?10,content_hash=?11,updated_at=?12,metadata_json=?13 WHERE id=?1",
     )?.execute(params![r.id, r.kind, r.title, r.content, r.status, r.importance, r.confidence, r.explicit,
@@ -350,30 +398,70 @@ fn invalidate_projections(
     id: &str,
     now: i64,
     is_update: bool,
-) -> rusqlite::Result<()> {
+) -> duckdb::Result<()> {
     for table in ["memory_scenarios", "memory_core_profiles"] {
-        db.prepare_cached(&format!(
+        db.prepare(&format!(
             "UPDATE {table} AS target SET status='stale',updated_at=?2 WHERE status='active'
              AND EXISTS(SELECT 1 FROM memory_scopes s WHERE s.memory_id=?1
                  AND s.scope_type IN ('global','workspace','project') AND s.scope_type=target.scope_type
-                 AND s.scope_id IS target.scope_id)",
+                 AND s.scope_id IS NOT DISTINCT FROM target.scope_id)",
         ))?.execute(params![id, now])?;
     }
     if is_update {
-        let has_dots: bool = db.prepare_cached(
+        let has_dots: bool = db.prepare(
             "SELECT EXISTS(SELECT 1 FROM memory_scopes WHERE memory_id=?1 AND scope_type='task' AND scope_id=?2)",
         )?.query_row(params![id, DOTS_TASK_ID], |row| row.get(0))?;
         if has_dots {
-            db.prepare_cached(
-                "UPDATE memory_core_profiles AS p SET status='stale',updated_at=?2 WHERE status='active'
-                 AND EXISTS(SELECT 1 FROM json_each(p.source_scenario_ids_json) j
-                   JOIN memory_scenarios s ON s.id=j.value AND s.status='active'
-                   WHERE EXISTS(SELECT 1 FROM json_each(s.source_memory_ids_json) WHERE value=?1))",
-            )?.execute(params![id, now])?;
-            db.prepare_cached(
-                "UPDATE memory_scenarios AS s SET status='stale',updated_at=?2 WHERE status='active'
-                 AND EXISTS(SELECT 1 FROM json_each(s.source_memory_ids_json) WHERE value=?1)",
-            )?.execute(params![id, now])?;
+            let scenario_ids: Vec<String> = {
+                let mut stmt = db.prepare(
+                    "SELECT id, source_memory_ids_json FROM memory_scenarios WHERE status='active'",
+                )?;
+                let mut rows = stmt.query([])?;
+                let mut matched = Vec::new();
+                while let Some(row) = rows.next()? {
+                    let sid: String = row.get(0)?;
+                    let raw: String = row.get(1)?;
+                    if serde_json::from_str::<Vec<String>>(&raw)
+                        .map(|v| v.iter().any(|x| x == id))
+                        .unwrap_or(false)
+                    {
+                        matched.push(sid);
+                    }
+                }
+                matched
+            };
+            if !scenario_ids.is_empty() {
+                let profile_ids: Vec<String> = {
+                    let mut stmt = db.prepare(
+                        "SELECT id, source_scenario_ids_json FROM memory_core_profiles WHERE status='active'",
+                    )?;
+                    let mut rows = stmt.query([])?;
+                    let mut matched = Vec::new();
+                    while let Some(row) = rows.next()? {
+                        let pid: String = row.get(0)?;
+                        let raw: String = row.get(1)?;
+                        if serde_json::from_str::<Vec<String>>(&raw)
+                            .map(|v| v.iter().any(|x| scenario_ids.contains(x)))
+                            .unwrap_or(false)
+                        {
+                            matched.push(pid);
+                        }
+                    }
+                    matched
+                };
+                for pid in profile_ids {
+                    db.execute(
+                        "UPDATE memory_core_profiles SET status='stale',updated_at=?2 WHERE id=?1",
+                        params![pid, now],
+                    )?;
+                }
+                for sid in scenario_ids {
+                    db.execute(
+                        "UPDATE memory_scenarios SET status='stale',updated_at=?2 WHERE id=?1",
+                        params![sid, now],
+                    )?;
+                }
+            }
         }
     }
     Ok(())

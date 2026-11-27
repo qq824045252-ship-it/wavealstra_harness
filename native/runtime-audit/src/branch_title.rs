@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, params};
+use duckdb::{Connection, params};
 use std::collections::HashSet;
 
 pub fn next(db: &Connection, source_title: &str, dots_task_id: &str) -> Result<String> {
@@ -10,10 +10,10 @@ pub fn next(db: &Connection, source_title: &str, dots_task_id: &str) -> Result<S
     };
     let prefix = format!("{base}（分支");
     let mut statement =
-        db.prepare_cached("SELECT title FROM tasks WHERE id != ?1 AND instr(title, ?2) = 1")?;
+        db.prepare("SELECT title FROM tasks WHERE id != ?1 AND starts_with(title, ?2)")?;
     let titles = statement
         .query_map(params![dots_task_id, prefix], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<HashSet<_>>>()?;
+        .collect::<duckdb::Result<HashSet<_>>>()?;
     let first = format!("{prefix}）");
     if !titles.contains(&first) {
         return Ok(first);

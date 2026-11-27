@@ -10,14 +10,15 @@ import { startCacheRequestTrace, sessionTraceBoundary, type CacheTraceBoundary }
 import type { ModelExecutionIdentity } from "./CacheRequestTracer";
 
 // Request-local settings only. Pi still owns configuration, parsing and the model catalog.
-const invocationSettings = new AsyncLocalStorage<{ settings: SettingsManager; validate?: () => void; boundary?: () => CacheTraceBoundary }>();
+type RequestValidation = () => void | Promise<void>;
+const invocationSettings = new AsyncLocalStorage<{ settings: SettingsManager; validate?: RequestValidation; boundary?: () => CacheTraceBoundary }>();
 const requestIdentity = new AsyncLocalStorage<(identity: ModelExecutionIdentity) => void>();
 const installed = new WeakSet<ModelRuntime>();
 const boundSessions = new WeakSet<AgentSession>();
-const requestGuards = new WeakMap<AgentSession, () => () => void>();
+const requestGuards = new WeakMap<AgentSession, () => RequestValidation>();
 const sessionsByManager = new WeakMap<object, AgentSession>();
 
-export function withModelInvocationSettings<T>(settings: SettingsManager, operation: () => T, validate?: () => void, boundary?: () => CacheTraceBoundary): T {
+export function withModelInvocationSettings<T>(settings: SettingsManager, operation: () => T, validate?: RequestValidation, boundary?: () => CacheTraceBoundary): T {
   return invocationSettings.run({ settings, validate, boundary: boundary ?? invocationSettings.getStore()?.boundary }, operation);
 }
 
@@ -44,7 +45,7 @@ export function requestTraceBoundary(signal: AbortSignal | undefined): (() => Ca
 /** Native hosts annotate the already-observed request while Pi builds its provider payload. */
 export function identifyModelInvocation(identity: ModelExecutionIdentity): void { requestIdentity.getStore()?.(identity); }
 
-export function setSessionRequestGuard(session: AgentSession, capture: () => () => void): void {
+export function setSessionRequestGuard(session: AgentSession, capture: () => RequestValidation): void {
   requestGuards.set(session, capture);
 }
 
@@ -57,9 +58,10 @@ export function getSessionModelInvocation(manager: object) {
     settings: session.settingsManager,
     run<T>(operation: () => T): T {
       const validate = requestGuards.get(session)?.();
-      return withModelInvocationSettings(session.settingsManager, operation, () => {
+      return withModelInvocationSettings(session.settingsManager, operation, async () => {
         if (sessionsByManager.get(manager) !== session) throw new Error("模型调用所属会话已结束");
-        validate?.();
+        await validate?.();
+        if (sessionsByManager.get(manager) !== session) throw new Error("模型调用所属会话已结束");
       }, () => sessionTraceBoundary(session, 'capability'));
     },
   };
@@ -75,6 +77,35 @@ export async function assertModelAdmission(runtime: ModelRuntime, settings: Sett
   if (!scopedModels.some(({ model: allowed }) => allowed.provider === model.provider && allowed.id === model.id)) {
     throw new Error(`模型 ${model.provider}/${model.id} 不在当前 Pi enabledModels 范围内`);
   }
+}
+
+/** Delays provider stream creation until an awaited admission check succeeds. */
+export function startGuardedModelStream(model: Model<Api>, signal: AbortSignal | undefined,
+  dispatch: () => Promise<AssistantMessageEventStream>, trace?: ReturnType<typeof startCacheRequestTrace>): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+  void (async () => {
+    try {
+      for await (const event of await dispatch()) {
+        if (event.type.endsWith('_delta') || event.type === 'done') trace?.firstResponse();
+        if (event.type === 'done') trace?.result(event.message);
+        else if (event.type === 'error') trace?.result(event.error);
+        stream.push(event);
+      }
+    } catch (error) {
+      const reason = signal?.aborted ? "aborted" : "error";
+      const response: AssistantMessage = {
+        role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
+        stopReason: reason, errorMessage: error instanceof Error ? error.message : String(error), timestamp: Date.now(),
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      };
+      trace?.result(response);
+      stream.push({ type: "error", reason, error: response });
+    } finally {
+      stream.end();
+    }
+  })();
+  return stream;
 }
 
 /** Image counts use native metadata; serialized HTTP bodies are checked by the transport guard. */
@@ -107,69 +138,49 @@ export function installModelInvocationAdmission(runtime: ModelRuntime, fallbackS
     const settings = invocation?.settings ?? fallbackSettings();
     // Durable registers per task invocation; an explicit caller boundary (native sessions) always wins.
     const describeBoundary = invocation?.boundary ?? requestTraceBoundary(options?.signal);
-    const stream = createAssistantMessageEventStream();
     const trace = (() => {
       try { return traceFactory(model, (options as { sessionId?: string } | undefined)?.sessionId, describeBoundary?.()); }
       catch { return undefined; }
     })();
-    void (async () => {
-      try {
-        const validate = async () => {
-          options?.signal?.throwIfAborted();
-          await assertModelAdmission(runtime, settings, model);
-          const current = runtime.getModel(model.provider, model.id);
-          if (!current) throw new Error(`Pi 模型目录中已无 ${model.provider}/${model.id}`);
-          const requestFacts = (entry: Model<Api>) => JSON.stringify([
-            entry.api, entry.baseUrl, entry.contextWindow, entry.maxTokens, entry.input, entry.inputLimits,
-            entry.reasoning, entry.thinkingLevelMap, entry.compat, entry.headers, entry.samplingParams, entry.samplingParamsByThinkingLevel,
-          ]);
-          if (requestFacts(model) !== requestFacts(current)) throw new Error("模型配置已变化，请在新轮次重新选择模型");
-          assertImageCounts(current, context);
-          options?.signal?.throwIfAborted();
-          invocation?.validate?.();
-        };
-        await validate();
-        const guardedOptions = {
-          ...options,
-          ...createRequestTransport(model, options, validate, trace),
-          transformHeaders: async (headers: ProviderHeaders) => {
-            const transformed = options?.transformHeaders ? await options.transformHeaders(headers) : headers;
-            // Authentication and user approvals may have awaited since entry.
-            await validate();
-            return transformed;
-          },
-          onProviderStreamEvent: async (data: unknown, eventModel: Model<Api>) => {
-            try { trace?.providerEvent(data); } catch { /* observation cannot fail a request */ }
-            await options?.onProviderStreamEvent?.(data, eventModel);
-          },
-          onPayload: async (payload: unknown, payloadModel: Model<TApi>) => {
-            const replacement = await requestIdentity.run(identity => { trace?.identify(identity); }, () => options?.onPayload?.(payload, payloadModel));
-            await validate();
-            trace?.payload(replacement === undefined ? payload : replacement);
-            return replacement;
-          },
-        } as TOptions;
-        for await (const event of dispatch(guardedOptions)) {
-          if (event.type.endsWith('_delta') || event.type === 'done') trace?.firstResponse();
-          if (event.type === 'done') trace?.result(event.message);
-          else if (event.type === 'error') trace?.result(event.error);
-          stream.push(event);
-        }
-        stream.end();
-      } catch (error) {
-        const reason = options?.signal?.aborted ? "aborted" : "error";
-        const response: AssistantMessage = {
-          role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
-          stopReason: reason, errorMessage: error instanceof Error ? error.message : String(error), timestamp: Date.now(),
-          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-        };
-        trace?.result(response);
-        stream.push({ type: "error", reason, error: response });
-        stream.end();
-      }
-    })();
-    return stream;
+    return startGuardedModelStream(model, options?.signal, async () => {
+      const validate = async () => {
+        options?.signal?.throwIfAborted();
+        await assertModelAdmission(runtime, settings, model);
+        const current = runtime.getModel(model.provider, model.id);
+        if (!current) throw new Error(`Pi 模型目录中已无 ${model.provider}/${model.id}`);
+        const requestFacts = (entry: Model<Api>) => JSON.stringify([
+          entry.api, entry.baseUrl, entry.contextWindow, entry.maxTokens, entry.input, entry.inputLimits,
+          entry.reasoning, entry.thinkingLevelMap, entry.compat, entry.headers, entry.samplingParams, entry.samplingParamsByThinkingLevel,
+        ]);
+        if (requestFacts(model) !== requestFacts(current)) throw new Error("模型配置已变化，请在新轮次重新选择模型");
+        assertImageCounts(current, context);
+        options?.signal?.throwIfAborted();
+        await invocation?.validate?.();
+        options?.signal?.throwIfAborted();
+      };
+      await validate();
+      const guardedOptions = {
+        ...options,
+        ...createRequestTransport(model, options, validate, trace),
+        transformHeaders: async (headers: ProviderHeaders) => {
+          const transformed = options?.transformHeaders ? await options.transformHeaders(headers) : headers;
+          // Authentication and user approvals may have awaited since entry.
+          await validate();
+          return transformed;
+        },
+        onProviderStreamEvent: async (data: unknown, eventModel: Model<Api>) => {
+          try { trace?.providerEvent(data); } catch { /* observation cannot fail a request */ }
+          await options?.onProviderStreamEvent?.(data, eventModel);
+        },
+        onPayload: async (payload: unknown, payloadModel: Model<TApi>) => {
+          const replacement = await requestIdentity.run(identity => { trace?.identify(identity); }, () => options?.onPayload?.(payload, payloadModel));
+          await validate();
+          trace?.payload(replacement === undefined ? payload : replacement);
+          return replacement;
+        },
+      } as TOptions;
+      return dispatch(guardedOptions);
+    }, trace);
   }
   // enabledModels is Pi's chat scope. Non-chat calls keep native typed catalogs, but
   // must still respect the product's explicit provider pause and session revocation.
@@ -186,7 +197,8 @@ export function installModelInvocationAdmission(runtime: ModelRuntime, fallbackS
         throw new Error('Provider ' + provider + ' is disabled in model settings');
       }
       signal?.throwIfAborted();
-      invocation?.validate?.();
+      await invocation?.validate?.();
+      signal?.throwIfAborted();
     };
   };
   if (typeof runtime.generateImages === 'function') {

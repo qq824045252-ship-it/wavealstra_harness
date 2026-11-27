@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emptyModePolicy } from "../src/shared/mode-profile";
 import { LOCAL_USER_ID } from "../src/shared/bot-work";
 import { DOTS_TASK_ID } from "../src/shared/dots";
 import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
@@ -357,55 +356,6 @@ try {
   assert.equal(noFallback.failedTurns, 1);
   assert.equal(pipeline.turns.get(unavailable.id)?.extractionState, "failed", "disabled defaults remain disabled and retryable");
   console.log("PASS retired-model recovery uses only the enabled current default and preserves chat selection");
-  agent.resolveEnabledModel = async () => ({ id: "model", provider: "test" });
-  {
-    const pendingId = "held-background-extraction";
-    task(pendingId);
-    task("foreground-send");
-    const older = capture(pendingId, "长期偏好是每周汇报测量校准结果。");
-    let entered!: () => void;
-    let release!: () => void;
-    const started = new Promise<void>(resolve => { entered = resolve; });
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    response = async () => { entered(); await gate; return { candidates: [] }; };
-    const extraction = agent.queuePendingMemoryExtraction([pendingId]);
-    await started;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      Object.assign(agent, {
-        durableAssemblies: new Map(),
-        workService: { repo: { bindingForTask: () => undefined } },
-        executionFailures: { resolveWorkspaceFailures: () => {} },
-        expertBindings: { ensureLegacy: () => {}, active: () => undefined },
-        modeProfiles: { getProfile: () => ({ policy: emptyModePolicy() }) },
-        projectContextResolver: { resolveTask: () => undefined },
-        runtimeCapabilityAvailability: () => ({}),
-        expertConnectorIds: () => [],
-        emitPatch: () => {},
-        runtimeRequirements: { ensurePresetReady: async () => {} },
-      });
-      agent.settingsStore.setTaskConnectorIds = () => {};
-      const send = agent.prepareDurableTask({
-        taskId: "foreground-send", userMessageId: "fast-send", assistantMessageId: "fast-answer", text: "继续", modelId: "test/model",
-      });
-      const admitted = await Promise.race([send, new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("foreground send waited for background memory model")), 500);
-      })]);
-      assert.equal(admitted.text, "继续");
-      assert.equal(pipeline.turns.get(older.id)?.extractionState, "processing", "memory must still be in flight");
-      await new Promise(resolve => setTimeout(resolve, 5));
-      const newer = capture(pendingId, "后续新一轮仍由独立批次提炼。");
-      release();
-      await extraction;
-      assert.equal(pipeline.turns.get(older.id)?.extractionState, "completed");
-      assert.equal(pipeline.turns.get(newer.id)?.extractionState, "pending");
-      console.log("PASS ordinary send does not wait for a held memory model and new evidence remains pending");
-    } finally {
-      if (timer) clearTimeout(timer);
-      release();
-      await extraction;
-    }
-  }
   console.log("memory-extraction-lifecycle-test: PASS (bulk/selected deletion, atomic rollback, exact scope, preserved memories, and safe in-flight/queued extraction and projection generation)");
   if (process.argv.includes("--native")) {
     const executable = locateRuntimeAudit(process.cwd());

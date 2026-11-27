@@ -8,6 +8,7 @@ import { DurableBotRuntime } from "./DurableBotRuntime";
 import { ActiveDurableConversation } from "./DurableConversationBranch";
 import { durableHistoryIdentity } from "./DurableHistoryIdentity";
 import { durableStorageExists, openRustDurableStorage } from "./DurableStorage";
+import { decodePiStorageText } from "./DuckDbStorage";
 
 export const PASSIVE_READONLY_MODELS = {
   getProviders: () => [],
@@ -45,7 +46,7 @@ export async function readDurableReadOnlyHistory(input: PassiveSource & {
   hasDotsDelegation?: () => boolean;
   observedUsage?: (conversationId: string) => import("../../../shared/task-diagnostics").ConversationUsageReceipt;
 }): Promise<TaskHistoryDto> {
-  if (!durableStorageExists(input.directory)) return { messages: [], cwd: input.cwd };
+  if (!(await durableStorageExists(input.directory, input.reader))) return { messages: [], cwd: input.cwd };
   if (input.reader) {
     try { return await readHistoryView(input, input.reader); }
     catch { /* Retry the same passive view with the host SQLite reader. */ }
@@ -69,7 +70,7 @@ async function readHistoryView(input: Parameters<typeof readDurableReadOnlyHisto
 export async function readDurableUserQuestions(input: PassiveSource & {
   query?: TaskUserQuestionsQuery; live?: () => Promise<TaskUserQuestionsDto>;
 }): Promise<TaskUserQuestionsDto> {
-  if (!durableStorageExists(input.directory)) return input.live ? input.live() : { questions: [] };
+  if (!(await durableStorageExists(input.directory, input.reader))) return input.live ? input.live() : { questions: [] };
   const before = input.query?.beforeEntryId;
   if (before !== undefined && (!Number.isSafeInteger(before) || before < 1)) throw new Error("Invalid question cursor");
   const native = await readTranscript(input, async (snapshot, conversationId, historyId) => {
@@ -77,7 +78,11 @@ export async function readDurableUserQuestions(input: PassiveSource & {
       return { questions: [], historyId, nextBefore: undefined };
     }
     const page = await snapshot.questions(conversationId, before);
-    return page && { questions: page.questions, historyId, nextBefore: page.nextBefore ?? undefined };
+    return page && {
+      questions: page.questions.map(question => ({ ...question, text: decodePiStorageText(question.text) })),
+      historyId,
+      nextBefore: page.nextBefore ?? undefined,
+    };
   });
   if (native) {
     if (input.query?.historyId !== undefined && input.query.historyId !== native.historyId) {
@@ -95,10 +100,13 @@ export async function readDurableUserQuestions(input: PassiveSource & {
 
 /** Read-only snapshot of the first N tokens of the conversation (AI naming). */
 export async function readDurableConversationHead(input: PassiveSource & { maxTokens?: number; live?: () => Promise<string> }): Promise<string> {
-  if (!durableStorageExists(input.directory)) return input.live ? input.live() : "";
+  if (!(await durableStorageExists(input.directory, input.reader))) return input.live ? input.live() : "";
   const maxTokens = input.maxTokens ?? 1024;
   if (Number.isFinite(maxTokens)) {
-    const native = await readTranscript(input, (snapshot, conversationId) => snapshot.head(conversationId, maxTokens));
+    const native = await readTranscript(input, async (snapshot, conversationId) => {
+      const head = await snapshot.head(conversationId, maxTokens);
+      return head === undefined ? undefined : decodePiStorageText(head);
+    });
     if (native !== undefined) return native;
   }
   if (input.live) return input.live();
@@ -128,7 +136,7 @@ async function readTranscript<T>(input: PassiveSource,
       if (typeof agent?.cwd === "string" && agent.cwd && resolve(agent.cwd) !== resolve(input.cwd)) {
         throw new Error("Bot 已绑定的工作目录与当前项目不一致");
       }
-      return await read(native.snapshot, conversationId, durableHistoryIdentity(input.directory, String(conversationId)));
+      return await read(native.snapshot, conversationId, durableHistoryIdentity(input.directory, String(conversationId), native.storage));
     } finally { await native.storage.close(context); }
   } catch { return undefined; }
 }

@@ -6,6 +6,6 @@ const interactiveLifecycleTools = new Set([
 ]);
 
 /** Runtime preparation precedes binding. Re-read at each tool permission phase. */
-export function workExecutionToolAllowed(name: string, binding: () => WorkExecutionBindingDto | undefined): boolean {
-  return !interactiveLifecycleTools.has(name) || binding() === undefined;
+export function workExecutionToolAllowed(name: string, binding: () => WorkExecutionBindingDto | boolean | undefined): boolean {
+  return !interactiveLifecycleTools.has(name) || !binding();
 }

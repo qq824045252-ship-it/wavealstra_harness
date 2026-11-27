@@ -151,6 +151,10 @@ async function main(): Promise<void> {
   const enabledSelection = skills.resolveRuntimeSkills(sandbox, [join(expert.path, "skills")]);
   const enabledWinner = enabledSelection.dtos.find((item) => item.id === replaced.id);
   assert.equal(enabledWinner?.filePath, globalEnabledAgain.filePath, "enabled Global Skill must keep existing first-wins priority over same-named Private Skill");
+  const authorized = await skills.readRuntimeSkills(sandbox, [join(expert.path, "skills")],
+    async item => item.filePath !== globalEnabledAgain.filePath, {});
+  assert.equal(authorized.dtos.find(item => item.id === replaced.id)?.filePath, join(expertSkillDir, "SKILL.md"),
+    "an installed skill excluded by current async authorization must not shadow the authorized Private Skill");
 
   // Acceptance: authored Expert installs and exports as a portable package without local install traces.
   const installedExpert = experts.installByPath(expert.path);

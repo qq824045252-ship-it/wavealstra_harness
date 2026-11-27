@@ -8,7 +8,6 @@ import { defaultAnswerRuleId, newAnswerRule } from "../src/shared/answer-routing
 import type { AnswerRoutingFlow } from "../src/shared/answer-routing-flow";
 import { DotsDelegations } from "../src/main/dots/DotsDelegations";
 import type { CronJobDto } from "../src/shared/agent-ipc";
-import { TaskBoardRepository } from "../src/main/task/TaskBoardRepository";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-dots-delivery-"));
 process.env.USERPROFILE = root;
@@ -17,6 +16,7 @@ mkdirSync(join(root, ".mybuddy", "plugins", "mcp"), { recursive: true });
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
 const { createArtifactDomain } = await import("../src/main/artifact/ArtifactDomainSetup");
 const { DotsActions } = await import("../src/main/dots/DotsActions");
+const { fixtureTaskBoard } = await import("./fixtures/legacy-task-board-store");
 const { CronService } = await import("../src/main/cron/CronService");
 const { TerminalHost } = await import("../src/main/terminal/TerminalHost");
 const { TaskTerminalService } = await import("../src/main/terminal/TaskTerminalService");
@@ -53,7 +53,7 @@ const actions = new DotsActions(db, agent, { link: (...args) => deliveries.link(
   observeTool: event => deliveries.observeTool(event),
   observeProgress: (...args) => deliveries.observeProgress(...args),
   rememberOrigin: (source, origin) => deliveries.rememberOrigin(source, origin),
-  list: () => deliveries.list(), failed: (...args) => deliveries.failed(...args) });
+  list: () => deliveries.list(), failed: (...args) => deliveries.failed(...args) }, fixtureTaskBoard(db.connection));
 agent.setDotsActions(actions);
 deliveries.connect(async () => ({ kind: "quiet" }), (reply, current) => agent.appendDotsReply(reply, current));
 const fallback = agent.answerRouting.list().find(rule => rule.id === defaultAnswerRuleId)!;
@@ -290,7 +290,7 @@ try {
       db.upsertTask({ id, title: id, spaceId: space.id, updatedAt: Date.now() });
     }
   });
-  const board = new TaskBoardRepository(db.connection);
+  const board = fixtureTaskBoard(db.connection);
   const timings: number[] = [];
   for (let sample = 0; sample < 60; sample++) {
     const id = "quote-board-" + ((sample * 23) % 1000).toString().padStart(4, "0");

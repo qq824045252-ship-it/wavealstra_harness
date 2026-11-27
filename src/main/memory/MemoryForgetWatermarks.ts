@@ -104,12 +104,17 @@ export class MemoryForgetWatermarks {
   private writeTail: Promise<void> = Promise.resolve();
 
   constructor(
-    private readonly db: Database.Database,
+    private readonly fixture: Database.Database | undefined,
     private readonly runtimeAuditReader?: RuntimeAuditReader,
   ) {}
 
   private get requiresRustWrites(): boolean {
-    return Boolean(this.db.readonly || this.runtimeAuditReader?.supervised);
+    return !this.fixture || Boolean(this.fixture.readonly || this.runtimeAuditReader?.supervised);
+  }
+
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("记忆遗忘状态需要通过 Rust Core 读取");
+    return this.fixture;
   }
 
   async flush(): Promise<void> {

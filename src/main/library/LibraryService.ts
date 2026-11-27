@@ -15,7 +15,7 @@ import { SemanticRouter } from "../retrieval/SemanticRouter";
 import { WorkspaceSemanticProvider, type SemanticCandidate } from "../retrieval/WorkspaceSemanticProvider";
 import { fuseHits } from "../workspace/WorkspaceResourceLocator.semantic";
 import type { WorkspaceResourceHit } from "../../shared/workspace-resource-locator";
-import { LibraryRepository, toCollection, toItem, toSpace, toVersion, type LibraryCatalogRows } from "./LibraryRepository";
+import { LibraryRepository, toCollection, toItem, toSpace, toVersion, type LibraryArtifactRow, type LibraryCatalogRows } from "./LibraryRepository";
 import { runLibraryDeepSearch, type LibraryEvidenceJudge } from "./LibraryDeepSearch";
 import { LIBRARY_NOTES_BACKUP_LIMIT, libraryNotesBackup, type LibraryNotesBackup } from "./library-note-backup";
 import { rewriteImportedFolderLinks, scanLibraryImportFolder } from "./library-folder-import";
@@ -355,7 +355,7 @@ export class LibraryService {
     private readonly db: AppDatabase,
     opts?: { libraryRoot?: string },
   ) {
-    this.repo = new LibraryRepository(db.connection, db.runtimeAuditReader);
+    this.repo = new LibraryRepository(db.fixtureConnection, db.runtimeAuditReader);
     this.root = opts?.libraryRoot ?? getLibraryDir();
     mkdirSync(this.root, { recursive: true });
     this.textSaves = new LibraryTextSaves(this.db, this.root);
@@ -653,14 +653,11 @@ export class LibraryService {
 
   async readSnapshot(request: LibrarySnapshotRequest = {}): Promise<LibrarySnapshotDto> {
     const { owner, spaceId, itemId } = request;
-    let spaceIds = owner ? ownedLibraryQueryScope(this.db, this.repo, owner).spaceIds : undefined;
-    if (spaceId !== undefined) spaceIds = new Set(!spaceIds || spaceIds.has(spaceId) ? [spaceId] : []);
-    const scoped = spaceIds !== undefined || itemId !== undefined;
-    const ownerName = this.ownerName();
     const catalog = await this.db.runtimeAuditReader?.libraryMetadata<LibraryCatalogRows>({
-      kind: "catalog", spaceIds: spaceIds ? [...spaceIds] : undefined, itemId,
+      kind: "catalog", owner, spaceIds: spaceId === undefined ? undefined : [spaceId], itemId,
     });
     if (catalog) {
+      const { ownerName } = catalog;
       const spaces = catalog.spaces.map(toSpace);
       const items = catalog.items.map(toItem);
       const names = new Map(spaces.map(space => [space.id, space.name]));
@@ -671,10 +668,14 @@ export class LibraryService {
       });
       return {
         spaces, collections: catalog.collections.map(toCollection), items, recent, ownerName,
-        artifacts: scoped ? [] : this.listLocalArtifacts(ownerName),
+        artifacts: catalog.artifacts.map(row => this.toLibraryArtifact(row, ownerName)),
         storage: { usedBytes: catalog.usedBytes },
       };
     }
+    if (this.db.coreIdentity) throw new Error("资料库目录读取未获 Rust Core 确认");
+    let spaceIds = owner ? ownedLibraryQueryScope(this.db, this.repo, owner).spaceIds : undefined;
+    if (spaceId !== undefined) spaceIds = new Set(!spaceIds || spaceIds.has(spaceId) ? [spaceId] : []);
+    const ownerName = this.ownerName();
     if (itemId !== undefined) {
       const item = this.repo.getItem(itemId);
       const space = item && (!spaceIds || spaceIds.has(item.spaceId)) ? this.repo.getSpace(item.spaceId) : null;
@@ -1625,8 +1626,10 @@ export class LibraryService {
 
   async recoverFileDeletes(): Promise<void> {
     const reader = this.db.runtimeAuditReader;
-    if (!reader || !this.db.connection.prepare("SELECT 1 FROM library_file_cleanup WHERE root=? LIMIT 1").get(this.textSaves.root)) return;
-    await this.trackFileMutation(reader.drainLibraryCleanup(this.textSaves.root));
+    const root = this.textSaves.root;
+    if (!reader || (!reader.supervised && !this.db.fixtureConnection
+      ?.prepare("SELECT 1 FROM library_file_cleanup WHERE root=? LIMIT 1").get(root))) return;
+    await this.trackFileMutation(reader.drainLibraryCleanup(root));
   }
 
   async recoverLibraryRestores(): Promise<void> {
@@ -2364,34 +2367,8 @@ export class LibraryService {
    */
   formatCatalog(limit = 36, opts?: { taskId?: string | null; projectId?: string | null; workspaceId?: string | null; toolsAvailable?: boolean }): string {
     const taskScope = this.resolveTaskScope(opts?.taskId, opts?.projectId, { workspaceFallback: opts?.workspaceId });
-    const toolsAvailable = opts?.toolsAvailable ?? true;
-    const retrievalHint = toolsAvailable
-      ? "需要内容时用 library_search / library_read 按需读取；二进制/办公/图片条目返回受管路径，需要文件工具或预览读取，资料库不提供内联全文。"
-      : "本会话不提供资料库工具；如需内容请告知用户或由主任务（在项目上下文中的任务）读取。";
     const spaces = this.repo.listSpaces();
-    const items = this.listItemsInScope(taskScope).filter((item) => item.kind !== "url");
-    if (items.length === 0) {
-      return [
-        "## 资料库",
-        taskScope.defaultOwner
-          ? "当前范围还没有可见资料。用户可在对应项目或工作空间的资料页添加，或显式引用已有资料。"
-          : "独立任务没有长期资料库；临时文件和产物放在任务内，需要长期保存的资料请归入项目或工作空间。",
-        "三种载体分工：MD 决定内容，CSV 存储数据，HTML 负责表达；同空间可用相对路径互相引用。",
-      ].join("\n");
-    }
-    const spaceName = new Map(spaces.map((s) => [s.id, s.name]));
-    const lines = [
-      "## 资料库",
-      "以下为本任务可使用的资料：归属项目、当前/祖先工作空间，以及显式引用。继承或引用只提供读取权。",
-      retrievalHint,
-      "",
-    ];
-    for (const item of items.slice(0, limit)) {
-      const loc = spaceName.get(item.spaceId) ?? item.spaceId;
-      lines.push(`- [${item.kind}] ${item.title} · ${loc} · id=${item.id}`);
-    }
-    if (items.length > limit) lines.push(`- …其余 ${items.length - limit} 条未列出，可在当前范围继续搜索`);
-    return lines.join("\n");
+    return formatLibraryCatalog(this.listItemsInScope(taskScope), spaces, Boolean(taskScope.defaultOwner), limit, opts?.toolsAvailable ?? true);
   }
 
   showInFolder(id: string): string {
@@ -2523,29 +2500,24 @@ export class LibraryService {
            ORDER BY a.updated_at DESC
            LIMIT 200`,
         )
-        .all() as Array<{
-        id: string;
-        task_id: string;
-        space_id: string | null;
-        kind: string;
-        title: string | null;
-        updated_at: number;
-        task_title: string | null;
-        space_name: string | null;
-      }>;
-      return rows.map((row) => ({
-        id: row.id,
-        taskId: row.task_id,
-        spaceId: row.space_id ?? undefined,
-        kind: row.kind,
-        title: row.title?.trim() || "未命名产物",
-        owner: ownerName,
-        location: row.space_name ? `${row.space_name} · ${row.task_title ?? "任务"}` : (row.task_title ?? "本地产物"),
-        updatedAt: row.updated_at,
-      }));
+        .all() as LibraryArtifactRow[];
+      return rows.map(row => this.toLibraryArtifact(row, ownerName));
     } catch {
       return [];
     }
+  }
+
+  private toLibraryArtifact(row: LibraryArtifactRow, ownerName: string): LibraryArtifactDto {
+    return {
+      id: row.id,
+      taskId: row.task_id,
+      spaceId: row.space_id ?? undefined,
+      kind: row.kind,
+      title: row.title?.trim() || "未命名产物",
+      owner: ownerName,
+      location: row.space_name ? `${row.space_name} · ${row.task_title ?? "任务"}` : (row.task_title ?? "本地产物"),
+      updatedAt: row.updated_at,
+    };
   }
 
   private artifactRow(artifactId: string): {
@@ -2751,6 +2723,40 @@ export class LibraryService {
       }
     }
   }
+}
+
+export function formatLibraryCatalog(
+  sourceItems: readonly LibraryItemDto[],
+  spaces: readonly LibrarySpaceDto[],
+  hasOwner: boolean,
+  limit: number,
+  toolsAvailable: boolean,
+): string {
+  const items = sourceItems.filter((item) => item.kind !== "url");
+  if (!items.length) {
+    return [
+      "## 资料库",
+      hasOwner
+        ? "当前范围还没有可见资料。用户可在对应项目或工作空间的资料页添加，或显式引用已有资料。"
+        : "独立任务没有长期资料库；临时文件和产物放在任务内，需要长期保存的资料请归入项目或工作空间。",
+      "三种载体分工：MD 决定内容，CSV 存储数据，HTML 负责表达；同空间可用相对路径互相引用。",
+    ].join("\n");
+  }
+  const spaceName = new Map(spaces.map((space) => [space.id, space.name]));
+  const lines = [
+    "## 资料库",
+    "以下为本任务可使用的资料：归属项目、当前/祖先工作空间，以及显式引用。继承或引用只提供读取权。",
+    toolsAvailable
+      ? "需要内容时用 library_search / library_read 按需读取；二进制/办公/图片条目返回受管路径，需要文件工具或预览读取，资料库不提供内联全文。"
+      : "本会话不提供资料库工具；如需内容请告知用户或由主任务（在项目上下文中的任务）读取。",
+    "",
+  ];
+  for (const item of items.slice(0, limit)) {
+    const loc = spaceName.get(item.spaceId) ?? item.spaceId;
+    lines.push(`- [${item.kind}] ${item.title} · ${loc} · id=${item.id}`);
+  }
+  if (items.length > limit) lines.push(`- …其余 ${items.length - limit} 条未列出，可在当前范围继续搜索`);
+  return lines.join("\n");
 }
 
 

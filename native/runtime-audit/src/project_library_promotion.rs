@@ -2,7 +2,7 @@ use crate::{
     Result, library_backup, library_index, library_restore, library_text,
     project_write::{self, Status},
 };
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fs, io::ErrorKind, path::PathBuf};
@@ -54,7 +54,7 @@ fn plan(db: &Connection, request: &Promotion) -> Result<Option<Destination>> {
     }
     let event: Option<(String, bool)> = db
         .query_row(
-        "SELECT title, CASE WHEN json_valid(payload_json) THEN json_type(payload_json,'$.libraryItemId') IS 'text' ELSE 0 END
+        "SELECT title, CASE WHEN json_valid(payload_json) THEN json_extract_string(payload_json,'$.libraryItemId') IS NOT NULL ELSE FALSE END
          FROM project_events WHERE id=?1 AND project_id=?2",
             params![request.event_id, request.project_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -117,8 +117,7 @@ pub fn promote(db: &mut Connection, request: Promotion) -> Result<Reply> {
     if !library_backup::valid_filename(&filename) {
         return Err("资料文件名无效".into());
     }
-    let write_guard = crate::write_gate::enter()?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     if project_write::has_receipt(&tx, &request.operation_id)? {
         return Ok(Reply::Changed);
     }
@@ -150,7 +149,6 @@ pub fn promote(db: &mut Connection, request: Promotion) -> Result<Reply> {
         &filename,
     )?;
     crate::request_control::commit(tx)?;
-    drop(write_guard);
 
     let applied = apply(db, &request, &destination, &filename, &path);
     let cleanup = library_restore::recover(db, &request.root, Some(&request.operation_id));
@@ -180,8 +178,7 @@ fn apply(
 ) -> Result<Reply> {
     let chunks =
         library_index::document_chunks(&request.content, request.chunk_size, request.overlap)?;
-    let write_guard = crate::write_gate::enter()?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let Some(current) = plan(&tx, request)? else {
         return Ok(Reply::ExistingPromotion);
     };
@@ -195,7 +192,7 @@ fn apply(
             params![space, request.space_name, request.project_id, request.saved_at],
         )?;
         if inserted != 1 {
-            return Err(rusqlite::Error::StatementChangedRows(inserted).into());
+            return Err(duckdb::Error::StatementChangedRows(inserted).into());
         }
     }
     let content = request.content.as_bytes();
@@ -216,7 +213,7 @@ fn apply(
         ],
     )?;
     if inserted != 1 {
-        return Err(rusqlite::Error::StatementChangedRows(inserted).into());
+        return Err(duckdb::Error::StatementChangedRows(inserted).into());
     }
     let seed = format!("# {}\n\n", request.title);
     if seed != request.content {
@@ -241,10 +238,9 @@ fn apply(
             request.item_id, request.title, request.promoted_by, request.created_at],
     )?;
     if linked != 1 {
-        return Err(rusqlite::Error::StatementChangedRows(linked).into());
+        return Err(duckdb::Error::StatementChangedRows(linked).into());
     }
     project_write::record_receipt(&tx, &request.operation_id)?;
     crate::request_control::commit(tx)?;
-    drop(write_guard);
     Ok(Reply::Changed)
 }

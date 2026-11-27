@@ -1,5 +1,5 @@
 use crate::{MAX_REPLY_BYTES, Result};
-use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params, params_from_iter};
+use duckdb::{Connection, OptionalExt, Row, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -160,7 +160,7 @@ pub fn run(db: &mut Connection, request: Request) -> Reply {
     }
 }
 
-fn rule_row(row: &Row<'_>) -> rusqlite::Result<RuleRow> {
+fn rule_row(row: &Row<'_>) -> duckdb::Result<RuleRow> {
     Ok(RuleRow {
         id: row.get(0)?,
         revision: row.get(1)?,
@@ -175,19 +175,19 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
                 db.prepare("SELECT id,revision,config FROM answer_rules ORDER BY rowid DESC")?;
             let rows = stmt
                 .query_map([], rule_row)?
-                .collect::<rusqlite::Result<_>>()?;
+                .collect::<duckdb::Result<_>>()?;
             Ok(Reply::Rules { rows })
         }
         Request::Preview { project_id } => {
             let mut stmt = db.prepare("SELECT id,revision,config FROM answer_rules WHERE enabled=1 AND (project_id IS NULL OR project_id=?1)")?;
             let rows = stmt
                 .query_map([project_id], rule_row)?
-                .collect::<rusqlite::Result<_>>()?;
+                .collect::<duckdb::Result<_>>()?;
             Ok(Reply::Rules { rows })
         }
         Request::Versions { id } => {
             let mut stmt = db.prepare(
-                "SELECT v.revision,v.at,v.source,v.title,v.note,v.config,
+                "SELECT v.revision,v.\"at\",v.source,v.title,v.note,v.config,
                 (SELECT COUNT(*) FROM answer_rule_turns t
                  WHERE t.rule_id=v.rule_id AND t.revision=v.revision AND t.status='applied')
                 FROM answer_rule_versions v WHERE v.rule_id=?1 ORDER BY v.revision DESC LIMIT 200",
@@ -204,7 +204,7 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
                         uses: row.get(6)?,
                     })
                 })?
-                .collect::<rusqlite::Result<_>>()?;
+                .collect::<duckdb::Result<_>>()?;
             Ok(Reply::Versions { rows })
         }
         Request::History { task_id, input_ids } => {
@@ -213,7 +213,7 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
         }
         Request::Save { draft } => save(db, draft),
         Request::Remove { id, revision } => {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let changed = tx.execute(
                 "DELETE FROM answer_rules WHERE id=?1 AND revision=?2",
                 params![id, revision],
@@ -226,7 +226,7 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
             })
         }
         Request::Annotate { id, revision, note } => {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let changed = tx.execute(
                 "UPDATE answer_rule_versions SET note=?1 WHERE rule_id=?2 AND revision=?3",
                 params![note, id, revision],
@@ -254,9 +254,9 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
             status,
             snapshot,
         } => {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             tx.execute(
-                "INSERT INTO answer_rule_turns(task_id,input_id,rule_id,revision,title,at,detail,phrase,evidence,scope,status,snapshot)
+                "INSERT INTO answer_rule_turns(task_id,input_id,rule_id,revision,title,\"at\",detail,phrase,evidence,scope,status,snapshot)
                  VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
                  ON CONFLICT(task_id,input_id) DO UPDATE SET detail=excluded.detail,evidence=excluded.evidence,status=excluded.status
                  WHERE answer_rule_turns.rule_id=excluded.rule_id AND answer_rule_turns.revision=excluded.revision
@@ -285,12 +285,12 @@ fn history(db: &Connection, task_id: Option<String>, input_ids: &[String]) -> Re
         (String::new(), "LIMIT 50")
     };
     let sql = format!("WITH uses AS (
-      SELECT task_id,input_id,rule_id,title,revision,at,detail,phrase,evidence,status,snapshot FROM answer_rule_turns
+      SELECT task_id,input_id,rule_id,title,revision,\"at\",detail,phrase,evidence,status,snapshot FROM answer_rule_turns
       UNION ALL
-      SELECT task_id,input_id,rule_id,title,revision,at,detail,NULL,NULL,NULL,NULL FROM answer_rule_uses old
+      SELECT task_id,input_id,rule_id,title,revision,\"at\",detail,NULL,NULL,NULL,NULL FROM answer_rule_uses old
       WHERE NOT EXISTS (SELECT 1 FROM answer_rule_turns turn WHERE turn.task_id=old.task_id AND turn.input_id=old.input_id)
-    ) SELECT u.task_id,t.title,u.input_id,u.rule_id,u.title,u.revision,u.at,u.detail,u.phrase,u.evidence,u.status,u.snapshot
-      FROM uses u JOIN tasks t ON t.id=u.task_id {filter} ORDER BY u.at DESC {limit}");
+    ) SELECT u.task_id,t.title,u.input_id,u.rule_id,u.title,u.revision,u.\"at\",u.detail,u.phrase,u.evidence,u.status,u.snapshot
+      FROM uses u JOIN tasks t ON t.id=u.task_id {filter} ORDER BY u.\"at\" DESC {limit}");
     let mut stmt = db.prepare(&sql)?;
     let row = |row: &Row<'_>| {
         Ok(UseRow {
@@ -311,12 +311,12 @@ fn history(db: &Connection, task_id: Option<String>, input_ids: &[String]) -> Re
     let values = task_id.iter().chain(input_ids);
     let result = stmt
         .query_map(params_from_iter(values), row)?
-        .collect::<rusqlite::Result<_>>()?;
+        .collect::<duckdb::Result<_>>()?;
     Ok(result)
 }
 
 fn save(db: &mut Connection, draft: Draft) -> Result<Reply> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let revision = if let Some(expected) = draft.expected_revision {
         let current = tx
             .query_row(
@@ -363,8 +363,10 @@ fn save(db: &mut Connection, draft: Draft) -> Result<Reply> {
         1
     };
     tx.execute(
-        "INSERT OR REPLACE INTO answer_rule_versions(rule_id,revision,at,source,title,config)
-        VALUES(?1,?2,?3,?4,?5,?6)",
+        "INSERT INTO answer_rule_versions(rule_id,revision,\"at\",source,title,config)
+         VALUES(?1,?2,?3,?4,?5,?6)
+         ON CONFLICT(rule_id, revision) DO UPDATE SET
+           \"at\"=excluded.\"at\", source=excluded.source, title=excluded.title, config=excluded.config",
         params![
             draft.id,
             revision,

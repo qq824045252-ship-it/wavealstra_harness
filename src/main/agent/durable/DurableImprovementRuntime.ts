@@ -61,18 +61,17 @@ export class DurableImprovementRuntime {
     if (entry === undefined) return;
     let pin = await api.memo<{ versions: { id: string; revision: number }[] }>(memoKey, ctx);
     if (!pin) {
-      const selected = this.service.packages.select({ taskId: scope.taskId, projectId: scope.projectId ?? undefined, workspaceId: scope.spaceId ?? undefined });
+      const selected = await this.service.packages.select({ taskId: scope.taskId, projectId: scope.projectId, workspaceId: scope.spaceId });
       pin = await api.memo(memoKey, { versions: selected ? [{ id: selected.release.id, revision: selected.release.revision }] : [] }, ctx);
     }
-    const packages = pin.versions.flatMap(v => {
-      const found = this.service.packages.version(v.id, v.revision);
-      if (!found?.release.enabled) return [];
+    const versions = await Promise.all(pin.versions.map(v => this.service.packages.version(v.id, v.revision)));
+    const packages = versions.filter((found): found is NonNullable<typeof found> => {
+      if (!found?.release.enabled) return false;
       const expected = found.release.scope.kind === "task" ? scope.taskId : found.release.scope.kind === "project" ? scope.projectId : scope.spaceId;
-      if (found.release.scope.id !== expected) return [];
+      if (found.release.scope.id !== expected) return false;
       const knowledge = this.service.knowledge();
       const task = { taskId: scope.taskId, projectId: scope.projectId, workspaceId: scope.spaceId };
-      if (!knowledge || !found.draft.knowledge.every(asset => knowledge.isCurrent(asset, task))) return [];
-      return [found];
+      return Boolean(knowledge && found.draft.knowledge.every(asset => knowledge.isCurrent(asset, task)));
     });
     return { packages, scope, run, entry, cwd: child?.workspace.cwd ?? this.binding.cwd,
       parentInputs: child?.parentSubmissionIds, canRead: this.binding.toolAllowed?.("read") !== false && (!child || child.item.tools.includes("read")),
@@ -82,7 +81,7 @@ export class DurableImprovementRuntime {
 
   private record(plan: NonNullable<Awaited<ReturnType<DurableImprovementRuntime["plan"]>>>, id: string, revision: number,
     kind: "hook" | "tool" | "skill" | "convention" | "memory", event: string, detail?: string) {
-    this.service.packages.record(id, revision, { task: plan.scope.taskId, conversation: plan.conversation, actor: plan.actor,
+    return this.service.packages.record(id, revision, { task: plan.scope.taskId, conversation: plan.conversation, actor: plan.actor,
       run: String(plan.entry), generation: plan.generation, kind, event, ...(detail ? { detail } : {}) });
   }
 
@@ -97,11 +96,11 @@ export class DurableImprovementRuntime {
     for (const { release, draft } of plan.packages) {
       if (draft.convention) {
         notes.push(draft.convention);
-        this.record(plan, release.id, release.revision, "convention", "applied");
+        await this.record(plan, release.id, release.revision, "convention", "applied");
       }
       if (draft.tool && plan.canRead) {
         notes.push("交付前将检查本轮明确要求的 Markdown 章节及附件。");
-        this.record(plan, release.id, release.revision, "tool", "offered");
+        await this.record(plan, release.id, release.revision, "tool", "offered");
       }
       for (const asset of draft.knowledge) {
         const resolved = await knowledge?.resolve(asset, { taskId: plan.scope.taskId, projectId: plan.scope.projectId,
@@ -110,10 +109,10 @@ export class DurableImprovementRuntime {
         injected.push(asset.version);
         if (resolved.kind === "skill") {
           notes.push(`技能 ${resolved.name}：\n${resolved.content}`);
-          this.record(plan, release.id, release.revision, "skill", "read", resolved.path);
+          await this.record(plan, release.id, release.revision, "skill", "read", resolved.path);
         } else {
           notes.push(`相关记忆：${resolved.title}\n${resolved.content}`);
-          this.record(plan, release.id, release.revision, "memory", "recalled");
+          await this.record(plan, release.id, release.revision, "memory", "recalled");
         }
       }
     }
@@ -130,7 +129,7 @@ export class DurableImprovementRuntime {
     const messages: string[] = [];
     for (const { release, draft } of plan.packages) {
       if (!draft.contract) continue;
-      this.record(plan, release.id, release.revision, "tool", "executed");
+      await this.record(plan, release.id, release.revision, "tool", "executed");
       let result = await executeDeliveryTool(draft.tool,plan.cwd,contract);
       if (result.status === "passed") {
         for (const path of [contract.document, ...contract.attachments]) {
@@ -140,23 +139,23 @@ export class DurableImprovementRuntime {
           }
         }
       }
-      this.record(plan, release.id, release.revision, "tool", result.status);
+      await this.record(plan, release.id, release.revision, "tool", result.status);
       let note: string;
       try { note = await this.service.packages.runHook(draft, result); }
       catch (error) {
         ctx.abortSignal?.throwIfAborted();
-        this.service.packages.regression(release.id,release.revision,result,{task:plan.scope.taskId,conversation:plan.conversation,
+        await this.service.packages.regression(release.id,release.revision,result,{task:plan.scope.taskId,conversation:plan.conversation,
           actor:plan.actor,run:String(plan.entry),generation:plan.generation,kind:"hook",event:"error",detail:String(error).slice(0,500)});
         throw error;
       }
       const decision = improvementOracleDecision(result, note);
       if (decision.event) {
-        this.service.packages.regression(release.id,release.revision,result,{task:plan.scope.taskId,conversation:plan.conversation,
+        await this.service.packages.regression(release.id,release.revision,result,{task:plan.scope.taskId,conversation:plan.conversation,
           actor:plan.actor,run:String(plan.entry),generation:plan.generation,kind:"hook",event:decision.event});
         if (decision.note) messages.push(decision.note);
         continue;
       }
-      this.record(plan, release.id, release.revision, "hook", note ? "feedback" : result.status === "passed" ? "passed" : "unknown");
+      await this.record(plan, release.id, release.revision, "hook", note ? "feedback" : result.status === "passed" ? "passed" : "unknown");
       if (note) messages.push(note);
     }
     return messages.join("\n");

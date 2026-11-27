@@ -5,15 +5,17 @@ import type { ReplyCitation } from "../../shared/chat-reply-content";
 import { collectReplyCitations } from "../../shared/chat-reply-sources";
 import { dotsSummaryInterval } from "../../shared/dots-settings";
 import { DOTS_TASK_ID, type DotsAssistantReply, type DotsDelegation, type DotsReplyOrigin, type DotsTaskDelivery } from "../../shared/dots";
-import { readCommittedDotsDeliveries, type CommittedDotsDelivery, type DotsAppendOutcome } from "../agent/durable/DurableDotsReply";
+import { normalizeDotsAssistantReply, readCommittedDotsDeliveries, type CommittedDotsDelivery, type DotsAppendOutcome } from "../agent/durable/DurableDotsReply";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 import type { DotsFollowupDecision } from "./DotsFollowup";
 import { activitySummary } from "./DotsActivity";
 import { dotsGoalConclusion, dotsOriginalDestination } from "./DotsGoalConclusion";
 
 export type DotsFollowup = (job: DotsDelegation, request?: AgentPromptRequest) =>
   Promise<DotsFollowupDecision>;
-export type AppendDotsReply = (reply: DotsAssistantReply, isCurrent: () => boolean) =>
+export type AppendDotsReply = (reply: DotsAssistantReply, isCurrent: () => boolean, outboxEventKey?: string) =>
   Promise<DotsAppendOutcome>;
+type OutboxNative = Pick<RuntimeAuditReader, "batch4aWrite" | "supervised"> & Partial<Pick<RuntimeAuditReader, "prepareDotsReply">>;
 
 type Event = { event_key: string; operation_id: string; status: string; interaction_id: string | null;
   task_id: string; snapshot: string; reply: string | null; settled: number };
@@ -48,7 +50,7 @@ export class DotsReplyOutbox {
 
   constructor(private db: Database.Database, private changed?: (operationId: string) => void,
     private readonly sampleIntervalMs = () => Number(dotsSummaryInterval.defaultSeconds) * 1_000,
-    private readonly native?: Pick<import("../platform/runtime-audit").RuntimeAuditReader, "batch4aWrite" | "supervised">) {
+    private readonly native?: OutboxNative) {
     if (!db.readonly) {
       db.exec(`CREATE TABLE IF NOT EXISTS dots_reply_origins(source TEXT PRIMARY KEY, conversation INTEGER NOT NULL, entry INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS dots_followup_plans(operation_id TEXT PRIMARY KEY,plan TEXT NOT NULL);
@@ -540,6 +542,13 @@ export class DotsReplyOutbox {
       // Also check replies prepared before the current body and citation selection were linked.
       const matched = collectReplyCitations(reply.text, reply.citations.map(citation => ({ ...citation, text: citation.excerpt })));
       reply.citations = matched.length ? matched : undefined;
+    }
+    if (this.native?.supervised && this.native.prepareDotsReply) {
+      if (!current()) return false;
+      if (!handler.allowedReply(reply.kind)) { this.settle(event); return false; }
+      const receipt = await this.native.prepareDotsReply(event.event_key, event.snapshot, normalizeDotsAssistantReply(reply));
+      if (!receipt || receipt.status === "invalid") throw new Error("Core 未确认 Dots 回传的原对话和正文");
+      return false;
     }
     const prepared = JSON.stringify(reply);
     if (prepared !== event.reply) {

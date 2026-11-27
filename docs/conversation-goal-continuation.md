@@ -210,7 +210,7 @@ RETURNING tokens_used, tokens_budget, state;
 
 ## 10. 测试计划
 
-新增 `scripts/conversation-goal-continuation-test.ts`（`pnpm -s test:conversation-goal-continuation`，纯 Node，默认进 headless 套件），复用 `scripts/agent-durable-fixture.ts`（确定性 provider、真实 AgentService/durable 存储）：
+原测试计划保留在 `scripts/conversation-goal-continuation-test.ts`。旧夹具以 SQLite 启动 Durable，已退役对应门禁。以下场景作为 Core 迁移的验收清单。
 
 1. 建 Goal（两条 criteria），prompt 一轮模型直接收尾 → 断言 `requests.length === 2`（宿主点了火），第二次请求的系统提示词含 `## 对话 Goal` 与"不要以…收尾"，用户入口 metadata 带 `goalContinuation.attempt === 1`。
 2. 第二轮仍不满足 → 第三次点火；`attempts === 2`；把 cap 调成 2 → 第三次不再点火，账本 `state === 'exhausted'`、`defer_reason === 'budget'`。
@@ -220,7 +220,7 @@ RETURNING tokens_used, tokens_budget, state;
 6. 用户在排队（构造 `queued > 0` 或 `waiting_input`）→ 跳过并记录原因。
 7. 本轮 failed/aborted → 写 deferral 且不点火；用户发新消息 → 清 deferral。
 8. 记账：fixture 每请求 input=1/output=1 → 工具完成后 `tokens_used` 单调增加；设 `tokens_budget = 3` → 到预算立刻 `exhausted` 且不再点火。
-9. 回归：`test:conversation-goal-prompt`、`test:bot-work-phase1`、`test:prompt-execution`、`test:durable-workspace-binding` 保持绿。
+9. Core 的 Goal 创建、并发冲突和重启回读由 `test:core-observability` 验证。模型收到的提示词和续跑行为需要独立验收。
 
 ## 11. 分阶段
 
@@ -263,6 +263,6 @@ RETURNING tokens_used, tokens_budget, state;
 | 历史标记 | `ChatMessageDto.goalContinuation`；`MessageItem` 渲染窄条 | 仍然是 `mybuddy.user` 条目，不新增 entry kind；`displayText` 只写短标签。 |
 | 开关 | settings `conversationGoalContinuationEnabled`（默认开）+ `MYBUDDY_DISABLE_GOAL_CONTINUATION=1` | 关闭后退化为纯提示词契约。 |
 
-验收：`scripts/conversation-goal-continuation-test.ts`（`pnpm -s test:conversation-goal-continuation`）驱动真实 AgentService/Durable/Work/账本，覆盖点火、请求契约、历史标记、轮次上限、显式继续（serial 不复用）、预算、无进展、用户消息清除、暂停/恢复、用户中断（等待输入时 abort）、重启对账与提示词 exhausted 规则。
+当前 Core 专项覆盖 Goal 创建、用户消息首次入库解除等待、重复与迟到请求、暂停原因及重启对账。自动续跑的点火、提示词、显式继续、预算和中断场景仍需通过真实 AgentService 验收。 [DuckDB 验收记录](reviews/duckdb-acceptance-2026-11-26.md)
 
 P3 未做：一个对话目前仍只允许一个活跃 Work（`ConversationGoalService.create` 冲突即拒绝），因此"多 Goal"没有独立状态机；watch 模式与绑定执行显式跳过点火。远程端通过 `activeGoal` DTO 透传 `continuation`，没有新增续跑控制 IPC。

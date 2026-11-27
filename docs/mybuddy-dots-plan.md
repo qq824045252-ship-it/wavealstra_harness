@@ -91,10 +91,8 @@ Dots 先在原对话接单。普通任务完成后，Dots 在同一对话追加�
 | 用户关心的事 | 可重复的检查 |
 | --- | --- |
 | 主页位置、独立对话、切回原任务、重启后打开原文件 | `pnpm -s test:dots-desktop` 使用隔离配置启动真实 Electron，由测试模型驱动原生会话。`pnpm run test:dots-desktop --excel` 另外在工作区覆盖同名报价表，并在 Dots 内的 GridCraft 验证原版 A1 内容。 |
-| 在空间办事、给原任务改向、回应阻塞、暂停或停止指定范围、到点或文件变化后接续 | `pnpm -s test:dots-actions` 从原生对话工具进入，读取 SQLite、文件系统和执行回执。 |
-| 普通任务交付、同名覆盖、迟到结果、断点恢复、离线补办、资料引用撤销与旧版本读取 | `pnpm -s test:dots-delivery` 读取实际文件，并按来源任务和本次请求核对。 |
-| 一次交办后继续、阻塞时带结果提问、文件变化后接续 | `pnpm -s test:dots-followup` 核对同一普通任务的原生执行回执和原 Dots 对话中的助手消息。 |
-| 定时续办、取消、无变化、重复事件及跨数据库写入中断 | `pnpm -s test:dots-reply-recovery` 在实际写入前后分别中断并重开，核对聊天条目、原始交办和执行次数。 |
+| 委派恢复、并发状态更新和原对话交付 | `pnpm -s test:core-task-and-python` 使用真实 Core 与 Pi Storage，检查委派去重、迟到状态、工作区变更、回执丢失及重启后的附件。 |
+| 改向、提问、按范围暂停和停止、定时和文件接续、同名覆盖、资料撤销 | 旧 SQLite 夹具已移出门禁，原场景保留。Core 专项覆盖部分定时和文件接续，完整的 Dots 桌面流程仍待复验。[迁移记录](reviews/duckdb-acceptance-2026-11-26.md) |
 | 切走后收到文字、附件或失败问题，再次打开仍在 | `pnpm run test:dots-desktop --proactive` 通过隔离桌面发送请求，核对屏幕和原生聊天记录。`--live-handoff` 使用实际模型计算工作区文件中的合计并交付文字。 |
 | 关窗后的常驻宿主、重复启动、冷备份与遗忘 | `pnpm -s test:dots-host` 验证单机接管。跨日观察使用独立参数。[常驻、恢复和七天观察说明](mybuddy-dots-single-host.md) |
 | 记忆规模和质量 | `pnpm -s test:dots-memory-scale` 用十万条记录和十万条持久向量计时。`pnpm -s test:dots-memory-longmemeval` 用独立标注的历史会话核对来源。 |

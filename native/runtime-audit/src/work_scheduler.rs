@@ -5,7 +5,7 @@ use crate::business_protocol::{
     ClientContext, EmittedEvent, ExecutorTracker, WriteSideEffects, append_event,
     current_core_generation, ensure_tables,
 };
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -819,11 +819,11 @@ fn fetch_work(conn: &Connection, work_id: &str) -> crate::Result<Option<WorkRowD
 
 fn ensure_bot_exists(tx: &Connection, user_id: &str, bot_id: &str, now: i64) -> crate::Result<()> {
     tx.execute(
-        "INSERT OR IGNORE INTO bots (
+        "INSERT INTO bots (
            bot_id, user_id, display_name, responsibility_summary, expert_profile_json,
            memory_scope_json, authorization_json, foreground_allowed_tools_json,
            notification_policy_json, status, created_at, updated_at
-         ) VALUES (?, ?, ?, '', '{}', '{}', '{}', '[]', '{}', 'active', ?, ?)",
+         ) VALUES (?, ?, ?, '', '{}', '{}', '{}', '[]', '{}', 'active', ?, ?) ON CONFLICT DO NOTHING",
         params![bot_id, user_id, bot_id, now, now],
     )?;
     Ok(())
@@ -962,10 +962,10 @@ fn save_receipt(
     now: i64,
 ) -> crate::Result<()> {
     tx.execute(
-        "INSERT OR IGNORE INTO work_operation_receipts (
+        "INSERT INTO work_operation_receipts (
            user_id, operation_id, work_id, operation_type, payload_hash,
            result_snapshot_json, outbox_event_id, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         params![
             user_id,
             operation_id,
@@ -992,11 +992,11 @@ fn insert_outbox(
     let event_id = format!("out-{}", sha256_hex(&format!("{}:{operation_id}:{event_type}", work.work_id))[..16].to_owned());
     let dedupe_key = format!("outbox:{}:{event_type}:{operation_id}", work.work_id);
     tx.execute(
-        "INSERT OR IGNORE INTO work_events_outbox (
+        "INSERT INTO work_events_outbox (
            event_id, dedupe_key, event_type, work_id, binding_id,
            intent_revision, state_version, owner_epoch, request_id,
            payload_json, delivery_status, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?) ON CONFLICT DO NOTHING",
         params![
             event_id,
             dedupe_key,
@@ -1359,7 +1359,8 @@ pub(crate) fn promote_compatible_executions(
                 exec_id
             ],
         )?;
-        tracker.register_active_execution(&exec_id, next_attempt, exec_epoch, &row.owner_generation);
+        // Note (`CC-10`): Do NOT register in `ExecutorTracker` inside the SQL transaction!
+        // `apply_committed_promotion_dispatches` registers only AFTER SQL COMMIT succeeds.
         conflicts.insert(&exec_id, &task_id, &kind, &payload);
 
         if let Some(binding_id) = payload.get("bindingId").and_then(Value::as_str) {
@@ -1410,6 +1411,56 @@ pub(crate) fn promote_compatible_executions(
         promoted += 1;
     }
     Ok(promoted)
+}
+
+/// Applies active-execution registrations to `ExecutorTracker` strictly AFTER SQL `COMMIT` succeeds (`CC-10`).
+pub(crate) fn apply_committed_promotion_dispatches(tracker: &ExecutorTracker, dispatches: &[Value]) {
+    for d in dispatches {
+        let Some(entry) = d.get("coreExecutionDispatch") else {
+            continue;
+        };
+        if entry.get("action").and_then(Value::as_str) != Some("start") {
+            continue;
+        }
+        let Some(epoch) = entry.get("targetEpoch").and_then(Value::as_u64) else {
+            continue;
+        };
+        let Some(exec) = entry.get("execution") else {
+            continue;
+        };
+        let (Some(exec_id), Some(attempt), Some(owner_gen)) = (
+            exec.get("executionId").and_then(Value::as_str),
+            exec.get("attempt").and_then(Value::as_i64),
+            exec.get("ownerGeneration").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        tracker.register_active_execution(exec_id, attempt, epoch, owner_gen);
+    }
+}
+
+/// Rebuilds `ExecutorTracker` active execution entries directly from committed DB rows.
+pub(crate) fn reconcile_executor_tracker_from_db(
+    conn: &Connection,
+    tracker: &ExecutorTracker,
+) -> crate::Result<usize> {
+    let Some((online_epoch, _)) = tracker.is_online() else {
+        return Ok(0);
+    };
+    let mut stmt = conn.prepare(
+        "SELECT execution_id, attempt, executor_epoch, owner_generation
+         FROM core_execution_runs
+         WHERE status IN ('dispatching', 'running') AND executor_epoch = ?",
+    )?;
+    let rows: Vec<(String, i64, i64, String)> = stmt
+        .query_map(params![online_epoch as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (eid, attempt, epoch, owner_gen) in &rows {
+        tracker.register_active_execution(eid, *attempt, *epoch as u64, owner_gen);
+    }
+    Ok(rows.len())
 }
 
 /// Hooks `CoreExecution` settlement back into `work_execution_bindings`, `work_deliverables`,
@@ -1528,7 +1579,7 @@ fn settle_binding_tx(
     if let Some(exec_row) = tx
         .query_row(
             "SELECT execution_id, revision FROM core_execution_runs
-             WHERE json_extract(payload_json, '$.bindingId') = ? LIMIT 1",
+             WHERE json_extract_string(payload_json, '$.bindingId') = ? LIMIT 1",
             params![binding_id],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
         )
@@ -1562,12 +1613,12 @@ fn settle_binding_tx(
         let uncovered_crit_json =
             serde_json::to_string(&deliv.uncovered_criterion_ids.clone().unwrap_or_default())?;
         tx.execute(
-            "INSERT OR IGNORE INTO work_deliverables (
+            "INSERT INTO work_deliverables (
                deliverable_id, work_id, producer_bot_id, execution_id,
                intent_revision, owner_epoch, input_snapshot_id, status, summary,
                artifact_refs_json, evidence_refs_json, uncovered_scope_json,
                uncovered_criterion_ids_json, created_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?)",
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
             params![
                 did,
                 work_id,
@@ -1618,19 +1669,19 @@ fn settle_binding_tx(
     if outcome == "unknown" {
         let blocker_id = format!("unknown-exec:{binding_id}");
         tx.execute(
-            "INSERT OR IGNORE INTO work_blockers (
+            "INSERT INTO work_blockers (
                blocker_id, work_id, reported_by_bot_id, reason, kind,
                unknown_external_effect_ref, waiting_for_user_input, status, created_at, reason_code
-             ) VALUES (?, ?, ?, 'Execution settled in unknown state; awaiting readback verification', 'external_effect', ?, 0, 'open', ?, 'unknown-execution')",
+             ) VALUES (?, ?, ?, 'Execution settled in unknown state; awaiting readback verification', 'external_effect', ?, 0, 'open', ?, 'unknown-execution') ON CONFLICT DO NOTHING",
             params![blocker_id, work_id, bot_id, binding_id, now],
         )?;
     } else if outcome == "failed" {
         let plan_id = format!("auto-rec:{binding_id}");
         let fp = sha256_hex(&format!("{binding_id}:{outcome}:{}", error_message.unwrap_or("")));
         tx.execute(
-            "INSERT OR IGNORE INTO work_automatic_recovery (
+            "INSERT INTO work_automatic_recovery (
                source_binding_id, plan_id, fingerprint, mode, created_at
-             ) VALUES (?, ?, ?, 'recover', ?)",
+             ) VALUES (?, ?, ?, 'recover', ?) ON CONFLICT DO NOTHING",
             params![binding_id, plan_id, fp, now],
         )?;
     }
@@ -1758,7 +1809,7 @@ fn tick_tx(
            active_since, last_seen_at, stopped_at, updated_at
          ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
          ON CONFLICT(authority_id) DO UPDATE SET
-           last_scan_at = MAX(COALESCE(work_watch_host_state.last_scan_at, excluded.last_scan_at), excluded.last_scan_at),
+           last_scan_at = GREATEST(COALESCE(work_watch_host_state.last_scan_at, excluded.last_scan_at), excluded.last_scan_at),
            last_seen_at = excluded.last_seen_at,
            stopped_at = NULL,
            updated_at = excluded.updated_at",
@@ -1770,8 +1821,8 @@ fn tick_tx(
     {
         let mut stmt = tx.prepare(
             "SELECT work_id FROM works WHERE mode = 'watch' AND lifecycle IN ('active', 'paused', 'closing')
-             AND ((json_type(watch_rule_json, '$.endsAt') IN ('integer', 'real') AND json_extract(watch_rule_json, '$.endsAt') <= ?)
-               OR json_extract(watch_rule_json, '$.termination.reason') = 'schedule_expired')",
+             AND (TRY_CAST(json_extract(watch_rule_json, '$.endsAt') AS DOUBLE) <= ?
+               OR json_extract_string(watch_rule_json, '$.termination.reason') = 'schedule_expired')",
         )?;
         for r in stmt.query_map(params![now], |r| r.get::<_, String>(0))? {
             let wid = r?;
@@ -1973,10 +2024,10 @@ fn tick_tx(
             let tick_id = format!("tick-{}", sha256_hex(&format!("{sub_id}:{revision}:{slot_key}"))[..16].to_owned());
             let initial_status = if merged_into.is_some() { "skipped" } else { "pending" };
             let inserted = tx.execute(
-                "INSERT OR IGNORE INTO work_schedule_ticks (
+                "INSERT INTO work_schedule_ticks (
                    tick_id, subscription_id, work_id, schedule_revision, logical_slot_key,
                    planned_at, effective_at, status, merged_from_slot_keys_json, created_at
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?)",
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?) ON CONFLICT DO NOTHING",
                 params![tick_id, sub_id, work_id, revision, slot_key, cursor, effective_at, initial_status, now],
             )?;
             if inserted > 0 && merged_into.is_none() {
@@ -1994,11 +2045,11 @@ fn tick_tx(
                     "continuousExecution": work.watch_rule.as_ref().and_then(|v| v.get("executionMode")).and_then(Value::as_str) == Some("continuous"),
                 });
                 tx.execute(
-                    "INSERT OR IGNORE INTO work_events_inbox (
+                    "INSERT INTO work_events_inbox (
                        event_id, dedupe_key, source, source_event_id, event_type,
                        work_id, subscription_id, intent_revision, state_version, owner_epoch,
                        source_version, payload_json, status, merged_count, received_at, target_key, process_reason
-                     ) VALUES (?, ?, 'cron', ?, 'work.tick', ?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, 'schedule-tick')",
+                     ) VALUES (?, ?, 'cron', ?, 'work.tick', ?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, 'schedule-tick') ON CONFLICT DO NOTHING",
                     params![
                         event_id,
                         dedupe_key,
@@ -2103,8 +2154,8 @@ fn tick_tx(
         drop(dl_stmt);
         for (wid, lifecycle, rev, at, irev, sver, oepoch) in dl_rows {
             tx.execute(
-                "INSERT OR IGNORE INTO work_deadline_instances (work_id, deadline_revision, deadline_at, state, created_at)
-                 VALUES (?, ?, ?, 'armed', ?)",
+                "INSERT INTO work_deadline_instances (work_id, deadline_revision, deadline_at, state, created_at)
+                 VALUES (?, ?, ?, 'armed', ?) ON CONFLICT DO NOTHING",
                 params![wid, rev, at, now],
             )?;
             if lifecycle == "paused" {
@@ -2114,20 +2165,20 @@ fn tick_tx(
                     params![now, wid, rev, at],
                 )?;
                 tx.execute(
-                    "INSERT OR IGNORE INTO work_blockers (
+                    "INSERT INTO work_blockers (
                        blocker_id, work_id, reason, kind, waiting_for_user_input, status, created_at, reason_code
-                     ) VALUES (?, ?, '事项承诺期限已到，但事项处于暂停状态；保留到期事实，恢复后再决定跟进', 'operational', 0, 'open', ?, 'deadline-follow-up')",
+                     ) VALUES (?, ?, '事项承诺期限已到，但事项处于暂停状态；保留到期事实，恢复后再决定跟进', 'operational', 0, 'open', ?, 'deadline-follow-up') ON CONFLICT DO NOTHING",
                     params![format!("offline:{wid}:deadline-follow-up"), wid, now],
                 )?;
             } else {
                 let dedupe_key = format!("work:{wid}:deadline:{rev}:{at}");
                 let event_id = format!("evt-{}", sha256_hex(&dedupe_key)[..16].to_owned());
                 tx.execute(
-                    "INSERT OR IGNORE INTO work_events_inbox (
+                    "INSERT INTO work_events_inbox (
                        event_id, dedupe_key, source, source_event_id, event_type,
                        work_id, intent_revision, state_version, owner_epoch,
                        payload_json, status, merged_count, received_at, batch_id, process_reason
-                     ) VALUES (?, ?, 'system', ?, 'deadline_expired', ?, ?, ?, ?, ?, 'pending', 1, ?, ?, 'deadline-expired')",
+                     ) VALUES (?, ?, 'system', ?, 'deadline_expired', ?, ?, ?, ?, ?, 'pending', 1, ?, ?, 'deadline-expired') ON CONFLICT DO NOTHING",
                     params![
                         event_id,
                         dedupe_key,
@@ -2186,7 +2237,7 @@ fn scan_recovery_tx(
     let mut stmt = tx.prepare(
         "SELECT b.binding_id, b.work_id, b.bot_id, b.status
          FROM work_execution_bindings b
-         JOIN core_execution_runs r ON json_extract(r.payload_json, '$.bindingId') = b.binding_id
+         JOIN core_execution_runs r ON json_extract_string(r.payload_json, '$.bindingId') = b.binding_id
          WHERE b.invalidated_at IS NULL
            AND b.status IN ('submitted', 'running')
            AND r.status = 'unknown'",
@@ -2427,7 +2478,7 @@ pub fn execute_write(
         } => {
             let now = supplied_now.unwrap_or_else(now_ms);
             let ttl = lease_ttl_ms.unwrap_or(DEFAULT_LEASE_TTL_MS);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let prev: Option<(String, i64, i64, Option<i64>)> = tx
                 .query_row(
                     "SELECT authority_id, acquired_at, heartbeat_at, released_at FROM work_host_lease WHERE lease_id='singleton'",
@@ -2513,7 +2564,7 @@ pub fn execute_write(
         } => {
             let now = supplied_now.unwrap_or_else(now_ms);
             let ttl = lease_ttl_ms.unwrap_or(DEFAULT_LEASE_TTL_MS);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             if let Some(rej) = check_owner_lease_write(&tx, Some(&owner_id), now, ttl)? {
                 return Ok(rej);
             }
@@ -2534,7 +2585,7 @@ pub fn execute_write(
             now_ms: supplied_now,
         } => {
             let now = supplied_now.unwrap_or_else(now_ms);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let updated = tx.execute(
                 "UPDATE work_host_lease SET released_at = ? WHERE lease_id = 'singleton' AND authority_id = ?",
                 params![now, owner_id],
@@ -2565,7 +2616,7 @@ pub fn execute_write(
             now_ms: supplied_now,
         } => {
             let now = supplied_now.unwrap_or_else(now_ms);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             if let Some(rej) =
                 check_owner_lease_write(&tx, owner_id.as_deref(), now, DEFAULT_LEASE_TTL_MS)?
             {
@@ -2677,7 +2728,7 @@ pub fn execute_write(
             now_ms: supplied_now,
         } => {
             let now = supplied_now.unwrap_or_else(now_ms);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             if let Some(rej) =
                 check_owner_lease_write(&tx, owner_id.as_deref(), now, DEFAULT_LEASE_TTL_MS)?
             {
@@ -2802,7 +2853,7 @@ pub fn execute_write(
             now_ms: supplied_now,
         } => {
             let now = supplied_now.unwrap_or_else(now_ms);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             if let Some(rej) =
                 check_owner_lease_write(&tx, owner_id.as_deref(), now, DEFAULT_LEASE_TTL_MS)?
             {
@@ -2899,7 +2950,7 @@ pub fn execute_write(
             now_ms: supplied_now,
         } => {
             let now = supplied_now.unwrap_or_else(now_ms);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             if let Some(rej) =
                 check_owner_lease_write(&tx, owner_id.as_deref(), now, DEFAULT_LEASE_TTL_MS)?
             {
@@ -2985,6 +3036,7 @@ pub fn execute_write(
                 now,
             )?;
             crate::request_control::commit(tx)?;
+            apply_committed_promotion_dispatches(tracker, &dispatches);
             Ok(WriteSideEffects {
                 data: reply,
                 events,
@@ -3066,7 +3118,7 @@ pub fn execute_write(
             archived_at,
         } => {
             let now = archived_at.unwrap_or_else(now_ms);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             if let Some(rej) =
                 check_owner_lease_write(&tx, owner_id.as_deref(), now, DEFAULT_LEASE_TTL_MS)?
             {
@@ -3106,7 +3158,7 @@ pub fn execute_write(
                 });
             }
             tx.execute(
-                "INSERT OR IGNORE INTO work_record_archive (work_id, archived_at) VALUES (?, ?)",
+                "INSERT INTO work_record_archive (work_id, archived_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
                 params![work_id, now],
             )?;
             let ev = append_event(
@@ -3145,7 +3197,7 @@ pub fn execute_write(
             now_ms: supplied_now,
         } => {
             let now = supplied_now.unwrap_or_else(now_ms);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             if let Some(rej) =
                 check_owner_lease_write(&tx, owner_id.as_deref(), now, DEFAULT_LEASE_TTL_MS)?
             {
@@ -3256,7 +3308,7 @@ pub fn execute_write(
             now_ms: supplied_now,
         } => {
             let now = supplied_now.unwrap_or_else(now_ms);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             if let Some(rej) =
                 check_owner_lease_write(&tx, owner_id.as_deref(), now, DEFAULT_LEASE_TTL_MS)?
             {
@@ -3302,12 +3354,12 @@ pub fn execute_write(
             let exec_kind = kind.unwrap_or_else(|| "work_execution".to_owned());
 
             tx.execute(
-                "INSERT OR IGNORE INTO work_execution_bindings (
+                "INSERT INTO work_execution_bindings (
                    binding_id, work_id, operation_id, bot_id, task_id, durable_store_key,
                    conversation_id, intent_revision, owner_epoch, input_snapshot_id,
                    expert_snapshot_json, delegated_scope_json, workspace_binding,
                    status, admitted_at, inbox_event_id
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '[]', ?, 'pending', ?, ?)",
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '[]', ?, 'pending', ?, ?) ON CONFLICT DO NOTHING",
                 params![
                     bind_id,
                     work_id,
@@ -3345,10 +3397,10 @@ pub fn execute_write(
 
             let conflict = has_active_conflict(&tx, &exec_id, &enriched_payload)?;
             tx.execute(
-                "INSERT OR IGNORE INTO work_dispatch_requests (
+                "INSERT INTO work_dispatch_requests (
                    operation_id, work_id, task_id, bot_id, intent_revision,
                    input_snapshot_id, state, error, attempts, created_at, inbox_event_id
-                 ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, 0, ?, ?)",
+                 ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, 0, ?, ?) ON CONFLICT DO NOTHING",
                 params![
                     operation_id,
                     work_id,
@@ -3369,10 +3421,10 @@ pub fn execute_write(
             };
             let idemp_key = format!("work:{work_id}:{operation_id}");
             tx.execute(
-                "INSERT OR IGNORE INTO core_execution_runs (
+                "INSERT INTO core_execution_runs (
                    execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
                    task_id, kind, payload_json, status, revision, created_at_ms, updated_at_ms
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) ON CONFLICT DO NOTHING",
                 params![
                     exec_id,
                     idemp_key,
@@ -3422,6 +3474,7 @@ pub fn execute_write(
                 now,
             )?;
             crate::request_control::commit(tx)?;
+            apply_committed_promotion_dispatches(tracker, &dispatches);
             Ok(WriteSideEffects {
                 data: reply,
                 events,
@@ -3446,7 +3499,7 @@ pub fn execute_write(
             // Note: Legitimate in-flight settlements match their original `(bindingId, ownerEpoch, intentRevision, inputSnapshotId)`
             // identity even across Work host restarts or ownership transitions (`RC-11` / `RC-13`)!
             let now = supplied_now.unwrap_or_else(now_ms);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let mut events = vec![];
             let data = settle_binding_tx(
                 &tx,
@@ -3469,6 +3522,7 @@ pub fn execute_write(
                 promote_compatible_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
             }
             crate::request_control::commit(tx)?;
+            apply_committed_promotion_dispatches(tracker, &dispatches);
             Ok(WriteSideEffects {
                 data,
                 events,
@@ -3487,7 +3541,7 @@ pub fn execute_write(
             now_ms: supplied_now,
         } => {
             let now = supplied_now.unwrap_or_else(now_ms);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             if let Some(rej) =
                 check_owner_lease_write(&tx, owner_id.as_deref(), now, DEFAULT_LEASE_TTL_MS)?
             {
@@ -3575,7 +3629,7 @@ pub fn execute_write(
         } => {
             let now = supplied_now.unwrap_or_else(now_ms);
             let ttl = lease_ttl_ms.unwrap_or(DEFAULT_LEASE_TTL_MS);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let mut events = vec![];
             let mut dispatches = vec![];
             let data = tick_tx(
@@ -3589,6 +3643,7 @@ pub fn execute_write(
                 &mut dispatches,
             )?;
             crate::request_control::commit(tx)?;
+            apply_committed_promotion_dispatches(tracker, &dispatches);
             Ok(WriteSideEffects {
                 data,
                 events,
@@ -3601,7 +3656,7 @@ pub fn execute_write(
             now_ms: supplied_now,
         } => {
             let now = supplied_now.unwrap_or_else(now_ms);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             if let Some(rej) =
                 check_owner_lease_write(&tx, owner_id.as_deref(), now, DEFAULT_LEASE_TTL_MS)?
             {
@@ -3613,6 +3668,7 @@ pub fn execute_write(
             let promoted =
                 promote_compatible_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
             crate::request_control::commit(tx)?;
+            apply_committed_promotion_dispatches(tracker, &dispatches);
             Ok(WriteSideEffects {
                 data: json!({
                     "ok": true,
@@ -3654,7 +3710,7 @@ fn transition_close_tx(
     now_ms_opt: Option<i64>,
 ) -> crate::Result<WriteSideEffects> {
     let now = now_ms_opt.unwrap_or_else(now_ms);
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     if let Some(rej) = check_owner_lease_write(&tx, owner_id, now, DEFAULT_LEASE_TTL_MS)? {
         return Ok(rej);
     }
@@ -3709,7 +3765,7 @@ fn transition_close_tx(
     if let Some((exec_epoch, _)) = tracker.is_online() {
         let mut active_runs_stmt = tx.prepare(
             "SELECT execution_id, revision, owner_generation, task_id FROM core_execution_runs
-             WHERE json_extract(payload_json, '$.workId') = ?
+             WHERE json_extract_string(payload_json, '$.workId') = ?
                AND status IN ('queued', 'waiting_executor', 'dispatching', 'running', 'pause_requested')",
         )?;
         let active_runs: Vec<(String, i64, String, String)> = active_runs_stmt
@@ -3820,7 +3876,7 @@ pub fn claim_supervised_core_lease(db: &mut Connection) -> crate::Result<bool> {
     let core_gen = current_core_generation();
     ensure_tables(db, &core_gen)?;
     let now = now_ms();
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let core_owner = format!("core:{core_gen}");
     let prev: Option<(String, i64, i64, Option<i64>)> = tx
         .query_row(
@@ -3876,7 +3932,7 @@ mod tests {
 
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(crate::db_schema::CANONICAL_SCHEMA_SQL).unwrap();
+        conn.execute_batch(crate::database::CANONICAL_DUCKDB_SCHEMA_SQL).unwrap();
         ensure_tables(&conn, "test-gen").unwrap();
         conn
     }
@@ -4047,13 +4103,24 @@ mod tests {
         )
         .unwrap();
 
-        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        let tx = db.transaction().unwrap();
         let mut events = Vec::new();
         let mut dispatches = Vec::new();
         let promoted = promote_compatible_executions(&tx, &core_gen, &tracker, &mut events, &mut dispatches).unwrap();
-        tx.commit().unwrap();
+        // Rollback before commit: tracker must NOT contain phantom active registration!
+        tx.rollback().unwrap();
+        assert!(tracker.verify_active_execution("exec-129", 1, 1).is_none());
 
-        assert_eq!(promoted, 1);
+        let tx2 = db.transaction().unwrap();
+        events.clear();
+        dispatches.clear();
+        let promoted2 = promote_compatible_executions(&tx2, &core_gen, &tracker, &mut events, &mut dispatches).unwrap();
+        assert_eq!(promoted, promoted2);
+        tx2.commit().unwrap();
+        apply_committed_promotion_dispatches(&tracker, &dispatches);
+        assert!(tracker.verify_active_execution("exec-129", 1, 1).is_some());
+
+        assert_eq!(promoted2, 1);
         assert_eq!(dispatches[0]["coreExecutionDispatch"]["execution"]["executionId"], "exec-129");
         let wait_reason: Option<String> = db
             .query_row(
@@ -4109,13 +4176,24 @@ mod tests {
         )
         .unwrap();
 
-        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        let tx = db.transaction().unwrap();
         let mut events = Vec::new();
         let mut dispatches = Vec::new();
         let promoted = promote_compatible_executions(&tx, &core_gen, &tracker, &mut events, &mut dispatches).unwrap();
-        tx.commit().unwrap();
+        // Rollback before commit: tracker must NOT contain phantom active registration!
+        tx.rollback().unwrap();
+        assert!(tracker.verify_active_execution("exec-fg", 1, 1).is_none());
 
-        assert_eq!(promoted, 1);
+        let tx2 = db.transaction().unwrap();
+        events.clear();
+        dispatches.clear();
+        let promoted2 = promote_compatible_executions(&tx2, &core_gen, &tracker, &mut events, &mut dispatches).unwrap();
+        assert_eq!(promoted, promoted2);
+        tx2.commit().unwrap();
+        apply_committed_promotion_dispatches(&tracker, &dispatches);
+        assert!(tracker.verify_active_execution("exec-fg", 1, 1).is_some());
+
+        assert_eq!(promoted2, 1);
         assert_eq!(dispatches[0]["coreExecutionDispatch"]["execution"]["executionId"], "exec-fg");
         let sess_reason: Option<String> = db
             .query_row(

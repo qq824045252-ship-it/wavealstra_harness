@@ -320,6 +320,8 @@ export class MemoryCognitionService {
   getContextSources(input: { taskId?: string; projectId?: string; workspaceId?: string }): {
     scenarios: MemoryScenarioDto[]; profiles: MemoryCoreProfileDto[];
   } {
+    // Core must verify source revisions, access and withdrawals together before a derived view enters a prompt.
+    if (!this.db.fixtureConnection) return { scenarios: [], profiles: [] };
     const isDots = input.taskId === DOTS_TASK_ID;
     const scopes = this.targetScopes(isDots ? undefined : input.taskId, input.projectId, input.workspaceId);
     if (isDots) {
@@ -408,11 +410,11 @@ export class MemoryCognitionService {
   }
 
   queueDotsViews(): void {
+    if (!this.db.fixtureConnection?.open) return;
     this.dotsViews.dirty = true;
     if (this.dotsViews.refresh) return;
     this.dotsViews.refresh = setImmediate(() => {
       this.dotsViews.refresh = undefined;
-      if (!this.db.connection.open) return;
       try { this.refreshDotsViews(); }
       catch (error) { console.warn("[MemoryKernel] Dots projection refresh failed", error); }
     });
@@ -425,11 +427,12 @@ export class MemoryCognitionService {
    * after the last mutation. Publication is one synchronous SQLite transaction.
    */
   private refreshDotsViews(): void {
+    const conn = this.db.fixtureConnection;
+    if (!conn?.open) return;
     const now = Date.now();
     const state = this.dotsViews;
     if (!this.dotsSource || (!state.dirty && (state.nextEffectiveAt ?? Infinity) > now)
       || !this.db.getTask(DOTS_TASK_ID)) return;
-    const conn = this.db.connection;
     const nextDue = conn.prepare(`SELECT valid_from FROM memory_records INDEXED BY idx_memory_records_dots_projection_due
       WHERE (source_task_id='${DOTS_TASK_ID}' OR json_extract(metadata_json, '$.dotsPrivateGateway')=1)
         AND status='active' AND valid_until IS NULL AND valid_from>?
@@ -508,7 +511,7 @@ export class MemoryCognitionService {
     state.timer = nextDue === undefined ? undefined : setTimeout(() => {
       state.timer = undefined;
       state.nextEffectiveAt = undefined;
-      if (this.db.connection.open) this.queueDotsViews();
+      if (this.db.isOpen) this.queueDotsViews();
     }, Math.min(2_147_483_647, Math.max(0, nextDue - Date.now()))).unref();
   }
 

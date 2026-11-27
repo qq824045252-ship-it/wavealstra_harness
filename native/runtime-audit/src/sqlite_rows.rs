@@ -1,26 +1,20 @@
 use crate::Result;
-use rusqlite::{Connection, Params, types::ValueRef};
+use crate::database::value_ref_to_json;
+use duckdb::{Connection, Params};
 use serde_json::{Map, Value};
 
 pub fn records(db: &Connection, sql: &str, params: impl Params) -> Result<Vec<Value>> {
-    let mut statement = db.prepare_cached(sql)?;
-    let names: Vec<String> = statement
-        .column_names()
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+    let mut statement = db.prepare(sql)?;
     let mut rows = statement.query(params)?;
+    let names: Vec<String> = rows
+        .as_ref()
+        .map(|s| s.column_names())
+        .unwrap_or_default();
     let mut records = Vec::new();
     while let Some(row) = rows.next()? {
         let mut record = Map::new();
         for (index, name) in names.iter().enumerate() {
-            let value = match row.get_ref(index)? {
-                ValueRef::Null => Value::Null,
-                ValueRef::Integer(number) => number.into(),
-                ValueRef::Real(number) => number.into(),
-                ValueRef::Text(text) => std::str::from_utf8(text)?.into(),
-                ValueRef::Blob(_) => return Err("unexpected binary metadata".into()),
-            };
+            let value = value_ref_to_json(row.get_ref(index)?)?;
             record.insert(name.clone(), value);
         }
         records.push(Value::Object(record));

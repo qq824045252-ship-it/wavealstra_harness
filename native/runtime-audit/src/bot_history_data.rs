@@ -1,5 +1,5 @@
 use crate::{MAX_REPLY_BYTES, Result};
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use duckdb::{Connection, OptionalExt, Row, params};
 use serde::{Deserialize, Serialize};
 
 const PAGE_SIZE: usize = 100;
@@ -77,31 +77,48 @@ pub fn read(db: &mut Connection, query: Query) -> Result<Page> {
     let ascending = query.after.is_some();
     let before = query.before.unwrap_or(MAX_ORDINAL);
     let after = query.after.unwrap_or(0);
-    let ids = query
-        .message_ids
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
     let order = if ascending { "ASC" } else { "DESC" };
-    let source_sql = "SELECT m.message_id,m.ordinal FROM bot_messages m
-       WHERE m.conversation_id=?1 AND m.ordinal<?2 AND m.ordinal>?3
-       AND (?4 IS NULL OR m.message_id IN (SELECT value FROM json_each(?4)))";
-    let mut primary = tx.prepare_cached(&format!(
+    if matches!(&query.message_ids, Some(ids) if ids.is_empty()) {
+        return Ok(Page::Ready {
+            conversation_id,
+            revision,
+            archived: archived_at.is_some(),
+            rows: Vec::new(),
+            before: None,
+        });
+    }
+    let id_filter = match &query.message_ids {
+        Some(ids) => format!(" AND m.message_id IN ({})", crate::database::anon_placeholders(ids.len())),
+        None => String::new(),
+    };
+    let source_sql = format!(
+        "SELECT m.message_id,m.ordinal FROM bot_messages m
+         WHERE m.conversation_id=? AND m.ordinal<? AND m.ordinal>?{id_filter}"
+    );
+    let mut primary = tx.prepare(&format!(
         "{source_sql} ORDER BY m.ordinal {order} LIMIT {PAGE_SQL_LIMIT}"
     ))?;
+    let mut primary_params: Vec<duckdb::types::Value> = vec![
+        duckdb::types::Value::Text(conversation_id.to_owned()),
+        duckdb::types::Value::BigInt(before),
+        duckdb::types::Value::BigInt(after),
+    ];
+    if let Some(ids) = &query.message_ids {
+        primary_params.extend(ids.iter().cloned().map(duckdb::types::Value::Text));
+    }
     let mut candidates = primary
-        .query_map(params![conversation_id, before, after, ids], candidate)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut inboxes = tx.prepare_cached(
+        .query_map(duckdb::params_from_iter(primary_params), candidate)?
+        .collect::<duckdb::Result<Vec<_>>>()?;
+    let mut inboxes = tx.prepare(
         "SELECT conversation_id FROM bot_conversations
          WHERE user_id=?1 AND conversation_id LIKE 'bot-inbox-%' AND conversation_id<>?2
            AND EXISTS(SELECT 1 FROM bot_work_feedback)",
     )?;
-    let mut linked = tx.prepare_cached(&format!(
+    let mut linked = tx.prepare(&format!(
         "{source_sql} AND EXISTS (
            SELECT 1 FROM bot_work_feedback f JOIN work_conversations t
-             ON t.work_id=json_extract(f.metadata_json,'$.workId')
-           WHERE f.message_id=m.message_id AND t.channel_type='bot-delivery' AND t.conversation_id=?5
+             ON t.work_id=json_extract_string(f.metadata_json,'$.workId')
+           WHERE f.message_id=m.message_id AND t.channel_type='bot-delivery' AND t.conversation_id=?
          ) ORDER BY m.ordinal {order} LIMIT {PAGE_SQL_LIMIT}"
     ))?;
     for inbox in inboxes.query_map(params![query.user_id, conversation_id], |row| {
@@ -118,10 +135,16 @@ pub fn read(db: &mut Connection, query: Query) -> Result<Page> {
         } else {
             after.max(edge.unwrap_or(after))
         };
-        let rows = linked.query_map(
-            params![inbox?, linked_before, linked_after, ids, conversation_id],
-            candidate,
-        )?;
+        let mut linked_params: Vec<duckdb::types::Value> = vec![
+            duckdb::types::Value::Text(inbox?),
+            duckdb::types::Value::BigInt(linked_before),
+            duckdb::types::Value::BigInt(linked_after),
+        ];
+        if let Some(ids) = &query.message_ids {
+            linked_params.extend(ids.iter().cloned().map(duckdb::types::Value::Text));
+        }
+        linked_params.push(duckdb::types::Value::Text(conversation_id.to_owned()));
+        let rows = linked.query_map(duckdb::params_from_iter(linked_params), candidate)?;
         for row in rows {
             candidates.push(row?);
         }
@@ -142,13 +165,27 @@ pub fn read(db: &mut Connection, query: Query) -> Result<Page> {
     } else {
         None
     };
-    let selected = serde_json::to_string(&candidates.iter().map(|(id, _)| id).collect::<Vec<_>>())?;
-    let mut details = tx.prepare_cached(
-        "SELECT m.message_id,m.conversation_id,m.bot_id,m.request_id,m.ordinal,m.role,m.text,m.status,
+    if candidates.is_empty() {
+        return Ok(Page::Ready {
+            conversation_id,
+            revision,
+            archived: archived_at.is_some(),
+            rows: Vec::new(),
+            before: cursor,
+        });
+    }
+    let selected_ids: Vec<&String> = candidates.iter().map(|(id, _)| id).collect();
+    let values_clause = (0..selected_ids.len())
+        .map(|i| format!("(CAST(? AS VARCHAR), {i})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut details = tx.prepare(&format!(
+        "WITH ids(value, key) AS (VALUES {values_clause})
+         SELECT m.message_id,m.conversation_id,m.bot_id,m.request_id,m.ordinal,m.role,m.text,m.status,
                 m.work_ids_json,m.error,m.created_at,m.updated_at,c.team_id,c.user_id,r.reference_message_id,
                 COALESCE(v.revision,0),a.attachments_json,f.metadata_json,act.activity_json,
                 s.segments_json,t.task_id,t.tools_json
-         FROM json_each(?1) ids
+         FROM ids
          JOIN bot_messages m ON m.message_id=ids.value
          JOIN bot_conversations c ON c.conversation_id=m.conversation_id
          LEFT JOIN bot_send_receipts r
@@ -160,11 +197,11 @@ pub fn read(db: &mut Connection, query: Query) -> Result<Page> {
          LEFT JOIN bot_message_activity act ON act.message_id=m.message_id AND m.status='running'
          LEFT JOIN bot_message_segments s ON s.message_id=m.message_id AND m.role='assistant'
          LEFT JOIN bot_message_tools t ON t.message_id=m.message_id AND m.role='assistant'
-         ORDER BY ids.key",
-    )?;
+         ORDER BY ids.key"
+    ))?;
     let mut rows = Vec::with_capacity(candidates.len());
     let mut wire_bytes = 256 + conversation_id.len().saturating_mul(6);
-    for row in details.query_map([selected], message)? {
+    for row in details.query_map(duckdb::params_from_iter(selected_ids.iter().copied()), message)? {
         let row = row?;
         wire_bytes = wire_bytes.saturating_add(row.wire_bound());
         if wire_bytes >= MAX_REPLY_BYTES {
@@ -181,16 +218,16 @@ pub fn read(db: &mut Connection, query: Query) -> Result<Page> {
     })
 }
 
-fn candidate(row: &Row<'_>) -> rusqlite::Result<Candidate> {
+fn candidate(row: &Row<'_>) -> duckdb::Result<Candidate> {
     Ok((row.get(0)?, row.get(1)?))
 }
 
-fn conversation(db: &Connection, query: &Query) -> rusqlite::Result<Option<Conversation>> {
+fn conversation(db: &Connection, query: &Query) -> duckdb::Result<Option<Conversation>> {
     let projection = "SELECT conversation_id,team_id,revision,archived_at FROM bot_conversations c WHERE user_id=?1";
     let map = |row: &Row<'_>| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?));
     if let Some(id) = &query.conversation_id {
         return db
-            .prepare_cached(&format!(
+            .prepare(&format!(
                 "{projection} AND conversation_id=?2
             AND (bot_id=?3 OR team_id IS NOT NULL)"
             ))?
@@ -199,20 +236,20 @@ fn conversation(db: &Connection, query: &Query) -> rusqlite::Result<Option<Conve
     }
     if let Some(team_id) = &query.team_id {
         return db
-            .prepare_cached(&format!(
+            .prepare(&format!(
                 "{projection} AND team_id=?2 AND archived_at IS NULL"
             ))?
             .query_row(params![query.user_id, team_id], map)
             .optional();
     }
-    db.prepare_cached(&format!("{projection} AND bot_id=?2 AND team_id IS NULL AND archived_at IS NULL
+    db.prepare(&format!("{projection} AND bot_id=?2 AND team_id IS NULL AND archived_at IS NULL
       AND ingress_kind='desktop' AND source_kind='user'
       AND NOT EXISTS(SELECT 1 FROM bot_gateway_conversations g WHERE g.conversation_id=c.conversation_id)"))?
         .query_row(params![query.user_id, query.bot_id], map)
         .optional()
 }
 
-fn message(row: &Row<'_>) -> rusqlite::Result<Message> {
+fn message(row: &Row<'_>) -> duckdb::Result<Message> {
     Ok(Message {
         message_id: row.get(0)?,
         conversation_id: row.get(1)?,

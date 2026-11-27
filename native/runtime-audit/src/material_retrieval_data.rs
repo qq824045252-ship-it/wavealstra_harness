@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -70,12 +70,7 @@ pub fn run(db: &mut Connection, request: Request) -> Reply {
 }
 
 fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
-    let behavior = if request.is_read() {
-        TransactionBehavior::Deferred
-    } else {
-        TransactionBehavior::Immediate
-    };
-    let tx = db.transaction_with_behavior(behavior)?;
+    let tx = db.transaction()?;
     let reply = match request {
         Request::GetSettings => Reply::Settings {
             settings: settings(&tx)?,
@@ -100,7 +95,7 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
             {
                 return Err("无效的 SAG2 决策模型".into());
             }
-            tx.prepare_cached(
+            tx.prepare(
                 "INSERT INTO material_retrieval_settings (singleton, mode, decision_model)
                  VALUES (1, ?1, ?2)
                  ON CONFLICT(singleton) DO UPDATE SET
@@ -123,9 +118,9 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
     Ok(reply)
 }
 
-fn settings(db: &Connection) -> rusqlite::Result<Settings> {
+fn settings(db: &Connection) -> duckdb::Result<Settings> {
     Ok(db
-        .prepare_cached(
+        .prepare(
             "SELECT mode, decision_model FROM material_retrieval_settings WHERE singleton = 1",
         )?
         .query_row([], |row| {
@@ -147,8 +142,8 @@ struct SpacePolicy {
     archived: bool,
 }
 
-fn space_policy(db: &Connection, id: &str) -> rusqlite::Result<Option<SpacePolicy>> {
-    db.prepare_cached(
+fn space_policy(db: &Connection, id: &str) -> duckdb::Result<Option<SpacePolicy>> {
+    db.prepare(
         "SELECT s.parent_id, o.mode, s.archived FROM spaces s
          LEFT JOIN material_retrieval_spaces o ON s.id = o.id WHERE s.id = ?1",
     )?
@@ -168,8 +163,8 @@ struct ProjectPolicy {
     archived: bool,
 }
 
-fn project_policy(db: &Connection, id: &str) -> rusqlite::Result<Option<ProjectPolicy>> {
-    db.prepare_cached(
+fn project_policy(db: &Connection, id: &str) -> duckdb::Result<Option<ProjectPolicy>> {
+    db.prepare(
         "SELECT p.default_space_id, o.mode, p.archived FROM projects p
          LEFT JOIN material_retrieval_projects o ON p.id = o.id WHERE p.id = ?1",
     )?
@@ -187,7 +182,7 @@ fn walk_spaces<T>(
     db: &Connection,
     mut space: Option<String>,
     find: impl Fn(&SpacePolicy) -> Option<T>,
-) -> rusqlite::Result<Option<(String, T)>> {
+) -> duckdb::Result<Option<(String, T)>> {
     let mut seen = HashSet::new();
     while let Some(id) = space.filter(|id| !id.is_empty()) {
         if !seen.insert(id.clone()) {
@@ -204,7 +199,7 @@ fn walk_spaces<T>(
     Ok(None)
 }
 
-fn effective_scope(db: &Connection, scope: Option<&Scope>) -> rusqlite::Result<ScopeSettings> {
+fn effective_scope(db: &Connection, scope: Option<&Scope>) -> duckdb::Result<ScopeSettings> {
     let (space_id, override_mode) = match scope {
         Some(Scope::Project { id }) => match project_policy(db, id)? {
             Some(ProjectPolicy {
@@ -266,13 +261,13 @@ fn set_scope(db: &Connection, scope: &Scope, mode: Option<&str>) -> Result<()> {
     };
     if let Some(mode) = mode {
         validate_mode(mode)?;
-        db.prepare_cached(&format!(
+        db.prepare(&format!(
             "INSERT INTO {table} (id, mode) VALUES (?1, ?2)
              ON CONFLICT(id) DO UPDATE SET mode = excluded.mode"
         ))?
         .execute(params![id, mode])?;
     } else {
-        db.prepare_cached(&format!("DELETE FROM {table} WHERE id = ?1"))?
+        db.prepare(&format!("DELETE FROM {table} WHERE id = ?1"))?
             .execute([id])?;
     }
     Ok(())

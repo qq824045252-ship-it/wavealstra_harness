@@ -6,12 +6,11 @@ use crate::business_protocol::{
     current_core_generation, dispatch_waiting_executions, ensure_tables as ensure_protocol_tables,
 };
 use crate::work_scheduler::{ParsedCron, cron_next_wake, now_ms, sha256_hex};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use crate::{DOTS_NO_CHANGE, DOTS_TASK_ID};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-const DOTS_TASK_ID: &str = "dots-internal";
-const DOTS_NO_CHANGE: &str = "DOTS_NO_CHANGE";
 const BUSY_TASK_SKIP: &str = "目标任务正忙，已跳过，未排队";
 const CRON_SKIP_GRACE_MS: i64 = 60_000;
 const MAX_TICK_JOBS_PER_PASS: usize = 64;
@@ -231,56 +230,7 @@ impl Command {
     }
 }
 
-pub fn ensure_cron_scheduler_tables(db: &Connection) -> crate::Result<()> {
-    db.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS cron_run_inputs (
-            run_id TEXT PRIMARY KEY REFERENCES cron_runs(id) ON DELETE CASCADE,
-            request_json TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS dots_schedule_origins (
-            job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
-            source TEXT NOT NULL,
-            conversation INTEGER NOT NULL,
-            entry INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS dots_schedule_scopes (
-            job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
-            task_id TEXT,
-            space_id TEXT
-        );
-        CREATE TABLE IF NOT EXISTS dots_schedule_holds (
-            job_id TEXT NOT NULL REFERENCES cron_jobs(id) ON DELETE CASCADE,
-            holder TEXT NOT NULL,
-            PRIMARY KEY(job_id, holder)
-        );
-        CREATE TABLE IF NOT EXISTS dots_schedule_notices (
-            job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
-            occurrence INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS core_cron_runtime_config (
-            key TEXT PRIMARY KEY,
-            value_json TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS core_cron_schedule_state (
-            job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
-            next_due_at_ms INTEGER,
-            occurrence_at_ms INTEGER,
-            last_evaluated_at_ms INTEGER NOT NULL,
-            schedule_sig TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS core_cron_occurrences (
-            occurrence_key TEXT PRIMARY KEY,
-            job_id TEXT NOT NULL,
-            occurrence_at_ms INTEGER NOT NULL,
-            run_id TEXT,
-            status TEXT NOT NULL,
-            recorded_at_ms INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_core_cron_occ_job
-            ON core_cron_occurrences(job_id, occurrence_at_ms);
-        ",
-    )?;
+pub fn ensure_cron_scheduler_tables(_db: &Connection) -> crate::Result<()> {
     Ok(())
 }
 
@@ -488,7 +438,7 @@ fn fetch_all_jobs(db: &Connection) -> crate::Result<Vec<CronJobRow>> {
                 c.skill_ids_json, c.connector_ids_json, c.effective_from, c.effective_to,
                 c.welcome_mode, c.project_id,
                 (SELECT COUNT(*) FROM cron_runs WHERE job_id = c.id AND
-                    CASE WHEN json_extract(c.execution_json, '$.reminder.kind') = 'bot-reminder'
+                    CASE WHEN json_extract_string(c.execution_json, '$.reminder.kind') = 'bot-reminder'
                          THEN status = 'success' ELSE status != 'skipped' END) AS run_count
          FROM cron_jobs c
          ORDER BY c.updated_at DESC",
@@ -507,7 +457,7 @@ fn fetch_job(db: &Connection, id: &str) -> crate::Result<Option<CronJobRow>> {
                 c.skill_ids_json, c.connector_ids_json, c.effective_from, c.effective_to,
                 c.welcome_mode, c.project_id,
                 (SELECT COUNT(*) FROM cron_runs WHERE job_id = c.id AND
-                    CASE WHEN json_extract(c.execution_json, '$.reminder.kind') = 'bot-reminder'
+                    CASE WHEN json_extract_string(c.execution_json, '$.reminder.kind') = 'bot-reminder'
                          THEN status = 'success' ELSE status != 'skipped' END) AS run_count
          FROM cron_jobs c
          WHERE c.id = ?1",
@@ -518,7 +468,7 @@ fn fetch_job(db: &Connection, id: &str) -> crate::Result<Option<CronJobRow>> {
     .map_err(Into::into)
 }
 
-fn map_cron_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CronJobRow> {
+fn map_cron_job_row(row: &duckdb::Row<'_>) -> duckdb::Result<CronJobRow> {
     let exec_raw: Option<String> = row.get(12)?;
     let exec_val: Value = exec_raw
         .as_deref()
@@ -582,17 +532,10 @@ fn map_cron_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CronJobRow> {
 }
 
 fn table_exists(db: &Connection, name: &str) -> crate::Result<bool> {
-    Ok(db
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
-            [name],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
+    crate::database::table_exists(db, name)
 }
 
-fn schedule_owner(db: &Connection, job_id: &str) -> crate::Result<Option<(Option<String>, Option<String>)>> {
+pub(crate) fn schedule_owner(db: &Connection, job_id: &str) -> crate::Result<Option<(Option<String>, Option<String>)>> {
     if let Some(pair) = db
         .query_row(
             "SELECT task_id, space_id FROM dots_schedule_scopes WHERE job_id = ?1",
@@ -678,6 +621,79 @@ fn dots_followup_paused(db: &Connection, job: &CronJobRow) -> crate::Result<bool
         }
     }
     Ok(false)
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "purpose", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum DotsRunPurpose {
+    Admission { assistant_message_id: String, text_hash: String },
+    Continuation,
+    Notification,
+    #[serde(skip_deserializing)]
+    Placement { text_hash: Option<String> },
+}
+
+pub fn dots_run_id(source: &str) -> Option<&str> {
+    source.strip_prefix("cron-")?.strip_suffix("-input").filter(|id| {
+        id.len() == 36 && id.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) { byte == b'-' } else { byte.is_ascii_hexdigit() }
+        })
+    })
+}
+
+/// Runs inside the caller's snapshot or the transaction that will use the authorization.
+pub fn authorize_dots_run(
+    db: &Connection,
+    source: &str,
+    purpose: &DotsRunPurpose,
+) -> crate::Result<Option<Option<String>>> {
+    let Some(run_id) = dots_run_id(source) else { return Ok(None) };
+    let row: Option<(String, String, String)> = db.query_row(
+        "SELECT r.job_id,r.status,i.request_json FROM cron_runs r JOIN cron_run_inputs i ON i.run_id=r.id
+         WHERE r.id=?1 AND r.task_id=?2 AND r.started_at<=?3",
+        params![run_id, DOTS_TASK_ID, now_ms()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).optional()?;
+    let Some((job_id, status, raw)) = row else { return Ok(None) };
+    let eligible_status = match purpose {
+        DotsRunPurpose::Admission { .. } | DotsRunPurpose::Placement { .. } => status == "running",
+        DotsRunPurpose::Continuation => matches!(status.as_str(), "running" | "success"),
+        DotsRunPurpose::Notification => matches!(status.as_str(), "success" | "error"),
+    };
+    if !eligible_status { return Ok(None); }
+    let Ok(stored) = serde_json::from_str::<Value>(&raw) else { return Ok(None) };
+    let request = &stored["request"];
+    let expected_assistant = format!("cron-{run_id}-assistant");
+    if stored["job"]["id"] != job_id || request["taskId"] != DOTS_TASK_ID
+        || request["userMessageId"] != source || request["assistantMessageId"] != expected_assistant
+    {
+        return Ok(None);
+    }
+    let expected_hash = match purpose {
+        DotsRunPurpose::Admission { assistant_message_id, text_hash } => {
+            if assistant_message_id != &expected_assistant { return Ok(None); }
+            Some(text_hash)
+        }
+        DotsRunPurpose::Placement { text_hash } => text_hash.as_ref(),
+        _ => None,
+    };
+    let Some(text) = request["text"].as_str() else { return Ok(None) };
+    if expected_hash.is_some_and(|hash| sha256_hex(text) != *hash) { return Ok(None); }
+    let Some(job) = fetch_job(db, &job_id)? else { return Ok(None) };
+    if !job.is_dots() || job.cancelled_at.is_some() || unavailable_reason(db, &job)?.is_some() {
+        return Ok(None);
+    }
+    let cfg = load_config(db)?;
+    if cfg.dots_suspended || !dots_schedule_visible(db, &job.id, &cfg)? || dots_followup_paused(db, &job)?
+        || (!matches!(purpose, DotsRunPurpose::Notification) && cfg.dots_followup_mode != "continue")
+    {
+        return Ok(None);
+    }
+    Ok(Some(schedule_owner(db, &job.id)?.and_then(|(_, space)| space)))
+}
+
+pub fn dots_source_current(db: &Connection, source: &str) -> crate::Result<bool> {
+    Ok(dots_run_id(source).is_none() || authorize_dots_run(db, source, &DotsRunPurpose::Continuation)?.is_some())
 }
 
 fn project_unavailable_reason(db: &Connection, project_id: Option<&str>) -> crate::Result<Option<String>> {
@@ -797,26 +813,67 @@ fn unavailable_reason(db: &Connection, job: &CronJobRow) -> crate::Result<Option
     Ok(None)
 }
 
+pub(crate) fn read_plan_context(
+    db: &Connection, job_id: &str,
+) -> crate::Result<(Option<(Option<String>, Option<String>)>, Option<String>)> {
+    let job = fetch_job(db, job_id)?.ok_or("automation plan disappeared within its read snapshot")?;
+    let owner = if job.is_dots() { schedule_owner(db, job_id)? } else { None };
+    Ok((owner, unavailable_reason(db, &job)?))
+}
+
 fn startup_migrate(tx: &Connection) -> crate::Result<()> {
     if table_exists(tx, "dots_proactive_pauses")? {
-        tx.execute_batch(
-            "INSERT OR IGNORE INTO dots_schedule_holds
-             SELECT j.id, 'proactive:' || p.scope
-             FROM dots_proactive_pauses p
-             JOIN json_each(p.timer_ids) x
-             JOIN cron_jobs j ON j.id = x.value
-             WHERE j.enabled = 0
-               AND json_extract(j.execution_json, '$.cancelledAt') IS NULL
-               AND NOT EXISTS (SELECT 1 FROM dots_schedule_holds h WHERE h.job_id = j.id);",
+        let mut stmt = tx.prepare("SELECT scope, timer_ids FROM dots_proactive_pauses")?;
+        let mut rows = stmt.query([])?;
+        let mut holds = Vec::new();
+        while let Some(r) = rows.next()? {
+            let scope: String = r.get(0)?;
+            let ids_raw: String = r.get(1)?;
+            if let Ok(arr) = serde_json::from_str::<Vec<String>>(&ids_raw) {
+                for jid in arr {
+                    holds.push((jid, format!("proactive:{scope}")));
+                }
+            }
+        }
+        drop(rows);
+        drop(stmt);
+        for (jid, holder) in holds {
+            let _ = tx.execute(
+                "INSERT INTO dots_schedule_holds (job_id, holder)
+                 SELECT j.id, ?2
+                 FROM cron_jobs j
+                 WHERE j.id = ?1
+                   AND j.enabled = 0
+                   AND json_extract_string(j.execution_json, '$.cancelledAt') IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM dots_schedule_holds h WHERE h.job_id = j.id)
+                 ON CONFLICT (job_id, holder) DO NOTHING",
+                params![jid, holder],
+            );
+        }
+    }
+    let mut stmt = tx.prepare(
+        "SELECT run_id, request_json FROM cron_run_inputs
+         WHERE json_valid(request_json)
+           AND json_extract_string(request_json, '$.request.welcomeMode') = 'bot'",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut updates = Vec::new();
+    while let Some(r) = rows.next()? {
+        let run_id: String = r.get(0)?;
+        let raw: String = r.get(1)?;
+        updates.push((
+            run_id,
+            crate::database::patch_json_fields(&raw, &[("$.request.welcomeMode", json!("general"))]),
+        ));
+    }
+    drop(rows);
+    drop(stmt);
+    for (run_id, updated) in updates {
+        tx.execute(
+            "UPDATE cron_run_inputs SET request_json = ?1 WHERE run_id = ?2",
+            params![updated, run_id],
         )?;
     }
-    tx.execute(
-        "UPDATE cron_run_inputs
-         SET request_json = json_set(request_json, '$.request.welcomeMode', 'general')
-         WHERE json_valid(request_json)
-           AND json_extract(request_json, '$.request.welcomeMode') = 'bot'",
-        [],
-    )?;
     Ok(())
 }
 
@@ -1012,7 +1069,7 @@ fn enqueue_cron_execution_tx(
         params![run_id, job.id, now, task_id],
     )?;
     tx.execute(
-        "INSERT OR IGNORE INTO cron_run_inputs (run_id, request_json) VALUES (?1, ?2)",
+        "INSERT INTO cron_run_inputs (run_id, request_json) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
         params![run_id, input_json],
     )?;
     tx.execute(
@@ -1135,8 +1192,8 @@ fn dispatch_new_run_tx(
     }
     // Atomically deduplicate scheduled occurrence.
     let inserted = tx.execute(
-        "INSERT OR IGNORE INTO core_cron_occurrences (occurrence_key, job_id, occurrence_at_ms, run_id, status, recorded_at_ms)
-         VALUES (?1, ?2, ?3, NULL, 'claimed', ?4)",
+        "INSERT INTO core_cron_occurrences (occurrence_key, job_id, occurrence_at_ms, run_id, status, recorded_at_ms)
+         VALUES (?1, ?2, ?3, NULL, 'claimed', ?4) ON CONFLICT DO NOTHING",
         params![occ_key, job.id, occurrence_ms.unwrap_or(now), now],
     )?;
     if inserted == 0 {
@@ -1477,7 +1534,7 @@ fn startup_or_scan_tx(
             && job.enabled
         {
             tx.execute(
-                "INSERT OR IGNORE INTO dots_schedule_holds (job_id, holder) VALUES (?1, 'manual')",
+                "INSERT INTO dots_schedule_holds (job_id, holder) VALUES (?1, 'manual') ON CONFLICT DO NOTHING",
                 [&job.id],
             )?;
             set_job_enabled_tx(tx, core_gen, client_gen, events, &job.id, false, now)?;
@@ -1829,7 +1886,7 @@ pub(crate) fn on_core_execution_state_change(
         };
         tx.execute(
             "UPDATE tasks SET title = CASE WHEN ?1 = '' THEN title ELSE ?1 END, status = ?2,
-             updated_at = MAX(updated_at, ?3) WHERE id = ?4",
+             updated_at = GREATEST(updated_at, ?3) WHERE id = ?4",
             params![title, task_status, now, tid],
         )?;
     }
@@ -1840,10 +1897,9 @@ pub(crate) fn on_core_execution_state_change(
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM core_cron_occurrences WHERE run_id = ?1 AND occurrence_key LIKE 'manual:%')",
             [run_id],
-            |r| r.get::<_, i64>(0),
+            |r| crate::database::row_bool(r, 0),
         )
-        .unwrap_or(0)
-        != 0;
+        .unwrap_or(false);
     if let Some(j) = &job {
         if j.enabled
             && ((!is_manual && !j.is_reminder && j.schedule_type == "at")
@@ -1996,7 +2052,7 @@ pub fn execute_write(
     ensure_protocol_tables(db, &core_gen)?;
     ensure_cron_scheduler_tables(db)?;
 
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let mut events = Vec::new();
     let mut dispatches = Vec::new();
 
@@ -2156,6 +2212,7 @@ pub fn execute_write(
     };
 
     crate::request_control::commit(tx)?;
+    crate::work_scheduler::apply_committed_promotion_dispatches(tracker, &dispatches);
     Ok(WriteSideEffects {
         data,
         events,
@@ -2196,11 +2253,11 @@ pub fn run_supervised_tick(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db_schema::CANONICAL_SCHEMA_SQL;
+    use crate::database::CANONICAL_DUCKDB_SCHEMA_SQL;
 
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().expect("open memory db");
-        conn.execute_batch(CANONICAL_SCHEMA_SQL).expect("schema");
+        conn.execute_batch(CANONICAL_DUCKDB_SCHEMA_SQL).expect("schema");
         let core_gen = current_core_generation();
         ensure_protocol_tables(&conn, &core_gen).expect("protocol tables");
         ensure_cron_scheduler_tables(&conn).expect("cron tables");
@@ -2276,7 +2333,7 @@ mod tests {
         // Finish CoalesceJob run first so both are settleable
         let coalesce_exec: String = conn
             .query_row(
-                "SELECT execution_id FROM core_execution_runs WHERE kind = 'cron' AND json_extract(payload_json, '$.cronJobId') = 'job-coalesce'",
+                "SELECT execution_id FROM core_execution_runs WHERE kind = 'cron' AND json_extract_string(payload_json, '$.cronJobId') = 'job-coalesce'",
                 [],
                 |r| r.get(0),
             )

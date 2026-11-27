@@ -179,7 +179,8 @@ export class MemorySkillEffectivenessService {
   }): MemorySkillEffectivenessDto {
     const at = input.at ?? Date.now();
     if (this.requiresRustWrites) {
-      const existing = this.getByTurnSkill(input.taskId, input.assistantMessageId, input.skill.skillId);
+      const fixture = this.db.fixtureConnection;
+      const existing = fixture ? this.getByTurnSkill(input.taskId, input.assistantMessageId, input.skill.skillId) : undefined;
       const cleanSources = [...new Set(input.skill.sourceMemoryIds.filter(Boolean))];
       this.enqueueBatch3("记录技能调用", {
         kind: "memorySkillEffectivenessOp",
@@ -204,7 +205,7 @@ export class MemorySkillEffectivenessService {
       return {
         id: existing?.id ?? idFor(input.taskId, input.assistantMessageId, input.skill.skillId),
         taskId: input.taskId,
-        taskTitle: existing?.taskTitle ?? this.db.getTask(input.taskId)?.title,
+        taskTitle: existing?.taskTitle ?? (fixture ? this.db.getTask(input.taskId)?.title : undefined),
         assistantMessageId: input.assistantMessageId,
         skillId: input.skill.skillId.trim(),
         candidateId: existing?.candidateId ?? input.skill.candidateId,
@@ -248,11 +249,8 @@ export class MemorySkillEffectivenessService {
     return row;
   }
 
-  markTurnOutcome(taskId: string, assistantMessageId: string, outcome: Exclude<MemorySkillOutcome, "pending">, at = Date.now()): number {
+  markTurnOutcome(taskId: string, assistantMessageId: string, outcome: Exclude<MemorySkillOutcome, "pending">, at = Date.now()): void {
     if (this.requiresRustWrites) {
-      const pendingCount = Number((this.conn.prepare(
-        "SELECT COUNT(1) n FROM memory_skill_effectiveness WHERE task_id=? AND assistant_message_id=? AND outcome='pending'",
-      ).get(taskId, assistantMessageId) as { n: number }).n);
       this.enqueueBatch3("记录技能轮次结果", {
         kind: "memorySkillEffectivenessOp",
         effAction: "markTurnOutcome",
@@ -268,21 +266,17 @@ export class MemorySkillEffectivenessService {
         feedbackNote: null,
         at,
       });
-      return pendingCount;
+      return;
     }
-    const result = this.conn.prepare(
+    this.conn.prepare(
       `UPDATE memory_skill_effectiveness
        SET outcome=?,outcome_at=?,updated_at=?
        WHERE task_id=? AND assistant_message_id=? AND outcome='pending'`,
     ).run(outcome, at, at, taskId, assistantMessageId);
-    return result.changes;
   }
 
-  abortPendingForTask(taskId: string, at = Date.now()): number {
+  abortPendingForTask(taskId: string, at = Date.now()): void {
     if (this.requiresRustWrites) {
-      const pendingCount = Number((this.conn.prepare(
-        "SELECT COUNT(1) n FROM memory_skill_effectiveness WHERE task_id=? AND outcome='pending'",
-      ).get(taskId) as { n: number }).n);
       this.enqueueBatch3("中止任务挂起技能统计", {
         kind: "memorySkillEffectivenessOp",
         effAction: "abortPendingForTask",
@@ -298,14 +292,13 @@ export class MemorySkillEffectivenessService {
         feedbackNote: null,
         at,
       });
-      return pendingCount;
+      return;
     }
-    const result = this.conn.prepare(
+    this.conn.prepare(
       `UPDATE memory_skill_effectiveness
        SET outcome='aborted',outcome_at=?,updated_at=?
        WHERE task_id=? AND outcome='pending'`,
     ).run(at, at, taskId);
-    return result.changes;
   }
 
   setFeedback(id: string, kind: MemorySkillFeedbackKind | null, note?: string): MemorySkillEffectivenessDto {

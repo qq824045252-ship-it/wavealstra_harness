@@ -1,3 +1,4 @@
+import { fixtureTaskBoard } from "./fixtures/legacy-task-board-store";
 import assert from "node:assert/strict";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -37,7 +38,7 @@ export async function verifyDurableDotsReplies(root: string) {
     return [{ type: "text", text: "已接单。" }];
   });
   const agent = fixture.agent, patches: AgentUiPatch[] = [];
-  agent.setDotsActions(new DotsActions(db, agent, { link() { throw new Error("Unexpected delegate"); } }));
+  agent.setDotsActions(new DotsActions(db, agent, { link() { throw new Error("Unexpected delegate"); } }, fixtureTaskBoard(db.connection)));
   const unsubscribe = agent.onPatch(patch => patches.push(patch));
   try {
     const sourceMessageId = "native-delivery-archive-request";

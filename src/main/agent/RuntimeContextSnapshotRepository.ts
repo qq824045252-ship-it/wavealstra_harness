@@ -7,7 +7,8 @@ import type {
 } from "../../shared/agent-ipc";
 import { normalizeWelcomeMode, type AssemblySegmentDto } from "../../shared/mode-profile";
 import type { ResolvedCapabilityDto } from "../../shared/runtime-policy";
-import type { RuntimeAuditReader } from "../platform/runtime-audit";
+import { TaskWriteQueue } from "../db/TaskWriteQueue";
+import { RuntimeAuditUnknownOperationError, type RuntimeAuditReader } from "../platform/runtime-audit";
 import {
   compactRuntimeAuditInstructions,
   normalizeStoredAuditInstructions,
@@ -175,7 +176,7 @@ type SnapshotFinish = Exclude<RuntimeContextSnapshotDto["status"], "running">;
 export type RuntimeSnapshotMutation =
   | { kind: "insert"; snapshot: ReturnType<typeof prepareSnapshot>["row"] }
   | { kind: "appendMaterials"; identity: SnapshotIdentity; items: RuntimeMaterialUseDto[]; at: number }
-  | { kind: "finish"; executionId: string; status: SnapshotFinish; error?: string; at: number }
+  | { kind: "finish"; taskId: string; executionId: string; status: SnapshotFinish; error?: string; at: number }
   | { kind: "finishByMessage"; taskId: string; assistantMessageId: string; status: SnapshotFinish; error?: string; at: number }
   | { kind: "bindMessage"; identity: SnapshotIdentity }
   | { kind: "abort"; taskId: string; at: number }
@@ -213,27 +214,17 @@ function prepareSnapshot(input: RuntimeContextSnapshotRecordInput) {
 }
 
 export class RuntimeContextSnapshotRepository {
-  private readonly epoch?: number;
-  private readonly epochPromise?: Promise<number>;
-  private tail: Promise<unknown> = Promise.resolve();
+  private readonly writes = new TaskWriteQueue();
   private closed = false;
 
-  constructor(private readonly db: Database.Database, private readonly reader?: RuntimeAuditReader) {
-    if (reader) {
-      if (db.readonly || reader.supervised) {
-        this.epochPromise = reader.batch1Write<{ epoch: number }>({ kind: "claimSnapshotEpoch" })
-          .then(res => {
-            if (!res || typeof res.epoch !== "number") throw new Error("Rust 核心未能分配快照代次");
-            return res.epoch;
-          });
-      } else {
-        this.epoch = db.prepare(`UPDATE runtime_snapshot_writer SET epoch=epoch+1, write_id='', result=0
-          WHERE id=1 RETURNING epoch`).pluck().get() as number;
-      }
-    }
+  constructor(private readonly fixture: Database.Database | undefined, private readonly reader?: RuntimeAuditReader) {}
+
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("运行上下文需要通过 Rust Core 读取或写入");
+    return this.fixture;
   }
 
-  async flush(): Promise<void> { await this.tail; }
+  flush(taskId?: string): Promise<void> { return this.writes.flush(taskId); }
 
   closeWrites(): Promise<void> {
     this.closed = true;
@@ -242,33 +233,27 @@ export class RuntimeContextSnapshotRepository {
 
   private write(mutation: RuntimeSnapshotMutation, fallback: () => number): number | Promise<number> {
     if (this.closed) return 0;
-    if (!this.reader) {
-      if (this.db.readonly) throw new Error("只读数据库模式下无法写入运行时快照");
+    if (this.fixture && !this.fixture.readonly && !this.reader?.supervised) {
       return fallback();
     }
     const reader = this.reader;
-    const rustRequired = this.db.readonly || reader.supervised;
-    if (this.epoch === undefined && !this.epochPromise) {
-      if (rustRequired) throw new Error("Rust 核心未能分配快照代次");
-      return fallback();
-    }
+    if (!reader) throw new Error("运行时快照写入需要 Rust Core");
     const writeId = randomUUID();
-    const pending = this.tail.then(async () => {
-      const epoch = this.epoch ?? await this.epochPromise!;
-      const result = await reader.mutateSnapshot(epoch, writeId, mutation);
-      if (result !== undefined) return result;
-      if (rustRequired) throw new Error("运行时上下文快照写入未获 Rust 核心确认");
-      return this.db.transaction(() => {
-        const receipt = this.db.prepare("SELECT epoch,write_id,result FROM runtime_snapshot_writer WHERE id=1")
-          .get() as { epoch: number; write_id: string; result: number };
-        if (receipt.epoch !== epoch) return 0;
-        if (receipt.write_id === writeId) return receipt.result;
-        const updated = fallback();
-        this.db.prepare("UPDATE runtime_snapshot_writer SET write_id=?,result=? WHERE id=1").run(writeId, updated);
-        return updated;
-      }).immediate();
-    });
-    this.tail = pending.catch(() => { console.warn("[RuntimeAudit] Snapshot mutation could not be saved"); });
+    const taskId = mutation.kind === "insert" ? mutation.snapshot.taskId
+      : "identity" in mutation ? mutation.identity.taskId : mutation.taskId;
+    const write = async () => {
+      try {
+        const result = await reader.mutateSnapshot(writeId, mutation);
+        if (result !== undefined) return result;
+      } catch (error) {
+        if (!(error instanceof RuntimeAuditUnknownOperationError)) throw error;
+      }
+      const receipt = await reader.snapshotReceipt(writeId);
+      if (receipt != null) return receipt;
+      throw new Error("运行时上下文快照写入未获 Rust 核心确认");
+    };
+    const pending = taskId === undefined ? this.writes.runExclusive(write) : this.writes.run([taskId], write);
+    void pending.catch(() => { console.warn("[RuntimeAudit] Snapshot mutation could not be saved"); });
     return pending;
   }
 
@@ -344,13 +329,13 @@ export class RuntimeContextSnapshotRepository {
     }).immediate());
   }
 
-  finish(executionId: string, status: SnapshotFinish, error?: string): void {
+  finish(taskId: string, executionId: string, status: SnapshotFinish, error?: string): void {
     const at = Date.now();
-    void this.write({ kind: "finish", executionId, status, error, at }, () => this.db.prepare(
+    void this.write({ kind: "finish", taskId, executionId, status, error, at }, () => this.db.prepare(
       `UPDATE task_runtime_context_snapshots
        SET status = ?, completed_at = ?, error = ?
-       WHERE execution_id = ? AND status = 'running'`,
-    ).run(status, at, error ?? null, executionId).changes);
+       WHERE task_id = ? AND execution_id = ? AND status = 'running'`,
+    ).run(status, at, error ?? null, taskId, executionId).changes);
   }
 
   finishByAssistantMessage(taskId: string, assistantMessageId: string, status: SnapshotFinish, error?: string): void {
@@ -410,6 +395,14 @@ export class RuntimeContextSnapshotRepository {
       `${selectSnapshots} WHERE s.task_id = ? ORDER BY s.created_at DESC, s.rowid DESC LIMIT ?`,
     ).all(taskId, safeLimit) as SnapshotRow[];
     return rows.map(mapRow);
+  }
+
+  async readList(taskId: string, limit = 50): Promise<RuntimeContextSnapshotDto[]> {
+    await this.flush(taskId);
+    if (this.fixture && !this.reader?.supervised) return this.list(taskId, limit);
+    const page = await this.reader?.snapshots(taskId, limit);
+    if (!page) throw new Error("运行上下文读取未获 Rust Core 确认");
+    return decodeRuntimeSnapshotPage(page);
   }
 
   clear(taskId?: string): number {

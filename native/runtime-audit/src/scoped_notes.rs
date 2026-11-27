@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -26,7 +26,7 @@ pub struct Save {
     updated_at: i64,
 }
 
-fn owner(db: &Connection, scope: Scope, id: &str) -> rusqlite::Result<Option<bool>> {
+fn owner(db: &Connection, scope: Scope, id: &str) -> duckdb::Result<Option<bool>> {
     let sql = match scope {
         Scope::Project => "SELECT archived != 0 FROM projects WHERE id=?1",
         Scope::Workspace => {
@@ -39,7 +39,7 @@ fn owner(db: &Connection, scope: Scope, id: &str) -> rusqlite::Result<Option<boo
              WHERE EXISTS(SELECT 1 FROM ancestors)"
         }
     };
-    db.prepare_cached(sql)?
+    db.prepare(sql)?
         .query_row([id], |row| row.get(0))
         .optional()
 }
@@ -48,7 +48,7 @@ pub(crate) fn library_owner_writable(
     db: &Connection,
     project: Option<&str>,
     workspace: Option<&str>,
-) -> rusqlite::Result<bool> {
+) -> duckdb::Result<bool> {
     if let Some(id) = project {
         if owner(db, Scope::Project, id)? == Some(true) {
             return Ok(false);
@@ -60,7 +60,7 @@ pub(crate) fn library_owner_writable(
     Ok(true)
 }
 
-fn read_note(db: &Connection, scope: Scope, id: &str) -> rusqlite::Result<Note> {
+fn read_note(db: &Connection, scope: Scope, id: &str) -> duckdb::Result<Note> {
     let sql = match scope {
         Scope::Project => {
             "SELECT content, revision, updated_at FROM project_notes WHERE project_id=?1"
@@ -70,7 +70,7 @@ fn read_note(db: &Connection, scope: Scope, id: &str) -> rusqlite::Result<Note> 
         }
     };
     Ok(db
-        .prepare_cached(sql)?
+        .prepare(sql)?
         .query_row([id], |row| {
             Ok(Note {
                 content: row.get(0)?,
@@ -94,7 +94,7 @@ pub fn read(db: &Connection, scope: Scope, id: &str) -> Result<Value> {
 }
 
 pub fn save(db: &mut Connection, scope: Scope, id: &str, save: Save) -> Result<Value> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     match owner(&tx, scope, id)? {
         None => return Ok(json!({ "status": "missing" })),
         Some(true) => return Ok(json!({ "status": "archived" })),
@@ -105,7 +105,7 @@ pub fn save(db: &mut Connection, scope: Scope, id: &str, save: Save) -> Result<V
         Scope::Workspace => "SELECT revision FROM workspace_notes WHERE workspace_id=?1",
     };
     let revision: i64 = tx
-        .prepare_cached(revision_sql)?
+        .prepare(revision_sql)?
         .query_row([id], |row| row.get(0))
         .optional()?
         .unwrap_or(0);

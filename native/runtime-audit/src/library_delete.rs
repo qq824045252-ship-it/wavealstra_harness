@@ -1,8 +1,9 @@
-use crate::{Result, library_index::has_table, library_text, scoped_notes};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use crate::{Result, library_text, scoped_notes};
+use duckdb::{Connection, OptionalExt, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::HashSet,
     fs::{self, Metadata},
     io::ErrorKind,
     path::{Component, Path},
@@ -14,6 +15,22 @@ pub enum Target {
     Item { id: String },
     Collection { id: String },
     Space { id: String },
+}
+
+#[derive(Default)]
+struct StagedDelete {
+    items: Vec<(String, String, String, String)>,
+    item_ids: HashSet<String>,
+    collections: HashSet<String>,
+    spaces: HashSet<String>,
+}
+
+impl StagedDelete {
+    fn push_item(&mut self, row: (String, String, String, String)) {
+        if self.item_ids.insert(row.0.clone()) {
+            self.items.push(row);
+        }
+    }
 }
 
 fn space_writable(db: &Connection, id: &str, deleting_space: bool) -> Result<bool> {
@@ -37,23 +54,23 @@ fn space_writable(db: &Connection, id: &str, deleting_space: bool) -> Result<boo
     )?)
 }
 
-fn stage_target(db: &Connection, target: &Target) -> Result<bool> {
+fn stage_target(db: &Connection, target: &Target, staged: &mut StagedDelete) -> Result<bool> {
     match target {
         Target::Item { id } => {
-            let space: Option<String> = db
+            let row: Option<(String, String, String, String)> = db
                 .query_row(
-                    "SELECT space_id FROM library_items WHERE id=?1 AND trashed_at IS NULL",
+                    "SELECT id,space_id,kind,filename FROM library_items WHERE id=?1 AND trashed_at IS NULL",
                     [id],
-                    |row| row.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()?;
-            let Some(space) = space else {
+            let Some(item) = row else {
                 return Ok(false);
             };
-            if !space_writable(db, &space, false)? {
+            if !space_writable(db, &item.1, false)? {
                 return Ok(false);
             }
-            db.execute("INSERT INTO temp.library_delete_items SELECT id,space_id,kind,filename FROM library_items WHERE id=?1", [id])?;
+            staged.push_item(item);
             return Ok(true);
         }
         Target::Collection { id } => {
@@ -70,143 +87,224 @@ fn stage_target(db: &Connection, target: &Target) -> Result<bool> {
             if !space_writable(db, &space, false)? {
                 return Ok(false);
             }
-            db.execute(
+            let mut stmt = db.prepare(
                 "WITH RECURSIVE tree(id) AS (
                    SELECT id FROM library_collections WHERE id=?1
                    UNION
                    SELECT c.id FROM library_collections c JOIN tree ON c.parent_id=tree.id WHERE c.space_id=?2
                  )
-                 INSERT INTO temp.library_delete_collections SELECT id FROM tree",
-                params![id, space],
+                 SELECT id FROM tree",
             )?;
-            db.execute(
-                "INSERT INTO temp.library_delete_items SELECT id,space_id,kind,filename FROM library_items
-                 WHERE space_id=?1 AND collection_id IN (SELECT id FROM temp.library_delete_collections)",
-                [space],
-            )?;
+            let col_ids: Vec<String> = stmt
+                .query_map(params![id, space], |r| r.get(0))?
+                .collect::<duckdb::Result<_>>()?;
+            staged.collections.extend(col_ids);
+            if !staged.collections.is_empty() {
+                let col_vec: Vec<String> = staged.collections.iter().cloned().collect();
+                let slots = crate::database::anon_placeholders(col_vec.len());
+                let mut q = db.prepare(&format!(
+                    "SELECT id,space_id,kind,filename FROM library_items
+                     WHERE space_id=? AND collection_id IN ({slots})"
+                ))?;
+                let mut p: Vec<&dyn duckdb::ToSql> = vec![&space];
+                for cid in &col_vec {
+                    p.push(cid);
+                }
+                let mut rows = q.query(duckdb::params_from_iter(p))?;
+                while let Some(r) = rows.next()? {
+                    staged.push_item((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?));
+                }
+            }
         }
         Target::Space { id } => {
             if !space_writable(db, id, true)? {
                 return Ok(false);
             }
-            db.execute("INSERT INTO temp.library_delete_spaces VALUES (?1)", [id])?;
+            staged.spaces.insert(id.clone());
         }
     }
     if matches!(target, Target::Space { .. }) {
-        stage_space_contents(db)?;
+        stage_space_contents(db, staged)?;
     }
-    scope_is_consistent(db)
+    scope_is_consistent(db, staged)
 }
 
-fn stage_space_contents(db: &Connection) -> Result<()> {
-    db.execute_batch(
-        "INSERT INTO temp.library_delete_collections SELECT id FROM library_collections
-           WHERE space_id IN (SELECT id FROM temp.library_delete_spaces);
-         INSERT INTO temp.library_delete_items SELECT id,space_id,kind,filename FROM library_items
-           WHERE space_id IN (SELECT id FROM temp.library_delete_spaces);",
-    )?;
-    Ok(())
-}
-
-fn scope_is_consistent(db: &Connection) -> Result<bool> {
-    let crosses_scope: bool = db.query_row(
-        "SELECT
-           EXISTS (SELECT 1 FROM library_collections
-                   WHERE parent_id IN (SELECT id FROM temp.library_delete_collections)
-                     AND id NOT IN (SELECT id FROM temp.library_delete_collections))
-           OR EXISTS (SELECT 1 FROM library_items
-                      WHERE collection_id IN (SELECT id FROM temp.library_delete_collections)
-                        AND id NOT IN (SELECT id FROM temp.library_delete_items))",
-        [],
-        |row| row.get(0),
-    )?;
-    Ok(!crosses_scope)
-}
-
-fn prepare_staging(db: &Connection) -> Result<()> {
-    db.execute_batch(
-        "CREATE TEMP TABLE IF NOT EXISTS library_delete_items(id TEXT PRIMARY KEY,space_id TEXT,kind TEXT,filename TEXT);
-         CREATE TEMP TABLE IF NOT EXISTS library_delete_collections(id TEXT PRIMARY KEY);
-         CREATE TEMP TABLE IF NOT EXISTS library_delete_spaces(id TEXT PRIMARY KEY);
-         DELETE FROM temp.library_delete_items;
-         DELETE FROM temp.library_delete_collections;
-         DELETE FROM temp.library_delete_spaces;",
-    )?;
-    Ok(())
-}
-
-fn apply_staged(db: &Connection, root: &Path) -> Result<Vec<String>> {
-    db.execute(
-        "INSERT OR IGNORE INTO library_file_cleanup(root,space_id,item_id,filename)
-         SELECT ?1,space_id,id,filename FROM temp.library_delete_items
-         WHERE kind!='url' AND space_id NOT IN (SELECT id FROM temp.library_delete_spaces)
-         UNION ALL SELECT ?1,id,'',NULL FROM temp.library_delete_spaces",
-        [root_key(root)?],
-    )?;
-    for index in ["library_fts", "library_chunks_fts"] {
-        if has_table(db, index)? {
-            db.execute(
-                &format!("DELETE FROM {index} WHERE item_id IN (SELECT id FROM temp.library_delete_items)"),
-                [],
-            )?;
+fn stage_space_contents(db: &Connection, staged: &mut StagedDelete) -> Result<()> {
+    if staged.spaces.is_empty() {
+        return Ok(());
+    }
+    let space_vec: Vec<String> = staged.spaces.iter().cloned().collect();
+    let slots = crate::database::anon_placeholders(space_vec.len());
+    {
+        let mut stmt = db.prepare(&format!(
+            "SELECT id FROM library_collections WHERE space_id IN ({slots})"
+        ))?;
+        let cols: Vec<String> = stmt
+            .query_map(duckdb::params_from_iter(space_vec.iter()), |r| r.get(0))?
+            .collect::<duckdb::Result<_>>()?;
+        staged.collections.extend(cols);
+    }
+    {
+        let mut stmt = db.prepare(&format!(
+            "SELECT id,space_id,kind,filename FROM library_items WHERE space_id IN ({slots})"
+        ))?;
+        let mut rows = stmt.query(duckdb::params_from_iter(space_vec.iter()))?;
+        while let Some(r) = rows.next()? {
+            staged.push_item((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?));
         }
     }
-    db.execute_batch(
-        "DELETE FROM library_chunk_embeddings WHERE chunk_id IN
-           (SELECT id FROM library_chunks WHERE item_id IN (SELECT id FROM temp.library_delete_items));
-         DELETE FROM library_chunks WHERE item_id IN (SELECT id FROM temp.library_delete_items);
-         DELETE FROM library_items WHERE id IN (SELECT id FROM temp.library_delete_items);
-         DELETE FROM workspace_library_collection_links WHERE collection_id IN (SELECT id FROM temp.library_delete_collections)
-           OR library_space_id IN (SELECT id FROM temp.library_delete_spaces);
-         DELETE FROM workspace_library_links WHERE library_space_id IN (SELECT id FROM temp.library_delete_spaces);
-         DELETE FROM library_collections WHERE id IN (SELECT id FROM temp.library_delete_collections);
-         DELETE FROM library_spaces WHERE id IN (SELECT id FROM temp.library_delete_spaces);",
-    )?;
-    let ids = db
-        .prepare("SELECT id FROM temp.library_delete_items")?
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    db.execute_batch(
-        "DELETE FROM temp.library_delete_items;
-         DELETE FROM temp.library_delete_collections;
-         DELETE FROM temp.library_delete_spaces;",
-    )?;
-    Ok(ids)
+    Ok(())
+}
+
+fn scope_is_consistent(db: &Connection, staged: &StagedDelete) -> Result<bool> {
+    if staged.collections.is_empty() {
+        return Ok(true);
+    }
+    let mut stmt = db.prepare("SELECT id, parent_id FROM library_collections WHERE parent_id IS NOT NULL")?;
+    let mut rows = stmt.query([])?;
+    while let Some(r) = rows.next()? {
+        let id: String = r.get(0)?;
+        let parent_id: String = r.get(1)?;
+        if staged.collections.contains(&parent_id) && !staged.collections.contains(&id) {
+            return Ok(false);
+        }
+    }
+    let mut i_stmt = db.prepare("SELECT id, collection_id FROM library_items WHERE collection_id IS NOT NULL")?;
+    let mut i_rows = i_stmt.query([])?;
+    while let Some(r) = i_rows.next()? {
+        let id: String = r.get(0)?;
+        let collection_id: String = r.get(1)?;
+        if staged.collections.contains(&collection_id) && !staged.item_ids.contains(&id) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn apply_staged(db: &Connection, root: &Path, staged: &StagedDelete) -> Result<Vec<String>> {
+    let rk = root_key(root)?;
+    {
+        let mut ins = db.prepare(
+            "INSERT INTO library_file_cleanup(root,space_id,item_id,filename)
+             VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",
+        )?;
+        for (id, space_id, kind, filename) in &staged.items {
+            if kind != "url" && !staged.spaces.contains(space_id) {
+                ins.execute(params![rk, space_id, id, filename])?;
+            }
+        }
+        for space_id in &staged.spaces {
+            ins.execute(params![rk, space_id, "", Option::<String>::None])?;
+        }
+    }
+    let item_vec: Vec<String> = staged.items.iter().map(|(id, _, _, _)| id.clone()).collect();
+    if !item_vec.is_empty() {
+        for id in &item_vec {
+            let doc_key = format!("library:{id}");
+            crate::search_postings::delete_document_postings_in_tx(db, &doc_key)?;
+        }
+        let slots = crate::database::anon_placeholders(item_vec.len());
+        db.execute(
+            &format!(
+                "DELETE FROM library_chunk_embeddings WHERE chunk_id IN
+                 (SELECT id FROM library_chunks WHERE item_id IN ({slots}))"
+            ),
+            duckdb::params_from_iter(item_vec.iter()),
+        )?;
+        db.execute(
+            &format!("DELETE FROM library_chunks WHERE item_id IN ({slots})"),
+            duckdb::params_from_iter(item_vec.iter()),
+        )?;
+        db.execute(
+            &format!("DELETE FROM library_versions WHERE item_id IN ({slots})"),
+            duckdb::params_from_iter(item_vec.iter()),
+        )?;
+        db.execute(
+            &format!("DELETE FROM library_text_saves WHERE item_id IN ({slots})"),
+            duckdb::params_from_iter(item_vec.iter()),
+        )?;
+        db.execute(
+            &format!("DELETE FROM library_items WHERE id IN ({slots})"),
+            duckdb::params_from_iter(item_vec.iter()),
+        )?;
+    }
+    if !staged.collections.is_empty() {
+        let col_vec: Vec<String> = staged.collections.iter().cloned().collect();
+        let slots = crate::database::anon_placeholders(col_vec.len());
+        db.execute(
+            &format!(
+                "DELETE FROM workspace_library_collection_links WHERE collection_id IN ({slots})"
+            ),
+            duckdb::params_from_iter(col_vec.iter()),
+        )?;
+    }
+    if !staged.spaces.is_empty() {
+        let space_vec: Vec<String> = staged.spaces.iter().cloned().collect();
+        let slots = crate::database::anon_placeholders(space_vec.len());
+        db.execute(
+            &format!(
+                "DELETE FROM workspace_library_collection_links WHERE library_space_id IN ({slots})"
+            ),
+            duckdb::params_from_iter(space_vec.iter()),
+        )?;
+        db.execute(
+            &format!("DELETE FROM workspace_library_links WHERE library_space_id IN ({slots})"),
+            duckdb::params_from_iter(space_vec.iter()),
+        )?;
+    }
+    if !staged.collections.is_empty() {
+        let col_vec: Vec<String> = staged.collections.iter().cloned().collect();
+        let slots = crate::database::anon_placeholders(col_vec.len());
+        db.execute(
+            &format!("DELETE FROM library_collections WHERE id IN ({slots})"),
+            duckdb::params_from_iter(col_vec.iter()),
+        )?;
+    }
+    if !staged.spaces.is_empty() {
+        let space_vec: Vec<String> = staged.spaces.iter().cloned().collect();
+        let slots = crate::database::anon_placeholders(space_vec.len());
+        db.execute(
+            &format!("DELETE FROM library_spaces WHERE id IN ({slots})"),
+            duckdb::params_from_iter(space_vec.iter()),
+        )?;
+    }
+    Ok(item_vec)
 }
 
 pub(crate) fn delete_project_spaces(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &duckdb::Transaction<'_>,
     root: &Path,
     project_id: &str,
 ) -> Result<Option<Vec<String>>> {
-    prepare_staging(tx)?;
-    tx.execute(
-        "INSERT INTO temp.library_delete_spaces SELECT id FROM library_spaces WHERE project_id=?1",
-        [project_id],
-    )?;
-    stage_space_contents(tx)?;
-    if !scope_is_consistent(tx)? {
+    let mut staged = StagedDelete::default();
+    {
+        let mut stmt = tx.prepare("SELECT id FROM library_spaces WHERE project_id=?1")?;
+        let space_ids: Vec<String> = stmt
+            .query_map([project_id], |r| r.get(0))?
+            .collect::<duckdb::Result<_>>()?;
+        staged.spaces.extend(space_ids);
+    }
+    stage_space_contents(tx, &mut staged)?;
+    if !scope_is_consistent(tx, &staged)? {
         return Ok(None);
     }
-    Ok(Some(apply_staged(tx, root)?))
+    Ok(Some(apply_staged(tx, root, &staged)?))
 }
 
 pub fn delete(db: &mut Connection, root: &Path, target: Target) -> Result<Value> {
-    let write_guard = crate::write_gate::enter()?;
-    let tx = match db.transaction_with_behavior(TransactionBehavior::Immediate) {
+    let tx = match db.transaction() {
         Ok(tx) => tx,
         Err(error) => {
             crate::request_control::known_failure();
             return Err(error.into());
         }
     };
-    let staged = (|| -> Result<Option<Vec<String>>> {
-        prepare_staging(&tx)?;
-        if !stage_target(&tx, &target)? {
-            return Ok(None);
-        }
-        Ok(Some(apply_staged(&tx, root)?))
-    })();
+    let mut staged_data = StagedDelete::default();
+    let staged = match stage_target(&tx, &target, &mut staged_data) {
+        Ok(true) => Ok(Some(apply_staged(&tx, root, &staged_data)?)),
+        Ok(false) => Ok(None),
+        Err(error) => Err(error),
+    };
     let ids = match staged {
         Ok(Some(ids)) => ids,
         Ok(None) => {
@@ -214,17 +312,13 @@ pub fn delete(db: &mut Connection, root: &Path, target: Target) -> Result<Value>
             return Ok(json!({ "status": "scopeChanged" }));
         }
         Err(error) => {
-            // No file cleanup happens before COMMIT. A SQL error with a confirmed
-            // rollback is a known failure, including triggers using RAISE(ROLLBACK).
-            let already_rolled_back = tx.is_autocommit();
-            if tx.rollback().is_ok() || already_rolled_back {
+            if tx.rollback().is_ok() {
                 crate::request_control::known_failure();
             }
             return Err(error);
         }
     };
     crate::request_control::commit(tx)?;
-    drop(write_guard);
     if let Err(error) = drain(db, root) {
         eprintln!("Library file cleanup will retry: {error}");
     }
@@ -246,8 +340,7 @@ struct CleanupJob {
 
 pub fn drain(db: &mut Connection, root: &Path) -> Result<usize> {
     let root_key = root_key(root)?;
-    let write_guard = crate::write_gate::enter()?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let jobs = tx
         .prepare("SELECT space_id,item_id,filename FROM library_file_cleanup WHERE root=?1")?
         .query_map([root_key], |row| {
@@ -257,7 +350,7 @@ pub fn drain(db: &mut Connection, root: &Path) -> Result<usize> {
                 filename: row.get(2)?,
             })
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .collect::<duckdb::Result<Vec<_>>>()?;
     let mut completed = 0;
     for job in jobs {
         let occupied: bool = match &job.filename {
@@ -285,7 +378,6 @@ pub fn drain(db: &mut Connection, root: &Path) -> Result<usize> {
         completed += 1;
     }
     crate::request_control::commit(tx)?;
-    drop(write_guard);
     Ok(completed)
 }
 

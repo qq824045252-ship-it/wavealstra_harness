@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -8,18 +8,14 @@ import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { botWorkspaceSpaceId } from "../src/main/agent/work/BotWorkspaceNavigationService";
 import { LOCAL_USER_ID, DEFAULT_BOT_ID } from "../src/shared/bot-work";
-import { TaskBoardRepository } from "../src/main/task/TaskBoardRepository";
-import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
+import { fixtureTaskBoard } from "./fixtures/legacy-task-board-store";
 import { CodeReviewService } from "../src/main/agent/CodeReviewService";
 import { focusRows } from "../src/renderer/src/lib/taskBoardFocus";
 import type { BoardPage, TaskBoardRow } from "../src/shared/task-board";
 
-const useNative = process.argv.includes("--native");
-const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
-if (useNative) assert.ok(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
 const dir = mkdtempSync(join(tmpdir(), "mybuddy-board-"));
 const path = join(dir, "app.db");
-let db = new AppDatabase(path, { runtimeAuditExecutable });
+let db = new AppDatabase(path);
 const now = Date.now();
 function day(offset: number) {
   const d = new Date(now);
@@ -33,16 +29,9 @@ try {
   const bot = new BotConversationRepository(db.connection);
   db.upsertSpace({ id: botWorkspaceSpaceId(DEFAULT_BOT_ID), name: "历史工作空间" });
   const prior = bot.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "older", text: "历史对话" });
-  let board = new TaskBoardRepository(db.connection, db.runtimeAuditReader);
+  let board = fixtureTaskBoard(db.connection);
   const ids = async (view: Parameters<typeof board.page>[0]) => (await board.page(view, now)).rows.map((r) => r.id);
-  const act = async (...args: Parameters<typeof board.action>) => {
-    if (useNative) db.connection.pragma("query_only = ON");
-    try {
-      await board.action(...args);
-    } finally {
-      if (useNative) db.connection.pragma("query_only = OFF");
-    }
-  };
+  const act = (...args: Parameters<typeof board.action>) => board.action(...args);
   assert.equal((await board.page({ view: "recent" }, now)).rows[0]?.request?.messageId, prior.assistantMessageId);
   db.connection.transaction(() => {
     for (let i = 0; i < 1000; i++)
@@ -58,6 +47,7 @@ try {
     .run("ask", "waiting", "run", "msg", "short_text", "使用哪种口径？", "pending", day(-40));
   board.follow("quote", "原始需求", day(-35));
   board.follow("quote", "调整含税口径", day(-1));
+  await board.flush();
   await act("report", "visit", day(-2));
   await act("report", "visit", day(-2) + 60_000);
   assert.deepEqual(await ids({ view: "frequent" }), []);
@@ -151,6 +141,7 @@ try {
   assert.equal(new Set([...firstFinished.rows, ...nextFinished.rows].map((row) => row.id)).size, firstFinished.rows.length + nextFinished.rows.length);
   assert.equal((await board.page({ ...laneQuery, lane: "running" }, now)).total, 0);
   board.follow("old-approval", "用户上传了本周数据", now);
+  await board.flush();
   const recentApproval = (await board.page({ view: "recent", search: "例行同步审批" }, now)).rows[0];
   assert.equal(recentApproval.reason, "用户上传了本周数据");
   assert.equal(recentApproval.wait?.reason, "同意更新共享库存表？", "follow-up history cannot conceal the current blocker");
@@ -209,8 +200,8 @@ try {
   assert.deepEqual(await ids({ view: "automation", jobId: "job" }), ["auto-2", "auto-1"]);
   await db.runtimeAuditReader?.close();
   db.close();
-  db = new AppDatabase(path, { runtimeAuditExecutable });
-  board = new TaskBoardRepository(db.connection, db.runtimeAuditReader);
+  db = new AppDatabase(path);
+  board = fixtureTaskBoard(db.connection);
   assert.deepEqual(await ids({ view: "frequent" }), ["report"]);
   assert.deepEqual((await ids({ view: "later" })).sort(), ["quote", "waiting"]);
   db.connection.transaction(() => {

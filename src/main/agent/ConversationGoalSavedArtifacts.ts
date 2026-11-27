@@ -6,16 +6,22 @@ import type { GoalSavedArtifactDto } from "../../shared/conversation-goal";
 
 export class ConversationGoalSavedArtifacts {
   constructor(
-    private readonly db: Database.Database,
+    private readonly fixture: Database.Database | undefined,
     private readonly reader?: import("../platform/runtime-audit").RuntimeAuditReader,
   ) {
-    if (db.readonly) return;
+    const db = fixture;
+    if (!db || db.readonly) return;
     db.exec(`CREATE TABLE IF NOT EXISTS conversation_goal_saved_artifact_verification (
       work_id TEXT NOT NULL REFERENCES works(work_id) ON DELETE CASCADE,
       artifact_id TEXT NOT NULL,
       verified_at INTEGER NOT NULL,
       PRIMARY KEY(work_id,artifact_id)
     );`);
+  }
+
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("目标成果记录需要通过 Rust Core 读取或写入");
+    return this.fixture;
   }
 
   read(workId: string, evidence: NonNullable<GoalActivityDto["nativeEvidence"]>): GoalSavedArtifactDto[] {
@@ -64,7 +70,7 @@ export class ConversationGoalSavedArtifacts {
     if (res && typeof res.verifiedAt === "number") {
       return { ...artifact, verification: { kind: "user", verifiedAt: res.verifiedAt } };
     }
-    if (!this.db.readonly && !this.reader.supervised) return this.confirm(workId, artifact);
+    if (this.fixture && !this.fixture.readonly && !this.reader.supervised) return this.confirm(workId, artifact);
     throw new Error("成果核验状态写入未获 Rust 核心确认");
   }
 }

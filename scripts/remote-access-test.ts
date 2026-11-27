@@ -134,11 +134,11 @@ assert.equal("path" in space, false);
 
 const events = new RemoteEventBus();
 const runtimeService = new RemoteAccessService({ getTask: () => ({ id: "legacy-chat" }) } as any, {
-  getConversationRuntimeSnapshot: () => ({ taskId: "legacy-chat", interactions: [], activeGoal: null,
+  readConversationRuntimeSnapshot: async () => ({ taskId: "legacy-chat", interactions: [], activeGoal: null,
     todos: [{ id: "retired-todo" }], activePlan: { id: "retired-plan" } }),
   isTaskBusy: () => false, listPendingActions: () => [],
 } as any, {} as any, {} as any, {} as any);
-const runtimeProjection = runtimeService.runtime("legacy-chat")!;
+const runtimeProjection = (await runtimeService.runtime("legacy-chat"))!;
 assert(!("todos" in runtimeProjection) && !("activePlan" in runtimeProjection), "remote runtime must omit removed chat state even from a legacy snapshot");
 assert.deepEqual(runtimeProjection.interactions, []);
 assert.equal(runtimeProjection.activeGoal, null);
@@ -582,6 +582,7 @@ try {
         ] },
       }] : [] }),
       getConversationRuntimeSnapshot: () => ({ interactions: [] }),
+      readConversationRuntimeSnapshot: async () => ({ interactions: [] }),
     };
     const settings = { read: () => ({ defaultModelId: null, permissionMode: "default" }), getTaskConnectorIds: () => [] };
     const commands = new RemoteTaskCommandService(db as never, agent as never, settings as never, { get: () => undefined } as never, uploadsRoot);

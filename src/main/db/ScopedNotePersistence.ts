@@ -17,7 +17,10 @@ export class ScopedNotePersistence {
 
   async read<T extends RuntimeScopedNote>(id: string, key: "projectId" | "workspaceId", readOnHost: () => T): Promise<T> {
     const result = await this.reader?.readScopedNote(this.scope, id);
-    if (!result) return readOnHost();
+    if (!result) {
+      if (this.rustRequired) throw new Error("Core 未确认便签读取");
+      return readOnHost();
+    }
     if (result.status !== "ok") throw new Error(this.errors[result.status]);
     return { [key]: id, ...result.note } as T;
   }
@@ -43,8 +46,8 @@ export class ScopedNotePersistence {
     const result = await this.reader.saveScopedNote(this.scope, id, { content, expectedRevision, updatedAt });
     if (result?.status === "ok") return { [key]: id, ...result.note } as T;
     if (result) throw new Error(this.errors[result.status]);
-    // The commit may have reached SQLite before the worker lost its reply.
-    const current = readOnHost();
+    // A committed note can outlive the reply. Confirm against the database that owns the write.
+    const current = await this.read(id, key, readOnHost);
     if (current.revision === expectedRevision + 1 && current.updatedAt === updatedAt && current.content === content) return current;
     if (this.rustRequired) throw new Error("便签保存未获 Rust 核心确认，请刷新后重试");
     return saveOnHost(updatedAt);

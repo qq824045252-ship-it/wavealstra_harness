@@ -6,10 +6,8 @@ import {
   type ConversationGoalCreateRequest,
   type ConversationGoalDto,
   type ConversationGoalEvidenceDto,
-  type ConversationGoalStatus,
   type ConversationGoalSourceDto,
   type ConversationGoalUpdateRequest,
-  type GoalCriterionDto,
   type GoalCriterionStatus,
 } from "../../shared/conversation-goal";
 import type { ConversationGoalMutationResult } from "../../shared/conversation-runtime";
@@ -23,6 +21,7 @@ import type {
 } from "../../shared/bot-work";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, isCriterionResolved, isRequiredCriterion } from "../../shared/bot-work";
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
+import { projectConversationGoal } from "./ConversationRuntimeData";
 import type { GoalCompletionObservation } from "./work/WorkClosureMutations";
 import { DESKTOP_USER_GRANTS, WorkService } from "./work/WorkService";
 
@@ -394,27 +393,7 @@ export class ConversationGoalService {
   toGoal(work: WorkDto, taskId: string): ConversationGoalDto {
     const continuation = this.options.resolveContinuation?.(work.workId);
     const blocker = work.lifecycle === "active" ? this.work.repo.listOpenBlockers(work.workId)[0] : undefined;
-    return {
-      id: work.workId,
-      taskId,
-      title: work.title,
-      description: work.goalDescription,
-      status: blocker ? "blocked" : goalStatus(work),
-      criteria: work.criteria.map(toGoalCriterion),
-      progressSummary: (work.lifecycle === "closed" ? work.closureSummary : undefined)
-        ?? work.progressSummary ?? (work.lifecycle === "closing" ? "正在结算在途操作" : undefined),
-      version: work.stateVersion,
-      createdBy: work.createdBy === "user" ? "user" : "agent_explicit_request",
-      createdAt: work.createdAt,
-      updatedAt: work.updatedAt,
-      closedAt: work.closedAt,
-      sourceMessageId: work.sourceMessageId,
-      source: this.work.repo.getGoalSource(work.workId),
-      waitingReason: blocker?.reason ?? (work.lifecycle === "closing" ? "正在结算在途操作" : undefined),
-      closureConclusion: work.closureConclusion,
-      achievedAt: work.lifecycle === "closed" && work.closureConclusion === "succeeded" ? work.closedAt : undefined,
-      ...(continuation ? { continuation } : {}),
-    };
+    return projectConversationGoal(work, taskId, this.work.repo.getGoalSource(work.workId), blocker?.reason, continuation);
   }
 
   private finish(result: WorkControlResult, goalId: string, conversationId: string): ConversationGoalMutationResult {
@@ -483,33 +462,6 @@ export function defaultBotActor(botId = DEFAULT_BOT_ID, userId = LOCAL_USER_ID):
   return {
     kind: "bot", botId, userId, host: "foreground", grants: DESKTOP_USER_GRANTS,
   };
-}
-
-function goalStatus(work: WorkDto): ConversationGoalStatus {
-  if (work.lifecycle === "closed") {
-    return work.closureConclusion === "succeeded" ? "achieved" : "cancelled";
-  }
-  if (work.lifecycle === "paused") return "paused";
-  if (work.lifecycle === "closing") return "active";
-  return "active";
-}
-
-function toGoalCriterion(criterion: WorkDto["criteria"][number]): GoalCriterionDto {
-  return {
-    id: criterion.id,
-    text: criterion.text,
-    status: goalCriterionStatus(criterion.status),
-    evidence: criterion.evidenceRefs.length > 0
-      ? `${criterion.evidenceRefs.length} 项证据${criterion.waivedReason ? `；豁免：${criterion.waivedReason}` : ""}`
-      : criterion.waivedReason,
-  };
-}
-
-function goalCriterionStatus(status: WorkDto["criteria"][number]["status"]): GoalCriterionStatus {
-  if (status === "satisfied") return "met";
-  if (status === "waived") return "waived";
-  if (status === "failed" || status === "blocked") return "not_met";
-  return "pending";
 }
 
 function legacyCriterionStatus(status: GoalCriterionStatus | undefined): "pending" | "met" | "not_met" | "waived" {

@@ -46,6 +46,7 @@ async function main() {
   let cancelled = false;
   let promptBarrier: ReturnType<typeof barrier> | undefined;
   let historyBarrier: ReturnType<typeof barrier> | undefined;
+  let skillBarrier: ReturnType<typeof barrier> | undefined;
   let preparing = false;
   const agent: CronAgent = {
     getAppSettings: () => ({}),
@@ -54,7 +55,11 @@ async function main() {
       return { modelId: id };
     },
     isTaskBusy: () => busy,
-    listSkills: () => [], listConnectors: () => [],
+    listSkills: async () => {
+      if (skillBarrier) { preparing = true; await skillBarrier.promise; }
+      return [{ id: "checked-skill", name: "Checked skill" }];
+    },
+    listConnectors: () => [],
     loadTaskHistory: async taskId => {
       if (historyBarrier) { preparing = true; await historyBarrier.promise; }
       return { messages: [...(history.get(taskId) ?? [])] };
@@ -137,6 +142,19 @@ async function main() {
       assert.equal(prompts.length, 2, "取消 await 准备中的计划不得启动");
       if (action === "cancel") assert.equal(cron.getForTask("source", scheduled.id).status, "cancelled");
     }
+    preparing = false;
+    skillBarrier = barrier();
+    await cron.saveUserPlan(job("cancel-during-skill-read", { sourceTaskId: "source",
+      target: { kind: "task", taskId: "source" }, skillIds: ["checked-skill"] }));
+    await cron.runNow("cancel-during-skill-read");
+    await until(() => preparing, "the plan is loading skills");
+    cron.changeForTask("source", "cancel-during-skill-read", "cancel");
+    skillBarrier.release();
+    skillBarrier = undefined;
+    await delay(30);
+    assert.equal(prompts.length, 2);
+    assert.equal(db.listCronRuns().some(run => run.jobId === "cancel-during-skill-read"), false);
+    console.log("PASS cancelling a plan while its skill list is loading prevents a run or submission");
     empty = true;
     cron.upsert(job("empty", { target: { kind: "task", taskId: "source" } }));
     await cron.runNow("empty"); await waitRun("empty", "error");

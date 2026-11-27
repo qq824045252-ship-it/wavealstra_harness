@@ -1,5 +1,5 @@
 use crate::{Result, javascript_whitespace, semantic_inference};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -109,16 +109,20 @@ pub enum QueryResult {
 #[derive(Default)]
 pub struct IndexQueues(HashMap<String, VecDeque<String>>);
 
-const LIBRARY_INDEX_JOIN: &str = "FROM library_chunks c JOIN library_items i ON i.id=c.item_id
-    LEFT JOIN library_chunk_embeddings e ON e.chunk_id=c.id AND e.chunk_hash=c.hash
-        AND e.model_id=:model_id AND e.model_version=:model_version AND e.dimension=:dimension
-        AND length(e.embedding)=:bytes
-    WHERE i.trashed_at IS NULL AND i.space_id IN (SELECT value FROM json_each(:eligible))";
+fn library_index_join(space_placeholders: &str) -> String {
+    format!(
+        "FROM library_chunks c JOIN library_items i ON i.id=c.item_id
+         LEFT JOIN library_chunk_embeddings e ON e.chunk_id=c.id AND e.chunk_hash=c.hash
+             AND e.model_id=?1 AND e.model_version=?2 AND e.dimension=?3
+             AND length(e.embedding)=?4
+         WHERE i.trashed_at IS NULL AND i.space_id IN ({space_placeholders})"
+    )
+}
 
 const MEMORY_INDEX_JOIN: &str = "FROM memory_records m
     LEFT JOIN memory_embeddings e ON e.memory_id=m.id AND e.content_hash=m.content_hash
-        AND e.model_id=:model_id AND e.model_version=:model_version AND e.dimension=:dimension
-        AND length(e.embedding)=:bytes
+        AND e.model_id=$model_id AND e.model_version=$model_version AND e.dimension=$dimension
+        AND length(e.embedding)=$bytes
     WHERE m.status='active'";
 
 impl IndexQueues {
@@ -126,15 +130,28 @@ impl IndexQueues {
         let result = match query {
             IndexQuery::LibraryStats { model } => {
                 let tx = db.transaction()?;
-                let eligible = serde_json::to_string(&hybrid_spaces(&tx)?)?;
-                let stats = tx.query_row(
-                    &format!("SELECT COUNT(*), COUNT(e.chunk_id) {LIBRARY_INDEX_JOIN}"),
-                    rusqlite::named_params! {
-                        ":model_id": model.model_id, ":model_version": model.model_version,
-                        ":dimension": model.dimension, ":bytes": model.dimension * 4, ":eligible": eligible,
-                    },
-                    |row| Ok(IndexStats { total: row.get(0)?, completed: row.get(1)? }),
-                )?;
+                let eligible: Vec<String> = hybrid_spaces(&tx)?.into_iter().collect();
+                let stats = if eligible.is_empty() {
+                    IndexStats {
+                        total: 0,
+                        completed: 0,
+                    }
+                } else {
+                    let ph: Vec<String> = (0..eligible.len()).map(|i| format!("?{}", i + 5)).collect();
+                    let join = library_index_join(&ph.join(","));
+                    let mut values: Vec<duckdb::types::Value> = vec![
+                        duckdb::types::Value::Text(model.model_id),
+                        duckdb::types::Value::Text(model.model_version),
+                        duckdb::types::Value::BigInt(model.dimension as i64),
+                        duckdb::types::Value::BigInt((model.dimension as i64) * 4),
+                    ];
+                    values.extend(eligible.into_iter().map(duckdb::types::Value::Text));
+                    tx.query_row(
+                        &format!("SELECT COUNT(*), COUNT(e.chunk_id) {join}"),
+                        duckdb::params_from_iter(values),
+                        |row| Ok(IndexStats { total: row.get(0)?, completed: row.get(1)? }),
+                    )?
+                };
                 tx.commit()?;
                 QueryResult::Stats(stats)
             }
@@ -144,21 +161,30 @@ impl IndexQueues {
                 limit,
             } => {
                 let tx = db.transaction()?;
-                let eligible = serde_json::to_string(&hybrid_spaces(&tx)?)?;
-                let rows = {
-                    let mut statement = tx.prepare_cached(&format!(
-                        "SELECT c.id,c.hash {LIBRARY_INDEX_JOIN}
-                         AND e.chunk_id IS NULL AND (:after IS NULL OR c.id>:after)
-                         ORDER BY c.id LIMIT :limit",
+                let eligible: Vec<String> = hybrid_spaces(&tx)?.into_iter().collect();
+                let rows = if eligible.is_empty() {
+                    Vec::new()
+                } else {
+                    let ph: Vec<String> = (0..eligible.len()).map(|i| format!("?{}", i + 7)).collect();
+                    let join = library_index_join(&ph.join(","));
+                    let mut values: Vec<duckdb::types::Value> = vec![
+                        duckdb::types::Value::Text(model.model_id),
+                        duckdb::types::Value::Text(model.model_version),
+                        duckdb::types::Value::BigInt(model.dimension as i64),
+                        duckdb::types::Value::BigInt((model.dimension as i64) * 4),
+                        after.map_or(duckdb::types::Value::Null, duckdb::types::Value::Text),
+                        duckdb::types::Value::BigInt(i64::from(limit.clamp(1, 100))),
+                    ];
+                    values.extend(eligible.into_iter().map(duckdb::types::Value::Text));
+                    let mut statement = tx.prepare(&format!(
+                        "SELECT c.id,c.hash {join}
+                         AND e.chunk_id IS NULL AND (?5 IS NULL OR c.id>?5)
+                         ORDER BY c.id LIMIT ?6",
                     ))?;
                     statement.query_map(
-                        rusqlite::named_params! {
-                            ":model_id": model.model_id, ":model_version": model.model_version,
-                            ":dimension": model.dimension, ":bytes": model.dimension * 4, ":eligible": eligible,
-                            ":after": after, ":limit": limit.clamp(1, 100),
-                        },
+                        duckdb::params_from_iter(values),
                         |row| Ok(Candidate { id: row.get(0)?, hash: row.get(1)? }),
-                    )?.collect::<rusqlite::Result<_>>()?
+                    )?.collect::<duckdb::Result<_>>()?
                 };
                 tx.commit()?;
                 QueryResult::Page(rows)
@@ -171,9 +197,9 @@ impl IndexQueues {
                 let tx = db.transaction()?;
                 let stats = tx.query_row(
                     &format!("SELECT COUNT(*), COUNT(e.memory_id) {MEMORY_INDEX_JOIN}"),
-                    rusqlite::named_params! {
-                        ":model_id": model.model_id, ":model_version": model.model_version,
-                        ":dimension": model.dimension, ":bytes": model.dimension * 4,
+                    duckdb::named_params! {
+                        "model_id": model.model_id, "model_version": model.model_version,
+                        "dimension": model.dimension, "bytes": model.dimension * 4,
                     },
                     |row| {
                         Ok(IndexStats {
@@ -185,17 +211,17 @@ impl IndexQueues {
                 let pending = stats.total - stats.completed;
                 let count = pending.min(limit.unwrap_or(pending));
                 if count != 0 {
-                    let mut statement = tx.prepare_cached(&format!(
+                    let mut statement = tx.prepare(&format!(
                         "SELECT m.id {MEMORY_INDEX_JOIN} AND e.memory_id IS NULL
-                         ORDER BY m.updated_at DESC,m.id LIMIT :limit",
+                         ORDER BY m.updated_at DESC,m.id LIMIT $limit",
                     ))?;
                     let ids = statement.query_map(
-                        rusqlite::named_params! {
-                            ":model_id": model.model_id, ":model_version": model.model_version,
-                            ":dimension": model.dimension, ":bytes": model.dimension * 4, ":limit": count,
+                        duckdb::named_params! {
+                            "model_id": model.model_id, "model_version": model.model_version,
+                            "dimension": model.dimension, "bytes": model.dimension * 4, "limit": count,
                         },
                         |row| row.get(0),
-                    )?.collect::<rusqlite::Result<_>>()?;
+                    )?.collect::<duckdb::Result<_>>()?;
                     self.0.insert(queue_id, ids);
                 } else {
                     self.0.remove(&queue_id);
@@ -210,7 +236,7 @@ impl IndexQueues {
                     .ok_or("memory indexing queue expired")?;
                 let tx = db.transaction()?;
                 let candidates = {
-                    let mut find = tx.prepare_cached(
+                    let mut find = tx.prepare(
                         "SELECT content_hash FROM memory_records WHERE id=? AND status='active'",
                     )?;
                     queue
@@ -223,7 +249,7 @@ impl IndexQueues {
                                 hash,
                             })
                         })
-                        .collect::<rusqlite::Result<Vec<_>>>()?
+                        .collect::<duckdb::Result<Vec<_>>>()?
                 };
                 tx.commit()?;
                 queue.drain(..candidates.len());
@@ -331,7 +357,7 @@ impl StagedVectors {
                 .map(|token| staged.remove(token).ok_or("staged semantic vector missing"))
                 .collect::<std::result::Result<Vec<_>, _>>()?
         };
-        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = db.transaction()?;
         let mut counts = Counts::default();
         let mut eligible_spaces = None;
         for vector in vectors {
@@ -376,7 +402,7 @@ fn save_memory(
         counts.skipped += 1;
         return Ok(());
     }
-    let saved = db.prepare_cached(
+    let saved = db.prepare(
         "INSERT INTO memory_embeddings(memory_id,model_id,model_version,content_hash,dimension,embedding,created_at)
          VALUES (?,?,?,?,?,?,?) ON CONFLICT(memory_id,model_id,model_version) DO UPDATE SET
            content_hash=excluded.content_hash,dimension=excluded.dimension,embedding=excluded.embedding,created_at=excluded.created_at
@@ -397,7 +423,7 @@ fn save_library(
     counts: &mut Counts,
 ) -> Result<()> {
     let space = db
-        .prepare_cached(
+        .prepare(
             "SELECT i.space_id FROM library_chunks c JOIN library_items i ON i.id=c.item_id
          WHERE c.id=? AND c.hash=? AND i.trashed_at IS NULL",
         )?
@@ -407,7 +433,7 @@ fn save_library(
         counts.skipped += 1;
         return Ok(());
     }
-    let saved = db.prepare_cached(
+    let saved = db.prepare(
         "INSERT INTO library_chunk_embeddings(chunk_id,model_id,model_version,chunk_hash,dimension,embedding,created_at)
          VALUES (?,?,?,?,?,?,?) ON CONFLICT(chunk_id,model_id,model_version) DO UPDATE SET
            chunk_hash=excluded.chunk_hash,dimension=excluded.dimension,embedding=excluded.embedding,created_at=excluded.created_at
@@ -420,7 +446,7 @@ fn save_library(
 
 type Policies = HashMap<String, (Option<String>, Option<String>)>;
 
-fn index_policies(db: &Connection, sql: &str) -> rusqlite::Result<Policies> {
+fn index_policies(db: &Connection, sql: &str) -> duckdb::Result<Policies> {
     let mut query = db.prepare(sql)?;
     query
         .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?

@@ -21,6 +21,7 @@ class FakeAdapter extends WeixinIlinkAdapter {
   override async disconnect(): Promise<void> { this.live = false; this.active = false; }
   override isConnected(): boolean { return this.live; }
   override workConnectionKey(): string | undefined { return this.live && this.active ? "b".repeat(64) : undefined; }
+  override gatewayPreparedConnectionKey(): string | undefined { return this.live ? "b".repeat(64) : undefined; }
 }
 class FakeLogin extends WeixinQrLogin {
   view: WeixinQrState = { status: "idle" }; starts = 0;
@@ -78,7 +79,7 @@ try {
   assert.equal(saved.botToken, undefined);
   assert.deepEqual(saved.allowUsers, [credentials.userId]);
   assert.equal(openGatewayProviderConfig("weixin", saved).botToken, credentials.botToken);
-  assert.equal(service.getChannelConfig("weixin-default").config.botToken, "••••••");
+  assert.equal((await service.getChannelConfig("weixin-default")).config.botToken, "••••••");
   Object.assign(login.view, { botToken: credentials.botToken, token: "private-token" });
   assert(!JSON.stringify(service.getWeixinQrLoginState()).includes(credentials.botToken));
   assert.equal((service.getWeixinQrLoginState() as unknown as Record<string, unknown>).token, undefined);
@@ -105,10 +106,10 @@ try {
   assert.equal(db.listGatewayChannels().find(value => value.id === "weixin-default")!.configJson, original);
 
   await service.startWeixinQrLogin(true);
-  const save = db.upsertGatewayChannel.bind(db);
-  db.upsertGatewayChannel = () => { throw new Error("fixture storage failure"); };
+  const save = db.writeGatewayChannel.bind(db);
+  db.writeGatewayChannel = async () => { throw new Error("fixture storage failure"); };
   await assert.rejects(login.authorize({ ...credentials, accountId: "789" }));
-  db.upsertGatewayChannel = save;
+  db.writeGatewayChannel = save;
   assert.equal(adapter.active, false);
   assert.equal(db.listGatewayChannels().find(value => value.id === "weixin-default")!.configJson, original);
 
@@ -119,7 +120,7 @@ try {
   await service.disconnect("weixin-default");
   assert.equal(service.getWeixinQrLoginState().state, "cancelled");
   assert.equal(db.listGatewayChannels().find(value => value.id === "weixin-default")!.connected, false);
-  assert.equal(service.getChannelConfig("weixin-default").config.botToken, "••••••");
+  assert.equal((await service.getChannelConfig("weixin-default")).config.botToken, "••••••");
   await service.startWeixinQrLogin(true);
   await login.authorize();
   await sendPrivate("ordinary-only");

@@ -1,5 +1,5 @@
 use crate::{MAX_REPLY_BYTES, Result};
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use duckdb::{Connection, OptionalExt, Row, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -21,6 +21,11 @@ pub enum Query {
         id: String,
         max_preview_bytes: usize,
     },
+    Record {
+        task_id: String,
+        id: Option<String>,
+        target_key: Option<String>,
+    },
 }
 
 #[derive(Serialize)]
@@ -38,7 +43,7 @@ struct FileRow {
 }
 
 impl FileRow {
-    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+    fn from_row(row: &Row<'_>) -> duckdb::Result<Self> {
         Ok(Self {
             id: row.get(0)?,
             relative_path: row.get(1)?,
@@ -69,24 +74,24 @@ enum Data {
     List { files: Vec<FileRow> },
     PendingCount { count: i64 },
     Detail { detail: Option<FileDetail> },
+    Record { record: Option<Value> },
 }
 
 const FILE_FIELDS: &str = "r.id, r.relative_path, r.before_present, r.after_present, r.additions,
     r.deletions, r.stats_available, r.status, r.capture_reason, r.failure_reason";
-const PREVIEW_TOO_LARGE: &str =
-    "max(coalesce(length(r.before_bytes), 0), coalesce(length(r.after_bytes), 0)) > ?3";
+const PREVIEW_TOO_LARGE: &str = "GREATEST(coalesce(octet_length(r.before_bytes), 0), coalesce(octet_length(r.after_bytes), 0)) > ?3";
 
 pub fn read(db: &Connection, query: Query) -> Result<Value> {
     let data = match query {
         Query::List { task_id } => {
-            let mut statement = db.prepare_cached(&format!(
+            let mut statement = db.prepare(&format!(
                 "SELECT {FILE_FIELDS} FROM task_code_review r
                  JOIN tasks t ON t.id = r.task_id WHERE r.task_id = ?1
                  ORDER BY r.status != 'pending', r.relative_path",
             ))?;
             let files = statement
                 .query_map([task_id], FileRow::from_row)?
-                .collect::<rusqlite::Result<_>>()?;
+                .collect::<duckdb::Result<_>>()?;
             Data::List { files }
         }
         Query::PendingCount { task_id } => Data::PendingCount {
@@ -102,7 +107,7 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
             max_preview_bytes,
         } => {
             let detail = db
-                .prepare_cached(&format!(
+                .prepare(&format!(
                     "SELECT {FILE_FIELDS}, {PREVIEW_TOO_LARGE},
                    CASE WHEN NOT ({PREVIEW_TOO_LARGE}) THEN r.before_bytes END,
                    CASE WHEN NOT ({PREVIEW_TOO_LARGE}) THEN r.after_bytes END
@@ -119,6 +124,23 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
                 })
                 .optional()?;
             Data::Detail { detail }
+        }
+        Query::Record {
+            task_id,
+            id,
+            target_key,
+        } => {
+            if id.is_some() == target_key.is_some() {
+                return Err("Expected one code review record selector".into());
+            }
+            let record = crate::sqlite_rows::records(db, &format!(
+                "SELECT {FILE_FIELDS}, r.task_id,r.target_key,r.root_entity,r.path,r.before_stamp,r.after_stamp,
+                   r.before_mode,r.after_mode,r.restoring,to_base64(r.before_bytes) AS before_bytes,
+                   to_base64(r.after_bytes) AS after_bytes
+                 FROM task_code_review r JOIN tasks t ON t.id=r.task_id
+                 WHERE r.task_id=?1 AND (?2 IS NULL OR r.id=?2) AND (?3 IS NULL OR r.target_key=?3)"
+            ), params![task_id, id, target_key])?.pop();
+            Data::Record { record }
         }
     };
     let encoded = serde_json::to_vec(&data)?;

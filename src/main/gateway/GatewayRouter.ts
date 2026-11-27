@@ -6,7 +6,7 @@ import type { GatewayEventDto } from "../../shared/agent-ipc";
 import type { AppSettingsStore } from "../AppSettingsStore";
 import { gatewayInboundIdentity } from "./gateway-inbound-identity";
 import { gatewayConversationId } from "./GatewayConversation";
-import { hasStableConversationMessageId, isNewConversationCommand, NEW_CONVERSATION_REPLY, reserveGatewayConversation } from "./GatewayConversationSession";
+import { hasStableConversationMessageId, isNewConversationCommand, NEW_CONVERSATION_REPLY, reserveGatewayConversation, type ConversationRoute } from "./GatewayConversationSession";
 
 import { isSecureGatewayProvider } from "./GatewayProviderConfig";
 import { runGatewayAgentTurn, type GatewayAgentPort } from "./GatewayAgentTurn";
@@ -58,31 +58,44 @@ export class GatewayRouter {
       return "这条消息没有稳定标识，无法安全开启新会话。请从支持消息标识的渠道重试 /new。";
     }
     const origin = this.origin(msg, connectionKey, userMessageId);
-    if (hasStableConversationMessageId(transportMessageId)) {
-      origin.personalMemoryBindingId = this.options.dotsBindings?.admit(origin, msg.replyRoute);
-    }
-    const fallback = gatewayConversationId(origin);
     const db = this.options.db;
-    const route = db?.connection ? reserveGatewayConversation(db.connection, origin, command, undefined, db.runtimeAuditReader)
-      : { taskId: fallback, currentTaskId: fallback, command: false };
-    if (command && !db?.connection) return "会话存储不可用，未开启新会话。";
+    const core = msg.gatewayDelivery && db?.runtimeAuditReader?.supervised ? db.runtimeAuditReader : undefined;
+    const assignment = await core?.readGatewayAssignment(origin);
+    let route: ConversationRoute;
+    if (core) {
+      if (assignment?.status !== "assigned") throw new Error("Core 未确认渠道会话或收件授权");
+      origin.personalMemoryBindingId = assignment.personalMemoryBindingId ?? undefined;
+      route = assignment;
+    } else {
+      if (hasStableConversationMessageId(transportMessageId)) origin.personalMemoryBindingId = this.options.dotsBindings?.admit(origin, msg.replyRoute);
+      const fixture = db?.fixtureConnection ?? (db && !db.runtimeAuditReader?.supervised ? db.connection : undefined);
+      const fallback = gatewayConversationId(origin);
+      if (command && !fixture) return "会话存储不可用，未开启新会话。";
+      route = fixture ? reserveGatewayConversation(fixture, origin, command, undefined, db?.runtimeAuditReader)
+        : { taskId: fallback, currentTaskId: fallback, command: false };
+    }
     // Same provider ID cannot turn an original ordinary message into a new command on reply retry.
     if (route.command !== command) return "这条消息已按原内容处理，未改变当前会话。";
     if (route.command) return route.taskId === route.currentTaskId
       ? NEW_CONVERSATION_REPLY : "这条 /new 已处理过，当前会话未改变。";
     if (route.taskId !== route.currentTaskId) {
-      const prior = db?.getTask(route.taskId);
-      if (!prior || prior.archived || db?.getTaskExecutionWorkspaceState(route.taskId)?.state === "trashed") {
-        return "这条旧消息所属会话不可用，未转入当前新会话。";
-      }
+      const prior = core ? undefined : db?.getTask(route.taskId);
+      const available = assignment?.status === "assigned" ? assignment.oldTaskAvailable
+        : prior && !prior.archived && db?.getTaskExecutionWorkspaceState(route.taskId)?.state !== "trashed";
+      if (!available) return "这条旧消息所属会话不可用，未转入当前新会话。";
     }
-    if (origin.personalMemoryBindingId) this.options.dotsBindings!.bindTask(route.taskId, origin.personalMemoryBindingId);
+    if (!core && origin.personalMemoryBindingId) this.options.dotsBindings!.bindTask(route.taskId, origin.personalMemoryBindingId);
     const modelId = this.options.readSettings().defaultModelId?.trim();
     const answer = await runGatewayAgentTurn(this.options.agent, {
       taskId: route.taskId, text: msg.text, displayText: msg.text, attachments: msg.attachments,
       userMessageId, assistantMessageId, ...(modelId ? { modelId } : {}), gatewayOrigin: origin,
     }, route.taskId);
-    if (origin.personalMemoryBindingId && !this.options.dotsBindings!.replyCurrent({ binding_id: origin.personalMemoryBindingId })) {
+    const current = await core?.readGatewayAssignment(origin);
+    if (core && (current?.status !== "assigned" || !current.oldTaskAvailable || current.taskId !== route.taskId
+      || current.personalMemoryBindingId !== (origin.personalMemoryBindingId ?? null))) {
+      throw new Error("渠道回复的会话或授权已变化，未发送本次回复");
+    }
+    if (!core && origin.personalMemoryBindingId && !this.options.dotsBindings!.replyCurrent({ binding_id: origin.personalMemoryBindingId })) {
       throw new Error("Dots 个人记忆授权已撤销，未发送本次回复");
     }
     return answer;

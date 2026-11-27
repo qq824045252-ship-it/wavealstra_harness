@@ -1,12 +1,10 @@
 use crate::Result;
-use rusqlite::{
-    Connection, OpenFlags, OptionalExtension, TransactionBehavior, named_params, params,
-    types::ValueRef,
-};
-use serde::Deserialize;
+use crate::database::value_ref_to_json;
+use duckdb::{Connection, OptionalExt, named_params, params};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, path::Path, time::Duration};
+use std::collections::HashMap;
 
 const MAX_AGE: i64 = 90 * 24 * 60 * 60 * 1000;
 const MAX_BYTES: i64 = 2 * 1024 * 1024;
@@ -53,29 +51,26 @@ pub fn read(db: &Connection, task_id: &str, limit: u32) -> Result<Value> {
          LEFT JOIN runtime_audit_payloads capabilities ON capabilities.hash = s.capabilities_hash
          WHERE s.task_id = ?1 ORDER BY s.created_at DESC, s.rowid DESC LIMIT ?2",
     )?;
-    let columns: Vec<String> = statement
-        .column_names()
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
     let mut result = statement.query(params![task_id, limit.clamp(1, 200)])?;
+    let columns: Vec<String> = result
+        .as_ref()
+        .map(|s| s.column_names())
+        .unwrap_or_default();
     let mut rows = Vec::new();
     let mut payloads = Payloads::default();
     while let Some(row) = result.next()? {
         let mut metadata = Map::new();
         let mut bytes = 0;
         for (index, name) in columns.iter().enumerate() {
-            let value = match row.get_ref(index)? {
-                ValueRef::Null => Value::Null,
-                ValueRef::Integer(number) => number.into(),
-                ValueRef::Text(text) if name.ends_with("_json") => {
+            let val_ref = row.get_ref(index)?;
+            let value = match val_ref {
+                duckdb::types::ValueRef::Text(text) if name.ends_with("_json") => {
                     if name != "material_usage_json" {
                         bytes += text.len();
                     }
                     payloads.intern(std::str::from_utf8(text)?).into()
                 }
-                ValueRef::Text(text) => std::str::from_utf8(text)?.into(),
-                _ => return Err("unexpected snapshot column type".into()),
+                other => value_ref_to_json(other)?,
             };
             metadata.insert(name.clone(), value);
         }
@@ -93,21 +88,13 @@ pub fn read(db: &Connection, task_id: &str, limit: u32) -> Result<Value> {
     Ok(page)
 }
 
-fn open_writer(path: &Path) -> rusqlite::Result<Connection> {
-    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    db.busy_timeout(Duration::from_millis(100))?;
-    db.pragma_update(None, "foreign_keys", true)?;
-    Ok(db)
-}
-
-pub fn compact(path: &Path, limit: u32) -> Result<usize> {
-    let mut db = open_writer(path)?;
-    let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+pub fn compact(db: &mut Connection, limit: u32) -> Result<usize> {
+    let transaction = db.transaction()?;
     let migrated = {
         let mut select = transaction.prepare(
             "SELECT id, resolved_instructions_json, resolved_capabilities_json, instructions_hash, capabilities_hash
              FROM task_runtime_context_snapshots
-             WHERE instructions_hash IS NULL OR capabilities_hash IS NULL ORDER BY id LIMIT ?1",
+             WHERE instructions_hash IS NULL OR capabilities_hash IS NULL ORDER BY created_at,id LIMIT ?1",
         )?;
         let mut insert = transaction.prepare(
             "INSERT INTO runtime_audit_payloads(hash, body) VALUES (?1, ?2) ON CONFLICT(hash) DO NOTHING",
@@ -128,12 +115,12 @@ pub fn compact(path: &Path, limit: u32) -> Result<usize> {
                     row.get::<_, Option<String>>(4)?,
                 ))
             })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut store = |reference: Option<String>, content: String| -> rusqlite::Result<String> {
+            .collect::<duckdb::Result<Vec<_>>>()?;
+        let mut store = |reference: Option<String>, content: String| -> duckdb::Result<String> {
             if let Some(hash) = reference {
                 return Ok(hash);
             }
-            let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+            let hash = hash_payload(&content);
             insert.execute(params![hash, content])?;
             Ok(hash)
         };
@@ -145,11 +132,12 @@ pub fn compact(path: &Path, limit: u32) -> Result<usize> {
         }
         migrated
     };
-    transaction.commit()?;
+    cleanup_payloads(&transaction)?;
+    crate::request_control::commit(transaction)?;
     Ok(migrated)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotInsert {
     id: String,
@@ -178,7 +166,7 @@ pub struct SnapshotInsert {
     storage_bytes: i64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Identity {
     task_id: String,
@@ -186,7 +174,7 @@ pub struct Identity {
     assistant_message_id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -202,6 +190,7 @@ pub enum Mutation {
         at: i64,
     },
     Finish {
+        task_id: String,
         execution_id: String,
         status: String,
         error: Option<String>,
@@ -226,27 +215,56 @@ pub enum Mutation {
     },
 }
 
-fn prune(db: &Connection, task_id: &str, at: i64) -> rusqlite::Result<()> {
+impl Mutation {
+    pub(crate) fn task_id(&self) -> Option<&str> {
+        match self {
+            Self::Insert { snapshot } => Some(&snapshot.task_id),
+            Self::AppendMaterials { identity, .. } | Self::BindMessage { identity } => {
+                Some(&identity.task_id)
+            }
+            Self::Finish { task_id, .. }
+            | Self::FinishByMessage { task_id, .. }
+            | Self::Abort { task_id, .. } => Some(task_id),
+            Self::Clear { task_id } => task_id.as_deref(),
+        }
+    }
+
+    pub(crate) fn insertion_keys(&self) -> Option<(&str, &str)> {
+        let Self::Insert { snapshot } = self else {
+            return None;
+        };
+        Some((&snapshot.id, &snapshot.execution_id))
+    }
+}
+
+fn hash_payload(body: &str) -> String {
+    format!("{:x}", Sha256::digest(body.as_bytes()))
+}
+
+fn cleanup_payloads(db: &Connection) -> duckdb::Result<()> {
+    db.execute("DELETE FROM runtime_audit_payloads WHERE hash NOT IN (
+        SELECT instructions_hash FROM task_runtime_context_snapshots WHERE instructions_hash IS NOT NULL
+        UNION SELECT capabilities_hash FROM task_runtime_context_snapshots WHERE capabilities_hash IS NOT NULL)", [])?;
+    Ok(())
+}
+
+fn prune(db: &Connection, task_id: &str, at: i64) -> duckdb::Result<()> {
     let cutoff = at.saturating_sub(MAX_AGE);
     db.execute(
-        "DELETE FROM task_runtime_context_snapshots WHERE task_id = ?1 AND created_at < ?2",
-        params![task_id, cutoff],
-    )?;
-    db.execute(
-        "WITH ranked AS (
-           SELECT id, ROW_NUMBER() OVER history AS position,
-                  SUM(COALESCE(storage_bytes,0)) OVER history AS bytes
-           FROM task_runtime_context_snapshots WHERE task_id=?1
-           WINDOW history AS (ORDER BY created_at DESC, rowid DESC ROWS UNBOUNDED PRECEDING)
-         )
-         DELETE FROM task_runtime_context_snapshots
-         WHERE id IN (SELECT id FROM ranked WHERE position>?2 OR (position>1 AND bytes>?3))",
-        params![task_id, MAX_RECORDS, MAX_BYTES],
+            "WITH ranked AS (
+               SELECT id,
+                      ROW_NUMBER() OVER (ORDER BY created_at DESC, rowid DESC) AS position,
+                      SUM(COALESCE(storage_bytes,0)) OVER (ORDER BY created_at DESC, rowid DESC ROWS UNBOUNDED PRECEDING) AS bytes
+               FROM task_runtime_context_snapshots WHERE task_id=?1
+             )
+             DELETE FROM task_runtime_context_snapshots WHERE task_id=?1 AND
+               (created_at<?4 OR id IN (SELECT id FROM ranked WHERE position>?2 OR (position>1 AND bytes>?3)))",
+        params![task_id, MAX_RECORDS, MAX_BYTES, cutoff],
     )?;
     Ok(())
 }
 
-fn insert_snapshot(db: &Connection, row: &SnapshotInsert) -> rusqlite::Result<usize> {
+fn insert_snapshot(db: &Connection, row: &SnapshotInsert) -> duckdb::Result<usize> {
     let insertable = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1)
             AND NOT EXISTS(SELECT 1 FROM task_runtime_context_snapshots WHERE execution_id=?2)",
@@ -256,36 +274,27 @@ fn insert_snapshot(db: &Connection, row: &SnapshotInsert) -> rusqlite::Result<us
     if !insertable {
         return Ok(0);
     }
-    let store = |body: &str| -> rusqlite::Result<String> {
-        let hash = format!("{:x}", Sha256::digest(body.as_bytes()));
-        db.execute(
-            "INSERT INTO runtime_audit_payloads VALUES (?1,?2) ON CONFLICT(hash) DO NOTHING",
-            params![hash, body],
-        )?;
-        Ok(hash)
-    };
-    let instructions = store(&row.instructions)?;
-    let capabilities = store(&row.capabilities)?;
+    // Compact shared payloads in maintenance so identical inputs cannot couple foreground tasks.
     let changed = db.execute(
         "INSERT INTO task_runtime_context_snapshots (
             id,task_id,user_message_id,assistant_message_id,created_at,schema_version,
             welcome_mode,tag_id,project_id,project_updated_at,
-            resolved_instructions_json,resolved_capabilities_json,instructions_hash,capabilities_hash,warnings_json,
+            resolved_instructions_json,resolved_capabilities_json,warnings_json,
             execution_id,status,started_at,completed_at,error,assembly_hash,model_id,permission_mode,
             working_directory,material_usage_json,storage_bytes
          ) VALUES (
-            :id,:task,:user,:assistant,:created,:version,:mode,:tag,:project,:project_at,
-            '[]','[]',:instructions,:capabilities,:warnings,:execution,:status,:started,:completed,
-            :error,:assembly,:model,:permission,:cwd,:materials,:bytes
+            $id,$task,$user,$assistant,$created,$version,$mode,$tag,$project,$project_at,
+            $instructions,$capabilities,$warnings,$execution,$status,$started,$completed,
+            $error,$assembly,$model,$permission,$cwd,$materials,$bytes
          )",
         named_params! {
-            ":id": row.id, ":task": row.task_id, ":user": row.user_message_id, ":assistant": row.assistant_message_id,
-            ":created": row.created_at, ":version": row.schema_version, ":mode": row.mode, ":tag": row.tag_id,
-            ":project": row.project_id, ":project_at": row.project_updated_at, ":instructions": instructions,
-            ":capabilities": capabilities, ":warnings": row.warnings, ":execution": row.execution_id, ":status": row.status,
-            ":started": row.started_at, ":completed": row.completed_at, ":error": row.error, ":assembly": row.assembly_hash,
-            ":model": row.model_id, ":permission": row.permission_mode, ":cwd": row.working_directory,
-            ":materials": row.material_usage, ":bytes": row.storage_bytes,
+            "id": row.id, "task": row.task_id, "user": row.user_message_id, "assistant": row.assistant_message_id,
+            "created": row.created_at, "version": row.schema_version, "mode": row.mode, "tag": row.tag_id,
+            "project": row.project_id, "project_at": row.project_updated_at, "instructions": row.instructions,
+            "capabilities": row.capabilities, "warnings": row.warnings, "execution": row.execution_id, "status": row.status,
+            "started": row.started_at, "completed": row.completed_at, "error": row.error, "assembly": row.assembly_hash,
+            "model": row.model_id, "permission": row.permission_mode, "cwd": row.working_directory,
+            "materials": row.material_usage, "bytes": row.storage_bytes,
         },
     )?;
     prune(db, &row.task_id, row.created_at)?;
@@ -372,26 +381,49 @@ fn append_materials(
     Ok(0)
 }
 
-pub fn mutate(path: &Path, epoch: i64, write_id: &str, mutation: Mutation) -> Result<usize> {
-    let mut db = open_writer(path)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let (current_epoch, last_id, previous): (i64, String, usize) = tx.query_row(
-        "SELECT epoch,write_id,result FROM runtime_snapshot_writer WHERE id=1",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )?;
-    if current_epoch != epoch {
-        return Ok(0);
+pub(crate) fn receipt(db: &Connection, write_id: &str) -> duckdb::Result<Option<usize>> {
+    db.query_row(
+        "SELECT result FROM runtime_snapshot_receipts WHERE write_id=?",
+        [write_id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+pub fn mutate(db: &mut Connection, write_id: &str, mutation: Mutation) -> Result<usize> {
+    let mut digest = Sha256::new();
+    serde_json::to_writer(&mut digest, &mutation)?;
+    let request_hash = format!("{:x}", digest.finalize());
+    let task_id = mutation.task_id().map(str::to_owned);
+    let tx = db.transaction()?;
+    let previous: Option<(String, usize)> = tx
+        .query_row(
+            "SELECT request_hash,result FROM runtime_snapshot_receipts WHERE write_id=?",
+            [write_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((saved_hash, result)) = previous {
+        if saved_hash != request_hash {
+            return Err("快照操作 ID 已用于另一笔写入".into());
+        }
+        return Ok(result);
     }
-    if last_id == write_id {
-        return Ok(previous);
+    if let Some(id) = &task_id
+        && !tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?)",
+            [id],
+            |row| row.get::<_, bool>(0),
+        )?
+    {
+        return Ok(0);
     }
     let result = match mutation {
         Mutation::Insert { snapshot } => insert_snapshot(&tx, &snapshot)?,
         Mutation::AppendMaterials { identity, items, at } => append_materials(&tx, identity, items, at)?,
-        Mutation::Finish { execution_id, status, error, at } => tx.execute(
+        Mutation::Finish { task_id, execution_id, status, error, at } => tx.execute(
             "UPDATE task_runtime_context_snapshots SET status=?1,completed_at=?2,error=?3
-             WHERE execution_id=?4 AND status='running'", params![status, at, error, execution_id],
+             WHERE execution_id=?4 AND task_id=?5 AND status='running'", params![status, at, error, execution_id, task_id],
         )?,
         Mutation::FinishByMessage { task_id, assistant_message_id, status, error, at } => tx.execute(
             "UPDATE task_runtime_context_snapshots SET status=?1,completed_at=?2,error=?3
@@ -406,12 +438,16 @@ pub fn mutate(path: &Path, epoch: i64, write_id: &str, mutation: Mutation) -> Re
             params![at, task_id],
         )?,
         Mutation::Clear { task_id: Some(task_id) } => tx.execute("DELETE FROM task_runtime_context_snapshots WHERE task_id=?1", [task_id])?,
-        Mutation::Clear { task_id: None } => tx.execute("DELETE FROM task_runtime_context_snapshots", [])?,
+        Mutation::Clear { task_id: None } => {
+            let removed = tx.execute("DELETE FROM task_runtime_context_snapshots", [])?;
+            cleanup_payloads(&tx)?;
+            removed
+        },
     };
     tx.execute(
-        "UPDATE runtime_snapshot_writer SET write_id=?1,result=?2 WHERE id=1",
-        params![write_id, result],
+        "INSERT INTO runtime_snapshot_receipts(write_id,task_id,request_hash,result) VALUES (?,?,?,?)",
+        params![write_id, task_id, request_hash, result],
     )?;
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
     Ok(result)
 }

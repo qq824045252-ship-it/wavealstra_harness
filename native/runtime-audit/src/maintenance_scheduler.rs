@@ -10,7 +10,7 @@ use crate::business_protocol::{
     current_core_generation, dispatch_waiting_executions, ensure_tables as ensure_protocol_tables,
 };
 use crate::work_scheduler::{now_ms, sha256_hex};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -103,36 +103,12 @@ impl Command {
     }
 }
 
-pub fn ensure_maintenance_scheduler_tables(db: &Connection) -> crate::Result<()> {
-    db.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS core_maintenance_config (
-            key TEXT PRIMARY KEY,
-            value_json TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS core_maintenance_cycles (
-            cycle_key TEXT PRIMARY KEY,
-            next_due_at_ms INTEGER,
-            last_dispatched_at_ms INTEGER,
-            last_completed_at_ms INTEGER,
-            in_flight INTEGER NOT NULL DEFAULT 0,
-            last_error TEXT,
-            updated_at_ms INTEGER NOT NULL
-        );
-        ",
-    )?;
+pub fn ensure_maintenance_scheduler_tables(_db: &Connection) -> crate::Result<()> {
     Ok(())
 }
 
 fn table_exists(db: &Connection, name: &str) -> crate::Result<bool> {
-    Ok(db
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
-            [name],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
+    crate::database::table_exists(db, name)
 }
 
 fn load_config(db: &Connection) -> crate::Result<RuntimeMaintenanceConfig> {
@@ -164,9 +140,10 @@ fn ensure_cycle_row(
     now: i64,
 ) -> crate::Result<()> {
     tx.execute(
-        "INSERT OR IGNORE INTO core_maintenance_cycles (
+        "INSERT INTO core_maintenance_cycles (
             cycle_key, next_due_at_ms, last_dispatched_at_ms, last_completed_at_ms, in_flight, last_error, updated_at_ms
-         ) VALUES (?1, ?2, NULL, NULL, 0, NULL, ?3)",
+         ) VALUES (?1, ?2, NULL, NULL, 0, NULL, ?3)
+         ON CONFLICT DO NOTHING",
         params![cycle_key, default_due_ms, now],
     )?;
     Ok(())
@@ -206,15 +183,15 @@ fn has_due_trashed_tasks(tx: &Connection, now: i64) -> crate::Result<bool> {
     if !table_exists(tx, "task_execution_workspace_state")? {
         return Ok(false);
     }
-    let found: i64 = tx.query_row(
+    let found: bool = tx.query_row(
         "SELECT EXISTS(
             SELECT 1 FROM task_execution_workspace_state
             WHERE state = 'trashed' AND purge_after IS NOT NULL AND purge_after <= ?1
          )",
         [now],
-        |r| r.get(0),
+        |r| crate::database::row_bool(r, 0),
     )?;
-    Ok(found != 0)
+    Ok(found)
 }
 
 fn find_due_cadence_projects(
@@ -282,20 +259,20 @@ fn dispatch_cycle_execution(
     let (due_opt, last_disp, last_comp, in_flight) = cycle_info(tx, cycle_key)?;
     if in_flight != 0 {
         let stale = last_disp.is_some_and(|d| now - d > STALE_INFLIGHT_MS);
-        let active_exec_exists: i64 = tx.query_row(
+        let active_exec_exists: bool = tx.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM core_execution_runs
                 WHERE kind = 'maintenance_control'
-                  AND json_extract(payload_json, '$.cycle') = ?1
+                  AND json_extract_string(payload_json, '$.cycle') = ?1
                   AND status IN ('queued', 'waiting_executor', 'dispatching', 'running', 'pause_requested', 'cancel_requested')
             )",
             [cycle_key],
-            |r| r.get(0),
+            |r| crate::database::row_bool(r, 0),
         )?;
-        if active_exec_exists != 0 && !force {
+        if active_exec_exists && !force {
             return Ok(false);
         }
-        if !stale && !force && active_exec_exists != 0 {
+        if !stale && !force && active_exec_exists {
             return Ok(false);
         }
     }
@@ -590,7 +567,7 @@ pub fn execute_write(
     ensure_protocol_tables(db, &core_gen)?;
     ensure_maintenance_scheduler_tables(db)?;
 
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let mut events = Vec::new();
     let mut dispatches = Vec::new();
 
@@ -688,6 +665,7 @@ pub fn execute_write(
     };
 
     crate::request_control::commit(tx)?;
+    crate::work_scheduler::apply_committed_promotion_dispatches(tracker, &dispatches);
     Ok(WriteSideEffects {
         data,
         events,
@@ -720,11 +698,11 @@ pub fn run_supervised_tick(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db_schema::CANONICAL_SCHEMA_SQL;
+    use crate::database::CANONICAL_DUCKDB_SCHEMA_SQL;
 
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().expect("open memory db");
-        conn.execute_batch(CANONICAL_SCHEMA_SQL).expect("schema");
+        conn.execute_batch(CANONICAL_DUCKDB_SCHEMA_SQL).expect("schema");
         let core_gen = current_core_generation();
         ensure_protocol_tables(&conn, &core_gen).expect("protocol tables");
         ensure_maintenance_scheduler_tables(&conn).expect("maintenance tables");
@@ -757,7 +735,7 @@ mod tests {
 
         let exec_id: String = conn
             .query_row(
-                "SELECT execution_id FROM core_execution_runs WHERE kind = 'maintenance_control' AND json_extract(payload_json, '$.cycle') = 'library_maintenance' LIMIT 1",
+                "SELECT execution_id FROM core_execution_runs WHERE kind = 'maintenance_control' AND json_extract_string(payload_json, '$.cycle') = 'library_maintenance' LIMIT 1",
                 [],
                 |r| r.get(0),
             )
@@ -765,7 +743,7 @@ mod tests {
         {
             let mut events = Vec::new();
             let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .transaction()
                 .unwrap();
             on_core_execution_state_change(
                 &tx,
@@ -815,7 +793,7 @@ mod tests {
 
         let first_trash_id: String = conn
             .query_row(
-                "SELECT execution_id FROM core_execution_runs WHERE kind = 'maintenance_control' AND json_extract(payload_json, '$.cycle') = 'trash_purge' ORDER BY created_at_ms DESC LIMIT 1",
+                "SELECT execution_id FROM core_execution_runs WHERE kind = 'maintenance_control' AND json_extract_string(payload_json, '$.cycle') = 'trash_purge' ORDER BY created_at_ms DESC LIMIT 1",
                 [],
                 |r| r.get(0),
             )
@@ -823,7 +801,7 @@ mod tests {
         {
             let mut events = Vec::new();
             let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .transaction()
                 .unwrap();
             on_core_execution_state_change(
                 &tx,

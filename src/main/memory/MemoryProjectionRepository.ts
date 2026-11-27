@@ -126,7 +126,11 @@ export class MemoryProjectionRepository {
   private writeTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly db: AppDatabase) {}
-  private get conn() { return this.db.connection; }
+  private get conn() {
+    const fixture = this.db.fixtureConnection;
+    if (!fixture) throw new Error("Core 尚未提供派生记忆视图接口");
+    return fixture;
+  }
 
   private get requiresRustWrites(): boolean {
     return Boolean(this.db.readonly || this.db.runtimeAuditReader?.supervised);
@@ -682,6 +686,7 @@ export class MemoryProjectionRepository {
   }
 
   getActiveDotsView(id: string, kind: "scenario" | "profile"): { id: string; title: string; body: string; scopeType: "task" } | undefined {
+    if (!this.db.fixtureConnection) return undefined;
     const table = kind === "scenario" ? "memory_scenarios" : "memory_core_profiles";
     const column = kind === "scenario" ? "summary" : "content";
     return this.conn.prepare(`SELECT id,title,${column} AS body,scope_type AS scopeType FROM ${table}
@@ -691,6 +696,7 @@ export class MemoryProjectionRepository {
 
   /** Revocation differs from ordinary grounding becoming stale during a frozen turn. */
   isRevoked(id: string, kind: "scenario" | "profile"): boolean {
+    if (!this.db.fixtureConnection) return true;
     const table = kind === "scenario" ? "memory_scenarios" : "memory_core_profiles";
     const row = this.conn.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id) as Record<string, unknown> | undefined;
     if (!row || this.conn.prepare("SELECT 1 FROM memory_projection_dismissals WHERE id=?").get(id)) return true;

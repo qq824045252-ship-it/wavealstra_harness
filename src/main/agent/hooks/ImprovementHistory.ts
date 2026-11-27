@@ -185,10 +185,10 @@ async function doc(storage: Storage, conversationId: ConversationId, kind: strin
   const row = await storage.findDocument({ kind, scope: { kind: "conversation", conversationId } }, "current", ctx);
   return row && (await storage.document(row.id, "current", ctx))?.value;
 }
-export async function scanImprovementHistory(taskId: string, directory: string, checkpoint: (identity: HistoryIdentity) => HistoryState,
-  save: (identity: HistoryIdentity, state: HistoryState, found: Observation[], scanned: number) => void, stopping: () => boolean,
-  childIndex?: { needsRead(conversation: number, childId: string): boolean; save(child: ImprovementChild, immutable: boolean): void },
-  onInputs?: (identity: HistoryIdentity, inputs: ImprovementInput[]) => void) {
+export async function scanImprovementHistory(taskId: string, directory: string, checkpoint: (identity: HistoryIdentity) => HistoryState | Promise<HistoryState>,
+  save: (identity: HistoryIdentity, state: HistoryState, found: Observation[], scanned: number) => void | Promise<void>, stopping: () => boolean,
+  childIndex?: { needsRead(conversation: number, childId: string): boolean; save(child: ImprovementChild, immutable: boolean): void | Promise<void> },
+  onInputs?: (identity: HistoryIdentity, inputs: ImprovementInput[]) => void | Promise<void>) {
   const storage = await openDurablePassiveStorage(directory, ctx);
   if (!storage) throw new Error("缺少原生会话存储");
   let scanned = 0;
@@ -202,7 +202,7 @@ export async function scanImprovementHistory(taskId: string, directory: string, 
         if (c.owner && child.taskId !== taskId || (await doc(storage, c.id, DurableConsultIdentity.definition.kind))?.key) continue;
         const identity: HistoryIdentity = { taskId, conversationId: String(c.id), actor: child.taskId === taskId ? "subagent" : "main",
           ...(c.owner ? { parent: String(c.owner.conversationId) } : {}) };
-        const saved = checkpoint(identity);
+        const saved = await checkpoint(identity);
         const state = saved.analysisVersion === analysisVersion ? saved : freshHistory();
         if (identity.actor === "subagent" && childIndex?.needsRead(c.id,String(object(child.item).id))) {
           const evidence = await readImprovementChild(storage,taskId,c,false);
@@ -215,9 +215,9 @@ export async function scanImprovementHistory(taskId: string, directory: string, 
               at: evidence.child.startedAt + (evidence.child.durationMs ?? 0), childReceipt: kind === "childDelivery" ? "assignment" : "steer" } });
             if (["failed","timedout","blocked"].includes(evidence.child.status)) add("childDelivery", assignment.id);
             for (const steer of evidence.steers) if (steer.status === "unprocessed" || steer.status === "unanswered") add("childSteer",steer.submissionId);
-            if (found.length) save(identity,state,found,0);
+            if (found.length) await save(identity,state,found,0);
           }
-          childIndex.save(evidence.child, evidence.parentReturnEntry !== undefined && evidence.child.status !== "unknown"
+          await childIndex.save(evidence.child, evidence.parentReturnEntry !== undefined && evidence.child.status !== "unknown"
             && evidence.steers.every(s => s.nativeStatus === "done" || s.nativeStatus === "unanswered"));
         }
         const submitted = new Set<number>();
@@ -241,8 +241,8 @@ export async function scanImprovementHistory(taskId: string, directory: string, 
           }
           scanned += entries.items.length;
           // Persist idempotent input keys before advancing the cursor so a crash cannot drop denominators.
-          if (inputs.length) onInputs?.(identity, inputs);
-          save(identity, state, found, entries.items.length);
+          if (inputs.length) await onInputs?.(identity, inputs);
+          await save(identity, state, found, entries.items.length);
           if (!entries.next) break;
           await new Promise<void>(resolve => setImmediate(resolve));
         } while (true);

@@ -36,6 +36,10 @@ export async function testAutomationUpdate() {
   try {
     db.upsertTask({ id: "source", title: "Source", cwd: root, permissionMode: "readonly", updatedAt: Date.now() });
     const job = cron.createForTask("source", root, { name: "Original", prompt: "old", scheduleType: "every", scheduleExpr: "1h", timezone: "UTC", target: "current-task" });
+    const detail = await invoke({ action: "get", id: job.id });
+    assert(!detail.isError);
+    const snapshot = detail.details as { job: { id: string }; status: string; activeRun: unknown; latestRun: unknown };
+    assert.deepEqual([snapshot.job.id, snapshot.status, snapshot.activeRun, snapshot.latestRun], [job.id, "scheduled", null, null]);
     const internals = cron as unknown as { timers: Map<string, unknown>; revisions: Map<string, number> };
     const timer = internals.timers.get(job.id);
     const revision = internals.revisions.get(job.id);
@@ -81,6 +85,32 @@ export async function testAutomationUpdate() {
     assert.equal(db.getCronJob(job.id)?.lastRunAt, paused.lastRunAt);
     assert.equal(db.getCronJob(job.id)?.runCount, 2);
     mock.timers.tick(60000); await drain(); assert.equal(prompts.length, 2);
+
+    const captured = Promise.withResolvers<void>();
+    const unblock = Promise.withResolvers<void>();
+    const readState = db.readCronJobState.bind(db);
+    db.readCronJobState = async id => {
+      const state = await readState(id);
+      if (id === job.id) {
+        captured.resolve();
+        await unblock.promise;
+      }
+      return state;
+    };
+    const staleEdit = cron.updateTaskPlan("source", job.id, { prompt: "Concurrent edit" });
+    const refused = assert.rejects(staleEdit, /已变化/);
+    try {
+      await captured.promise;
+      db.upsertCronJob({ ...db.getCronJob(job.id)!, name: "Saved elsewhere" });
+    } finally {
+      unblock.resolve();
+      await refused;
+      db.readCronJobState = readState;
+    }
+    assert.equal(db.getCronJob(job.id)?.name, "Saved elsewhere");
+    assert.equal(db.getCronJob(job.id)?.prompt, "later");
+    const retried = await cron.updateTaskPlan("source", job.id, { prompt: "Concurrent edit" });
+    assert.deepEqual([retried.name, retried.prompt], ["Saved elsewhere", "Concurrent edit"]);
     console.log("PASS automation update: tool schema, scope, identity/history, partial patch, cadence/retry, validation, active race, pause");
   } finally {
     release(); await drain(); cron.stop(); db.close(); mock.timers.reset(); rmSync(root, { recursive: true, force: true });

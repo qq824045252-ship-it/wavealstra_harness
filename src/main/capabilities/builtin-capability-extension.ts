@@ -97,7 +97,7 @@ export interface BuiltinCapabilityExtensionBridge {
    * 确认路径落在某个技能目录内（而不是任务区外的任意文件），
    * 以及取出该技能的依赖声明来决定用哪套受管环境。null 表示不属于任何已知技能。
    */
-  resolveSkillScript?: (scriptPath: string) => SkillScriptOwner | null;
+  resolveSkillScript?: (scriptPath: string) => SkillScriptOwner | null | Promise<SkillScriptOwner | null>;
   skillAuthoring?: {
     assess: (intent: string, modelId?: string) => Promise<unknown>;
     create: (intent: string, forceCreate?: boolean, modelId?: string) => Promise<unknown>;
@@ -1087,7 +1087,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               // 归属校验先于执行：技能目录在任务区之外，是唯一被允许的越界。
               // 少了这一步，script 参数就变成「用受管解释器跑机器上任意文件」的入口。
               scriptPath = resolve(bridge.taskRoot, script);
-              const owner = bridge.resolveSkillScript?.(scriptPath) ?? null;
+              const owner = await bridge.resolveSkillScript?.(scriptPath) ?? null;
               const allowed =
                 isPathInsideOrEqual(bridge.taskRoot, scriptPath) ||
                 (owner !== null && isPathInsideOrEqual(owner.baseDir, scriptPath));

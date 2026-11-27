@@ -3,9 +3,9 @@
 //! task board daily notes, task expert bindings, conversation branches, and
 //! task/workspace lifecycle metadata.
 
-use crate::Result;
+use crate::{DOTS_TASK_ID, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, named_params, params};
+use duckdb::{Connection, OptionalExt, named_params, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -107,6 +107,8 @@ pub enum Request {
     CodeReviewUpsert {
         task_id: String,
         target_key: String,
+        expected_id: Option<String>,
+        expected_stamp: Option<String>,
         root_entity: String,
         path: String,
         relative_path: String,
@@ -253,9 +255,20 @@ pub enum Request {
         task_mode_preset_id: Option<String>,
     },
     RebindLegacyTaskWorkspacePaths {
-        cwd_updates: Vec<(String, String)>,
-        trash_updates: Vec<(String, String)>,
+        cwd_updates: Vec<(String, String, String)>,
+        trash_updates: Vec<(String, String, String)>,
     },
+}
+
+pub(crate) fn rebind_task_ids<'a>(cwds: &'a [(String, String, String)], trash: &'a [(String, String, String)]) -> impl Iterator<Item = &'a str> {
+    cwds.iter().chain(trash).map(|(id, _, _)| id.as_str())
+}
+
+pub(crate) fn task_workspace_paths(db: &Connection) -> Result<Value> {
+    Ok(json!({
+        "cwds": crate::sqlite_rows::records(db, "SELECT id, cwd AS path FROM tasks WHERE cwd IS NOT NULL", [])?,
+        "trashPaths": crate::sqlite_rows::records(db, "SELECT task_id AS id, trash_path AS path FROM task_execution_workspace_state WHERE trash_path IS NOT NULL", [])?,
+    }))
 }
 
 fn decode_optional_bytes(encoded: Option<String>) -> Result<Option<Vec<u8>>> {
@@ -265,7 +278,7 @@ fn decode_optional_bytes(encoded: Option<String>) -> Result<Option<Vec<u8>>> {
     Ok(Some(STANDARD.decode(raw)?))
 }
 
-fn bind_task_cwd_tx(tx: &rusqlite::Transaction<'_>, task_id: &str, cwd: &str, at: i64) -> Result<()> {
+fn bind_task_cwd_tx(tx: &duckdb::Transaction<'_>, task_id: &str, cwd: &str, at: i64) -> Result<()> {
     let exists: Option<String> = tx
         .query_row("SELECT title FROM tasks WHERE id = ?1", [task_id], |r| r.get(0))
         .optional()?;
@@ -292,7 +305,7 @@ fn bind_task_cwd_tx(tx: &rusqlite::Transaction<'_>, task_id: &str, cwd: &str, at
 
 #[allow(clippy::too_many_arguments)]
 fn upsert_ws_state_tx(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &duckdb::Transaction<'_>,
     task_id: &str,
     directory_name: &str,
     state: &str,
@@ -328,7 +341,7 @@ fn upsert_ws_state_tx(
 }
 
 pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let out = match request {
         Request::RelocateProjectFolder {
             now,
@@ -350,7 +363,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             }
             drop(update_res);
             let mut update_proj = tx.prepare(
-                "UPDATE projects SET updated_at = MAX(updated_at + 1, ?1) WHERE id = ?2",
+                "UPDATE projects SET updated_at = GREATEST(updated_at + 1, ?1) WHERE id = ?2",
             )?;
             for pid in affected_project_ids {
                 update_proj.execute(params![now, pid])?;
@@ -523,6 +536,8 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
         Request::CodeReviewUpsert {
             task_id,
             target_key,
+            expected_id,
+            expected_stamp,
             root_entity,
             path,
             relative_path,
@@ -540,10 +555,25 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             stats_available,
             capture_reason,
         } => {
+            let task_exists = tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?)", [&task_id], |row| row.get::<_, bool>(0))?;
+            let current: Option<(String, String, bool)> = tx.query_row(
+                "SELECT id,after_stamp,restoring FROM task_code_review WHERE task_id=?1 AND target_key=?2",
+                params![task_id, target_key], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+            ).optional()?;
+            let current_id = current.as_ref().map(|row| row.0.as_str());
+            let current_stamp = current.as_ref().map(|row| row.1.as_str());
+            if !task_exists || current_id != expected_id.as_deref() || current_stamp != expected_stamp.as_deref()
+                || current.as_ref().is_some_and(|row| row.2) {
+                return Ok(json!({ "ok": false }));
+            }
             let before_bytes = decode_optional_bytes(before_bytes_base64)?;
             let after_bytes = decode_optional_bytes(after_bytes_base64)?;
             tx.execute(
-                "INSERT OR REPLACE INTO task_code_review (
+                "DELETE FROM task_code_review WHERE task_id = ?1 AND target_key = ?2",
+                params![task_id, target_key],
+            )?;
+            tx.execute(
+                "INSERT INTO task_code_review (
                    task_id, target_key, root_entity, path, relative_path, id, status,
                    before_present, before_stamp, before_bytes, before_mode,
                    after_present, after_stamp, after_bytes, after_mode, additions, deletions, stats_available, capture_reason
@@ -595,12 +625,15 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             detail,
             at,
         } => {
-            tx.execute(
-                "INSERT INTO task_board_days(id,kind,day,at,detail)
-                 VALUES(?1,?2,date(?3/1000.0,'unixepoch','localtime'),?3,?4)
-                 ON CONFLICT(id,kind,day) DO UPDATE SET at=excluded.at, detail=excluded.detail WHERE excluded.at>=at",
-                params![id, kind_name, at, detail],
+            if !matches!(kind_name.as_str(), "follow" | "visit" | "read" | "result") {
+                return Err("invalid board observation kind".into());
+            }
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1)", [&id], |row| row.get(0),
             )?;
+            if exists {
+                crate::trigger_effects::upsert_task_board_day_in_tx(&tx, &id, &kind_name, at, &detail)?;
+            }
             json!({ "ok": true })
         }
         Request::TaskExpertInstallFrozen {
@@ -706,7 +739,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
         }
         Request::ArchiveTask { id, archived, at } => {
             tx.execute(
-                "UPDATE tasks SET archived = ?1, updated_at = max(updated_at, ?2) WHERE id = ?3",
+                "UPDATE tasks SET archived = ?1, updated_at = GREATEST(updated_at, ?2) WHERE id = ?3",
                 params![i64::from(archived), at, id],
             )?;
             json!({ "ok": true })
@@ -742,25 +775,10 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             json!({ "ok": true })
         }
         Request::DeleteTask { id } => {
-            tx.execute(
-                "UPDATE memory_evidence
-                 SET excerpt = COALESCE(NULLIF(excerpt,''), (
-                   SELECT substr('用户：' || t.user_text || char(10) || '助手：' || t.assistant_text, 1, 1200)
-                   FROM memory_turns t
-                   WHERE t.id = memory_evidence.ref_id
-                 ))
-                 WHERE evidence_kind='conversation'
-                   AND ref_id IN (SELECT id FROM memory_turns WHERE task_id=?1)",
-                [&id],
-            )?;
-            tx.execute("DELETE FROM memory_turns WHERE task_id = ?1", [&id])?;
-            tx.execute("DELETE FROM memory_pipeline_state WHERE task_id = ?1", [&id])?;
-            tx.execute(
-                "DELETE FROM memory_skill_effectiveness WHERE task_id = ?1",
-                [&id],
-            )?;
-            tx.execute("DELETE FROM tasks WHERE id = ?1", [&id])?;
-            tx.execute("DELETE FROM task_library_references WHERE task_id = ?1", [&id])?;
+            if id == DOTS_TASK_ID {
+                return Err("Dots 对话不能作为普通任务删除".into());
+            }
+            crate::task_trash::delete_task_rows_in_tx(&tx, &id)?;
             json!({ "ok": true })
         }
         Request::CommitTaskWorkspaceTrashed {
@@ -772,7 +790,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             trash_path,
         } => {
             tx.execute(
-                "UPDATE tasks SET archived = 1, updated_at = max(updated_at, ?1) WHERE id = ?2",
+                "UPDATE tasks SET archived = 1, updated_at = GREATEST(updated_at, ?1) WHERE id = ?2",
                 params![trashed_at, task_id],
             )?;
             upsert_ws_state_tx(
@@ -802,7 +820,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             bind_task_cwd_tx(&tx, &task_id, &workspace_dir, now)?;
             if had_task {
                 tx.execute(
-                    "UPDATE tasks SET archived = 0, updated_at = max(updated_at, ?1) WHERE id = ?2",
+                    "UPDATE tasks SET archived = 0, updated_at = GREATEST(updated_at, ?1) WHERE id = ?2",
                     params![now, task_id],
                 )?;
             }
@@ -821,9 +839,9 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
         }
         Request::OpenDots { at } => {
             tx.execute(
-                "INSERT OR IGNORE INTO tasks (id,title,updated_at,welcome_mode,mode_preset_id)
-                 VALUES ('__dots__', 'Dots', ?1, 'general', 'native')",
-                [at],
+                "INSERT INTO tasks (id,title,updated_at,welcome_mode,mode_preset_id)
+                 VALUES (?1, 'Dots', ?2, 'general', 'native') ON CONFLICT DO NOTHING",
+                params![DOTS_TASK_ID, at],
             )?;
             json!({ "ok": true })
         }
@@ -839,13 +857,13 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
         } => {
             let (saved_parent, saved_sort): (Option<String>, f64) = tx.query_row(
                 "INSERT INTO spaces (id, name, path, parent_id, sort_order, created_at, updated_at)
-                 VALUES (:id, :name, :path,
-                   CASE WHEN :hasParent THEN :parentId ELSE (SELECT parent_id FROM spaces WHERE id = :id) END,
-                   CASE WHEN :hasSortOrder THEN :sortOrder ELSE COALESCE(
-                     (SELECT sort_order FROM spaces WHERE id = :id),
-                     (SELECT COALESCE(MAX(sort_order), 0) + 1000 FROM spaces WHERE parent_id IS :parentId)
+                 VALUES ($id, $name, $path,
+                   CASE WHEN $hasParent THEN $parentId ELSE (SELECT parent_id FROM spaces WHERE id = $id) END,
+                   CASE WHEN $hasSortOrder THEN $sortOrder ELSE COALESCE(
+                     (SELECT sort_order FROM spaces WHERE id = $id),
+                     (SELECT COALESCE(MAX(sort_order), 0) + 1000 FROM spaces WHERE parent_id IS NOT DISTINCT FROM $parentId)
                    ) END,
-                   :now, :now)
+                   $now, $now)
                  ON CONFLICT(id) DO UPDATE SET
                    name = excluded.name,
                    path = excluded.path,
@@ -854,14 +872,14 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                    updated_at = excluded.updated_at
                  RETURNING parent_id, sort_order",
                 named_params! {
-                    ":id": id,
-                    ":name": name,
-                    ":path": path,
-                    ":parentId": parent_id,
-                    ":sortOrder": sort_order,
-                    ":now": at,
-                    ":hasParent": i64::from(has_parent),
-                    ":hasSortOrder": i64::from(has_sort_order),
+                    "id": id,
+                    "name": name,
+                    "path": path,
+                    "parentId": parent_id,
+                    "sortOrder": sort_order,
+                    "now": at,
+                    "hasParent": has_parent,
+                    "hasSortOrder": has_sort_order,
                 },
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
@@ -946,22 +964,26 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             trash_updates,
         } => {
             let mut cwds = 0usize;
-            for (task_id, cwd) in cwd_updates {
-                cwds += tx.execute(
-                    "UPDATE tasks SET cwd = ?1 WHERE id = ?2",
-                    params![cwd, task_id],
-                )?;
+            for (task_id, before, cwd) in cwd_updates {
+                if matches!(std::fs::exists(&before), Ok(false)) {
+                    cwds += tx.execute(
+                        "UPDATE tasks SET cwd = ?1 WHERE id = ?2 AND cwd = ?3",
+                        params![cwd, task_id, before],
+                    )?;
+                }
             }
             let mut trash_paths = 0usize;
-            for (task_id, trash_path) in trash_updates {
-                trash_paths += tx.execute(
-                    "UPDATE task_execution_workspace_state SET trash_path = ?1 WHERE task_id = ?2",
-                    params![trash_path, task_id],
-                )?;
+            for (task_id, before, trash_path) in trash_updates {
+                if matches!(std::fs::exists(&before), Ok(false)) {
+                    trash_paths += tx.execute(
+                        "UPDATE task_execution_workspace_state SET trash_path = ?1 WHERE task_id = ?2 AND trash_path = ?3",
+                        params![trash_path, task_id, before],
+                    )?;
+                }
             }
             json!({ "cwds": cwds, "trashPaths": trash_paths })
         }
     };
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
     Ok(out)
 }

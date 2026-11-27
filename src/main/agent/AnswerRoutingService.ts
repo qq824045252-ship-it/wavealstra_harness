@@ -247,9 +247,10 @@ export class AnswerRoutingService {
     private readonly memoryEnabled: () => boolean = () => true,
     private readonly library?: () => LibraryService,
     private readonly canAccessEvidence?: (taskId: string, evidence: AnswerEvidenceScope) => boolean) {
-    this.foreground = new DotsForegroundReads(db.connection);
-    if (db.connection.readonly) return;
-    db.connection.exec(`
+    const fixture = db.fixtureConnection;
+    this.foreground = new DotsForegroundReads(fixture, db.coreIdentity ? db.runtimeAuditReader : undefined);
+    if (!fixture || fixture.readonly) return;
+    fixture.exec(`
       CREATE TABLE IF NOT EXISTS answer_rules (
         id TEXT PRIMARY KEY, revision INTEGER NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
         source_id TEXT REFERENCES memory_records(id) ON DELETE CASCADE, source_hash TEXT, enabled INTEGER NOT NULL, config TEXT NOT NULL);
@@ -325,7 +326,9 @@ export class AnswerRoutingService {
 
   async readList(): Promise<AnswerRule[]> {
     const result = await this.db.runtimeAuditReader?.answerRoutingData({ kind: "list" });
-    return result?.status === "rules" ? result.rows.map(row => this.currentRule(row)) : this.list();
+    if (result?.status === "rules") return result.rows.map(row => this.currentRule(row));
+    if (this.db.coreIdentity) throw new Error("回答调度规则读取未获 Rust Core 确认");
+    return this.list();
   }
 
   taskScope(taskId: string): string | null {
@@ -805,7 +808,9 @@ export class AnswerRoutingService {
         let body = read.body;
         if (input.taskId === DOTS_TASK_ID) {
           const source = item ? "material:" + item.id : "file:" + resolvedPathKey(read.path);
-          const charged = this.foreground.charge(input.inputId, "automatic-pre-read", source, JSON.stringify({ reference, itemId: item?.id, contentHash: read.contentHash }), read.body, rule.policy);
+          const charged = await this.foreground.chargeRead(input.inputId, "automatic-pre-read", source,
+            JSON.stringify({ reference, itemId: item?.id, contentHash: read.contentHash }), read.body,
+            { rule: { id: rule.id, revision: rule.revision }, fixturePolicy: rule.policy });
           body = charged.text;
           if (!body && read.body) throw new Error("本轮前台读取范围已用完");
         }

@@ -34,7 +34,7 @@ async function verifyResourceLeases(cwd: string, conversation: Conversation): Pr
   const api = { agent: conversation.agent.bind(conversation), commit: conversation.commit.bind(conversation),
     taskId: 12, conversationId: conversation.id, callId: "controlled-call",
     memo: async (_name: string, candidate: unknown) => { notStarted.push(candidate); return candidate; } } as unknown as ToolExecutionApi;
-  const run = (name: string, args: Record<string, unknown>, body: () => Promise<void>, signal?: AbortSignal, beforeExecute?: () => void,
+  const run = (name: string, args: Record<string, unknown>, body: () => Promise<void>, signal?: AbortSignal, beforeExecute?: () => void | Promise<void>,
     codeReview?: DurableCodeReview, env?: NodeExecutionEnv) => {
     const tool = withDurableToolCoordination(defineTool({ name, description: "Controlled tool with real filesystem effects", parameters: Type.Object({}, { additionalProperties: true }), replay: "safe",
       execute: async () => { await body(); return { output: [{ type: "text", text: "done" }] }; } }), cwd, beforeExecute, undefined, codeReview);
@@ -54,6 +54,19 @@ async function verifyResourceLeases(cwd: string, conversation: Conversation): Pr
   assert.equal(await readFile(other, "utf8"), "independent", "an unrelated write advances while a conflicting read waits");
   assert.equal(readStarted, false);
   releaseWriter.release(); await Promise.all([writer, reader]);
+
+  const enteredCheck = deferred(), releaseCheck = deferred();
+  const abortCheck = new AbortController();
+  const checking = run("write", { path: target }, async () => { await writeFile(target, "cancelled write"); }, abortCheck.signal,
+    async () => { enteredCheck.release(); await releaseCheck.promise; });
+  await enteredCheck.promise;
+  try {
+    await run("write", { path: other }, async () => { await writeFile(other, "while authorization waits"); });
+    assert.equal(await readFile(target, "utf8"), "new");
+    abortCheck.abort(new Error("cancel during authorization"));
+  } finally { releaseCheck.release(); }
+  await assert.rejects(checking, /cancel during authorization/);
+  assert.equal(await readFile(target, "utf8"), "new");
 
   // A file URL can resolve to a filename containing a literal nonbreaking space.
   // A reviewed write receives the already-admitted absolute path.

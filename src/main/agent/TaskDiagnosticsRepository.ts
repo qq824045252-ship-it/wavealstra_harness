@@ -136,10 +136,16 @@ export class TaskDiagnosticsRepository {
   private readonly writes?: TaskDiagnosticWrites;
   private closed = false;
   private unavailable: string | undefined;
-  constructor(private readonly db: Database.Database, reader?: RuntimeAuditReader) {
+  constructor(private readonly fixture: Database.Database | undefined, private readonly reader?: RuntimeAuditReader) {
     try {
+      const db = fixture;
+      if (!db || reader?.supervised) {
+        if (reader) this.writes = new TaskDiagnosticWrites(reader);
+        else this.unavailable = "运行诊断需要 Rust Core";
+        return;
+      }
       if (db.readonly) {
-        if (reader) this.writes = new TaskDiagnosticWrites(db, reader, write => this.writeOnHost(write));
+        this.unavailable = "诊断夹具以只读方式打开";
         return;
       }
       db.exec(`CREATE TABLE IF NOT EXISTS task_request_diagnostics (
@@ -154,12 +160,7 @@ export class TaskDiagnosticsRepository {
         CREATE INDEX IF NOT EXISTS idx_scope_tool_diagnostics ON scope_tool_diagnostics(task_id,started_at);
         CREATE INDEX IF NOT EXISTS idx_task_request_scope ON task_request_diagnostics(json_extract(record_json,'$.executionScope'),started_at);
         CREATE INDEX IF NOT EXISTS idx_task_diagnostic_waits ON conversation_interactions(task_id, execution_id);`);
-      this.writes = db.transaction(() => {
-        let writes: TaskDiagnosticWrites | undefined;
-        if (reader) {
-          try { writes = new TaskDiagnosticWrites(db, reader, write => this.writeOnHost(write)); }
-          catch { /* Synchronous persistence remains available. */ }
-        }
+      db.transaction(() => {
         // Fence out the previous process before marking its observation intervals interrupted.
         db.prepare(`UPDATE task_request_diagnostics SET record_json=json_set(record_json,'$.status','interrupted')
           WHERE json_extract(record_json,'$.status')='running'`).run();
@@ -167,9 +168,13 @@ export class TaskDiagnosticsRepository {
           WHERE json_extract(record_json,'$.status')='running'`).run();
         db.prepare(`UPDATE scope_tool_diagnostics SET record_json=json_set(record_json,'$.status','interrupted','$.complete',json('false'),'$.segmentStartedAt',NULL)
           WHERE json_extract(record_json,'$.status')='running'`).run();
-        return writes;
       }).immediate();
     } catch { this.unavailable = "本次启动未能打开诊断存储，执行功能仍可使用"; }
+  }
+
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("运行诊断需要通过 Rust Core 读取或写入");
+    return this.fixture;
   }
 
   async flush(): Promise<void> {
@@ -200,7 +205,7 @@ export class TaskDiagnosticsRepository {
     let observed = this.observations.get(event.request);
     if (!observed || (!observed.receipt && event.event === "execution")) {
       const staged = event.event === "started" ? undefined : this.writes?.requestReceipts().get(event.request);
-      const stored = !staged && event.event !== "started" ? this.loadRequest(event.request) : undefined;
+      const stored = this.fixture && !staged && event.event !== "started" ? this.loadRequest(event.request) : undefined;
       if (stored === null) return;
       const receipt = staged ?? (stored ? usageReceipt(stored) : undefined);
       if (!observed) {
@@ -218,7 +223,7 @@ export class TaskDiagnosticsRepository {
     const { conversationId, generationTaskId } = event;
     if (event.event === "execution" && conversationId && generationTaskId !== undefined) {
       const scope = event.executionScope ?? event.taskId ?? "global";
-      const taskId = event.taskId && this.db.prepare("SELECT 1 FROM tasks WHERE id=?").get(event.taskId) ? event.taskId : null;
+      const taskId = event.taskId && (!this.fixture || this.fixture.prepare("SELECT 1 FROM tasks WHERE id=?").get(event.taskId)) ? event.taskId : null;
       // Scope reflects the original invocation. The task FK reflects current ownership.
       event = { ...event, taskId: taskId ?? undefined, executionScope: scope };
       receipt = { id: event.request, taskId, executionScope: scope, conversationId,
@@ -227,6 +232,10 @@ export class TaskDiagnosticsRepository {
     }
     if (!receipt) {
       if (observed.beforeExecution.length < 64) observed.beforeExecution.push(event);
+      if (!this.fixture && event.event === "result") {
+        this.write({ kind: "trace", request: { id: event.request, provider: model.provider, model: model.id,
+          startedAt: observed.startedAt, events: [event] } });
+      }
       return;
     }
     const events = [...observed.beforeExecution, event];
@@ -399,27 +408,39 @@ export class TaskDiagnosticsRepository {
   }
 
   usageForGeneration(taskId: string | undefined, conversationId: string, generationTaskId: number, executionScope = taskId ?? "global") {
-    if (this.unavailable) return { ...unknownTokenUsage(), costTotal: null };
+    const unknown = { ...unknownTokenUsage(), costTotal: null };
+    if (this.unavailable) return unknown;
     try {
-    const rows = this.db.prepare(`SELECT request_id,record_json FROM task_request_diagnostics WHERE task_id IS ?
-      AND json_extract(record_json,'$.conversationId')=? AND json_extract(record_json,'$.generationTaskId')=?
-      AND json_extract(record_json,'$.executionScope')=? ORDER BY started_at DESC,rowid DESC`)
-      .all(taskId ?? null, conversationId, generationTaskId, executionScope) as Array<{ request_id: string; record_json: string }>;
-    const staged = this.writes?.requestReceipts();
-    const committed = rows.find(row => !staged?.has(row.request_id));
-    let value = committed ? usageReceipt(requestSchema.parse(JSON.parse(committed.record_json))) : undefined;
-    for (const row of staged?.values() ?? []) {
-      if (row.taskId === (taskId ?? null) && row.conversationId === conversationId && row.generationTaskId === generationTaskId
-        && row.executionScope === executionScope && (!value || row.startedAt >= value.startedAt)) value = row;
-    }
-    return { ...(value?.usage ?? unknownTokenUsage()), costTotal: value?.costTotal ?? null };
-    } catch { return { ...unknownTokenUsage(), costTotal: null }; }
+      const staged = this.writes?.requestReceipts();
+      const rows = this.fixture?.prepare(`SELECT request_id,record_json FROM task_request_diagnostics WHERE task_id IS ?
+        AND json_extract(record_json,'$.conversationId')=? AND json_extract(record_json,'$.generationTaskId')=?
+        AND json_extract(record_json,'$.executionScope')=? ORDER BY started_at DESC,rowid DESC`)
+        .all(taskId ?? null, conversationId, generationTaskId, executionScope) as Array<{ request_id: string; record_json: string }> | undefined;
+      const committed = rows?.find(row => !staged?.has(row.request_id));
+      let value = committed ? usageReceipt(requestSchema.parse(JSON.parse(committed.record_json))) : undefined;
+      const add = (row?: DiagnosticUsageReceipt) => {
+        if (row && row.taskId === (taskId ?? null) && row.conversationId === conversationId && row.generationTaskId === generationTaskId
+          && row.executionScope === executionScope && (!value || row.startedAt >= value.startedAt)) value = row;
+      };
+      if (!this.fixture) {
+        for (const observation of this.observations.values()) add(observation.receipt);
+      }
+      for (const row of staged?.values() ?? []) add(row);
+      return value ? { ...value.usage, costTotal: value.costTotal } : unknown;
+    } catch { return unknown; }
   }
 
   /** `limit` 缺省 = 不截断：规则与基线需要该任务的全部观测，不再按 200 条截断。 */
   list(taskId: string, limit?: number, offset = 0): TaskDiagnosticsDto {
     try { return this.readList(taskId, limit, offset); }
     catch { return this.emptyList(taskId, "诊断记录暂时无法读取，执行功能仍可使用"); }
+  }
+
+  async readForTask(taskId: string, limit?: number, offset = 0): Promise<TaskDiagnosticsDto> {
+    await this.flush();
+    if (this.fixture && !this.reader?.supervised) return this.list(taskId, limit, offset);
+    const report = await this.reader?.diagnostics(taskId, limit, offset);
+    return report?.taskId === taskId ? report : this.emptyList(taskId, "诊断记录暂时无法读取，执行功能仍可使用");
   }
 
   requestsForGenerations(taskId: string, generations: readonly { conversationId: string; generationTaskId: number }[]): ModelRequestDiagnostic[] {

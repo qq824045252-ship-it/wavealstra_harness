@@ -162,13 +162,14 @@ export class GadgetStorage {
   }
 
   async exportNative(
-    taskDirectory: string, gadget: GadgetDescriptor, source: GadgetSourceInspection,
+    taskDirectory: string, gadget: GadgetDescriptor, source: GadgetSourceInspection, taskId?: string,
   ): Promise<GadgetSaveToTaskDirectoryResult> {
     if (!this.native) throw new Error("Gadget 存储服务已关闭");
     const result = await this.native.exportGadgetFiles({
       taskDirectory,
       root: this.canonicalRootDir,
       id: gadget.id,
+      taskId,
       token: source.token,
       ...planGadgetExport(gadget, source.manifest, source.paths),
     });
@@ -176,6 +177,7 @@ export class GadgetStorage {
       return { directory: result.directory, entryPath: result.entryPath, fileCount: result.fileCount };
     }
     if (result?.status === "sourceChanged") throw new Error("Gadget 源码已被修改，请重新保存副本");
+    if (result?.status === "scopeChanged") throw new Error("Gadget 作用域已变化，无法保存副本");
     throw new Error(result?.status === "failed" ? result.message : "导出结果未确认，请检查任务目录");
   }
 
@@ -217,9 +219,9 @@ export class GadgetStorage {
     return { root: this.canonicalRootDir, id, entry, token };
   }
 
-  async saveManifestNative(descriptor: GadgetDescriptor, manifest: GadgetManifest, token: string): Promise<boolean> {
+  async saveManifestNative(descriptor: GadgetDescriptor, manifest: GadgetManifest, token: string,
+    patch: import("../platform/runtime-audit").RuntimeGadgetPatch): Promise<boolean> {
     if (!this.native) return false;
-    const fields = gadgetInsertValues(descriptor);
     const result = await this.native.saveGadgetSource({
       root: this.canonicalRootDir,
       id: descriptor.id,
@@ -228,7 +230,7 @@ export class GadgetStorage {
       updatedAt: descriptor.updatedAt,
       files: [],
       manifest: `${JSON.stringify(normalizeGadgetManifest(manifest), null, 2)}\n`,
-      update: { name: fields.name, description: fields.description, metadataJson: fields.metadataJson },
+      update: patch,
     });
     if (result?.status === "manifestSaved") return true;
     if (result?.status === "needsHost") return false;
@@ -341,7 +343,7 @@ export class GadgetStorage {
   }
 
   async updateSourceNative(
-    request: GadgetSourceUpdateRequest, updatedAt: number, authorize?: () => void,
+    request: GadgetSourceUpdateRequest, updatedAt: number, taskId?: string,
   ): Promise<GadgetSourceSnapshot | undefined> {
     if (!this.native) return undefined;
     const source = await this.native.readGadgetSource(this.canonicalRootDir, request.gadgetId);
@@ -349,10 +351,10 @@ export class GadgetStorage {
     if (source.status === "rejected") throw new Error(source.message);
     if (!source.token) return undefined;
     const { manifest, patches } = this.prepareSourceEdit(request, this.nativeSnapshot(source));
-    authorize?.();
     const result = await this.native.saveGadgetSource({
       root: this.canonicalRootDir,
       id: request.gadgetId,
+      taskId,
       operationId: randomUUID(),
       token: source.token,
       updatedAt,
@@ -365,6 +367,7 @@ export class GadgetStorage {
     if (result?.status === "saved") return this.nativeSnapshot(result.source);
     if (result?.status === "needsHost") return undefined;
     if (result?.status === "conflict") throw new Error("Gadget 已被修改，请重新读取源码后再保存");
+    if (result?.status === "scopeChanged") throw new Error("Gadget 作用域已变化，无法修改源码");
     throw new Error(`工作台数据写入失败，请重试${result?.status === "failed" ? `：${result.message}` : ""}`);
   }
 
@@ -550,7 +553,6 @@ export class GadgetStorage {
     if (result !== true) throw new Error("Gadget 存储清理未完成");
   }
 
-  /** SQLite descriptor 是 durable truth；清理崩溃窗口留下的未提交目录。 */
   async recover(validIds: () => ReadonlySet<string>): Promise<void> {
     const failed = await this.native?.reconcileGadgetStorage(this.canonicalRootDir);
     if (failed === undefined) {

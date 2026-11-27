@@ -10,7 +10,9 @@ import { GATEWAY_MEDIA_LIMITS } from "./GatewayMedia";
 import { gatewayReplyRouteSchema, type GatewayReplyRoute } from "./GatewayReply";
 import { gatewayWorkTargetSchema, type GatewayWorkTarget } from "./work-outbound";
 import type { GatewayBotOrigin } from "../agent/work/BotTurnOrigins";
-import type { RuntimeAuditReader } from "../platform/runtime-audit";
+import { RuntimeAuditUnknownOperationError, type RuntimeAuditReader, type RuntimeGatewayDeliveryCommand,
+  type RuntimeGatewayDeliveryReply, type RuntimeGatewayExecutionOutcome, type RuntimeGatewayRecovery, type RuntimeGatewayRecoveryQuery,
+  type RuntimeGatewayReplyOutcome } from "../platform/runtime-audit";
 
 type InboxStatus = "pending" | "running" | "reply_pending" | "completed" | "blocked" | "unknown";
 type OutboxStatus = "pending" | "sending" | "sent" | "blocked" | "failed" | "unknown";
@@ -62,27 +64,31 @@ export interface GatewayDeliveryJournalOptions {
   maxPending?: number;
   maxReceipts?: number;
   retentionMs?: number;
-  native?: Pick<RuntimeAuditReader, "batch4aWrite" | "supervised">;
+  native?: GatewayDeliveryCore;
 }
+type GatewayAdmissionInput = { platform: GatewayChannelType; accountKey: string; sessionKey: string; message: GatewayInboundMessage;
+  replayNativeReceipts: boolean; reserveConversation?(messageId: string, acceptedAt: number): void };
+type GatewayDeliveryCore = Pick<RuntimeAuditReader, "batch4aWrite" | "supervised" | "gatewayDeliveryControl" | "readGatewayOutbox"
+  | "readGatewayInbox" | "readGatewayAssignment" | "admitGatewayInbound" | "readGatewayRecovery" | "readGatewayContinuation">;
 const digest = (text: string | Buffer) => createHash("sha256").update(text).digest("hex");
 const nonempty = (value: unknown, limit = 2048): value is string => typeof value === "string" && Boolean(value.trim()) && value.length <= limit;
 
-/** SQLite transport admission and replies. This does not execute tools or replace
- * native receipts. All accepted inputs retain their original message identity. */
+/** Transport inbox and outbox. Accepted inputs retain their original message identity. */
 export class GatewayDeliveryJournal {
   private readonly now: () => number;
   private readonly mediaDirectory: string;
   private readonly maxPending: number;
   private readonly maxReceipts: number;
   private readonly retentionMs: number;
-  private readonly native?: Pick<RuntimeAuditReader, "batch4aWrite" | "supervised">;
+  private readonly native?: GatewayDeliveryCore;
+  private initialRecovery?: Promise<void>;
   private writeTail = Promise.resolve();
   private pendingWriteCount = 0;
   private readonly pendingInbox = new Map<string, GatewayInboxEntry>();
   private readonly pendingOutbox = new Map<string, GatewayOutboxEntry>();
   private readonly pendingContinuations = new Map<string, string>();
 
-  constructor(private readonly db: Database.Database, options: GatewayDeliveryJournalOptions = {}) {
+  constructor(private readonly fixture: Database.Database | undefined, options: GatewayDeliveryJournalOptions = {}) {
     this.now = options.now ?? Date.now;
     this.mediaDirectory = resolve(options.mediaDirectory ?? join(getGatewayDir(), "media"));
     this.maxPending = options.maxPending ?? 10_000;
@@ -92,18 +98,170 @@ export class GatewayDeliveryJournal {
     if (![this.maxPending, this.maxReceipts, this.retentionMs].every(value => Number.isSafeInteger(value) && value > 0)) {
       throw new Error("Gateway 持久队列限制无效");
     }
-    if (!db.readonly) {
-      ensureGatewayDeliveryTables(db);
-      db.exec("CREATE TABLE IF NOT EXISTS bot_gateway_continuations(delivery_id TEXT PRIMARY KEY,operation_id TEXT NOT NULL UNIQUE)");
+    if (!fixture && !this.native?.supervised) throw new Error("Core Gateway 持久队列未就绪");
+    if (fixture && !this.requiresRustWrites) {
+      ensureGatewayDeliveryTables(fixture);
+      fixture.exec("CREATE TABLE IF NOT EXISTS bot_gateway_continuations(delivery_id TEXT PRIMARY KEY,operation_id TEXT NOT NULL UNIQUE)");
     }
   }
 
-  private get requiresRustWrites(): boolean {
-    return this.db.readonly || Boolean(this.native?.supervised);
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("Gateway 当前操作仍需迁移到 Core");
+    return this.fixture;
   }
+
+  private get requiresRustWrites(): boolean {
+    return this.fixture?.readonly === true || this.native?.supervised === true;
+  }
+
+  get usesCoreAdmission(): boolean { return this.requiresRustWrites; }
 
   flush(): Promise<void> {
     return this.writeTail;
+  }
+
+  private async control(id: string, command: RuntimeGatewayDeliveryCommand): Promise<RuntimeGatewayDeliveryReply> {
+    const core = this.native;
+    if (!core) throw new Error("Core Gateway 持久队列未就绪");
+    await this.flush();
+    const operationId = randomUUID();
+    const apply = () => core.gatewayDeliveryControl(id, operationId, command);
+    const result = await apply().catch(error => {
+      if (error instanceof RuntimeAuditUnknownOperationError) return apply();
+      throw error;
+    });
+    if (!result) throw new Error("Core 未确认 Gateway 持久操作");
+    return result;
+  }
+
+  async readOutbox(id: string): Promise<GatewayOutboxEntry | undefined> {
+    if (!this.requiresRustWrites) return this.outbox(id);
+    await this.flush();
+    const row = await this.native?.readGatewayOutbox(id);
+    if (row === undefined) throw new Error("Core 未确认 Gateway 回复读取");
+    return row ?? undefined;
+  }
+
+  async readRecovery(query: RuntimeGatewayRecoveryQuery): Promise<RuntimeGatewayRecovery> {
+    if (!this.usesCoreAdmission) throw new Error("Gateway 恢复需要 Core 队列");
+    this.initialRecovery ??= Promise.resolve().then(async () => {
+      const confirmation = await this.native?.batch4aWrite<{ ok: boolean }>({
+        kind: "gatewayDeliveryOp", op: "recoverInterrupted", now: this.now(),
+      });
+      if (confirmation?.ok !== true) throw new Error("Core 未确认 Gateway 中断状态恢复");
+    }).catch(error => {
+      this.initialRecovery = undefined;
+      throw error;
+    });
+    await this.initialRecovery;
+    const result = await this.native?.readGatewayRecovery(query);
+    if (result?.kind !== "recovery") throw new Error("Core 未确认 Gateway 待处理队列");
+    return result;
+  }
+
+  async readContinuationOperation(id: string): Promise<string | undefined> {
+    if (!this.usesCoreAdmission) return this.continuationOperation(id);
+    await this.flush();
+    const result = await this.native?.readGatewayContinuation(id);
+    if (result?.kind !== "continuation") throw new Error("Core 未确认 Gateway 续回读取");
+    return result.operationId ?? undefined;
+  }
+
+  async assignmentCurrent(entry: GatewayInboxEntry, senderId?: string): Promise<boolean> {
+    if (!this.usesCoreAdmission) return true;
+    if (!senderId) return false;
+    const assignment = await this.native?.readGatewayAssignment({ channelId: entry.channel_id, connectionKey: entry.account_key,
+      chatId: entry.chat_id, senderId, messageId: entry.message_id });
+    return assignment?.status === "assigned";
+  }
+
+  async rejectUnclaimed(id: string, reason: string): Promise<void> {
+    if (this.requiresRustWrites) {
+      await this.flush();
+      const reply = await this.native?.batch4aWrite<{ ok: boolean }>({
+        kind: "gatewayDeliveryOp", op: "blockUnclaimed", deliveryId: id, reason, now: this.now(),
+      });
+      if (reply?.ok !== true) throw new Error("Core 未确认 Gateway 入站校验状态");
+      return;
+    }
+    this.db.prepare(`UPDATE gateway_inbox SET status='blocked',last_error=?,updated_at=?
+      WHERE delivery_id=? AND status IN ('pending','blocked','reply_pending')
+        AND NOT EXISTS (SELECT 1 FROM gateway_outbox WHERE delivery_id=gateway_inbox.delivery_id AND status NOT IN ('pending','blocked'))`)
+      .run(reason, this.now(), id);
+  }
+
+  async claimExecution(id: string): Promise<number | undefined> {
+    if (this.requiresRustWrites) {
+      const reply = await this.control(id, { action: "claimExecution" });
+      return reply.status === "claimed" ? reply.attempt : undefined;
+    }
+    return this.db.transaction(() => {
+      const entry = this.get(id);
+      if (!entry || !["pending", "blocked"].includes(entry.status) || this.outbox(id)) return undefined;
+      return this.begin(id).retry_count + 1;
+    }).immediate();
+  }
+
+  async queueOwnedReply(id: string, attempt: number, text: string): Promise<void> {
+    if (this.requiresRustWrites) {
+      const reply = await this.control(id, { action: "queueReply", attempt, text });
+      if (reply.status !== "applied") throw new Error("Gateway 回复未保存，执行认领或正文已改变");
+      return;
+    }
+    this.db.transaction(() => {
+      const current = this.get(id);
+      if (current?.retry_count !== attempt || (current.status !== "running" && !this.outbox(id))) {
+        throw new Error("Gateway 执行认领已改变，未覆盖回复");
+      }
+      this.queueReply(id, text);
+    }).immediate();
+  }
+
+  async finishOwnedExecution(id: string, attempt: number, outcome: RuntimeGatewayExecutionOutcome): Promise<void> {
+    if (this.requiresRustWrites) {
+      await this.control(id, { action: "finishExecution", attempt, outcome });
+      return;
+    }
+    this.db.transaction(() => {
+      const current = this.get(id);
+      if (current?.retry_count !== attempt || current.status !== "running") return;
+      if (outcome === "completed") this.complete(id);
+      else if (outcome === "interrupted") this.defer(id);
+      else this.block(id, "execution_failed", current.receipt_mode === "pi-durable" ? "blocked" : "unknown");
+    }).immediate();
+  }
+
+  async claimReply(id: string, maxAttempts: number): Promise<RuntimeGatewayDeliveryReply> {
+    if (this.requiresRustWrites) return this.control(id, { action: "claimReply", maxAttempts });
+    return this.db.transaction((): RuntimeGatewayDeliveryReply => {
+      const row = this.outbox(id);
+      if (row?.status === "sent") return { status: "sent" };
+      if (!row || !["pending", "blocked"].includes(row.status)) return { status: "unavailable" };
+      if (row.next_attempt_at > this.now()) return { status: "waiting", nextAttemptAt: row.next_attempt_at };
+      if (digest(row.reply_text) !== row.reply_hash) {
+        this.sendFailed(id, { status: "failed", reason: "reply_integrity_invalid" });
+        return { status: "integrity" };
+      }
+      if (row.retry_count >= maxAttempts) {
+        this.sendFailed(id, { status: "failed", reason: "retry_exhausted" });
+        return { status: "exhausted" };
+      }
+      return { status: "sending", entry: this.beginSend(id) };
+    }).immediate();
+  }
+
+  async finishOwnedReply(id: string, attempt: number, outcome: RuntimeGatewayReplyOutcome, reason?: string, nextAttemptAt?: number): Promise<boolean> {
+    if (this.requiresRustWrites) {
+      const reply = await this.control(id, { action: "finishReply", attempt, outcome, reason, nextAttemptAt });
+      return reply.status === "applied";
+    }
+    return this.db.transaction(() => {
+      const current = this.outbox(id);
+      if (current?.retry_count !== attempt || current.status !== "sending") return false;
+      if (outcome === "sent") this.sent(id);
+      else this.sendFailed(id, { status: outcome, reason: reason ?? "", nextAttemptAt });
+      return true;
+    }).immediate();
   }
 
   private enqueueOp(request: Record<string, unknown>, label: string): void {
@@ -163,9 +321,42 @@ export class GatewayDeliveryJournal {
     return payload;
   }
 
-  /** Synchronous commit is complete before an early-ACK transport may acknowledge. */
-  accept(input: { platform: GatewayChannelType; accountKey: string; sessionKey: string; message: GatewayInboundMessage;
-    replayNativeReceipts: boolean; reserveConversation?(messageId: string, acceptedAt: number): void }): { entry: GatewayInboxEntry; duplicate: boolean } {
+  async admit(input: GatewayAdmissionInput): Promise<{ entry: GatewayInboxEntry; duplicate: boolean }> {
+    const core = this.native;
+    if (!core || !this.usesCoreAdmission) throw new Error("Core Gateway 收件尚未就绪");
+    if (!/^[a-f0-9]{64}$/.test(input.accountKey)) throw new Error("Gateway 持久消息缺少账号身份");
+    const messageId = input.message.messageId || `local:${randomUUID()}`;
+    const id = digest(JSON.stringify(["gateway-delivery-v1", input.platform, input.message.channelId, input.accountKey, input.message.chatId, messageId]));
+    const previous = await core.readGatewayInbox(id);
+    if (previous === undefined) throw new Error("Core 未确认 Gateway 收件查询");
+    let payload: GatewayStoredPayload;
+    if (previous) {
+      const stored = this.decode(previous, false);
+      if (stored.text !== input.message.text || stored.sender?.id !== input.message.sender?.id) {
+        throw new Error("Gateway 重投消息内容与已接收记录不一致");
+      }
+      // Reuse content-addressed attachments only for a known delivery. The current route is still checked for private consent.
+      payload = { ...stored, audience: input.message.audience, replyRoute: input.message.replyRoute };
+    } else {
+      payload = this.payload(input.message, messageId);
+    }
+    const draft = { platform: input.platform, accountKey: input.accountKey, sessionKey: input.sessionKey,
+      payloadJson: JSON.stringify(payload), replayNativeReceipts: input.replayNativeReceipts,
+      maxPending: this.maxPending, maxReceipts: this.maxReceipts, retentionMs: this.retentionMs };
+    const commit = () => core.admitGatewayInbound(draft);
+    const reply = await commit().catch(error => {
+      if (error instanceof RuntimeAuditUnknownOperationError) return commit();
+      throw error;
+    });
+    if (reply?.status === "accepted") return reply;
+    if (reply?.code === "PAYLOAD_CONFLICT") throw new Error("Gateway 重投消息内容与已接收记录不一致");
+    if (reply?.code === "CAPACITY") throw new Error("Gateway 持久收件箱已满，消息尚未确认接收");
+    if (reply?.code === "AUTHORIZATION_CHANGED") throw new Error("Gateway 收件授权已变化，消息尚未确认接收");
+    throw new Error("Core 未确认 Gateway 收件，消息尚未确认接收");
+  }
+
+  accept(input: GatewayAdmissionInput): { entry: GatewayInboxEntry; duplicate: boolean } {
+    if (this.usesCoreAdmission) throw new Error("Core Gateway 收件必须等待提交回执");
     if (!/^[a-f0-9]{64}$/.test(input.accountKey)) throw new Error("Gateway 持久消息缺少账号身份");
     const messageId = input.message.messageId || `local:${randomUUID()}`;
     const id = digest(JSON.stringify(["gateway-delivery-v1", input.platform, input.message.channelId, input.accountKey, input.message.chatId, messageId]));
@@ -180,53 +371,6 @@ export class GatewayDeliveryJournal {
     const payload = this.payload(input.message, messageId);
     const json = JSON.stringify(payload);
     const now = this.now();
-    if (this.requiresRustWrites) {
-      const pending = [...this.db.prepare("SELECT delivery_id FROM gateway_inbox WHERE status!='completed'").all() as Array<{ delivery_id: string }>];
-      const pendingIds = new Set(pending.map(row => row.delivery_id));
-      for (const [deliveryId, entry] of this.pendingInbox) {
-        if (entry.status === "completed") pendingIds.delete(deliveryId);
-        else pendingIds.add(deliveryId);
-      }
-      if (pendingIds.size >= this.maxPending) throw new Error("Gateway 持久收件箱已满，消息尚未确认接收");
-      const jsonHash = digest(json);
-      const receiptMode = input.replayNativeReceipts ? "pi-durable" : "none";
-      const entry: GatewayInboxEntry = {
-        delivery_id: id,
-        platform: input.platform,
-        channel_id: payload.channelId,
-        account_key: input.accountKey,
-        chat_id: payload.chatId,
-        session_key: input.sessionKey,
-        message_id: messageId,
-        payload_json: json,
-        payload_hash: jsonHash,
-        status: "pending",
-        retry_count: 0,
-        receipt_mode: receiptMode,
-        last_error: null,
-        created_at: now,
-        updated_at: now,
-      };
-      this.pendingInbox.set(id, entry);
-      this.enqueueOp({
-        op: "enqueue",
-        deliveryId: id,
-        platform: input.platform,
-        channelId: payload.channelId,
-        accountKey: input.accountKey,
-        chatId: payload.chatId,
-        sessionKey: input.sessionKey,
-        messageId,
-        payloadJson: json,
-        payloadHash: jsonHash,
-        receiptMode,
-        now,
-        retentionMs: this.retentionMs,
-        maxReceipts: this.maxReceipts,
-      }, "accept");
-      input.reserveConversation?.(messageId, now);
-      return { entry, duplicate: false };
-    }
     return this.db.transaction(() => {
       this.prune();
       const pending = this.db.prepare("SELECT COUNT(*) AS count FROM gateway_inbox WHERE status!='completed'").get() as { count: number };
@@ -394,12 +538,7 @@ export class GatewayDeliveryJournal {
    * interrupted after I/O is ambiguous; native receipt replay and send replay
    * deliberately have different rules. */
   recoverInterrupted(): void {
-    if (this.requiresRustWrites) {
-      this.pendingInbox.clear();
-      this.pendingOutbox.clear();
-      this.enqueueOp({ op: "recoverInterrupted", now: this.now() }, "recoverInterrupted");
-      return;
-    }
+    if (this.requiresRustWrites) return; // readRecovery awaits the Core reconciliation before exposing work.
     this.db.transaction(() => {
       const now = this.now();
       this.db.prepare("UPDATE gateway_outbox SET status='unknown',last_error='send_interrupted',updated_at=? WHERE status='sending'").run(now);
@@ -430,91 +569,46 @@ export class GatewayDeliveryJournal {
   }
 
   begin(id: string): GatewayInboxEntry {
+    if (this.requiresRustWrites) throw new Error("Core Gateway 执行必须等待认领回执");
     const entry = this.get(id);
-    if (!entry || entry.status === "completed" || entry.status === "unknown" || this.outbox(id)) throw new Error("Gateway 消息不可重复执行");
+    if (!entry || !["pending", "blocked"].includes(entry.status) || this.outbox(id)) throw new Error("Gateway 消息不可重复执行");
     if (entry.retry_count > 0 && entry.receipt_mode !== "pi-durable") {
       this.block(id, "native_recovery_unavailable", "unknown");
       throw new Error("Gateway 缺少原生幂等回执，未重复执行");
     }
     const now = this.now();
-    if (this.requiresRustWrites) {
-      this.pendingInbox.set(id, { ...entry, status: "running", retry_count: entry.retry_count + 1, last_error: null, updated_at: now });
-      this.enqueueOp({ op: "begin", deliveryId: id, now }, "begin");
-      return entry;
-    }
     this.db.prepare("UPDATE gateway_inbox SET status='running',retry_count=retry_count+1,last_error=NULL,updated_at=? WHERE delivery_id=?").run(now, id);
     return entry;
   }
 
   complete(id: string): void {
+    if (this.requiresRustWrites) throw new Error("Core Gateway 结算需要已认领的执行代次");
     const outbox = this.outbox(id);
     if (outbox && outbox.status !== "sent") return;
     const now = this.now();
-    if (this.requiresRustWrites) {
-      const current = this.get(id);
-      if (current) this.pendingInbox.set(id, { ...current, status: "completed", last_error: null, updated_at: now });
-      this.enqueueOp({ op: "complete", deliveryId: id, now }, "complete");
-      return;
-    }
     this.db.prepare("UPDATE gateway_inbox SET status='completed',last_error=NULL,updated_at=? WHERE delivery_id=?").run(now, id);
   }
 
-  block(id: string, reason: string, status: "blocked" | "unknown" = "blocked"): void {
+  private block(id: string, reason: string, status: "blocked" | "unknown"): void {
     const now = this.now();
-    if (this.requiresRustWrites) {
-      const current = this.get(id);
-      if (current && current.status !== "completed") {
-        this.pendingInbox.set(id, { ...current, status, last_error: reason, updated_at: now });
-      }
-      this.enqueueOp({ op: "block", deliveryId: id, status, reason, now }, "block");
-      return;
-    }
     this.db.prepare("UPDATE gateway_inbox SET status=?,last_error=?,updated_at=? WHERE delivery_id=? AND status!='completed'").run(status, reason, now, id);
   }
 
-  defer(id: string): void {
+  private defer(id: string): void {
     const now = this.now();
-    if (this.requiresRustWrites) {
-      const current = this.get(id);
-      if (current && current.status !== "completed" && current.status !== "unknown" && !this.outbox(id)) {
-        const nextStatus = current.receipt_mode === "pi-durable" || current.retry_count === 0 ? "pending" : "unknown";
-        this.pendingInbox.set(id, { ...current, status: nextStatus, last_error: "connection_interrupted", updated_at: now });
-      }
-      this.enqueueOp({ op: "defer", deliveryId: id, now }, "defer");
-      return;
-    }
     this.db.prepare(`UPDATE gateway_inbox SET status=CASE WHEN receipt_mode='pi-durable' OR retry_count=0 THEN 'pending' ELSE 'unknown' END,
       last_error='connection_interrupted',updated_at=? WHERE delivery_id=? AND status NOT IN ('completed','unknown')
       AND delivery_id NOT IN (SELECT delivery_id FROM gateway_outbox)`).run(now, id);
   }
 
   queueReply(id: string, text: string): GatewayOutboxEntry {
+    if (this.requiresRustWrites) throw new Error("Core Gateway 回复需要已认领的执行代次");
     if (typeof text !== "string" || !text.trim() || Buffer.byteLength(text) > 512 * 1024) throw new Error("Gateway 回复为空或超过持久大小限制");
     const hash = digest(text);
     const old = this.outbox(id);
     if (old) {
       if (old.reply_hash !== hash) throw new Error("Gateway 回复与已保存结果不一致，未覆盖");
       return old;
-    }
-    if (this.requiresRustWrites) {
-      const now = this.now();
-      const outboxEntry: GatewayOutboxEntry = {
-        delivery_id: id,
-        reply_text: text,
-        reply_hash: hash,
-        status: "pending",
-        retry_count: 0,
-        next_attempt_at: 0,
-        last_error: null,
-        created_at: now,
-        updated_at: now,
-        sent_at: null,
-      };
-      this.pendingOutbox.set(id, outboxEntry);
-      const current = this.get(id);
-      if (current) this.pendingInbox.set(id, { ...current, status: "reply_pending", last_error: null, updated_at: now });
-      this.enqueueOp({ op: "queueReply", deliveryId: id, replyText: text, replyHash: hash, now }, "queueReply");
-      return outboxEntry;
     }
     return this.db.transaction(() => {
       const now = this.now();
@@ -525,33 +619,16 @@ export class GatewayDeliveryJournal {
   }
 
   beginSend(id: string): GatewayOutboxEntry {
+    if (this.requiresRustWrites) throw new Error("Core Gateway 回复必须等待发送认领回执");
     const old = this.outbox(id);
     if (!old || !["pending", "blocked"].includes(old.status) || digest(old.reply_text) !== old.reply_hash) throw new Error("Gateway 回复不可重发或校验失败");
     const now = this.now();
-    if (this.requiresRustWrites) {
-      const next: GatewayOutboxEntry = { ...old, status: "sending", retry_count: old.retry_count + 1, last_error: null, updated_at: now };
-      this.pendingOutbox.set(id, next);
-      this.enqueueOp({ op: "beginSend", deliveryId: id, now }, "beginSend");
-      return next;
-    }
     this.db.prepare("UPDATE gateway_outbox SET status='sending',retry_count=retry_count+1,last_error=NULL,updated_at=? WHERE delivery_id=?").run(now, id);
     return this.outbox(id)!;
   }
 
-  sent(id: string): void {
+  private sent(id: string): void {
     const now = this.now();
-    if (this.requiresRustWrites) {
-      const out = this.outbox(id);
-      if (out && out.status === "sending") {
-        this.pendingOutbox.set(id, { ...out, status: "sent", last_error: null, sent_at: now, updated_at: now });
-      }
-      const entry = this.get(id);
-      if (entry && (!out || out.status === "sending" || out.status === "sent")) {
-        this.pendingInbox.set(id, { ...entry, status: "completed", last_error: null, updated_at: now });
-      }
-      this.enqueueOp({ op: "sent", deliveryId: id, now }, "sent");
-      return;
-    }
     this.db.transaction(() => {
       this.db.prepare("UPDATE gateway_outbox SET status='sent',last_error=NULL,sent_at=?,updated_at=? WHERE delivery_id=? AND status='sending'").run(now, now, id);
       this.complete(id);
@@ -559,26 +636,8 @@ export class GatewayDeliveryJournal {
   }
 
   sendFailed(id: string, input: { status: "pending" | "blocked" | "unknown" | "failed"; reason: string; nextAttemptAt?: number }): void {
+    if (this.requiresRustWrites) throw new Error("Core Gateway 发送结算需要已认领的发送代次");
     const now = this.now();
-    if (this.requiresRustWrites) {
-      const out = this.outbox(id);
-      if (out && out.status !== "sent") {
-        this.pendingOutbox.set(id, { ...out, status: input.status, last_error: input.reason, next_attempt_at: input.nextAttemptAt ?? 0, updated_at: now });
-      }
-      const entry = this.get(id);
-      if (entry && entry.status !== "completed") {
-        this.pendingInbox.set(id, { ...entry, status: input.status === "unknown" ? "unknown" : "reply_pending", last_error: input.reason, updated_at: now });
-      }
-      this.enqueueOp({
-        op: "sendFailed",
-        deliveryId: id,
-        status: input.status,
-        reason: input.reason,
-        nextAttemptAt: input.nextAttemptAt ?? 0,
-        now,
-      }, "sendFailed");
-      return;
-    }
     this.db.transaction(() => {
       this.db.prepare("UPDATE gateway_outbox SET status=?,last_error=?,next_attempt_at=?,updated_at=? WHERE delivery_id=? AND status!='sent'")
         .run(input.status, input.reason, input.nextAttemptAt ?? 0, now, id);

@@ -1,7 +1,6 @@
+use crate::database::{DbError, classify_duckdb_error};
 use crate::{MAX_REPLY_BYTES, Result};
-use rusqlite::{
-    Connection, Error, ErrorCode, TransactionBehavior, params, params_from_iter, types::Value,
-};
+use duckdb::{Connection, params, params_from_iter, types::Value};
 use serde::{Deserialize, Serialize};
 
 /// Rows the log keeps; the host write prunes to the same bound.
@@ -56,28 +55,25 @@ pub enum WriteReply {
 pub fn append(db: &mut Connection, message: &Append) -> Result<WriteReply> {
     match apply(db, message) {
         Ok(()) => Ok(WriteReply::Saved),
-        Err(Error::SqliteFailure(error, _))
-            if matches!(
-                error.code,
-                ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked
-            ) =>
-        {
+        Err(error) if matches!(classify_duckdb_error(&error.to_string()), DbError::Busy(_)) => {
             Ok(WriteReply::NeedsHost)
         }
         Err(error) => Err(error.into()),
     }
 }
 
-fn apply(db: &mut Connection, message: &Append) -> rusqlite::Result<()> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+fn apply(db: &mut Connection, message: &Append) -> duckdb::Result<()> {
+    let tx = db.transaction()?;
+    let next_id: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM gateway_messages", [], |r| r.get(0))?;
     tx.execute(
-        "INSERT INTO gateway_messages (channel_id, chat_id, direction, sender_id, sender_name, text, created_at)
-         SELECT ?1,?2,?3,?4,?5,?6,?7
+        "INSERT INTO gateway_messages (id, channel_id, chat_id, direction, sender_id, sender_name, text, created_at)
+         SELECT ?1,?2,?3,?4,?5,?6,?7,?8
          WHERE NOT EXISTS (
            SELECT 1 FROM gateway_messages
-           WHERE channel_id=?1 AND chat_id=?2 AND direction=?3 AND created_at=?7 AND text=?6
-             AND coalesce(sender_id,'')=coalesce(?4,''))",
+           WHERE channel_id=?2 AND chat_id=?3 AND direction=?4 AND created_at=?8 AND text=?7
+             AND coalesce(sender_id,'')=coalesce(?5,''))",
         params![
+            next_id,
             message.channel_id,
             message.chat_id,
             message.direction,
@@ -111,8 +107,8 @@ pub fn read(db: &Connection, query: Query) -> Result<Option<Vec<Message>>> {
         params.push(Value::Text(chat));
     }
     sql.push_str(" ORDER BY created_at DESC,id DESC LIMIT ?");
-    params.push(Value::Integer(query.limit.clamp(1, 1_000)));
-    let mut stmt = db.prepare_cached(&sql)?;
+    params.push(Value::BigInt(query.limit.clamp(1, 1_000)));
+    let mut stmt = db.prepare(&sql)?;
     let messages = stmt.query_map(params_from_iter(params), |row| {
         Ok(Message {
             id: row.get(0)?,
@@ -147,14 +143,14 @@ mod tests {
         let db = Connection::open_in_memory().expect("open fixture database");
         db.execute_batch(
             "CREATE TABLE gateway_messages (
-               id INTEGER PRIMARY KEY AUTOINCREMENT,
-               channel_id TEXT NOT NULL,
-               chat_id TEXT NOT NULL DEFAULT '',
-               direction TEXT NOT NULL,
-               sender_id TEXT,
-               sender_name TEXT,
-               text TEXT NOT NULL,
-               created_at INTEGER NOT NULL
+               id BIGINT PRIMARY KEY,
+               channel_id VARCHAR NOT NULL,
+               chat_id VARCHAR NOT NULL DEFAULT '',
+               direction VARCHAR NOT NULL,
+               sender_id VARCHAR,
+               sender_name VARCHAR,
+               text VARCHAR NOT NULL,
+               created_at BIGINT NOT NULL
              );
              CREATE INDEX idx_gateway_messages_chat
                ON gateway_messages(channel_id, chat_id, created_at);",

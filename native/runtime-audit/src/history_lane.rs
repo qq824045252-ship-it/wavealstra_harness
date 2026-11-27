@@ -42,7 +42,9 @@ fn reply(id: &str, value: Option<Value>) -> io::Result<()> {
     }
     request_control::emit(&frame)
 }
-fn history_worker() -> io::Result<(SyncSender<Job>, thread::JoinHandle<io::Result<()>>)> {
+fn history_worker(
+    engine: Arc<crate::database::DuckDbEngine>,
+) -> io::Result<(SyncSender<Job>, thread::JoinHandle<io::Result<()>>)> {
     let (tx, rx) = mpsc::sync_channel::<Job>(48);
     let handle = thread::Builder::new()
         .name("durable-history".into())
@@ -52,7 +54,7 @@ fn history_worker() -> io::Result<(SyncSender<Job>, thread::JoinHandle<io::Resul
                 if !request_control::begin(&Some(job.id.clone())) {
                     continue;
                 }
-                let data = durable::read(&mut sessions, job.session, job.action);
+                let data = durable::read(&engine, &mut sessions, job.session, job.action);
                 reply(&job.id, data.ok())?;
             }
             Ok(())
@@ -163,6 +165,7 @@ fn control_frame(control: &Control, value: &Value, id: &str) -> io::Result<()> {
 /// Stdin owns admission/control; it NEVER waits for a business queue to make room.
 /// Overload is a correlated neverStarted rejection, leaving cancel/revoke/status live.
 pub(super) fn route_input(
+    engine: Arc<crate::database::DuckDbEngine>,
     control: Arc<Control>,
 ) -> io::Result<(Input, thread::JoinHandle<io::Result<()>>)> {
     let (tx, rx) = mpsc::sync_channel(32);
@@ -180,7 +183,7 @@ pub(super) fn route_input(
             if let Err(error)=control.register(&id,&operation,deadline,crate::request_may_mutate(&request)) {request_control::emit(&error.frame(&id))?;continue;}
             match request {
                 Request::HistoryRead{request_id,session,action}=>{
-                    if history.is_none() {history=Some(history_worker()?);}
+                    if history.is_none() {history=Some(history_worker(Arc::clone(&engine))?);}
                     let job=Job{id:request_id,session,action};
                     if let Err(error)=history.as_ref().unwrap().0.try_send(job) {
                         let job=match error {mpsc::TrySendError::Full(job)|mpsc::TrySendError::Disconnected(job)=>job};

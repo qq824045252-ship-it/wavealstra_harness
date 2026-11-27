@@ -1,8 +1,5 @@
 use crate::{Result, sqlite_rows::records};
-use rusqlite::{
-    Connection, OptionalExtension, Params, TransactionBehavior, params, params_from_iter,
-    types::Value as SqlValue,
-};
+use duckdb::{Connection, OptionalExt, Params, params, params_from_iter, types::Value as SqlValue};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -56,8 +53,26 @@ pub enum Mutation {
 pub struct Guard {
     tasks: Vec<String>,
     projects: Vec<String>,
+    target_task_id: Option<String>,
     enabled_limit_for_task: Option<String>,
     dots: Option<DotsGuard>,
+}
+
+impl Mutation {
+    pub(crate) fn guarded_tasks(&self) -> impl Iterator<Item = &String> {
+        match self {
+            Self::Save { guard, .. } => guard.as_ref(),
+            Self::Remove { .. } => None,
+        }
+        .into_iter()
+        .flat_map(|guard| {
+            guard
+                .tasks
+                .iter()
+                .chain(guard.target_task_id.iter())
+                .chain(guard.dots.iter().filter_map(|dots| dots.task_id.as_ref()))
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -100,9 +115,29 @@ fn exists(db: &Connection, sql: &str, values: impl Params) -> Result<bool> {
     Ok(db.query_row(sql, values, |_| Ok(())).optional()?.is_some())
 }
 
-fn guard_allows(db: &Connection, id: &str, guard: &Guard) -> Result<bool> {
+fn guard_allows(
+    db: &Connection,
+    id: &str,
+    guard: &Guard,
+    provenance: Option<&Provenance>,
+) -> Result<bool> {
     for task in &guard.tasks {
-        if !exists(db, "SELECT 1 FROM tasks WHERE id=? AND archived=0", [task])? {
+        if !exists(
+            db,
+            "SELECT 1 FROM tasks WHERE id=?1 AND archived=0 AND NOT EXISTS (
+            SELECT 1 FROM task_execution_workspace_state WHERE task_id=?1 AND state='trashed')",
+            [task],
+        )? {
+            return Ok(false);
+        }
+    }
+    if let Some(target) = &guard.target_task_id {
+        if !exists(
+            db,
+            "SELECT 1 FROM tasks t LEFT JOIN projects p ON p.id=t.project_id
+            WHERE t.id=? AND (t.project_id IS NULL OR (p.id IS NOT NULL AND p.archived=0))",
+            [target],
+        )? {
             return Ok(false);
         }
     }
@@ -118,7 +153,7 @@ fn guard_allows(db: &Connection, id: &str, guard: &Guard) -> Result<bool> {
     if let Some(task) = &guard.enabled_limit_for_task {
         let count = db.query_row(
             "SELECT COUNT(*) FROM cron_jobs WHERE enabled=1 AND id<>?
-             AND json_extract(execution_json,'$.sourceTaskId')=? AND json_extract(execution_json,'$.reminder.kind') IS NOT 'bot-reminder'",
+             AND json_extract_string(execution_json,'$.sourceTaskId')=? AND json_extract_string(execution_json,'$.reminder.kind') IS DISTINCT FROM 'bot-reminder'",
             params![id, task],
             |row| row.get::<_, i64>(0),
         )?;
@@ -129,14 +164,25 @@ fn guard_allows(db: &Connection, id: &str, guard: &Guard) -> Result<bool> {
     let Some(dots) = &guard.dots else {
         return Ok(true);
     };
+    let owner = match provenance {
+        Some(origin) => origin
+            .owner
+            .as_ref()
+            .map(|owner| (owner.task_id.clone(), owner.space_id.clone())),
+        None => crate::cron_scheduler::schedule_owner(db, id)?,
+    }
+    .unwrap_or_default();
+    if owner != (dots.task_id.clone(), dots.space_id.clone()) {
+        return Ok(false);
+    }
     if exists(
         db,
-        "SELECT 1 FROM dots_schedule_holds WHERE job_id=? AND (holder<>'manual' OR ?=0)",
+        "SELECT 1 FROM dots_schedule_holds WHERE job_id=? AND (holder<>'manual' OR NOT ?)",
         params![id, dots.ignore_manual_hold],
     )? {
         return Ok(false);
     }
-    let has_table = |name| exists(db, "SELECT 1 FROM sqlite_master WHERE name=?", [name]);
+    let has_table = |name| crate::database::table_exists(db, name);
     if has_table("dots_proactive_pauses")?
         && exists(
             db,
@@ -166,7 +212,7 @@ fn guard_allows(db: &Connection, id: &str, guard: &Guard) -> Result<bool> {
             "WITH RECURSIVE parents(id, parent_id, archived) AS (
                 SELECT id, parent_id, archived FROM spaces WHERE id=?1
                 UNION SELECT s.id, s.parent_id, s.archived FROM spaces s JOIN parents p ON p.parent_id=s.id
-             ) SELECT 1 FROM tasks WHERE id=?2 AND space_id IS ?1 AND archived=0
+             ) SELECT 1 FROM tasks WHERE id=?2 AND space_id IS NOT DISTINCT FROM ?1 AND archived=0
                AND NOT EXISTS (SELECT 1 FROM parents WHERE archived<>0)
                AND NOT EXISTS (SELECT 1 FROM task_execution_workspace_state WHERE task_id=?2 AND state='trashed')",
             params![dots.space_id, task],
@@ -191,7 +237,7 @@ fn same_provenance(db: &Connection, id: &str, provenance: &Provenance) -> Result
     match &provenance.owner {
         Some(owner) => exists(
             db,
-            "SELECT 1 FROM dots_schedule_scopes WHERE job_id=? AND task_id IS ? AND space_id IS ?",
+            "SELECT 1 FROM dots_schedule_scopes WHERE job_id=? AND task_id IS NOT DISTINCT FROM ? AND space_id IS NOT DISTINCT FROM ?",
             params![id, owner.task_id, owner.space_id],
         ),
         None => Ok(!exists(
@@ -243,7 +289,7 @@ fn save(
         return Ok(false);
     }
     if let Some(guard) = guard {
-        if !guard_allows(db, id, guard)? {
+        if !guard_allows(db, id, guard, provenance)? {
             return Ok(false);
         }
     }
@@ -262,14 +308,14 @@ fn save(
             Some(Value::Null) => SqlValue::Null,
             Some(Value::String(text)) => SqlValue::Text(text.clone()),
             Some(Value::Number(number)) => match number.as_i64() {
-                Some(integer) => SqlValue::Integer(integer),
-                None => SqlValue::Real(number.as_f64().ok_or("invalid automation plan number")?),
+                Some(integer) => SqlValue::BigInt(integer),
+                None => SqlValue::Double(number.as_f64().ok_or("invalid automation plan number")?),
             },
             _ => return Err("invalid automation plan column".into()),
         };
         values.push(value);
     }
-    db.prepare_cached(&format!("INSERT INTO cron_jobs ({columns}) VALUES ({inputs}) ON CONFLICT(id) DO UPDATE SET {changes}"))?
+    db.prepare(&format!("INSERT INTO cron_jobs ({columns}) VALUES ({inputs}) ON CONFLICT(id) DO UPDATE SET {changes}"))?
         .execute(params_from_iter(values))?;
     if let Some(p) = provenance {
         db.execute(
@@ -286,7 +332,7 @@ fn save(
     match manual_hold {
         Some(ManualHold::Add) => {
             db.execute(
-                "INSERT OR IGNORE INTO dots_schedule_holds VALUES(?,'manual')",
+                "INSERT INTO dots_schedule_holds VALUES(?,'manual') ON CONFLICT DO NOTHING",
                 [id],
             )?;
         }
@@ -302,7 +348,7 @@ fn save(
 }
 
 pub fn write(db: &mut Connection, mutation: Mutation) -> Result<bool> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let applied = match mutation {
         Mutation::Save {
             row,
@@ -325,12 +371,24 @@ pub fn write(db: &mut Connection, mutation: Mutation) -> Result<bool> {
             } else if current != expected {
                 false
             } else {
-                tx.execute("DELETE FROM cron_runs WHERE job_id=?", [&id])?;
-                tx.execute("DELETE FROM cron_jobs WHERE id=?", [&id])?;
+                remove_plan(&tx, &id)?;
                 true
             }
         }
     };
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
     Ok(applied)
+}
+
+pub(crate) fn remove_plan(tx: &duckdb::Transaction<'_>, id: &str) -> Result<()> {
+    use crate::relation_catalog::delete_cascade_by_single_pk;
+    let runs = tx
+        .prepare("SELECT id FROM cron_runs WHERE job_id=?")?
+        .query_map([id], |row| row.get::<_, String>(0))?
+        .collect::<duckdb::Result<Vec<_>>>()?;
+    for run in runs {
+        delete_cascade_by_single_pk(tx, "cron_runs", "id", &run)?;
+    }
+    delete_cascade_by_single_pk(tx, "cron_jobs", "id", id)?;
+    Ok(())
 }

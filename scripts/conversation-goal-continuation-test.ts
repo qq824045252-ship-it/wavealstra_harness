@@ -455,7 +455,7 @@ try {
   const skillGoal = await agent.createConversationGoal({ taskId: "goal-skill", title: "Create a reusable check" });
   assert(skillGoal.ok);
   await fixture.prompt({ taskId: "goal-skill", text: "goal-author-skill", userMessageId: "goal-skill-user", assistantMessageId: "goal-skill-answer" });
-  authoredSkillPath = agent.listSkills().find(skill => skill.id === "goal-evidence-fixture")?.filePath;
+  authoredSkillPath = (await agent.listSkills()).find(skill => skill.id === "goal-evidence-fixture")?.filePath;
   assert(authoredSkillPath, "the native authoring tool created and installed an actual package");
   const skillEvidence = async () => (await agent.getConversationGoalEvidence("goal-skill", skillGoal.goal.id))?.activity?.skills
     .find(skill => skill.skillId === "goal-evidence-fixture");

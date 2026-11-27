@@ -599,6 +599,19 @@ export class AppSettingsStore {
     return orphans;
   }
 
+  /** Clear only the checked settings entries that are still unchanged. */
+  clearMissingTaskConnectorIds(checked: Record<string, string[]>): void {
+    const current = this.read();
+    const next = { ...current.taskConnectorIds };
+    let changed = false;
+    for (const [id, expected] of Object.entries(checked)) {
+      if (JSON.stringify(next[id]) !== JSON.stringify(expected)) continue;
+      delete next[id];
+      changed = true;
+    }
+    if (changed) this.write({ taskConnectorIds: next });
+  }
+
   /** 任务级 Active Connector 持久化：读取（无记录返回 undefined，不落盘默认值） */
   getTaskConnectorIds(taskId: string): string[] | undefined {
     if (!taskId) return undefined;

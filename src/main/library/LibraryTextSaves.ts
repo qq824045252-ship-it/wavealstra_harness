@@ -34,7 +34,7 @@ export class LibraryTextSaves {
     this.coordinator = existing ?? { pending: new Map() };
     if (!existing) {
       roots.set(this.root, this.coordinator);
-      this.recoverInterruptedSaves();
+      if (db.fixtureConnection) this.recoverInterruptedSaves();
     }
   }
 

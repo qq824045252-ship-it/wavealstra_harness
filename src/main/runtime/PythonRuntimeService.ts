@@ -52,8 +52,6 @@ import {
 import { parseUvVersion } from "./UvToolchain";
 
 export interface PythonRuntimeServiceOptions extends PythonEnvironmentStoreOptions {
-  /** 项目解释器手动覆盖解析器；未命中时继续自动发现项目内虚拟环境 */
-  projectModeResolver?: (taskRoot: string) => PythonProjectBinding | null;
   /** 运行时根目录（仅用于状态展示）；其余六个目录由 store 选项决定 */
   runtimeDir?: string;
 }
@@ -70,8 +68,6 @@ interface PhaseRecord {
 export class PythonRuntimeService extends EventEmitter {
   readonly store: PythonEnvironmentStore;
   private readonly platform: NodeJS.Platform;
-  private projectModeResolver: ((taskRoot: string) => PythonProjectBinding | null) | null;
-  /** DB 就绪前为 null：此时项目绑定不可读写，执行一律走受管环境 */
   private bindingStore: PythonProjectBindingStore | null = null;
   private readonly runtimeDirOverride: string | undefined;
   private phase: PhaseRecord = {
@@ -86,7 +82,6 @@ export class PythonRuntimeService extends EventEmitter {
   constructor(options: PythonRuntimeServiceOptions = {}) {
     super();
     this.platform = options.platform ?? currentNodePlatform;
-    this.projectModeResolver = options.projectModeResolver ?? null;
     this.runtimeDirOverride = options.runtimeDir;
     this.store = new PythonEnvironmentStore({
       ...options,
@@ -113,23 +108,11 @@ export class PythonRuntimeService extends EventEmitter {
   }
 
   /**
-   * 后注入项目模式解析器。
-   *
-   * 本服务是模块级单例（见 pythonRuntimeInstance.ts），而绑定关系存在 SQLite 里，
-   * 数据库要到 index.ts 的 app.whenReady 才创建。构造函数保持无副作用，
-   * 因此这里允许 DB 就绪后再接线；未接线时 resolveForExecution 一律走受管环境。
-   */
-  setProjectModeResolver(resolver: ((taskRoot: string) => PythonProjectBinding | null) | null): void {
-    this.projectModeResolver = resolver;
-  }
-
-  /**
    * DB 就绪后接线项目绑定：读写与执行期解析共用同一个 store，
    * 避免「UI 里看得到绑定、执行时却不生效」这种两边不一致。
    */
   setProjectBindingStore(store: PythonProjectBindingStore): void {
     this.bindingStore = store;
-    this.setProjectModeResolver((taskRoot) => store.resolveForDir(taskRoot));
   }
 
   /* ---------------- 动作 1：解析需求 ---------------- */
@@ -236,7 +219,7 @@ export class PythonRuntimeService extends EventEmitter {
     // 临时代码、Skill 和内置能力必须保留受管环境的依赖隔离语义。
     // 手动覆盖优先；没有覆盖时自动识别项目内 .venv/venv/env；都没有才走受管环境。
     if (options.useProjectBinding && options.taskRoot) {
-      const project = this.resolveProjectInterpreter(options.taskRoot);
+      const project = await this.resolveProjectInterpreter(options.taskRoot);
       const binding = project?.binding ?? null;
       if (binding && !existsSync(binding.pythonPath)) {
         const kind = project?.source === "override" ? "手动覆盖" : "自动识别";
@@ -286,8 +269,8 @@ export class PythonRuntimeService extends EventEmitter {
   }
 
   /** 手动覆盖优先，未覆盖时零配置发现项目目录内的虚拟环境。 */
-  private resolveProjectInterpreter(taskRoot: string): { binding: PythonProjectBinding; source: "override" | "auto" } | null {
-    const override = this.projectModeResolver?.(taskRoot) ?? null;
+  private async resolveProjectInterpreter(taskRoot: string): Promise<{ binding: PythonProjectBinding; source: "override" | "auto" } | null> {
+    const override = await this.bindingStore?.resolveForDir(taskRoot);
     if (override) return { binding: override, source: "override" };
     const discovered = discoverProjectPython(taskRoot, this.platform);
     return discovered ? { binding: discovered, source: "auto" } : null;
@@ -310,7 +293,7 @@ export class PythonRuntimeService extends EventEmitter {
       };
     }
 
-    const project = this.resolveProjectInterpreter(resolvedDir);
+    const project = await this.resolveProjectInterpreter(resolvedDir);
     if (!project) {
       return {
         projectDir: resolvedDir,
@@ -407,7 +390,7 @@ export class PythonRuntimeService extends EventEmitter {
       manifestPath: manifestName ? join(resolvedDir, manifestName) : null,
       boundAt: Date.now(),
     };
-    await this.bindingStore.saveAsync(binding);
+    await this.bindingStore.save(binding);
     return {
       ok: true,
       binding: { ...binding, bindingId: pythonProjectBindingId(binding.dirKey), available: true },
@@ -417,14 +400,14 @@ export class PythonRuntimeService extends EventEmitter {
   /** 取消手动覆盖：该项目恢复自动识别；若没有项目虚拟环境，再回到受管环境。 */
   async unbindProject(projectDir: string): Promise<{ ok: boolean; detail: string }> {
     if (!this.bindingStore) return { ok: false, detail: "项目绑定存储未装配（数据库尚未就绪）" };
-    const removed = await this.bindingStore.removeAsync(projectDir ?? "");
+    const removed = await this.bindingStore.remove(projectDir ?? "");
     return removed
       ? { ok: true, detail: "已取消手动覆盖，该项目恢复自动识别" }
       : { ok: false, detail: "该目录没有手动覆盖" };
   }
 
   /** 诊断/兼容用：全部手动覆盖记录。产品 UI 不再管理这张表。 */
-  listProjectBindings(): PythonProjectBindingView[] {
+  async listProjectBindings(): Promise<PythonProjectBindingView[]> {
     return this.bindingStore?.list() ?? [];
   }
 
@@ -510,7 +493,7 @@ export class PythonRuntimeService extends EventEmitter {
    * 带上项目绑定是必要的：执行期可能走 `project:*` 环境，只看受管环境列表
    * 无法解释「为什么这个任务没用受管解释器」。
    */
-  exportDiagnostics(): Record<string, unknown> {
+  async exportDiagnostics(): Promise<Record<string, unknown>> {
     const manifests: PythonEnvironmentManifest[] = [];
     for (const info of this.store.list()) {
       const manifest = this.store.readManifest(info.id);
@@ -523,7 +506,7 @@ export class PythonRuntimeService extends EventEmitter {
       interpreters: this.listInterpreters(),
       environments: this.store.list(),
       manifests,
-      projectBindings: this.listProjectBindings(),
+      projectBindings: await this.listProjectBindings(),
       roots: this.roots(),
     };
   }

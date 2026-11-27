@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep, basename } from "node:path";
 import { SlackSocketModeAdapter, redactSlackText, safeSlackError, splitSlackReply, type SlackSocket } from "../src/main/gateway/SlackSocketModeAdapter";
@@ -9,9 +9,6 @@ import { gatewayConversationId } from "../src/main/gateway/GatewayConversation";
 import { GatewayService } from "../src/main/gateway/GatewayService";
 import { sealSlackGatewayConfig, openSlackGatewayConfig, slackGatewayConfigView } from "../src/main/gateway/SlackGatewayCredentials";
 import { setEncryptionAvailable } from "./gateway-electron-stub";
-import type { AgentPromptRequest } from "../src/shared/agent-ipc";
-import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
-import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Model } from "@earendil-works/pi-ai/compat";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-slack-test-"));
 const config = { teamId: "T0C5V7WTE8P", appId: "A0C6PPDAB1S", allowUsers: ["U0C750DCY4Q"],
@@ -400,7 +397,8 @@ try {
     const requests: Parameters<GatewayAgentPort["runGatewayTurn"]>[0][] = [];
     const db = {
       listGatewayChannels: () => stored ? [stored] : [],
-      upsertGatewayChannel: (row: any) => { if (failSave) throw new Error("fixture store failure"); stored = { ...row }; },
+      readGatewayChannels: async () => stored ? [stored] : [],
+      writeGatewayChannel: async (row: any) => { if (failSave) throw new Error("fixture store failure"); stored = { ...row }; return true; },
       insertGatewayMessage: () => undefined,
       writeGatewayMessage: async () => undefined,
       getTask: () => ({ id: "native-task", welcomeMode: "coding", sessionFile: "fixture-session.jsonl" }),
@@ -425,7 +423,7 @@ try {
     await service.connect(fakeAdapter.id, config);
     assert.equal(activations, 1); assert.equal(internals.webhookServer, null, "Socket Mode must not open an HTTP listener");
     assert(!stored.configJson.includes(config.botToken));
-    const view = service.getChannelConfig(fakeAdapter.id);
+    const view = await service.getChannelConfig(fakeAdapter.id);
     assert.equal(view.config.botToken, "••••••"); assert.equal(view.config.encryptedSecrets, undefined);
     await service.disconnect(fakeAdapter.id); assert.equal(stored.connected, false);
     await service.connect(fakeAdapter.id, { ...config, botToken: "••••••", appToken: "••••••" });
@@ -494,60 +492,6 @@ try {
     assert.equal(chunks.length, 3); assert.equal(chunks.join(""), long);
   });
 
-  await check("native Pi text turn executes once and same Slack thread continues its session (local scripted provider)", async () => {
-    const f = fixture("pi-native");
-    const cwd = join(root, "native-task");
-    mkdirSync(cwd);
-    const model: Model<any> = {
-      id: "slack-local-fixture", provider: "fixture", api: "openai-completions", name: "Local fixture",
-      baseUrl: "http://invalid.invalid", reasoning: false, input: ["text"], contextWindow: 100000, maxTokens: 4096,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    };
-    const runtime = {
-      hasConfiguredAuth: () => true, getAuth: async () => ({ auth: { apiKey: "local-fixture-only" } }), getModel: () => model,
-      streamSimple: (_model: Model<any>, context: Context) => {
-        const stream = createAssistantMessageEventStream();
-        assert.equal(context.tools?.length ?? 0, 0, "no tools must reach the channel conversation model");
-        const users = context.messages.filter(message => message.role === "user");
-        const followUp = JSON.stringify(users.at(-1)).includes("follow-up");
-        if (followUp) assert(JSON.stringify(users[0]).includes("first-question"), "same sender and thread preserve context");
-        const content: AssistantMessage["content"] = [{ type: "text", text: followUp ? "SAME_SESSION_REPLY_OK" : "NATIVE_PI_REPLY_OK" }];
-        const stopReason = "stop" as const;
-        const response: AssistantMessage = { role: "assistant", content, stopReason, api: model.api, provider: model.provider,
-          model: model.id, timestamp: Date.now(), usage: { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 20,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
-        stream.push({ type: "start", partial: response }); stream.push({ type: "done", reason: stopReason, message: response }); stream.end();
-        return stream;
-      },
-    } as any;
-    const session = await DurableBotRuntime.open({ directory: join(cwd,"durable"), cwd, models: runtime,
-      model: { provider:model.provider,modelId:model.id }, toolMode:"native", toolAllowed:()=>false, instructions:()=>"fixture", onSnapshot:()=>{} });
-    const requests: AgentPromptRequest[] = [];
-    const port: GatewayAgentPort = {
-      runGatewayTurn: async request => {
-        requests.push(request);
-        return session.reply(await session.submit(request.text,request.userMessageId));
-      },
-    };
-    f.adapter.setInboundHandler(async message => {
-      const reply = await runGatewayAgentTurn(port, { taskId: message.taskId!, text: message.text,
-        gatewayOrigin: { channelId: message.channelId, connectionKey: "a".repeat(64), chatId: message.chatId,
-          senderId: message.sender!.id, messageId: message.messageId!, audience: "private" },
-        assistantMessageId: message.assistantMessageId!, userMessageId: message.userMessageId!, streamingBehavior: "followUp" });
-      await message.reply(reply);
-    });
-    try {
-      await f.adapter.connect(config);
-      const first = event("EvNATIVE", undefined, { text: "first-question" });
-      f.sockets[0].emit(first); f.sockets[0].emit(first);
-      await until(() => f.posts.length === 1, "native text result returned");
-      f.sockets[0].emit(event("EvFOLLOWUP", "1700000000.000002", { thread_ts: first.payload.event.ts, text: "follow-up" }));
-      await until(() => f.posts.length === 2, "same-session text reply");
-      assert.equal(requests[0].taskId, requests[1].taskId);
-      assert.equal(f.posts[0].text, "NATIVE_PI_REPLY_OK"); assert.equal(f.posts[1].text, "SAME_SESSION_REPLY_OK");
-      await session.refresh(); assert.equal(session.snapshot.messages.filter(message=>message.role==='user').length,2);
-    } finally { await f.adapter.disconnect(); await session.close(); }
-  });
   console.log("SLACK_GATEWAY_TESTS_PASSED " + passed);
 } finally {
   for (const adapter of adapters) await adapter.disconnect();

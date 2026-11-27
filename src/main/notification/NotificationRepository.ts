@@ -52,6 +52,7 @@ export type RuntimeNotificationMutation =
   | { kind: "markRead" | "dismiss"; id: string; at: number }
   | { kind: "markReadByDedupeKey"; dedupeKey: string; at: number }
   | { kind: "markAllRead" | "dismissAll"; at: number }
+  | { kind: "cleanup"; now: number }
   | { kind: "publish"; record: Omit<NotificationDto, "target" | "group">; targetJson?: string; inApp: boolean; desktop: boolean };
 
 export type RuntimeNotificationWriteReply =
@@ -65,7 +66,7 @@ export function clipNotificationText(input: string, limit: number): string {
   return input.trim().slice(0, limit).replace(/[\uD800-\uDFFF]/gu, "\uFFFD");
 }
 
-function normalizeList(request: NotificationListRequest): Extract<RuntimeNotificationQuery, { kind: "list" }> {
+export function normalizeNotificationList(request: NotificationListRequest): Extract<RuntimeNotificationQuery, { kind: "list" }> {
   const requestedLimit = request.limit ?? 100;
   const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(500, Math.floor(requestedLimit))) : 100;
   const types = Array.isArray(request.types) && request.types.length
@@ -79,7 +80,7 @@ function normalizeList(request: NotificationListRequest): Extract<RuntimeNotific
       : undefined };
 }
 
-function mapRow(row: RuntimeNotificationSqlRow): NotificationDto {
+export function mapNotificationRow(row: RuntimeNotificationSqlRow): NotificationDto {
   let target: NotificationActivationTarget | null = null;
   if (row.target_json) {
     try { target = parseNotificationTarget(JSON.parse(row.target_json)); } catch { /* Invalid persisted target. */ }
@@ -171,7 +172,7 @@ export class NotificationRepository {
     if (row) { try { return parseNotificationTarget(JSON.parse(row.target_json)); } catch { return null; } }
     const legacy = this.db.prepare(`SELECT * FROM notifications WHERE id = ? AND created_at >= ?`)
       .get(id, now - 90 * 24 * 60 * 60 * 1000) as RuntimeNotificationSqlRow | undefined;
-    return legacy ? notificationTarget(mapRow(legacy)) : null;
+    return legacy ? notificationTarget(mapNotificationRow(legacy)) : null;
   }
 
   insert(record: NotificationDto): { record: NotificationDto; inserted: boolean } {
@@ -212,17 +213,17 @@ export class NotificationRepository {
   findByDedupeKey(dedupeKey: string): NotificationDto | undefined {
     const row = this.db.prepare(`SELECT * FROM notifications WHERE dedupe_key = ? LIMIT 1`)
       .get(dedupeKey) as RuntimeNotificationSqlRow | undefined;
-    return row ? mapRow(row) : undefined;
+    return row ? mapNotificationRow(row) : undefined;
   }
 
   list(request: NotificationListRequest = {}): NotificationDto[] {
-    return this.listOnHost(normalizeList(request));
+    return this.listOnHost(normalizeNotificationList(request));
   }
 
   async readList(request: NotificationListRequest = {}): Promise<NotificationDto[]> {
-    const query = normalizeList(request);
+    const query = normalizeNotificationList(request);
     const result = await this.native?.notificationData(query);
-    return Array.isArray(result) ? result.map(mapRow) : this.listOnHost(query);
+    return Array.isArray(result) ? result.map(mapNotificationRow) : this.listOnHost(query);
   }
 
   private listOnHost(request: Extract<RuntimeNotificationQuery, { kind: "list" }>): NotificationDto[] {
@@ -251,7 +252,7 @@ export class NotificationRepository {
       ORDER BY created_at DESC, id DESC
       LIMIT ?
     `).all(...bindings, limit) as RuntimeNotificationSqlRow[];
-    return rows.map(mapRow);
+    return rows.map(mapNotificationRow);
   }
 
   private listGrouped(where: string[], bindings: Array<string | number>, limit: number,
@@ -293,7 +294,7 @@ export class NotificationRepository {
       FROM page p JOIN visible a ON a.id = p.activation_id
       ORDER BY p.created_at DESC, p.id DESC
     `).all(...bindings, ...(before ? [before.createdAt, before.id] : []), limit) as RuntimeNotificationSqlRow[];
-    return rows.map(mapRow);
+    return rows.map(mapNotificationRow);
   }
 
   unreadCount(): number {

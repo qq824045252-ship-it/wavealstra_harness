@@ -92,8 +92,7 @@ export class ConversationInteractionService {
     if (current.status !== "pending") return { ok: false, code: "already_resolved", message: "该交互已经结束" };
     const interaction = this.repo.settle(id, "cancelled");
     if (!interaction) return { ok: false, code: "already_resolved", message: "该交互已经结束" };
-    this.publish(interaction);
-    for (const waiter of [...this.waiters.get(id) ?? []]) waiter.reject(new Error(reason));
+    this.publishCancellation(interaction, reason);
     return { ok: true, interaction };
   }
 
@@ -101,6 +100,15 @@ export class ConversationInteractionService {
    * questions in the same execution or changing any saved user answer. */
   cancelDurable(ctx: ConversationExecutionContext, key: string, reason?: string): ConversationInteractionMutationResult {
     return this.cancel(durableInteractionId(ctx, key), reason);
+  }
+
+  async cancelDurableAsync(ctx: ConversationExecutionContext, key: string, reason: string): Promise<void> {
+    const interaction = await this.repo.cancelForTask(ctx.taskId, durableInteractionId(ctx, key));
+    if (interaction) this.publishCancellation(interaction, reason);
+  }
+
+  async cancelExecutionAsync(ctx: ConversationExecutionContext, reason: string): Promise<void> {
+    for (const interaction of await this.repo.cancelPendingInExecution(ctx)) this.publishCancellation(interaction, reason);
   }
 
   cancelExecution(executionId: string, reason?: string): void {
@@ -177,6 +185,11 @@ export class ConversationInteractionService {
       messageId: interaction.assistantMessageId,
       interaction,
     });
+  }
+
+  private publishCancellation(interaction: ConversationInteractionDto, reason: string): void {
+    this.publish(interaction);
+    for (const waiter of [...this.waiters.get(interaction.id) ?? []]) waiter.reject(new Error(reason));
   }
 }
 

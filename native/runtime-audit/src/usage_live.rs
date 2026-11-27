@@ -2,7 +2,7 @@ use crate::{
     Result,
     usage_history::{Usage, model_from_id},
 };
-use rusqlite::{Connection, named_params, params};
+use duckdb::{Connection, named_params, params};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -140,35 +140,35 @@ pub fn record(db: &Connection, input: LiveInput, captured: i64, coverage: bool) 
         }
     });
     let native_cost = native.cost.unwrap_or_default();
-    let saved = db.prepare_cached(
-        "INSERT OR IGNORE INTO usage_events(
+    let saved = db.prepare(
+        "INSERT INTO usage_events(
            entry_id,task_id,session_file,source_kind,source_detail,provider,model,response_model,ts,
            input_tokens,output_tokens,cache_read,cache_write,cache_write_1h,reasoning_tokens,total_tokens,
            cost_total,cost_input,cost_output,cost_cache_read,cost_cache_write,stop_reason,error_message,
            request_started_at,first_response_at,completed_at,ttft_ms,decode_ms,generation_tps,model_wall_ms,
            response_id,turn_index,user_turn,backfilled
          ) VALUES (
-           :entry,:task,:session,:source,:detail,:provider,:model,:response_model,:time,
-           :input,:output,:cache_read,:cache_write,:cache_write_1h,:reasoning,:total,
-           :cost,:cost_input,:cost_output,:cost_read,:cost_write,:stop,:error,
-           :started,:first,:complete,:ttft,:decode,:tps,:wall,:response,:turn,:user_turn,0
-         )",
+           $entry,$task,$session,$source,$detail,$provider,$model,$response_model,$time,
+           $input,$output,$cache_read,$cache_write,$cache_write_1h,$reasoning,$total,
+           $cost,$cost_input,$cost_output,$cost_read,$cost_write,$stop,$error,
+           $started,$first,$complete,$ttft,$decode,$tps,$wall,$response,$turn,$user_turn,0
+         ) ON CONFLICT DO NOTHING",
     )?.execute(named_params! {
-        ":entry": entry_id, ":task": input.task_id, ":session": input.session_file,
-        ":source": input.source_kind, ":detail": input.source_detail, ":provider": provider, ":model": model,
-        ":response_model": response_model, ":time": m.timestamp.or(t.completed_at).unwrap_or(captured as f64),
-        ":input": new_input.unwrap_or_default(), ":output": output.unwrap_or_default(),
-        ":cache_read": cache_read.unwrap_or_default(), ":cache_write": cache_write.unwrap_or_default(),
-        ":cache_write_1h": native.cache_write1h, ":reasoning": native.reasoning, ":total": total,
-        ":cost": cost.unwrap_or_default(), ":cost_input": native_cost.input.unwrap_or_default(),
-        ":cost_output": native_cost.output.unwrap_or_default(), ":cost_read": native_cost.cache_read.unwrap_or_default(),
-        ":cost_write": native_cost.cache_write.unwrap_or_default(), ":stop": m.stop_reason, ":error": m.error_message,
-        ":started": t.request_started_at, ":first": t.first_response_at, ":complete": t.completed_at,
-        ":ttft": t.ttft_ms, ":decode": t.decode_ms, ":tps": t.generation_tps, ":wall": t.model_wall_ms,
-        ":response": m.response_id, ":turn": t.turn_index, ":user_turn": input.user_turn,
+        "entry": entry_id, "task": input.task_id, "session": input.session_file,
+        "source": input.source_kind, "detail": input.source_detail, "provider": provider, "model": model,
+        "response_model": response_model, "time": m.timestamp.or(t.completed_at).unwrap_or(captured as f64),
+        "input": new_input.unwrap_or_default(), "output": output.unwrap_or_default(),
+        "cache_read": cache_read.unwrap_or_default(), "cache_write": cache_write.unwrap_or_default(),
+        "cache_write_1h": native.cache_write1h, "reasoning": native.reasoning, "total": total,
+        "cost": cost.unwrap_or_default(), "cost_input": native_cost.input.unwrap_or_default(),
+        "cost_output": native_cost.output.unwrap_or_default(), "cost_read": native_cost.cache_read.unwrap_or_default(),
+        "cost_write": native_cost.cache_write.unwrap_or_default(), "stop": m.stop_reason, "error": m.error_message,
+        "started": t.request_started_at, "first": t.first_response_at, "complete": t.completed_at,
+        "ttft": t.ttft_ms, "decode": t.decode_ms, "tps": t.generation_tps, "wall": t.model_wall_ms,
+        "response": m.response_id, "turn": t.turn_index, "user_turn": input.user_turn,
     })?;
     if coverage {
-        db.prepare_cached("INSERT OR IGNORE INTO usage_event_coverage VALUES (?1,?2,?3,?4,?5,?6)")?
+        db.prepare("INSERT INTO usage_event_coverage VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING")?
             .execute(params![
                 entry_id,
                 new_input.is_some(),

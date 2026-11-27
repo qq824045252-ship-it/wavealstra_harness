@@ -1,4 +1,4 @@
-use rusqlite::{Connection, Row, TransactionBehavior, params};
+use duckdb::{Connection, Row, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -44,7 +44,7 @@ pub fn run(db: &mut Connection, request: Request) -> Reply {
     }
 }
 
-fn apply(db: &mut Connection, request: Request) -> rusqlite::Result<Profile> {
+fn apply(db: &mut Connection, request: Request) -> duckdb::Result<Profile> {
     let Request::Update { patch } = request else {
         return db.query_row(
             "SELECT name, alias, persona FROM soul WHERE id = 1",
@@ -52,7 +52,7 @@ fn apply(db: &mut Connection, request: Request) -> rusqlite::Result<Profile> {
             map,
         );
     };
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let profile = tx.query_row(
         "UPDATE soul SET name = COALESCE(?1, name), alias = COALESCE(?2, alias),
                          persona = COALESCE(?3, persona) WHERE id = 1
@@ -64,7 +64,7 @@ fn apply(db: &mut Connection, request: Request) -> rusqlite::Result<Profile> {
     Ok(profile)
 }
 
-fn map(row: &Row<'_>) -> rusqlite::Result<Profile> {
+fn map(row: &Row<'_>) -> duckdb::Result<Profile> {
     Ok(Profile {
         name: row.get(0)?,
         alias: row.get(1)?,

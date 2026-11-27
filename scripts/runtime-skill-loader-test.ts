@@ -447,13 +447,13 @@ async function main(): Promise<void> {
   console.log("\n[L10] Unified Runtime Audit clear");
   {
     const beforeSnapshots = (await agent.listRuntimeContextSnapshots("skill-task", 200)).length;
-    const beforeLoadout = agent.listAgentLoadoutObservations("skill-task", 200).length;
+    const beforeLoadout = (await agent.listAgentLoadoutObservations("skill-task", 200)).length;
     assert(beforeSnapshots > 0 && beforeLoadout > 0, "[L10] fixture has both Runtime snapshots and Loadout observations");
     const cleared = await agent.clearRuntimeAudit("skill-task");
     assert(cleared.runtimeSnapshots === beforeSnapshots, "[L10] unified clear removes Runtime snapshots");
     assert(cleared.loadoutObservations === beforeLoadout, "[L10] unified clear removes Loadout observations");
     assert(cleared.total === cleared.runtimeSnapshots + cleared.loadoutObservations, "[L10] clear result total is auditable");
-    assert((await agent.listRuntimeContextSnapshots("skill-task", 10)).length === 0 && agent.listAgentLoadoutObservations("skill-task", 10).length === 0, "[L10] both histories are empty after clear");
+    assert((await agent.listRuntimeContextSnapshots("skill-task", 10)).length === 0 && (await agent.listAgentLoadoutObservations("skill-task", 10)).length === 0, "[L10] both histories are empty after clear");
   }
 
   /* ================= Matcher 收敛（P3）纯函数语义 ================= */

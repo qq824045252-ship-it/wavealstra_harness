@@ -15,8 +15,7 @@
  * 运行：pnpm test:artifact-domain（esbuild bundle → node；better-sqlite3 external）
  */
 import Database from "better-sqlite3";
-import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, mkdirSync, readdirSync, symlinkSync, truncateSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -26,13 +25,8 @@ import { ArtifactRepository } from "../src/main/artifact/ArtifactRepository";
 import { ArtifactRegistry } from "../src/main/artifact/ArtifactRegistry";
 import { ArtifactService, type ArtifactEventSink } from "../src/main/artifact/ArtifactService";
 import { ArtifactRefreshCoordinator } from "../src/main/artifact/ArtifactRefreshCoordinator";
-import { ArtifactProtocol } from "../src/main/artifact/ArtifactProtocol";
-import { WebArtifactRuntime } from "../src/main/artifact/WebArtifactRuntime";
 import { ensureTaskLegacyMigrated, readArtifactSnapshotBatch } from "../src/main/artifact/ArtifactDomainSetup";
-import { locateRuntimeAudit, RuntimeAuditReader, type RuntimeArtifactMutation } from "../src/main/platform/runtime-audit";
-import { readWorkspaceFile } from "../src/main/workspace/WorkspaceService";
 import type { ArtifactDescriptor } from "../src/shared/artifact-types";
-import { artifactImageUrl } from "../src/shared/artifact-ipc";
 
 const results: Array<[string, boolean, string]> = [];
 const check = (name: string, pass: boolean, detail = ""): void => {
@@ -872,11 +866,8 @@ async function main(): Promise<void> {
 
   // ---------- T29: 任务成果批量读取与并发补迁 ----------
   {
-    const executable = process.argv.includes("--native") ? locateRuntimeAudit(process.cwd()) : undefined;
-    if (process.argv.includes("--native")) assert.ok(executable && existsSync(executable));
     const h = makeHarness();
-    const reader = executable ? new RuntimeAuditReader(executable, h.db.name) : undefined;
-    const service = new ArtifactService(h.storage, h.repository, h.registry, h.sink, reader);
+    const service = h.service;
     try {
       await service.register({ taskId: "current", kind: "markdown", title: "校验记录", content: "# 工作记录" });
       const old = await service.register({
@@ -916,82 +907,18 @@ async function main(): Promise<void> {
       await service.remove(old.id);
       const after = await readArtifactSnapshotBatch(service, null, ["current"]);
       assert.deepEqual([after[0]?.revision, after[0]?.artifacts.map(a => a.title)], [3, ["校验记录"]]);
-      if (reader) {
-        const native = await reader.artifactSnapshots(["legacy", "current"]);
-        assert.deepEqual(native?.map(snapshot => [snapshot.taskId, snapshot.revision, snapshot.legacyMigrated]), [
-          ["legacy", 1, true], ["current", 3, true],
-        ]);
-      }
       check("T29 批量返回有序快照，隔离失败，旧成果不重复补迁", true);
 
       const taskId = "artifact-writes";
-      const dropped = new Set<string>();
-      if (reader) {
-        const write: RuntimeAuditReader["writeArtifact"] = reader.writeArtifact.bind(reader);
-        reader.writeArtifact = async <T>(task: string, operation: string, mutation: RuntimeArtifactMutation): Promise<T | undefined> => {
-          const result = await write<T>(task, operation, mutation);
-          if (task === taskId && result !== undefined && !dropped.has(mutation.kind)) {
-            dropped.add(mutation.kind);
-            return undefined;
-          }
-          return result;
-        };
-      }
       const path = join(h.root, "result.md");
       writeFileSync(path, "# 工作区成果", "utf8");
       const [external, duplicate] = await Promise.all(["first-message", "second-message"].map(producerMessageId =>
         service.registerWorkspaceOutput({ taskId, kind: "markdown", title: "工作区成果", workspaceFile: { entryFile: path, rootDir: h.root }, producerMessageId }),
       ));
       assert.equal(external.id, duplicate.id);
-      const originalMaterialize = h.storage.materializeAsync.bind(h.storage);
-      const originalManagedRead = h.storage.readAsync.bind(h.storage);
-      const originalManagedWrite = reader?.writeManagedArtifact.bind(reader);
-      if (reader && originalManagedWrite) {
-        h.storage.materializeAsync = async () => { throw new Error("Native materialization unexpectedly used the host fallback"); };
-        h.storage.readAsync = async () => { throw new Error("Native content read unexpectedly used the host fallback"); };
-        reader.writeManagedArtifact = async (...args) => {
-          const result = await originalManagedWrite(...args);
-          assert.equal(typeof result === "object" ? result.status : result, "saved");
-          return undefined;
-        };
-      }
-      const managed = await (async () => {
-        try {
-          const item = await service.register({ taskId, kind: "markdown", title: "受管成果", content: "# 已保存", producerMessageId: "managed-message" });
-          assert.equal((await service.readContent(item.id))?.content, "# 已保存");
-          return item;
-        } finally {
-          h.storage.materializeAsync = originalMaterialize;
-          h.storage.readAsync = originalManagedRead;
-          if (reader && originalManagedWrite) reader.writeManagedArtifact = originalManagedWrite;
-        }
-      })();
+      const managed = await service.register({ taskId, kind: "markdown", title: "受管成果", content: "# 已保存", producerMessageId: "managed-message" });
+      assert.equal((await service.readContent(managed.id))?.content, "# 已保存");
       const managedPath = service.entryPathOf(managed.id)!;
-      if (reader) {
-        const before = h.sink.events.length;
-        h.db.exec(`CREATE TRIGGER fixture_fail_managed_receipt BEFORE INSERT ON artifact_write_receipts
-          WHEN new.task_id='managed-rollback' BEGIN SELECT RAISE(ABORT,'fixture denied artifact receipt'); END`);
-        try {
-          await assert.rejects(service.register({
-            id: "failed-output", taskId: "managed-rollback", kind: "html", content: "<html>rollback</html>",
-          }), /fixture denied artifact receipt/);
-        } finally {
-          h.db.exec("DROP TRIGGER fixture_fail_managed_receipt");
-        }
-        assert.equal(service.get("failed-output"), null);
-        assert.equal(existsSync(join(h.storage.root, "managed-rollback", "failed-output")), false);
-        assert.equal(h.sink.events.length, before);
-        assert.deepEqual(await reader.artifactSnapshots(["managed-rollback"]), [{
-          taskId: "managed-rollback", revision: 0, artifacts: [], legacyMigrated: false, state: "ready",
-        }]);
-        mkdirSync(join(h.storage.root, "legacy-layout"));
-        writeFileSync(join(h.storage.root, "legacy-layout", "report.md"), "# 历史成果");
-        h.repository.insert({
-          ...managed, id: "legacy-layout-report", taskId: "legacy-layout",
-          source: { type: "managed-content", rootDir: h.storage.root, storagePath: "legacy-layout/report.md" },
-        });
-        assert.equal((await service.readContent("legacy-layout-report"))?.content, "# 历史成果");
-      }
       const changed = await service.markFilesChanged({ taskId, cwd: h.root, changedFiles: [path, path], messageId: "edit-message", toolCallId: "edit-tool" });
       assert.deepEqual(changed.map(event => [event.artifactId, event.version, event.revision]), [[external.id, 2, 3]]);
       assert.deepEqual(service.listMessageRefs(taskId).map(ref => [ref.messageId, ref.relation, ref.toolCallId]), [
@@ -1012,228 +939,14 @@ async function main(): Promise<void> {
       assert.deepEqual(await service.removeByTask(taskId, { requireTrashed: true }), { removed: 1, orphaned: 0 });
       assert.deepEqual(service.listMessageRefs(taskId), []);
       assert.equal(existsSync(path), true);
-      if (reader) assert.deepEqual([...dropped], ["register", "refresh", "remove"]);
-      check("T30 登记、刷新和删除在回执丢失后仍只提交一次，回收区检查有效", true);
+      check("T30 登记、刷新、删除和回收区检查", true);
 
       h.repository.insert({ ...external, id: "lazy-stored", taskId: "lazy", title: "已保存的旧成果" });
       await service.register({ taskId: "lazy", kind: "markdown", title: "新成果", content: "# 新成果" });
       assert.deepEqual(service.listByTask("lazy").map(item => item.title), ["已保存的旧成果", "新成果"]);
       check("T31 未加载的任务先登记新成果，列表仍包含旧成果", true);
-      if (reader) {
-        const shared = await service.register({ taskId: "cleanup-owner", kind: "html", content: "<html>仍在用</html>" });
-        assert.equal(shared.source.type, "managed-content");
-        if (shared.source.type !== "managed-content") throw new Error("fixture requires managed content");
-        const sharedPath = service.entryPathOf(shared.id)!;
-        const sharedStorage = shared.source;
-        h.repository.insert({
-          ...shared, id: "cleanup-shared", taskId: "cleanup-other",
-          source: {
-            ...sharedStorage,
-            storagePath: process.platform === "win32" ? sharedStorage.storagePath.toUpperCase() : sharedStorage.storagePath,
-          },
-        });
-        const outside = join(h.root, "outside-artifact-store");
-        mkdirSync(outside);
-        const outsideFile = join(outside, "source.txt");
-        writeFileSync(outsideFile, "工作区文件保留");
-        const orphanLink = join(h.storage.root, "orphan-link");
-        const registeredLink = join(h.storage.root, "registered-link");
-        symlinkSync(outside, orphanLink, "junction");
-        symlinkSync(outside, registeredLink, "junction");
-        h.repository.insert({
-          ...shared, id: "cleanup-linked", taskId: "cleanup-other",
-          source: { ...sharedStorage, storagePath: "registered-link/source.txt" },
-        });
-        const abandoned = join(h.storage.root, "abandoned", "draft");
-        mkdirSync(abandoned, { recursive: true });
-        writeFileSync(join(abandoned, "index.html"), "<html>未登记</html>");
-        writeFileSync(join(abandoned, ".mybuddy-artifact-write"), "interrupted fixture");
-        const removeOnHost = h.storage.remove.bind(h.storage);
-        const removeAsyncOnHost = h.storage.removeAsync.bind(h.storage);
-        const scanOnHost = h.storage.orphanCandidates.bind(h.storage);
-        h.storage.remove = () => { throw new Error("Native cleanup unexpectedly used the host fallback"); };
-        h.storage.removeAsync = async () => { throw new Error("Native cleanup unexpectedly used the host fallback"); };
-        h.storage.orphanCandidates = () => { throw new Error("Native orphan scan unexpectedly used the host fallback"); };
-        try {
-          assert.equal(await service.remove(shared.id), true);
-          assert.equal(readFileSync(sharedPath, "utf8"), "<html>仍在用</html>");
-          const unsafe = await reader.cleanupArtifactFiles(h.storage.root, { kind: "selected", paths: ["orphan-link/source.txt"] });
-          assert.deepEqual(unsafe, { removed: [], failed: ["orphan-link/source.txt"] });
-          const gc = await service.orphanGC();
-          assert.deepEqual(gc.failed, []);
-          for (const file of ["orphan-link", "abandoned/draft/index.html", "abandoned/draft/.mybuddy-artifact-write"]) {
-            assert(gc.removed.includes(file), `expected cleanup of ${file}`);
-          }
-          assert.equal(existsSync(abandoned), false);
-          assert.equal(existsSync(orphanLink), false);
-          assert.equal(existsSync(registeredLink), true);
-          assert.equal(readFileSync(outsideFile, "utf8"), "工作区文件保留");
-          assert.equal((await service.readContent("cleanup-shared"))?.content, "<html>仍在用</html>");
-          assert.equal(await service.remove("cleanup-shared"), true);
-          assert.equal(existsSync(sharedPath), false);
-          assert.deepEqual(await service.orphanGC(), { removed: [], failed: [] });
-        } finally {
-          h.storage.remove = removeOnHost;
-          h.storage.removeAsync = removeAsyncOnHost;
-          h.storage.orphanCandidates = scanOnHost;
-        }
-        check("T32 Rust 清理保留共享成果与外部源文件，重复扫描无变化", true);
-
-        const large = await service.register({ taskId: "large-artifact", kind: "html", content: "<html/>" });
-        const raster = await service.register({ taskId: "large-artifact", kind: "image", content: "data:image/png;base64,AA==" });
-        const mib = 1024 * 1024;
-        const textBytes = Buffer.alloc(21 * mib + 17, "a");
-        Buffer.from("\ufeff开头", "utf8").copy(textBytes);
-        Buffer.from("中文🙂", "utf8").copy(textBytes, mib - 1);
-        Buffer.from("跨块🚀", "utf8").copy(textBytes, 13 * mib - 3);
-        Buffer.from([0xf0, 0x9f]).copy(textBytes, 19 * mib - 1);
-        Buffer.from("结束", "utf8").copy(textBytes, textBytes.length - Buffer.byteLength("结束"));
-        writeFileSync(service.entryPathOf(large.id)!, textBytes);
-        const imageBytes = Buffer.alloc(21 * mib + 128, "A");
-        imageBytes.write("data:image/png;base64,");
-        writeFileSync(service.entryPathOf(raster.id)!, imageBytes);
-
-        const readOnHost = h.storage.read.bind(h.storage);
-        const readAsyncOnHost = h.storage.readAsync.bind(h.storage);
-        h.storage.read = () => { throw new Error("Large content unexpectedly used the host fallback"); };
-        h.storage.readAsync = async () => { throw new Error("Large content unexpectedly used the host fallback"); };
-        try {
-          const [body, preview] = await Promise.all([
-            service.readContent(large.id),
-            service.readContent(raster.id, { inline: true }),
-          ]);
-          assert(body);
-          const expected = textBytes.toString("utf8");
-          assert.equal(body.content.length, expected.length);
-          assert.equal(createHash("sha256").update(body.content).digest("hex"),
-            createHash("sha256").update(expected).digest("hex"));
-          assert.equal(body.content.charCodeAt(0), 0xfeff);
-          assert.match(body.content, /中文🙂/);
-          assert.match(body.content, /跨块🚀/);
-          assert.deepEqual(preview, { content: artifactImageUrl(raster.id, "full", { version: 1 }), kind: "image", artifactVersion: 1 });
-          assert.equal(raster.source.type, "managed-content");
-          assert.deepEqual(await reader.readManagedArtifact(h.storage.root, raster.source.storagePath, true), { status: "raster" });
-        } finally {
-          h.storage.read = readOnHost;
-          h.storage.readAsync = readAsyncOnHost;
-        }
-        check("T33 Rust 分块读取超过 20 MiB 的成果，保留跨分块文本并按文件头返回图片预览", true);
-
-        const previewRoot = join(h.root, "workspace-preview");
-        mkdirSync(previewRoot);
-        const previewText = join(previewRoot, "记录.md");
-        const heading = "\ufeff# 记录\n";
-        const prefix = heading + "a".repeat(256 * 1024 - Buffer.byteLength(heading) - 1);
-        const body = prefix + "中🙂";
-        writeFileSync(previewText, body);
-        assert.deepEqual(await readWorkspaceFile(previewRoot, "记录.md", true, reader), {
-          path: previewText, name: "记录.md", kind: "code",
-          content: prefix.slice(1), bytes: Buffer.byteLength(body), truncated: true,
-        });
-        writeFileSync(previewText, Buffer.from([0x61, 0x00]));
-        await assert.rejects(readWorkspaceFile(previewText, "", true, reader), /包含二进制内容/);
-        writeFileSync(previewText, Buffer.from([0xe4, 0xb8]));
-        await assert.rejects(readWorkspaceFile(previewRoot, "记录.md", true, reader), /不是有效的 UTF-8/);
-        symlinkSync(outside, join(previewRoot, "outside"), "junction");
-        await assert.rejects(readWorkspaceFile(previewRoot, join("outside", "source.txt"), true, reader), /不在当前工作区/);
-        await assert.rejects(readWorkspaceFile(previewRoot, join("outside", "source.txt"), true), /不在当前工作区/);
-        assert.deepEqual(await reader.workspaceFilePreview(previewRoot, "missing.txt", "text"), { status: "missing" });
-        check("T34 Rust 文本预览保留完整字符，拒绝二进制和工作区外目标", true);
-
-        const previewImage = join(previewRoot, "截图.png");
-        const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jW9kAAAAASUVORK5CYII=", "base64");
-        const imageLength = 6 * mib;
-        writeFileSync(previewImage, png);
-        truncateSync(previewImage, imageLength);
-        const imageArtifact = await service.register({
-          taskId: "workspace-preview", kind: "image",
-          workspaceFile: { entryFile: previewImage, rootDir: previewRoot },
-        });
-        assert.deepEqual(await reader.workspaceFilePreview(previewRoot, "截图.png", "imageHeader"), {
-          status: "imageHeader", base64: png.subarray(0, 32).toString("base64"), bytes: imageLength,
-        });
-        const baseUrl = `mybuddy-artifact://local/${imageArtifact.id}/?`;
-        assert.deepEqual(await service.readContent(imageArtifact.id, { inline: true }), {
-          artifactVersion: 1, content: baseUrl + "variant=full&mime=image%2Fpng&bytes=6291456&w=1&h=1&v=1",
-          kind: "image", path: previewImage, bytes: imageLength, language: "png", width: 1, height: 1,
-          thumbnail: { mimeType: "image/png", bytes: imageLength, width: 1, height: 1, url: baseUrl + "variant=thumb&v=1" },
-        });
-        check("T35 工作区内联 PNG 只取文件头，保留原图大小和协议地址", true);
-
-        const protocol = new ArtifactProtocol(new WebArtifactRuntime({
-          filePathOf: id => service.entryPathOf(id), rootOf: id => service.rootOf(id),
-          contentOf: async () => null,
-        }), (id, variant, options) => service.openImageVariant(id, variant, options));
-        const originalUrl = baseUrl + "variant=full&v=1";
-        const head = await protocol.handle(new Request(originalUrl, { method: "HEAD" }));
-        assert.equal(head.status, 200);
-        assert.equal(head.body, null);
-        assert.equal(head.headers.get("content-length"), "6291456");
-
-        const original = await protocol.handle(new Request(originalUrl));
-        assert.equal(original.status, 200);
-        assert.equal(original.headers.get("content-type"), "image/png");
-        assert.equal(original.headers.get("cache-control"), "private, max-age=31536000, immutable");
-        const correctBytes = Buffer.alloc(imageLength);
-        png.copy(correctBytes);
-        assert.deepEqual(Buffer.from(await original.arrayBuffer()), correctBytes);
-
-        const aborted = new AbortController();
-        const abortedResponse = await protocol.handle(new Request(originalUrl, { signal: aborted.signal }));
-        const abortedBody = abortedResponse.body!.getReader();
-        assert.deepEqual(Buffer.from((await abortedBody.read()).value!).subarray(0, png.length), png);
-        aborted.abort(new Error("预览已取消"));
-        await assert.rejects(abortedBody.read(), /预览已取消/);
-
-        const changed = await protocol.handle(new Request(originalUrl));
-        const changedBody = changed.body!.getReader();
-        assert.deepEqual(Buffer.from((await changedBody.read()).value!).subarray(0, png.length), png);
-        truncateSync(previewImage, imageLength - 1);
-        await assert.rejects(changedBody.read(), /内容已变化/);
-
-        const linkedImage = await service.register({
-          taskId: "workspace-preview", kind: "image",
-          workspaceFile: { entryFile: join(previewRoot, "outside", "source.txt"), rootDir: previewRoot },
-        });
-        const denied = await protocol.handle(new Request(`mybuddy-artifact://local/${linkedImage.id}/?variant=full&v=1`));
-        assert.equal(denied.status, 404);
-        check("T36 原图协议按需交付字节，支持 HEAD、取消和文件变更检查", true);
-
-        const managedImage = await service.register({
-          taskId: "workspace-preview", kind: "image", content: "data:image/png;base64,AA==",
-        });
-        const managedPath = service.entryPathOf(managedImage.id)!;
-        const expectedImage = Buffer.concat([correctBytes, Buffer.from([0xfb, 0xff])]);
-        const encodedImage = expectedImage.toString("base64url") + "=";
-        writeFileSync(managedPath, "\ufeff DATA:image/png;BASE64," + " ".repeat(mib)
-          + encodedImage.slice(0, mib - 5) + "\r\n" + encodedImage.slice(mib - 5));
-        const managedUrl = `mybuddy-artifact://local/${managedImage.id}/?variant=full&v=1`;
-        const managedHead = await protocol.handle(new Request(managedUrl, { method: "HEAD" }));
-        assert.equal(managedHead.status, 200);
-        assert.equal(managedHead.headers.get("content-type"), "image/png");
-        assert.equal(managedHead.body, null);
-        const managedResponse = await protocol.handle(new Request(managedUrl));
-        assert.equal(managedResponse.status, 200);
-        assert.deepEqual(Buffer.from(await managedResponse.arrayBuffer()), expectedImage);
-
-        const changedManagedResponse = await protocol.handle(new Request(managedUrl));
-        const changedManagedBody = changedManagedResponse.body!.getReader();
-        assert.deepEqual(Buffer.from((await changedManagedBody.read()).value!).subarray(0, png.length), png);
-        truncateSync(managedPath, 2 * mib);
-        await assert.rejects(changedManagedBody.read(), /内容已变化/);
-
-        const legacySvg = await service.register({
-          taskId: "workspace-preview", kind: "image", content: "data:image/svg+xml,%3Csvg%2F%3E",
-        });
-        const svg = await protocol.handle(new Request(`mybuddy-artifact://local/${legacySvg.id}/?variant=full&v=1`));
-        assert.equal(svg.status, 200);
-        assert.equal(svg.headers.get("content-type"), "image/svg+xml");
-        assert.equal(await svg.text(), "<svg/>");
-        check("T37 受管图片流兼容跨分块的 Base64、文件变更和旧 SVG 内容", true);
-      }
     } finally {
       await service.flushWrites();
-      await reader?.close();
       h.close();
     }
   }

@@ -1,7 +1,7 @@
 //! Work scheduling ownership uses the same asynchronous writer as application data.
 //! The UI must never synchronously wait for this database's write lock.
 
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -39,7 +39,7 @@ struct Row {
     released_at: Option<i64>,
 }
 
-fn row(db: &Connection) -> rusqlite::Result<Option<Row>> {
+fn row(db: &Connection) -> duckdb::Result<Option<Row>> {
     db.query_row(
         "SELECT authority_id,acquired_at,heartbeat_at,released_at FROM work_host_lease WHERE lease_id='singleton'",
         [],
@@ -61,7 +61,7 @@ pub fn run(db: &mut Connection, request: Request) -> crate::Result<Reply> {
         crate::request_control::known_failure();
         return Err("invalid Work host lease request".into());
     }
-    let tx = match db.transaction_with_behavior(TransactionBehavior::Immediate) {
+    let tx = match db.transaction() {
         Ok(tx) => tx,
         Err(error) => {
             crate::request_control::known_failure();
@@ -131,7 +131,7 @@ mod tests {
 
     fn fixture() -> Connection {
         let db = Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE work_host_lease (lease_id TEXT PRIMARY KEY,authority_id TEXT NOT NULL,acquired_at INTEGER NOT NULL,heartbeat_at INTEGER NOT NULL,released_at INTEGER)").unwrap();
+        db.execute_batch("CREATE TABLE work_host_lease (lease_id VARCHAR PRIMARY KEY,authority_id VARCHAR NOT NULL,acquired_at BIGINT NOT NULL,heartbeat_at BIGINT NOT NULL,released_at BIGINT)").unwrap();
         db
     }
     fn request(action: Action, authority_id: &str, now: i64) -> Request {

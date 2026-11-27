@@ -39,7 +39,7 @@ function verify(target, directory) {
     const result = execFileSync(executable, ["--protocol-version"], {
       encoding: "utf8", windowsHide: true, timeout: 5_000,
     }).trim();
-    if (result !== "89") throw new Error("Runtime audit executable protocol mismatch");
+    if (result !== "115") throw new Error("Runtime audit executable protocol mismatch");
   }
 }
 
@@ -69,7 +69,7 @@ function prepare(target) {
   const build = path.join(root, "out", "native", "runtime-audit-build");
   const receipt = path.join(build, `${target}.sha256`);
   const files = ["Cargo.toml", "Cargo.lock", ...fs.readdirSync(path.join(crate, "src"))
-    .filter(name => name.endsWith(".rs")).sort().map(name => path.join("src", name))];
+    .filter(name => name.endsWith(".rs") || name.endsWith(".sql")).sort().map(name => path.join("src", name))];
   const fingerprint = createHash("sha256");
   for (const file of files) fingerprint.update(file).update("\0").update(fs.readFileSync(path.join(crate, file))).update("\0");
   const digest = fingerprint.digest("hex");

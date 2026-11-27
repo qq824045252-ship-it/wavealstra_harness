@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -22,7 +22,7 @@ pub struct TrashedTask {
 }
 
 pub fn list(db: &Connection) -> Result<Vec<TrashedTask>> {
-    let mut query = db.prepare_cached(
+    let mut query = db.prepare(
         "SELECT t.id,t.title,t.space_id,t.project_id,w.trashed_at,w.purge_after,w.trash_path
          FROM task_execution_workspace_state w JOIN tasks t ON t.id=w.task_id
          WHERE w.state='trashed'
@@ -40,7 +40,7 @@ pub fn list(db: &Connection) -> Result<Vec<TrashedTask>> {
             directory_missing: true,
         })
     })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    Ok(rows.collect::<duckdb::Result<_>>()?)
 }
 
 pub fn check_directories(root: &Path, mut rows: Vec<TrashedTask>) -> Vec<TrashedTask> {
@@ -64,7 +64,7 @@ pub struct DueTask {
 }
 
 pub fn due(db: &Connection, now: i64) -> Result<Vec<DueTask>> {
-    let mut query = db.prepare_cached(
+    let mut query = db.prepare(
         "SELECT w.task_id,t.project_id FROM task_execution_workspace_state w
          LEFT JOIN tasks t ON t.id=w.task_id
          WHERE w.state='trashed' AND w.purge_after<=?1
@@ -76,7 +76,7 @@ pub fn due(db: &Connection, now: i64) -> Result<Vec<DueTask>> {
             project_id: row.get(1)?,
         })
     })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    Ok(rows.collect::<duckdb::Result<_>>()?)
 }
 
 #[derive(Serialize)]
@@ -108,6 +108,12 @@ pub struct Purge {
     trashed_at: Option<f64>,
     trash_path: Option<String>,
     archive_scope: Option<ArchiveScope>,
+}
+
+impl Purge {
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
 }
 
 #[derive(Deserialize)]
@@ -143,13 +149,13 @@ pub fn purge(db: &mut Connection, request: Purge) -> PurgeReply {
 
 fn apply_purge(db: &mut Connection, request: Purge) -> Result<()> {
     let id = &request.task_id;
-    if id == "mybuddy-dots" {
+    if id == crate::DOTS_TASK_ID {
         return Err("Dots 对话不能作为普通任务删除".into());
     }
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let same_entry: bool = tx
         .query_row(
-            "SELECT state='trashed' AND updated_at IS ?2 AND trashed_at IS ?3 AND trash_path IS ?4
+            "SELECT state='trashed' AND updated_at IS NOT DISTINCT FROM ?2 AND trashed_at IS NOT DISTINCT FROM ?3 AND trash_path IS NOT DISTINCT FROM ?4
          FROM task_execution_workspace_state WHERE task_id=?1",
             params![
                 id,
@@ -169,49 +175,99 @@ fn apply_purge(db: &mut Connection, request: Purge) -> Result<()> {
             return Err("任务或所属空间已恢复，已停止彻底删除".into());
         }
     }
+    delete_task_rows_in_tx(&tx, id)?;
+    crate::request_control::commit(tx)?;
+    Ok(())
+}
+
+pub(crate) fn delete_task_rows_in_tx(tx: &Connection, id: &str) -> Result<()> {
+    if crate::gateway_execution_authority::gateway_task_id(id) {
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1)",
+            [id],
+            |row| row.get(0),
+        )?;
+        if exists {
+            crate::gateway_admission::retire_task_routes(tx, id)?;
+        }
+        tx.execute("DELETE FROM gateway_execution_sources WHERE task_id=?1", [id])?;
+    }
+    let directory: Option<String> = tx.query_row(
+        "SELECT directory FROM durable_bot_bindings WHERE task_id=?1", [id], |row| row.get(0),
+    ).optional()?;
+    if let Some(directory) = directory {
+        crate::pi_storage::retire_task_store_in_tx(tx, Path::new(&directory))?;
+    }
     // Keep the bounded excerpt for memories that refer to these conversation turns.
     tx.execute(
         "UPDATE memory_evidence
          SET excerpt=coalesce(nullif(excerpt,''), (
-            SELECT substr('用户：' || t.user_text || char(10) || '助手：' || t.assistant_text,1,1200)
+            SELECT substr('用户：' || t.user_text || chr(10) || '助手：' || t.assistant_text,1,1200)
             FROM memory_turns t WHERE t.id=memory_evidence.ref_id
          ))
          WHERE evidence_kind='conversation' AND ref_id IN (SELECT id FROM memory_turns WHERE task_id=?1)",
         [id],
     )?;
+    crate::artifact_write::delete_artifacts(tx, id, None)?;
     for sql in [
         "DELETE FROM memory_turns WHERE task_id=?1",
         "DELETE FROM memory_pipeline_state WHERE task_id=?1",
         "DELETE FROM memory_skill_effectiveness WHERE task_id=?1",
+        "DELETE FROM artifact_task_revisions WHERE task_id=?1",
+        "DELETE FROM artifact_task_state WHERE task_id=?1",
+        "DELETE FROM artifact_write_receipts WHERE task_id=?1",
+        "DELETE FROM task_runtime_context_snapshots WHERE task_id=?1",
+        "DELETE FROM agent_loadout_observations WHERE task_id=?1",
+        "DELETE FROM runtime_snapshot_receipts WHERE task_id=?1",
+        "DELETE FROM task_request_diagnostics WHERE task_id=?1",
+        "DELETE FROM task_tool_diagnostics WHERE task_id=?1",
+        "DELETE FROM conversation_interactions WHERE task_id=?1",
+        "DELETE FROM task_code_review WHERE task_id=?1",
+        "DELETE FROM task_expert_bindings WHERE task_id=?1",
+        "DELETE FROM durable_bot_memory_projection WHERE task_id=?1",
+        "DELETE FROM durable_bot_message_workspaces WHERE task_id=?1",
+        "DELETE FROM durable_bot_workspace_moves WHERE task_id=?1",
+        "DELETE FROM durable_bot_bindings WHERE task_id=?1",
+        "DELETE FROM gateway_sidebar_conversations WHERE task_id=?1",
+        "DELETE FROM task_execution_workspace_state WHERE task_id=?1",
         "DELETE FROM tasks WHERE id=?1",
         "DELETE FROM task_library_references WHERE task_id=?1",
-        "DELETE FROM task_execution_workspace_state WHERE task_id=?1",
     ] {
         tx.execute(sql, [id])?;
     }
-    tx.commit()?;
+    crate::trigger_effects::on_task_deleted_in_tx(tx, id)?;
     Ok(())
 }
 
 fn in_archive_scope(db: &Connection, id: &str, scope: ArchiveScope) -> Result<bool> {
-    let roots = serde_json::to_string(&scope.selected_roots)?;
     let explicitly_archived = matches!(scope.direct, DirectArchive::Explicit);
     let directly_selected = !matches!(scope.direct, DirectArchive::None);
-    Ok(db.query_row(
+    let selected_filter = if scope.selected_roots.is_empty() {
+        "FALSE".to_owned()
+    } else {
+        format!("a.id IN ({})", crate::database::anon_placeholders(scope.selected_roots.len()))
+    };
+    let sql = format!(
         "WITH RECURSIVE ancestors(id,parent_id,archived) AS (
-            SELECT s.id,s.parent_id,s.archived FROM spaces s JOIN tasks t ON t.space_id=s.id WHERE t.id=?1
+            SELECT s.id,s.parent_id,s.archived FROM spaces s JOIN tasks t ON t.space_id=s.id WHERE t.id=?
             UNION
             SELECT s.id,s.parent_id,s.archived FROM spaces s JOIN ancestors a ON s.id=a.parent_id
          ), selected_ancestors(id,parent_id,archived) AS (
-            SELECT a.id,a.parent_id,a.archived FROM ancestors a JOIN json_each(?2) roots ON roots.value=a.id
+            SELECT a.id,a.parent_id,a.archived FROM ancestors a WHERE {selected_filter}
             UNION
             SELECT s.id,s.parent_id,s.archived FROM spaces s JOIN selected_ancestors a ON s.id=a.parent_id
          )
-         SELECT EXISTS (SELECT 1 FROM tasks t WHERE t.id=?1 AND (
-             (?3 AND t.archived!=0) OR (?4 AND EXISTS (SELECT 1 FROM ancestors WHERE archived!=0))
+         SELECT EXISTS (SELECT 1 FROM tasks t WHERE t.id=? AND (
+             (? AND t.archived!=0) OR (? AND EXISTS (SELECT 1 FROM ancestors WHERE archived!=0))
              OR EXISTS (SELECT 1 FROM selected_ancestors WHERE archived!=0)
-         ))",
-        params![id, roots, explicitly_archived, directly_selected],
-        |row| row.get(0),
-    )?)
+         ))"
+    );
+    let mut params_vec: Vec<duckdb::types::Value> = vec![duckdb::types::Value::Text(id.to_owned())];
+    for r in scope.selected_roots {
+        params_vec.push(duckdb::types::Value::Text(r));
+    }
+    params_vec.push(duckdb::types::Value::Text(id.to_owned()));
+    params_vec.push(duckdb::types::Value::Boolean(explicitly_archived));
+    params_vec.push(duckdb::types::Value::Boolean(directly_selected));
+    Ok(db.query_row(&sql, duckdb::params_from_iter(params_vec), |row| row.get(0))?)
 }

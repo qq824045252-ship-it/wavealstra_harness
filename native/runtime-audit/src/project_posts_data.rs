@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -48,12 +48,7 @@ pub fn run(db: &mut Connection, request: Request) -> Reply {
 }
 
 fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
-    let mode = if request.is_read() {
-        TransactionBehavior::Deferred
-    } else {
-        TransactionBehavior::Immediate
-    };
-    let tx = db.transaction_with_behavior(mode)?;
+    let tx = db.transaction()?;
     let reply = match request {
         Request::List { project_id } => {
             project_archived(&tx, &project_id)?;
@@ -106,7 +101,7 @@ fn project_archived(db: &Connection, project_id: &str) -> Result<bool> {
 }
 
 fn list_posts(db: &Connection, project_id: &str) -> Result<Vec<Post>> {
-    let mut select = db.prepare_cached(
+    let mut select = db.prepare(
         "SELECT id, project_id, body, created_at FROM project_posts
          WHERE project_id = ?1 ORDER BY created_at DESC, id DESC",
     )?;
@@ -118,5 +113,5 @@ fn list_posts(db: &Connection, project_id: &str) -> Result<Vec<Post>> {
             created_at: row.get(3)?,
         })
     })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    Ok(rows.collect::<duckdb::Result<_>>()?)
 }

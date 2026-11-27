@@ -16,6 +16,7 @@ mkdirSync(join(root, ".mybuddy"), { recursive: true });
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
 const { ArtifactRepository } = await import("../src/main/artifact/ArtifactRepository");
 const { DotsActions } = await import("../src/main/dots/DotsActions");
+const { fixtureTaskBoard } = await import("./fixtures/legacy-task-board-store");
 const { DurableBotRuntime } = await import("../src/main/agent/durable/DurableBotRuntime");
 const { createAgentDurableFixture } = await import("./agent-durable-fixture");
 const db = new AppDatabase(join(root, "app.db"));
@@ -33,7 +34,7 @@ let fixture = await createAgentDurableFixture(root, db, async input => {
   return [{ type: "text", text: "正常模型回复" }];
 }, { deferRecovery: true });
 function configureDots() {
-  fixture.agent.setDotsActions(new DotsActions(db, fixture.agent, { link() { throw new Error("Unexpected delegation"); } }));
+  fixture.agent.setDotsActions(new DotsActions(db, fixture.agent, { link() { throw new Error("Unexpected delegation"); } }, fixtureTaskBoard(db.connection)));
 }
 configureDots();
 await fixture.agent.updateAppSettings({ memoryEnabled: false });

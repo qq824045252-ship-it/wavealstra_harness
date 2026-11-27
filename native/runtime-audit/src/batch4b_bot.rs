@@ -1,34 +1,41 @@
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use serde::Deserialize;
+use duckdb::{Connection, OptionalExt, Transaction, params};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotRegistration {
+    pub bot_id: String,
+    pub user_id: String,
+    #[serde(default)]
+    pub primary: bool,
+    operation_id: Option<String>,
+    display_name: String,
+    responsibility_summary: String,
+    expert_profile_json: String,
+    memory_scope_json: String,
+    authorization_json: String,
+    foreground_allowed_tools_json: String,
+    notification_policy_json: String,
+    status: String,
+    now: i64,
+    active_version: i64,
+    expert_id: String,
+    source_revision: String,
+    system_prompt_hash: String,
+    allowed_mcp_ids_json: String,
+    allowed_skill_ids_json: String,
+    allowed_connector_ids_json: String,
+    configuration_json: Option<String>,
+    skill_packages_json: String,
+}
 
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum BotOp {
-    #[serde(rename_all = "camelCase")]
-    BotUpsert {
-        bot_id: String,
-        user_id: String,
-        display_name: String,
-        responsibility_summary: String,
-        expert_profile_json: String,
-        memory_scope_json: String,
-        authorization_json: String,
-        foreground_allowed_tools_json: String,
-        notification_policy_json: String,
-        status: String,
-        now: i64,
-        active_version: i64,
-        expert_id: String,
-        source_revision: String,
-        system_prompt_hash: String,
-        allowed_mcp_ids_json: String,
-        allowed_skill_ids_json: String,
-        allowed_connector_ids_json: String,
-        configuration_json: Option<String>,
-        skill_packages_json: String,
-    },
+    BotUpsert(BotRegistration),
     #[serde(rename_all = "camelCase")]
     BotPrimaryRoleEnsure {
         user_id: String,
@@ -370,80 +377,127 @@ pub struct BotWorkReadScope {
     pub request_id: String,
 }
 
+fn ensure_primary(db: &Connection, user_id: &str, bot_id: &str, assigned_at: i64) -> duckdb::Result<()> {
+    db.execute(
+        "INSERT INTO bot_identity_roles(user_id,role,bot_id,assigned_at)
+         SELECT ?1,'primary',?2,?3 WHERE EXISTS(SELECT 1 FROM bots WHERE bot_id=?2 AND user_id=?1)
+         ON CONFLICT DO NOTHING",
+        params![user_id, bot_id, assigned_at],
+    )?;
+    Ok(())
+}
+
+fn register_bot(conn: &Connection, registration: &BotRegistration) -> Result<Value> {
+    let BotRegistration {
+        bot_id,
+        user_id,
+        primary,
+        display_name,
+        responsibility_summary,
+        expert_profile_json,
+        memory_scope_json,
+        authorization_json,
+        foreground_allowed_tools_json,
+        notification_policy_json,
+        status,
+        now,
+        active_version,
+        expert_id,
+        source_revision,
+        system_prompt_hash,
+        allowed_mcp_ids_json,
+        allowed_skill_ids_json,
+        allowed_connector_ids_json,
+        configuration_json,
+        skill_packages_json,
+        ..
+    } = registration;
+    let existing_user: Option<String> = conn.query_row(
+        "SELECT user_id FROM bots WHERE bot_id=?", [bot_id], |row| row.get(0),
+    ).optional()?;
+    if existing_user.as_ref().is_some_and(|owner| owner != user_id) {
+        return Ok(json!({ "ok": false, "reason": "owner_mismatch" }));
+    }
+    if existing_user.is_none() {
+        conn.execute(
+            "INSERT INTO bots (
+                bot_id,user_id,display_name,responsibility_summary,expert_profile_json,memory_scope_json,
+                authorization_json,foreground_allowed_tools_json,notification_policy_json,status,created_at,updated_at
+            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)",
+            params![
+                bot_id,
+                user_id,
+                display_name,
+                responsibility_summary,
+                expert_profile_json,
+                memory_scope_json,
+                authorization_json,
+                foreground_allowed_tools_json,
+                notification_policy_json,
+                status,
+                now
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO bot_expert_versions (
+                bot_id,version,state,expert_id,source_revision,system_prompt_hash,allowed_mcp_ids_json,
+                allowed_skill_ids_json,allowed_connector_ids_json,configuration_json,skill_packages_json,staged_by,created_at,adopted_at
+            ) VALUES (?1,?2,'active',?3,?4,?5,?6,?7,?8,?9,?10,'host',?11,?11)",
+            params![
+                bot_id,
+                active_version,
+                expert_id,
+                source_revision,
+                system_prompt_hash,
+                allowed_mcp_ids_json,
+                allowed_skill_ids_json,
+                allowed_connector_ids_json,
+                configuration_json,
+                skill_packages_json,
+                now
+            ],
+        )?;
+    }
+    if *primary {
+        ensure_primary(conn, user_id, bot_id, *now)?;
+    }
+    Ok(json!({ "ok": true, "bot": crate::bot_registry_data::bot(conn, bot_id)? }))
+}
+
 pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
     let conn: &Connection = tx;
     match op {
-        BotOp::BotUpsert {
-            bot_id,
-            user_id,
-            display_name,
-            responsibility_summary,
-            expert_profile_json,
-            memory_scope_json,
-            authorization_json,
-            foreground_allowed_tools_json,
-            notification_policy_json,
-            status,
-            now,
-            active_version,
-            expert_id,
-            source_revision,
-            system_prompt_hash,
-            allowed_mcp_ids_json,
-            allowed_skill_ids_json,
-            allowed_connector_ids_json,
-            configuration_json,
-            skill_packages_json,
-        } => {
+        BotOp::BotUpsert(registration) => {
+            let Some(operation_id) = &registration.operation_id else {
+                return register_bot(conn, &registration);
+            };
+            let scope = format!("bot-registration:{}", registration.bot_id);
+            let hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&registration)?));
+            let prior: Option<(String, String)> = conn.query_row(
+                "SELECT request_hash,result_json FROM operation_receipts
+                 WHERE caller_scope=?1 AND operation_id=?2 AND batch_index=0",
+                params![scope, operation_id], |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional()?;
+            if let Some((saved_hash, result)) = prior {
+                if saved_hash != hash {
+                    return Err("Bot registration operation was reused with a different payload".into());
+                }
+                return Ok(serde_json::from_str(&result)?);
+            }
+            let reply = register_bot(conn, &registration)?;
             conn.execute(
-                "INSERT OR IGNORE INTO bots (
-                    bot_id,user_id,display_name,responsibility_summary,expert_profile_json,memory_scope_json,
-                    authorization_json,foreground_allowed_tools_json,notification_policy_json,status,created_at,updated_at
-                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)",
-                params![
-                    bot_id,
-                    user_id,
-                    display_name,
-                    responsibility_summary,
-                    expert_profile_json,
-                    memory_scope_json,
-                    authorization_json,
-                    foreground_allowed_tools_json,
-                    notification_policy_json,
-                    status,
-                    now
-                ],
+                "INSERT INTO operation_receipts(caller_scope,operation_id,batch_index,request_hash,status,result_json,created_at_ms)
+                 VALUES (?1,?2,0,?3,'committed',?4,?5)",
+                params![scope, operation_id, hash, serde_json::to_string(&reply)?, registration.now],
             )?;
-            conn.execute(
-                "INSERT OR IGNORE INTO bot_expert_versions (
-                    bot_id,version,state,expert_id,source_revision,system_prompt_hash,allowed_mcp_ids_json,
-                    allowed_skill_ids_json,allowed_connector_ids_json,configuration_json,skill_packages_json,staged_by,created_at,adopted_at
-                ) VALUES (?1,?2,'active',?3,?4,?5,?6,?7,?8,?9,?10,'host',?11,?11)",
-                params![
-                    bot_id,
-                    active_version,
-                    expert_id,
-                    source_revision,
-                    system_prompt_hash,
-                    allowed_mcp_ids_json,
-                    allowed_skill_ids_json,
-                    allowed_connector_ids_json,
-                    configuration_json,
-                    skill_packages_json,
-                    now
-                ],
-            )?;
-            Ok(json!({ "ok": true }))
+            Ok(reply)
         }
         BotOp::BotPrimaryRoleEnsure {
             user_id,
             bot_id,
             assigned_at,
         } => {
-            conn.execute(
-                "INSERT OR IGNORE INTO bot_identity_roles(user_id,role,bot_id,assigned_at) VALUES(?1,'primary',?2,?3)",
-                params![user_id, bot_id, assigned_at],
-            )?;
+            ensure_primary(conn, &user_id, &bot_id, assigned_at)?;
             Ok(json!({ "ok": true }))
         }
         BotOp::BotChannelBind {
@@ -536,6 +590,16 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             Ok(json!({ "ok": true }))
         }
         BotOp::BotDelete { bot_id } => {
+            let blocked: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM works WHERE owner_bot_id=?1)
+                    OR EXISTS(SELECT 1 FROM work_participants WHERE bot_id=?1)
+                    OR EXISTS(SELECT 1 FROM work_execution_bindings WHERE bot_id=?1 AND settled_at IS NULL)",
+                [&bot_id], |row| row.get(0),
+            )?;
+            if blocked {
+                return Ok(json!({ "ok": false, "reason": "has_responsibility" }));
+            }
+            conn.execute("DELETE FROM bot_identity_roles WHERE bot_id=?1", [&bot_id])?;
             conn.execute("DELETE FROM bot_channel_bindings WHERE bot_id=?1", [&bot_id])?;
             conn.execute("DELETE FROM bot_expert_versions WHERE bot_id=?1", [&bot_id])?;
             conn.execute("DELETE FROM bots WHERE bot_id=?1", [&bot_id])?;
@@ -553,15 +617,11 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             updated_at,
             or_ignore,
         } => {
-            let verb = if or_ignore {
-                "INSERT OR IGNORE INTO"
-            } else {
-                "INSERT INTO"
-            };
+            let conflict_clause = if or_ignore { " ON CONFLICT DO NOTHING" } else { "" };
             conn.execute(
                 &format!(
-                    "{verb} bot_conversations(conversation_id,bot_id,user_id,team_id,ingress_kind,source_kind,archived_at,created_at,updated_at)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"
+                    "INSERT INTO bot_conversations(conversation_id,bot_id,user_id,team_id,ingress_kind,source_kind,archived_at,created_at,updated_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9){conflict_clause}"
                 ),
                 params![
                     conversation_id,
@@ -627,17 +687,19 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             or_ignore,
             attachments_json,
         } => {
-            let verb = if or_ignore {
-                "INSERT OR IGNORE INTO"
-            } else {
-                "INSERT INTO"
-            };
+            let next_ordinal: i64 = conn.query_row(
+                "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM bot_messages",
+                [],
+                |r| r.get(0),
+            )?;
+            let conflict_clause = if or_ignore { " ON CONFLICT DO NOTHING" } else { "" };
             let changes = conn.execute(
                 &format!(
-                    "{verb} bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,work_ids_json,created_at,updated_at)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"
+                    "INSERT INTO bot_messages(ordinal,message_id,conversation_id,bot_id,request_id,role,text,status,work_ids_json,created_at,updated_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11){conflict_clause}"
                 ),
                 params![
+                    next_ordinal,
                     message_id,
                     conversation_id,
                     bot_id,
@@ -652,7 +714,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             )?;
             if let Some(att) = attachments_json {
                 conn.execute(
-                    "INSERT OR IGNORE INTO bot_message_attachments(message_id,attachments_json) VALUES (?1,?2)",
+                    "INSERT INTO bot_message_attachments(message_id,attachments_json) VALUES (?1,?2) ON CONFLICT DO NOTHING",
                     params![message_id, att],
                 )?;
             }
@@ -669,25 +731,35 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             activity_json,
             clear_work_reads,
         } => {
+            let terminal_changed = matches!(status.as_str(), "completed" | "failed") && conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM bot_messages WHERE message_id=?1 AND role='assistant' AND status IS DISTINCT FROM ?2)",
+                params![message_id, status], |row| row.get::<_, bool>(0),
+            )?;
             conn.execute(
                 "UPDATE bot_messages SET status=?1,text=?2,error=?3,updated_at=?4 WHERE message_id=?5",
                 params![status, text, error, updated_at, message_id],
             )?;
+            if terminal_changed {
+                crate::trigger_effects::on_bot_message_result_in_tx(conn, &message_id, updated_at)?;
+            }
             if let Some(segs) = segments_json {
                 conn.execute(
-                    "INSERT OR REPLACE INTO bot_message_segments(message_id,segments_json) VALUES (?1,?2)",
+                    "INSERT INTO bot_message_segments(message_id,segments_json) VALUES (?1,?2)
+                     ON CONFLICT(message_id) DO UPDATE SET segments_json=excluded.segments_json",
                     params![message_id, segs],
                 )?;
             }
             if let Some(t) = tools {
                 conn.execute(
-                    "INSERT OR REPLACE INTO bot_message_tools(message_id,task_id,tools_json) VALUES (?1,?2,?3)",
+                    "INSERT INTO bot_message_tools(message_id,task_id,tools_json) VALUES (?1,?2,?3)
+                     ON CONFLICT(message_id) DO UPDATE SET task_id=excluded.task_id, tools_json=excluded.tools_json",
                     params![message_id, t.task_id, t.tools_json],
                 )?;
             }
             if let Some(act) = activity_json {
                 conn.execute(
-                    "INSERT OR REPLACE INTO bot_message_activity(message_id,activity_json) VALUES (?1,?2)",
+                    "INSERT INTO bot_message_activity(message_id,activity_json) VALUES (?1,?2)
+                     ON CONFLICT(message_id) DO UPDATE SET activity_json=excluded.activity_json",
                     params![message_id, act],
                 )?;
             } else {
@@ -756,6 +828,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
                     reference_message_id
                 ],
             )?;
+            crate::trigger_effects::on_bot_send_receipt_inserted_in_tx(conn, &user_id, &bot_id, &request_id)?;
             Ok(json!({ "ok": true }))
         }
         BotOp::BotClarificationAnswerInsert {
@@ -793,8 +866,8 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             references_json,
         } => {
             conn.execute(
-                "INSERT OR IGNORE INTO bot_work_user_inputs(work_id,source_message_id,intent_revision,source_version,messages_json,references_json)
-                 VALUES (?1,?2,?3,?4,?5,?6)",
+                "INSERT INTO bot_work_user_inputs(work_id,source_message_id,intent_revision,source_version,messages_json,references_json)
+                 VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING",
                 params![
                     work_id,
                     source_message_id,
@@ -812,7 +885,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             attachments_json,
         } => {
             conn.execute(
-                "INSERT OR IGNORE INTO bot_work_attachments(work_id,input_snapshot_id,attachments_json) VALUES (?1,?2,?3)",
+                "INSERT INTO bot_work_attachments(work_id,input_snapshot_id,attachments_json) VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",
                 params![work_id, input_snapshot_id, attachments_json],
             )?;
             Ok(json!({ "ok": true }))
@@ -831,7 +904,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
                 )?
             } else {
                 conn.execute(
-                    "INSERT OR IGNORE INTO bot_work_feedback(message_id,metadata_json) VALUES (?1,?2)",
+                    "INSERT INTO bot_work_feedback(message_id,metadata_json) VALUES (?1,?2) ON CONFLICT DO NOTHING",
                     params![message_id, metadata_json],
                 )?
             };
@@ -847,7 +920,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
                 [&work_id],
             )?;
             conn.execute(
-                "INSERT OR IGNORE INTO work_conversations(work_id,conversation_id,channel_type,last_referenced_at) VALUES (?1,?2,'bot-delivery',?3)
+                "INSERT INTO work_conversations(work_id,conversation_id,channel_type,last_referenced_at) VALUES (?1,?2,'bot-delivery',?3)
                  ON CONFLICT(work_id,conversation_id) DO UPDATE SET channel_type='bot-delivery'",
                 params![work_id, conversation_id, now],
             )?;
@@ -863,7 +936,8 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             value_json,
         } => {
             conn.execute(
-                "INSERT OR REPLACE INTO bot_foreground_usage VALUES(?1,?2,?3)",
+                "INSERT INTO bot_foreground_usage VALUES(?1,?2,?3)
+                 ON CONFLICT(message_id,generation_id) DO UPDATE SET value_json=excluded.value_json",
                 params![message_id, generation_id, value_json],
             )?;
             Ok(json!({ "ok": true }))
@@ -873,7 +947,8 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             value_json,
         } => {
             conn.execute(
-                "INSERT OR REPLACE INTO bot_foreground_metrics VALUES(?1,?2)",
+                "INSERT INTO bot_foreground_metrics VALUES(?1,?2)
+                 ON CONFLICT(message_id) DO UPDATE SET value_json=excluded.value_json",
                 params![message_id, value_json],
             )?;
             Ok(json!({ "ok": true }))
@@ -909,8 +984,8 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             audience,
         } => {
             conn.execute(
-                "INSERT OR IGNORE INTO bot_gateway_conversations
-                 (conversation_id,user_id,bot_id,channel_id,connection_key,chat_id,audience) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                "INSERT INTO bot_gateway_conversations
+                 (conversation_id,user_id,bot_id,channel_id,connection_key,chat_id,audience) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT DO NOTHING",
                 params![
                     conversation_id,
                     user_id,
@@ -931,8 +1006,8 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             origin_json,
         } => {
             conn.execute(
-                "INSERT OR IGNORE INTO bot_turn_origins(user_message_id,user_id,bot_id,conversation_id,origin_json)
-                 VALUES(?1,?2,?3,?4,?5)",
+                "INSERT INTO bot_turn_origins(user_message_id,user_id,bot_id,conversation_id,origin_json)
+                 VALUES(?1,?2,?3,?4,?5) ON CONFLICT DO NOTHING",
                 params![user_message_id, user_id, bot_id, conversation_id, origin_json],
             )?;
             Ok(json!({ "ok": true }))
@@ -992,8 +1067,8 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             assistant_message_id,
         } => {
             conn.execute(
-                "INSERT OR IGNORE INTO bot_collaboration_requests
-                 (collaboration_id,conversation_id,request_id,user_message_id,assistant_message_id) VALUES (?1,?2,?3,?4,?5)",
+                "INSERT INTO bot_collaboration_requests
+                 (collaboration_id,conversation_id,request_id,user_message_id,assistant_message_id) VALUES (?1,?2,?3,?4,?5) ON CONFLICT DO NOTHING",
                 params![
                     collaboration_id,
                     conversation_id,
@@ -1014,7 +1089,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             created_at,
         } => {
             conn.execute(
-                "UPDATE bot_collaborations SET next_ordinal=MAX(next_ordinal+1, ?1+1), updated_at=MAX(updated_at,?2) WHERE collaboration_id=?3",
+                "UPDATE bot_collaborations SET next_ordinal=GREATEST(next_ordinal+1, ?1+1), updated_at=GREATEST(updated_at, ?2) WHERE collaboration_id=?3",
                 params![ordinal, created_at, collaboration_id],
             )?;
             conn.execute(
@@ -1043,7 +1118,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             created_at,
         } => {
             conn.execute(
-                "UPDATE bot_collaborations SET next_ordinal=MAX(next_ordinal+1, ?1+1) WHERE collaboration_id=?2",
+                "UPDATE bot_collaborations SET next_ordinal=GREATEST(next_ordinal+1, ?1+1) WHERE collaboration_id=?2",
                 params![ordinal, collaboration_id],
             )?;
             conn.execute(
@@ -1059,7 +1134,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
                 ],
             )?;
             conn.execute(
-                "UPDATE bot_collaborations SET status=?1,times_json=?2,updated_at=MAX(updated_at,?3) WHERE collaboration_id=?4",
+                "UPDATE bot_collaborations SET status=?1,times_json=?2,updated_at=GREATEST(updated_at, ?3) WHERE collaboration_id=?4",
                 params![kind, times_json, created_at, collaboration_id],
             )?;
             Ok(json!({ "ok": true }))
@@ -1077,7 +1152,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             )?;
             if changes > 0 {
                 conn.execute(
-                    "UPDATE bot_collaborations SET updated_at=MAX(updated_at,?1) WHERE collaboration_id=?2",
+                    "UPDATE bot_collaborations SET updated_at=GREATEST(updated_at, ?1) WHERE collaboration_id=?2",
                     params![updated_at, collaboration_id],
                 )?;
             }
@@ -1094,7 +1169,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             )?;
             if changes > 0 {
                 conn.execute(
-                    "UPDATE bot_collaborations SET updated_at=MAX(updated_at,?1) WHERE collaboration_id=?2",
+                    "UPDATE bot_collaborations SET updated_at=GREATEST(updated_at, ?1) WHERE collaboration_id=?2",
                     params![now, collaboration_id],
                 )?;
             }
@@ -1147,7 +1222,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
         }
         BotOp::BotTaskAssignSpace { task_id, space_id } => {
             conn.execute(
-                "UPDATE tasks SET space_id=?1 WHERE id=?2 AND space_id IS NOT ?1",
+                "UPDATE tasks SET space_id=?1 WHERE id=?2 AND space_id IS DISTINCT FROM ?1",
                 params![space_id, task_id],
             )?;
             Ok(json!({ "ok": true }))
@@ -1158,7 +1233,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             message_id,
         } => {
             conn.execute(
-                "INSERT OR IGNORE INTO work_message_refs(work_id,conversation_id,message_id) VALUES (?1,?2,?3)",
+                "INSERT INTO work_message_refs(work_id,conversation_id,message_id) VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",
                 params![work_id, conversation_id, message_id],
             )?;
             Ok(json!({ "ok": true }))
@@ -1171,11 +1246,11 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             at,
         } => {
             conn.execute(
-                "INSERT INTO conversation_goal_last_wake(work_id,task_id,intent_revision,trigger,at)
+                "INSERT INTO conversation_goal_last_wake(work_id,task_id,intent_revision,trigger,\"at\")
                  SELECT work_id,task_id,intent_revision,?1,?2 FROM conversation_goal_continuations
                  WHERE work_id=?3 AND task_id=?4 AND intent_revision=?5
                  ON CONFLICT(work_id) DO UPDATE SET task_id=excluded.task_id,intent_revision=excluded.intent_revision,
-                   trigger=excluded.trigger,at=excluded.at",
+                   trigger=excluded.trigger,\"at\"=excluded.\"at\"",
                 params![trigger, at, work_id, task_id, intent_revision],
             )?;
             Ok(json!({ "ok": true }))
@@ -1189,11 +1264,11 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             at,
         } => {
             conn.execute(
-                "INSERT INTO conversation_goal_last_check(work_id,task_id,intent_revision,trigger,reason,at)
+                "INSERT INTO conversation_goal_last_check(work_id,task_id,intent_revision,trigger,reason,\"at\")
                  SELECT work_id,task_id,intent_revision,?1,?2,?3 FROM conversation_goal_continuations
                  WHERE work_id=?4 AND task_id=?5 AND intent_revision=?6
                  ON CONFLICT(work_id) DO UPDATE SET task_id=excluded.task_id,intent_revision=excluded.intent_revision,
-                   trigger=excluded.trigger,reason=excluded.reason,at=excluded.at",
+                   trigger=excluded.trigger,reason=excluded.reason,\"at\"=excluded.\"at\"",
                 params![trigger, reason, at, work_id, task_id, intent_revision],
             )?;
             Ok(json!({ "ok": true }))
@@ -1292,7 +1367,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: BotOp) -> Result<Value> {
             recorded_at,
         } => {
             conn.execute(
-                "INSERT OR IGNORE INTO conversation_goal_usage_events(event_key,task_id,tokens,recorded_at) VALUES (?1,?2,?3,?4)",
+                "INSERT INTO conversation_goal_usage_events(event_key,task_id,tokens,recorded_at) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",
                 params![event_key, task_id, tokens, recorded_at],
             )?;
             Ok(json!({ "ok": true }))

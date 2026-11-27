@@ -24,7 +24,8 @@ import {
   responseText,
   extractCandidates,
 } from "./MemoryCandidateExtraction";
-import { resolveAssistantScopeChain, resolveWorkMemoryScope } from "./AssistantMemoryScopes";
+import { readCoreRecallAuthority, resolveAssistantScopeChain, resolveWorkMemoryScope, type CoreMemoryRecallAuthority } from "./AssistantMemoryScopes";
+import { CoreMemoryRecallUnavailable, readCoreRecallAtom, searchCoreMemory } from "./MemoryCoreRecall";
 import { gatewayDotsMemorySource, hasGatewayDotsMemory } from "../gateway/GatewayDotsBindings";
 import { isGatewayConversation } from "../../shared/gateway-task";
 import { botMemorySource, botMemoryTextEligible, botMemoryConversationOnly, botMemoryWriteEvidenceAllowed, botMemoryAutomaticBoundary, botPeerMemoryInput } from "./BotMemorySource";
@@ -114,7 +115,7 @@ export class MemoryService {
 
   constructor(private readonly db: AppDatabase, opts?: { semantic?: boolean }) {
     this.repository = new MemoryRepository(db);
-    this.forgetWatermarks = new MemoryForgetWatermarks(db.connection, db.runtimeAuditReader);
+    this.forgetWatermarks = new MemoryForgetWatermarks(db.fixtureConnection, db.runtimeAuditReader);
     this.cognition = new MemoryCognitionService(db, (id, revision) => this.getDotsRevisionSource(id, revision));
     this.learning = new MemorySkillLearningService(db, this.repository);
     this.semantic = opts?.semantic === false ? null : new MemorySemanticProvider(db);
@@ -122,12 +123,9 @@ export class MemoryService {
     // 每个 AppDatabase 只跑一次：同一进程有 4 个构造点，重放会反复改判在飞候选。
     if (!reapedDatabases.has(db)) {
       reapedDatabases.add(db);
-      try {
-        const reaped = this.repository.reapStalePendingCandidates(Date.now() - 10 * 60_000);
+      this.writeTail = this.repository.recoverPendingCandidates(Date.now() - 10 * 60_000).then(reaped => {
         if (reaped > 0) console.info(`[MemoryKernel] reaped ${reaped} stale pending candidates → needs_review`);
-      } catch (error) {
-        console.warn("[MemoryKernel] stale candidate reap failed", error);
-      }
+      }).catch(error => console.warn("[MemoryKernel] stale candidate reap failed", error));
     }
   }
 
@@ -443,12 +441,14 @@ export class MemoryService {
     return this.repository.readCandidates(status, limit);
   }
 
-  private buildRecord(request: MemoryCreateRequest, now = Date.now(), stagedWorkspace = false): MemoryRecordDto {
+  private buildRecord(
+    request: MemoryCreateRequest, now = Date.now(), scopeAuthority: "host" | "core" | "blueprint" = "host",
+  ): MemoryRecordDto {
     const title = cleanText(request.title, MEMORY_TITLE_MAX_CHARS);
     const content = cleanMultilineText(request.content ?? "", MEMORY_CONTENT_MAX_CHARS);
     if (!title) throw new Error("记忆标题不能为空");
     if (isSensitive(`${title} ${content}`)) throw new Error("记忆包含疑似敏感秘密，拒绝保存");
-    if (!stagedWorkspace || request.scopeType !== "workspace" || !request.scopeId?.trim()) {
+    if (scopeAuthority === "host" || (scopeAuthority === "blueprint" && !request.scopeId?.trim())) {
       this.assertScope(request.scopeType, request.scopeId);
     }
     const id = `mem_${randomUUID()}`;
@@ -552,13 +552,19 @@ export class MemoryService {
 
   async createSettingsMemory(request: MemoryCreateRequest): Promise<MemoryRecordDto> {
     const worker = this.db.runtimeAuditReader;
+    const fixture = this.db.fixtureConnection;
+    if (!worker || this.db.inTransaction) return this.create(request);
     // Task-originated agent writes depend on live gateway and Work authorization.
-    if (!worker || this.db.connection.inTransaction || (request.sourceType === "agent" && request.sourceTaskId)) {
+    if (request.sourceTaskId && (request.sourceType ?? (request.explicit ? "user" : "agent")) === "agent") {
+      if (fixture) return this.create(request);
+      throw new Error("任务代理写入需要通过当前任务的记忆授权");
+    }
+    const prepared = fixture ? this.prepareCreation(request) : this.buildRecord(request, Date.now(), "core");
+    const mutation = createMemoryWrite(prepared);
+    if (!nativeMemoryWriteCompatible(mutation)) {
+      if (!fixture) throw new Error("记忆包含无法保存的字符或时间");
       return this.create(request);
     }
-    const prepared = this.prepareCreation(request);
-    const mutation = createMemoryWrite(prepared);
-    if (!nativeMemoryWriteCompatible(mutation)) return this.create(request);
     const reply = await worker.writeMemoryRecord(mutation);
     if (reply?.status === "needsHost") {
       if (this.requiresRustWrites) throw new Error("记忆新建需要 Rust 核心确认，不会回退到 Node 宿主");
@@ -576,7 +582,7 @@ export class MemoryService {
       kind: "constraint", title: "Blueprint default context", content, scopeType: "workspace", scopeId: workspaceId,
       sourceType: "import", explicit: true, confidence: 1, importance: 1,
       metadata: { blueprintId, source: "blueprint-default-context" },
-    }, Date.now(), true);
+    }, Date.now(), "blueprint");
   }
 
   insertBlueprintContext(record: MemoryRecordDto): void {
@@ -863,13 +869,21 @@ export class MemoryService {
 
   async forgetSettingsMemory(id: string): Promise<void> {
     const worker = this.db.runtimeAuditReader;
-    if (!worker || this.db.connection.inTransaction || typeof id !== "string" || /[\uD800-\uDFFF]/u.test(id)) return this.forget(id);
+    const fixture = this.db.fixtureConnection;
+    if (!worker || this.db.inTransaction) return this.forget(id);
+    if (typeof id !== "string" || /[\uD800-\uDFFF]/u.test(id)) {
+      if (!fixture) throw new Error("记忆 ID 无效");
+      return this.forget(id);
+    }
 
     // The write rechecks the exact facts, history, evidence and scopes before
     // removing their sources and persisting the same withdrawal proofs.
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const source = await worker.memoryRecordsData({ kind: "forgetSource", id });
-      if (source?.kind !== "forgetSource") return this.forget(id);
+      if (source?.kind !== "forgetSource") {
+        if (!fixture) throw new Error("记忆删除未取得 Rust 核心确认，请刷新后再试");
+        return this.forget(id);
+      }
       const reply = await worker.writeMemoryRecord({
         kind: "forget", id,
         withdrawal: {
@@ -1113,7 +1127,75 @@ export class MemoryService {
     return dots ? this.rankDotsQuery(request, hits) : hits;
   }
 
+  get usesCoreRecall(): boolean { return this.db.fixtureConnection === undefined; }
+
+  async readCoreRecallAuthority(request: MemorySearchRequest): Promise<CoreMemoryRecallAuthority> {
+    const authority = await readCoreRecallAuthority(this.db, request);
+    if (!authority) throw new CoreMemoryRecallUnavailable("Core 暂未确认当前对话的记忆可见范围");
+    return authority;
+  }
+
+  async readCoreRecallAtom(id: string, request: MemorySearchRequest, authority: CoreMemoryRecallAuthority) {
+    return readCoreRecallAtom(this.db, id, request, authority);
+  }
+
+  async readCurrentCoreMemory(id: string, request: MemorySearchRequest) {
+    if (!request.taskId) return;
+    const authority = await this.readCoreRecallAuthority(request);
+    const atom = await this.readCoreRecallAtom(id, request, authority);
+    if (!atom) return;
+    const current = await this.readCoreRecallAtom(id, request, authority);
+    if ((await this.readCoreRecallAuthority(request)).witness !== authority.witness) {
+      throw new CoreMemoryRecallUnavailable("记忆读取期间任务的可见范围已变化");
+    }
+    const now = Date.now();
+    if (!current || current.revision !== atom.revision || current.memory.contentHash !== atom.memory.contentHash
+      || current.memory.status === "invalid" || (current.memory.validFrom !== undefined && current.memory.validFrom > now)
+      || (current.memory.validUntil !== undefined && current.memory.validUntil <= now)) return;
+    return current;
+  }
+
+  async readCoreContextSnapshot(source: { id: string; revision: number }, request: MemorySearchRequest,
+    authority?: CoreMemoryRecallAuthority): Promise<Pick<MemoryRevisionDto, "memoryId" | "revision" | "kind" | "title" | "content"> | undefined> {
+    const access = authority ?? await this.readCoreRecallAuthority(request);
+    const atom = await this.readCoreRecallAtom(source.id, request, access);
+    const now = Date.now();
+    if (!atom || atom.memory.status === "invalid" || atom.revision < source.revision
+      || (atom.memory.validFrom !== undefined && atom.memory.validFrom > now)) return;
+    const memory = atom.memory;
+    const validUntil = memory.validUntil;
+    const expired = validUntil !== undefined && validUntil <= now;
+    if (expired && memory.status !== "superseded") return;
+    if (atom.revision === source.revision && !expired) {
+      return { memoryId: memory.id, revision: atom.revision, kind: memory.kind, title: memory.title, content: memory.content };
+    }
+    const detail = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "history", id: source.id });
+    if (detail?.kind !== "history") throw new CoreMemoryRecallUnavailable("Core 未确认历史记忆版本");
+    const revisions = detail.revisions;
+    if (revisions[0]?.revision !== atom.revision) return;
+    const original = revisions.find(revision => revision.revision === source.revision);
+    if (!original) return;
+    if (expired) {
+      const transition = revisions.findIndex((revision, index) => {
+        const previous = revisions[index + 1];
+        return previous && previous.revision >= source.revision && previous.status !== "superseded"
+          && revision.status === "superseded" && revision.validUntil === validUntil
+          && memory.relations.some(relation => relation.relation === "SUPERSEDES" && relation.toMemoryId === source.id
+            && relation.createdAt === revision.validUntil);
+      });
+      if (transition < 0) return;
+      const priorValidity = revisions[transition + 1]!.validUntil;
+      if (priorValidity !== null && priorValidity <= now) return;
+    }
+    return original;
+  }
+
+  async searchCoreLexical(request: MemorySearchRequest, authority: CoreMemoryRecallAuthority): Promise<MemorySearchHit[]> {
+    return searchCoreMemory(this.db, request, authority);
+  }
+
   async searchLexical(request: MemorySearchRequest): Promise<MemorySearchHit[]> {
+    if (this.usesCoreRecall) return this.searchCoreLexical(request, await this.readCoreRecallAuthority(request));
     const query = request.query?.trim() ?? "";
     if (!query && !this.db.runtimeAuditReader) return this.search(request);
     const stamp = this.recallScopeStamp(request);
@@ -1150,6 +1232,7 @@ export class MemoryService {
   }
 
   async searchBaselines(requests: MemorySearchRequest[]): Promise<{ version: number; hits: MemorySearchHit[][] } | undefined> {
+    if (this.usesCoreRecall) return undefined;
     const runtime = this.db.runtimeAuditReader;
     const db = this.db.connection;
     if (!runtime || !db.open || db.inTransaction) return undefined;
@@ -1175,8 +1258,8 @@ export class MemoryService {
   }
 
   isCurrentBaselineVersion(version: number): boolean {
-    const db = this.db.connection;
-    return db.open && searchEpoch(db, "text_version") === version;
+    const db = this.db.fixtureConnection;
+    return Boolean(db?.open && searchEpoch(db, "text_version") === version);
   }
 
   private rankDotsQuery(request: MemorySearchRequest, hits: MemorySearchHit[]): MemorySearchHit[] {
@@ -1232,6 +1315,10 @@ export class MemoryService {
   /** Scope-first hybrid recall. Re-read facts and visibility after every async boundary. */
   async searchHybrid(request: MemorySearchRequest,
     onLexicalFallback?: (reason: "short-query" | "unavailable") => void): Promise<MemorySearchHit[]> {
+    if (this.usesCoreRecall) {
+      onLexicalFallback?.((request.query?.trim().length ?? 0) < 4 ? "short-query" : "unavailable");
+      return this.searchLexical(request);
+    }
     const requestedLimit = Math.max(1, Math.min(100, request.limit ?? 20));
     const query = request.query?.trim() ?? "";
     const initialScopeStamp = this.recallScopeStamp(request);

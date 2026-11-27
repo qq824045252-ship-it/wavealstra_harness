@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use duckdb::{Connection, OptionalExt, Transaction, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -852,25 +852,16 @@ pub enum WorkOp {
 }
 
 fn has_column(conn: &Connection, table: &str, col: &str) -> Result<bool> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-    for r in rows {
-        if r? == col {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    let found: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='main' AND table_name=?1 AND column_name=?2",
+        params![table, col],
+        |row| row.get(0),
+    )?;
+    Ok(found > 0)
 }
 
 fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
-    Ok(conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
-            [table],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
+    crate::database::table_exists(conn, table)
 }
 
 pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
@@ -1465,10 +1456,10 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             trusted_origin,
         } => {
             let changes = conn.execute(
-                "INSERT OR IGNORE INTO work_source_events
+                "INSERT INTO work_source_events
                  (source,source_event_id,event_type,source_version,causal_event_id,payload_json,received_at,
                   occurred_at,target_key,payload_bytes,adapter,trusted_origin)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) ON CONFLICT DO NOTHING",
                 params![
                     source, source_event_id, event_type, source_version, causal_event_id, payload_json,
                     received_at, occurred_at, target_key, payload_bytes, adapter, trusted_origin
@@ -1505,12 +1496,12 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             queued_while_paused,
         } => {
             let changes = conn.execute(
-                "INSERT OR IGNORE INTO work_events_inbox (
+                "INSERT INTO work_events_inbox (
                     event_id,dedupe_key,source,source_event_id,event_type,work_id,subscription_id,intent_revision,
                     state_version,owner_epoch,source_version,causal_event_id,payload_json,status,merged_count,
                     merge_deadline_at,received_at,processed_at,batch_id,batch_deadline_at,frozen_at,frozen_payload_json,
                     claim_version,target_key,process_reason,queued_while_paused
-                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)",
+                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26) ON CONFLICT DO NOTHING",
                 params![
                     event_id, dedupe_key, source, source_event_id, event_type, work_id, subscription_id,
                     intent_revision, state_version, owner_epoch, source_version, causal_event_id,
@@ -1680,10 +1671,10 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             target_key,
         } => {
             let changes = conn.execute(
-                "INSERT OR IGNORE INTO work_notifications (
+                "INSERT INTO work_notifications (
                     notification_id,work_id,semantic_key,kind,title,body,state_version,intent_revision,delivery,
                     channel,idempotency_key,attempt_count,external_receipt,read_at,created_at,sent_at,card_key,effect_key,target_key
-                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19) ON CONFLICT DO NOTHING",
                 params![
                     notification_id, work_id, semantic_key, kind, title, body, state_version, intent_revision,
                     delivery, channel, idempotency_key, attempt_count, external_receipt, read_at,
@@ -1805,11 +1796,11 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             created_at,
         } => {
             conn.execute(
-                "INSERT OR IGNORE INTO work_notification_effects (
+                "INSERT INTO work_notification_effects (
                     effect_key,notification_id,payload_hash,payload_json,channel,target_key,delivery_guarantee,
                     supports_idempotency_key,supports_receipt_query,authorization_kind,authorization_operation_id,
                     authorization_reason,resend_of_attempt_id,created_at
-                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) ON CONFLICT DO NOTHING",
                 params![
                     effect_key, notification_id, payload_hash, payload_json, channel, target_key,
                     delivery_guarantee, supports_idempotency_key, supports_receipt_query,
@@ -1891,7 +1882,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             started_at,
         } => {
             conn.execute(
-                "INSERT OR IGNORE INTO work_execution_metrics(binding_id,task_id,conversation_id,started_at) VALUES(?1,?2,?3,?4)",
+                "INSERT INTO work_execution_metrics(binding_id,task_id,conversation_id,started_at) VALUES(?1,?2,?3,?4) ON CONFLICT DO NOTHING",
                 params![binding_id, task_id, conversation_id, started_at],
             )?;
             Ok(json!({ "ok": true }))
@@ -1902,7 +1893,8 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             value_json,
         } => {
             conn.execute(
-                "INSERT OR REPLACE INTO work_execution_usage VALUES(?1,?2,?3)",
+                "INSERT INTO work_execution_usage VALUES(?1,?2,?3)
+                 ON CONFLICT(binding_id,call_key) DO UPDATE SET value_json=excluded.value_json",
                 params![binding_id, call_key, value_json],
             )?;
             Ok(json!({ "ok": true }))
@@ -1913,7 +1905,8 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             value_json,
         } => {
             conn.execute(
-                "INSERT OR REPLACE INTO work_execution_timings VALUES(?1,?2,?3)",
+                "INSERT INTO work_execution_timings VALUES(?1,?2,?3)
+                 ON CONFLICT(binding_id,message_id) DO UPDATE SET value_json=excluded.value_json",
                 params![binding_id, message_id, value_json],
             )?;
             Ok(json!({ "ok": true }))
@@ -1936,7 +1929,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
                     .optional()?
                 {
                     conn.execute(
-                        "INSERT OR IGNORE INTO work_projection_streams(user_id) VALUES(?1)",
+                        "INSERT INTO work_projection_streams(user_id) VALUES(?1) ON CONFLICT DO NOTHING",
                         [&user_id],
                     )?;
                     conn.execute(
@@ -1960,7 +1953,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
         }
         WorkOp::WorkProjectionStreamEnsure { user_id } => {
             conn.execute(
-                "INSERT OR IGNORE INTO work_projection_streams(user_id) VALUES (?1)",
+                "INSERT INTO work_projection_streams(user_id) VALUES (?1) ON CONFLICT DO NOTHING",
                 [user_id],
             )?;
             Ok(json!({ "ok": true }))
@@ -1987,11 +1980,11 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             previous_card_key,
         } => {
             conn.execute(
-                "INSERT OR IGNORE INTO work_result_cards (
+                "INSERT INTO work_result_cards (
                     card_key,semantic_card_key,work_id,user_id,kind,intent_revision,input_snapshot_id,origin_owner_epoch,
                     canonical_outcome_hash,canonical_outcome_json,title,summary,deliverable_ids_json,evidence_ids_json,
                     source_refs_json,artifact_refs_json,unverified_scope_json,created_at,previous_card_key,read_version
-                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,0)",
+                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,0) ON CONFLICT DO NOTHING",
                 params![
                     card_key, semantic_card_key, work_id, user_id, kind, intent_revision, input_snapshot_id,
                     origin_owner_epoch, canonical_outcome_hash, canonical_outcome_json, title, summary,
@@ -2109,7 +2102,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
                 )?;
             } else {
                 conn.execute(
-                    "INSERT OR IGNORE INTO work_subitem_results(fact_id,work_id,binding_id,item_id,result_json,created_at) VALUES (?1,?2,?3,?4,?5,?6)",
+                    "INSERT INTO work_subitem_results(fact_id,work_id,binding_id,item_id,result_json,created_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING",
                     params![fact_id, work_id, binding_id, item_id, result_json, created_at],
                 )?;
             }
@@ -2159,7 +2152,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
         }
         WorkOp::WorkContinuationGapInsert { gap_key, plan_id } => {
             conn.execute(
-                "INSERT OR IGNORE INTO work_continuation_gaps(gap_key,plan_id) VALUES (?1,?2)",
+                "INSERT INTO work_continuation_gaps(gap_key,plan_id) VALUES (?1,?2) ON CONFLICT DO NOTHING",
                 params![gap_key, plan_id],
             )?;
             Ok(json!({ "ok": true }))
@@ -2224,11 +2217,11 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
         } => {
             let changes = match mode.as_str() {
                 "observe" => conn.execute(
-                    "INSERT OR IGNORE INTO work_automatic_completion(binding_id,work_id) VALUES (?1,?2)",
+                    "INSERT INTO work_automatic_completion(binding_id,work_id) VALUES (?1,?2) ON CONFLICT DO NOTHING",
                     params![binding_id, work_id],
                 )?,
                 "recoverUnreviewed" => conn.execute(
-                    "INSERT OR IGNORE INTO work_automatic_completion(binding_id,work_id,recovered)
+                    "INSERT INTO work_automatic_completion(binding_id,work_id,recovered)
                      SELECT b.binding_id,w.work_id,1 FROM works w JOIN work_execution_bindings b ON b.work_id=w.work_id
                      WHERE w.lifecycle='active' AND w.mode='once' AND w.cancel_requested_at IS NULL
                        AND b.bot_id=w.owner_bot_id AND b.owner_epoch=w.owner_epoch
@@ -2238,18 +2231,19 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
                        AND NOT EXISTS (SELECT 1 FROM work_execution_bindings newer WHERE newer.work_id=w.work_id
                          AND newer.bot_id=w.owner_bot_id AND newer.intent_revision=w.intent_revision
                          AND newer.input_snapshot_id=w.input_snapshot_id AND newer.invalidated_at IS NULL
-                         AND newer.admitted_at>b.admitted_at)",
+                         AND newer.admitted_at>b.admitted_at) ON CONFLICT DO NOTHING",
                     [],
                 )?,
                 "recordDelivery" => {
                     let c = conn.execute(
-                        "INSERT OR IGNORE INTO work_automatic_completion_deliveries(binding_id,summary,outcome,goal_reviewed) VALUES (?1,?2,?3,?4)",
+                        "INSERT INTO work_automatic_completion_deliveries(binding_id,summary,outcome,goal_reviewed) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",
                         params![binding_id, summary, outcome, goal_reviewed],
                     )?;
                     if c > 0 {
                         if let Some(fp) = fingerprint {
                             conn.execute(
-                                "INSERT OR REPLACE INTO work_completion_review_evidence(binding_id,fingerprint) VALUES (?1,?2)",
+                                "INSERT INTO work_completion_review_evidence(binding_id,fingerprint) VALUES (?1,?2)
+                                 ON CONFLICT(binding_id) DO UPDATE SET fingerprint=excluded.fingerprint",
                                 params![binding_id, fp],
                             )?;
                         }
@@ -2291,7 +2285,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
         } => {
             let changes = match mode.as_str() {
                 "insert" => conn.execute(
-                    "INSERT OR IGNORE INTO work_artifact_dependencies(binding_id,path,work_id,fingerprint_json) VALUES (?1,?2,?3,?4)",
+                    "INSERT INTO work_artifact_dependencies(binding_id,path,work_id,fingerprint_json) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",
                     params![binding_id, path, work_id, fingerprint_json],
                 )?,
                 "invalidate" => conn.execute(
@@ -2315,7 +2309,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             let changes = conn.execute(
                 "INSERT INTO work_generated_artifacts(binding_id,path,digest,payload_json)
                  VALUES (?1,?2,?3,?4) ON CONFLICT(binding_id,path,digest) DO UPDATE SET payload_json=excluded.payload_json
-                 WHERE json_extract(excluded.payload_json,'$.sourceEntryId') > json_extract(work_generated_artifacts.payload_json,'$.sourceEntryId')",
+                 WHERE COALESCE(json_extract_string(excluded.payload_json,'$.sourceEntryId'),'') > COALESCE(json_extract_string(work_generated_artifacts.payload_json,'$.sourceEntryId'),'')",
                 params![binding_id, path, digest, payload_json],
             )?;
             Ok(json!({ "ok": true, "changes": changes }))
@@ -2428,8 +2422,8 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             created_at,
         } => {
             conn.execute(
-                "INSERT OR IGNORE INTO work_handoff_preparations(preparation_id,work_id,target_bot_id,state_version,
-                 owner_epoch,input_snapshot_id,snapshot_json,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                "INSERT INTO work_handoff_preparations(preparation_id,work_id,target_bot_id,state_version,
+                 owner_epoch,input_snapshot_id,snapshot_json,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT DO NOTHING",
                 params![
                     preparation_id, work_id, target_bot_id, state_version,
                     owner_epoch, input_snapshot_id, snapshot_json, created_at
@@ -2469,8 +2463,8 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             match mode.as_str() {
                 "receive" => {
                     conn.execute(
-                        "INSERT OR IGNORE INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at)
-                         VALUES (?1,?2,?3,?4,?5)",
+                        "INSERT INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at)
+                         VALUES (?1,?2,?3,?4,?5) ON CONFLICT DO NOTHING",
                         params![fact_id, binding_id, namespace_hash, payload_json, now],
                     )?;
                     conn.execute(
@@ -2539,8 +2533,8 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             context_json,
         } => {
             conn.execute(
-                "INSERT OR IGNORE INTO work_report_contexts (binding_id,work_id,task_id,intent_revision,owner_epoch,input_snapshot_id,context_json)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                "INSERT INTO work_report_contexts (binding_id,work_id,task_id,intent_revision,owner_epoch,input_snapshot_id,context_json)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT DO NOTHING",
                 params![binding_id, work_id, task_id, intent_revision, owner_epoch, input_snapshot_id, context_json],
             )?;
             Ok(json!({ "ok": true }))
@@ -2641,7 +2635,7 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             inbox_event_id,
         } => {
             conn.execute(
-                "INSERT OR IGNORE INTO work_paused_source_routes(source,source_event_id,subscription_id,catch_up_policy) VALUES (?1,?2,?3,?4)",
+                "INSERT INTO work_paused_source_routes(source,source_event_id,subscription_id,catch_up_policy) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",
                 params![source, source_event_id, subscription_id, catch_up_policy],
             )?;
             if let Some(eid) = inbox_event_id {
@@ -2668,9 +2662,9 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
         } => {
             let changes = match mode.as_str() {
                 "insert" => conn.execute(
-                    "INSERT OR IGNORE INTO work_schedule_ticks
+                    "INSERT INTO work_schedule_ticks
                      (tick_id,subscription_id,work_id,schedule_revision,logical_slot_key,planned_at,effective_at,status,merged_from_slot_keys_json,created_at)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'[]',?9)",
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'[]',?9) ON CONFLICT DO NOTHING",
                     params![tick_id, subscription_id, work_id, schedule_revision, logical_slot_key, planned_at, effective_at, status, created_at],
                 )?,
                 "dispatched" => conn.execute(
@@ -2701,8 +2695,8 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             match mode.as_str() {
                 "insertArmed" => {
                     conn.execute(
-                        "INSERT OR IGNORE INTO work_deadline_instances
-                         (work_id,deadline_revision,deadline_at,state,created_at) VALUES (?1,?2,?3,'armed',?4)",
+                        "INSERT INTO work_deadline_instances
+                         (work_id,deadline_revision,deadline_at,state,created_at) VALUES (?1,?2,?3,'armed',?4) ON CONFLICT DO NOTHING",
                         params![work_id, deadline_revision, deadline_at, now],
                     )?;
                 }
@@ -2720,8 +2714,8 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
                     )?;
                     if let (Some(rev), Some(at)) = (deadline_revision, deadline_at) {
                         conn.execute(
-                            "INSERT OR IGNORE INTO work_deadline_instances
-                             (work_id,deadline_revision,deadline_at,state,created_at) VALUES (?1,?2,?3,'armed',?4)",
+                            "INSERT INTO work_deadline_instances
+                             (work_id,deadline_revision,deadline_at,state,created_at) VALUES (?1,?2,?3,'armed',?4) ON CONFLICT DO NOTHING",
                             params![work_id, rev, at, now],
                         )?;
                     }
@@ -2760,11 +2754,11 @@ pub fn apply_tx(tx: &Transaction<'_>, op: WorkOp) -> Result<Value> {
             match mode.as_str() {
                 "insert" => {
                     conn.execute(
-                        "INSERT OR IGNORE INTO work_offline_gaps
+                        "INSERT INTO work_offline_gaps
                          (gap_id,host_session_id,subscription_id,work_id,offline_gap_from,offline_gap_to,detected_by,confidence,
                           policy,policy_revision,source_cursor,queryable,recovered_count,merged_count,skipped_count,unknown_count,
                           state,continuation_cursor,gap_reason,created_at,updated_at)
-                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0,0,0,NULL,?13,NULL,?14,?15,?15)",
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0,0,0,NULL,?13,NULL,?14,?15,?15) ON CONFLICT DO NOTHING",
                         params![
                             gap_id, host_session_id, subscription_id, work_id, offline_gap_from, offline_gap_to,
                             detected_by, confidence, policy, policy_revision, source_cursor, queryable, state, gap_reason, now

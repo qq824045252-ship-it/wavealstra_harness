@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::Connection;
+use duckdb::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -132,7 +132,7 @@ pub fn read(db: &mut Connection, query: Query) -> Result<WorkspaceData> {
 }
 
 fn read_spaces(db: &Connection) -> Result<Vec<Space>> {
-    let mut statement = db.prepare_cached(
+    let mut statement = db.prepare(
         "SELECT s.id,s.name,s.path,s.archived,s.parent_id,s.sort_order,s.created_at,
         i.shape,i.color FROM spaces s LEFT JOIN workspace_icons i ON i.workspace_id=s.id
         ORDER BY s.updated_at DESC,s.rowid",
@@ -153,7 +153,7 @@ fn read_spaces(db: &Connection) -> Result<Vec<Space>> {
                 path_missing: false,
             })
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .collect::<duckdb::Result<Vec<_>>>()?;
     let effective = effective_archives(&spaces);
     for (space, archived) in spaces.iter_mut().zip(effective) {
         space.effective_archived = archived.unwrap_or(false);
@@ -200,7 +200,7 @@ fn effective_archives(spaces: &[Space]) -> Vec<Option<bool>> {
 }
 
 fn has_generated_spaces(db: &Connection) -> Result<bool> {
-    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_workspace_navigation_spaces')", [], |row| row.get(0))?)
+    crate::database::table_exists(db, "bot_workspace_navigation_spaces")
 }
 
 fn digest(id: &str) -> String {
@@ -215,7 +215,7 @@ fn owner_space(bot_id: &str, team_id: Option<&str>) -> String {
 }
 
 fn read_history_spaces(db: &Connection, user_id: &str) -> Result<HashSet<String>> {
-    let mut statement = db.prepare_cached(&format!(
+    let mut statement = db.prepare(&format!(
         "SELECT c.bot_id,c.team_id FROM bot_conversations c WHERE {CONVERSATION_FILTER}
         UNION SELECT r.bot_id,c.team_id {RECEIPTS}"
     ))?;
@@ -224,11 +224,11 @@ fn read_history_spaces(db: &Connection, user_id: &str) -> Result<HashSet<String>
         let team_id: Option<String> = row.get(1)?;
         Ok(owner_space(&bot_id, team_id.as_deref()))
     })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    Ok(rows.collect::<duckdb::Result<_>>()?)
 }
 
 fn read_navigation(db: &Connection, user_id: &str) -> Result<Navigation> {
-    let mut requests = db.prepare_cached(&format!(
+    let mut requests = db.prepare(&format!(
         "SELECT r.conversation_id,r.bot_id,c.team_id,u.text,u.created_at,
         a.updated_at,c.archived_at,r.request_id,r.assistant_message_id,a.status {RECEIPTS}
         ORDER BY u.created_at DESC,r.request_id"
@@ -245,21 +245,21 @@ fn read_navigation(db: &Connection, user_id: &str) -> Result<Navigation> {
                 conversation,
             })
         })?
-        .collect::<rusqlite::Result<_>>()?;
-    let mut conversations = db.prepare_cached(&format!("SELECT c.conversation_id,c.bot_id,c.team_id,
+        .collect::<duckdb::Result<_>>()?;
+    let mut conversations = db.prepare(&format!("SELECT c.conversation_id,c.bot_id,c.team_id,
         (SELECT m.text FROM bot_messages m WHERE m.conversation_id=c.conversation_id AND m.role='user' ORDER BY m.ordinal LIMIT 1),
         c.created_at,c.updated_at,c.archived_at FROM bot_conversations c WHERE {CONVERSATION_FILTER}
         ORDER BY c.created_at DESC,c.conversation_id"))?;
     let conversations = conversations
         .query_map([user_id], |row| conversation_row(row, "新对话"))?
-        .collect::<rusqlite::Result<_>>()?;
+        .collect::<duckdb::Result<_>>()?;
     Ok(Navigation {
         foreground_requests,
         conversations,
     })
 }
 
-fn conversation_row(row: &rusqlite::Row<'_>, empty_title: &str) -> rusqlite::Result<Conversation> {
+fn conversation_row(row: &duckdb::Row<'_>, empty_title: &str) -> duckdb::Result<Conversation> {
     let bot_id: String = row.get(1)?;
     let team_id: Option<String> = row.get(2)?;
     let title: Option<String> = row.get(3)?;
@@ -323,13 +323,13 @@ fn retain_visible(
         format!("bot-workspace-group-team-{user}"),
     ];
     let mut generated =
-        db.prepare_cached("SELECT space_id,auto_name FROM bot_workspace_navigation_spaces")?;
+        db.prepare("SELECT space_id,auto_name FROM bot_workspace_navigation_spaces")?;
     let names = generated
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
-        .collect::<rusqlite::Result<HashMap<_, _>>>()?;
-    let mut used = db.prepare_cached("SELECT EXISTS(SELECT 1 FROM (
+        .collect::<duckdb::Result<HashMap<_, _>>>()?;
+    let mut used = db.prepare("SELECT EXISTS(SELECT 1 FROM (
         SELECT space_id AS space FROM tasks UNION ALL SELECT space_id FROM cron_jobs
         UNION ALL SELECT default_space_id FROM projects UNION ALL SELECT workspace_id FROM workspace_notes
         UNION ALL SELECT workspace_id FROM library_spaces UNION ALL SELECT workspace_id FROM workspace_library_links
@@ -337,7 +337,7 @@ fn retain_visible(
         UNION ALL SELECT scope_id FROM gadgets WHERE scope_type='workspace'
         UNION ALL SELECT scope_id FROM memory_scopes WHERE scope_type='workspace'
         ) WHERE space=? LIMIT 1)")?;
-    let mut eligible = |space: &Space| -> rusqlite::Result<bool> {
+    let mut eligible = |space: &Space| -> duckdb::Result<bool> {
         Ok(space.path.as_deref().unwrap_or_default().is_empty()
             && names.get(&space.id) == Some(&space.name)
             && !history.contains(space.id.as_str())

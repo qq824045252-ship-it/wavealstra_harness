@@ -16,6 +16,7 @@ mkdirSync(join(root, ".mybuddy"));
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
 const { ArtifactRepository } = await import("../src/main/artifact/ArtifactRepository");
 const { DotsActions } = await import("../src/main/dots/DotsActions");
+const { fixtureTaskBoard } = await import("./fixtures/legacy-task-board-store");
 const { createAgentDurableFixture } = await import("./agent-durable-fixture");
 const db = new AppDatabase(join(root, "app.db"));
 new ArtifactRepository(db.connection);
@@ -91,7 +92,7 @@ const discovery = new DotsDiscovery(discoveryDir, () => ({ ...preferences(), pau
   });
 
 try {
-  fixture.agent.setDotsActions(new DotsActions(db, fixture.agent, { link() { assert.fail("查邮箱不应创建普通任务"); } }));
+  fixture.agent.setDotsActions(new DotsActions(db, fixture.agent, { link() { assert.fail("查邮箱不应创建普通任务"); } }, fixtureTaskBoard(db.connection)));
   fixture.agent.setDotsResident({ discovery, google: new DotsGoogleReads(
     new DotsGoogleAccounts(accountsDir, async () => {}, async () => undefined, [], run), () => preferences().google, run) });
   await fixture.agent.updateAppSettings({ memoryEnabled: false, dotsSettings: {

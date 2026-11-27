@@ -1,7 +1,7 @@
 use crate::Result;
 use crate::batch4b_bot::{self, BotOp};
 use crate::batch4b_work::{self, WorkOp};
-use rusqlite::{Connection, Transaction};
+use duckdb::{Connection, Transaction};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -31,15 +31,20 @@ fn apply_op(tx: &Transaction<'_>, op: BatchOp) -> Result<Value> {
 pub fn run(conn: &mut Connection, request: Request) -> Result<Value> {
     let tx = conn.transaction()?;
     let out = match request {
-        Request::Batch { ops } => {
-            let mut results = Vec::with_capacity(ops.len());
-            for op in ops {
-                results.push(apply_op(&tx, op)?);
-            }
-            json!({ "ok": true, "results": results })
-        }
-        Request::Single(op) => apply_op(&tx, op)?,
+        Request::Batch { ops } => ops.into_iter().map(|op| apply_op(&tx, op)).collect::<Result<Vec<_>>>()
+            .map(|results| json!({ "ok": true, "results": results })),
+        Request::Single(op) => apply_op(&tx, op),
     };
-    tx.commit()?;
-    Ok(out)
+    match out {
+        Ok(reply) => {
+            crate::request_control::commit(tx)?;
+            Ok(reply)
+        }
+        Err(error) => {
+            if tx.rollback().is_ok() {
+                crate::request_control::known_failure();
+            }
+            Err(error)
+        }
+    }
 }

@@ -3,11 +3,12 @@ use crate::{
     artifact_content::{self, Content, Pending},
     sqlite_rows::records,
 };
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -15,6 +16,9 @@ use serde_json::{Value, json};
 )]
 pub enum Mutation {
     Register {
+        row: ArtifactRow,
+    },
+    RegisterWorkspaceOutput {
         row: ArtifactRow,
     },
     Refresh {
@@ -29,7 +33,7 @@ pub enum Mutation {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct ArtifactRow {
     id: String,
     task_id: String,
@@ -63,8 +67,9 @@ pub fn write_managed(
     row: ArtifactRow,
     content: Content,
 ) -> Result<ManagedWrite> {
+    let hash = request_hash(&("managed", &row, &content))?;
     let mut pending = None;
-    let result = write_managed_inner(db, task_id, operation_id, row, content, &mut pending);
+    let result = write_managed_inner(db, task_id, operation_id, &hash, row, content, &mut pending);
     match result {
         Ok(revision) => {
             if let Some(pending) = pending {
@@ -75,8 +80,8 @@ pub fn write_managed(
         Err(error) => {
             if let Some(pending) = pending {
                 // Verify the receipt after the transaction drops before deleting anything.
-                let recovery = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                if let Some(value) = receipt(&recovery, task_id, operation_id)? {
+                let recovery = db.transaction()?;
+                if let Some(value) = replay(&recovery, task_id, operation_id, &hash)? {
                     pending.finish();
                     return Ok(ManagedWrite::Saved {
                         revision: registration_revision(&value)?,
@@ -95,17 +100,19 @@ fn write_managed_inner(
     db: &mut Connection,
     task_id: &str,
     operation_id: &str,
+    hash: &str,
     row: ArtifactRow,
     content: Content,
     pending: &mut Option<Pending>,
 ) -> Result<i64> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    if let Some(value) = receipt(&tx, task_id, operation_id)? {
+    let tx = db.transaction()?;
+    if let Some(value) = replay(&tx, task_id, operation_id, hash)? {
         return registration_revision(&value);
     }
     if row.source_type != "managed-content" || row.task_id != task_id {
         return Err("成果受管内容与任务不一致".into());
     }
+    require_active_task(&tx, task_id)?;
     if tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM artifacts WHERE id=?)",
         [&row.id],
@@ -133,11 +140,10 @@ fn write_managed_inner(
         .map_err(|error| format!("materialize 失败: {error}"))?;
     let value =
         register(&tx, task_id, row).map_err(|error| format!("metadata 写入失败: {error}"))?;
-    store_receipt(&tx, task_id, operation_id, &value)
+    store_receipt(&tx, task_id, operation_id, hash, &value)
         .map_err(|error| format!("metadata 写入失败: {error}"))?;
     let revision = registration_revision(&value)?;
-    tx.commit()
-        .map_err(|error| format!("metadata 写入失败: {error}"))?;
+    crate::request_control::commit(tx).map_err(|error| format!("metadata 写入失败: {error}"))?;
     Ok(revision)
 }
 
@@ -169,7 +175,55 @@ fn register(db: &Connection, task_id: &str, row: ArtifactRow) -> Result<Value> {
         db.execute("INSERT INTO artifact_message_refs (task_id,message_id,artifact_id,relation,tool_call_id,created_at)
             VALUES (?,?,?,'created',?,?)", params![task_id, message_id, row.id, row.created_by_tool_call_id, row.created_at])?;
     }
+    crate::trigger_effects::on_artifact_board_event_in_tx(
+        db,
+        task_id,
+        row.updated_at,
+        row.title.as_deref(),
+    )?;
     Ok(json!({ "revision": bump_revision(db, task_id)? }))
+}
+
+fn require_active_task(db: &Connection, task_id: &str) -> Result<()> {
+    let exists = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tasks t WHERE t.id=?1 AND NOT EXISTS (
+            SELECT 1 FROM task_execution_workspace_state s WHERE s.task_id=t.id AND s.state='trashed'))",
+        [task_id],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !exists {
+        return Err("成果所属任务不存在或已移至回收站".into());
+    }
+    Ok(())
+}
+
+fn register_workspace_output(db: &Connection, task_id: &str, row: ArtifactRow) -> Result<Value> {
+    require_active_task(db, task_id)?;
+    let entry_file = row
+        .entry_file
+        .as_deref()
+        .filter(|path| !path.is_empty())
+        .ok_or("工作区成果缺少入口文件")?;
+    if row.task_id != task_id || row.source_type != "workspace-file" {
+        return Err("工作区成果与任务不一致".into());
+    }
+    let mut matches = records(
+        db,
+        "SELECT * FROM artifacts WHERE task_id=?1 AND source_type='workspace-file'
+         AND lower(replace(entry_file, chr(92), '/'))=lower(replace(?2, chr(92), '/'))
+         ORDER BY created_at,rowid LIMIT 1",
+        params![task_id, entry_file],
+    )?;
+    if let Some(existing) = matches.pop() {
+        if let Some(message_id) = row.created_by_message_id {
+            db.execute("INSERT INTO artifact_message_refs (task_id,message_id,artifact_id,relation,tool_call_id,created_at)
+                VALUES (?,?,?,'updated',?,?) ON CONFLICT DO NOTHING",
+                params![task_id, message_id, existing["id"].as_str(), row.created_by_tool_call_id, row.created_at])?;
+        }
+        return Ok(json!({ "status": "reused", "row": existing }));
+    }
+    let created = register(db, task_id, row)?;
+    Ok(json!({ "status": "created", "revision": created["revision"] }))
 }
 
 fn refresh(
@@ -181,9 +235,9 @@ fn refresh(
     tool_call_id: Option<&str>,
 ) -> Result<Value> {
     let mut items = Vec::new();
-    let mut update = db.prepare_cached(
+    let mut update = db.prepare(
         "UPDATE artifacts SET version=version+1, updated_at=?3 WHERE id=?1 AND task_id=?2
-         AND (?4 IS NULL OR created_by_message_id IS NOT ?4)",
+         AND (?4 IS NULL OR created_by_message_id IS DISTINCT FROM ?4)",
     )?;
     let mut seen = std::collections::HashSet::new();
     for id in ids {
@@ -191,12 +245,18 @@ fn refresh(
             continue;
         }
         if let Some(message_id) = message_id {
-            db.execute("INSERT OR IGNORE INTO artifact_message_refs (task_id,message_id,artifact_id,relation,tool_call_id,created_at)
-                VALUES (?,?,?,'updated',?,?)", params![task_id, message_id, id, tool_call_id, at])?;
+            db.execute("INSERT INTO artifact_message_refs (task_id,message_id,artifact_id,relation,tool_call_id,created_at)
+                VALUES (?,?,?,'updated',?,?) ON CONFLICT DO NOTHING", params![task_id, message_id, id, tool_call_id, at])?;
         }
         let row = records(db, "SELECT * FROM artifacts WHERE id=?", [id])?
             .pop()
             .ok_or("artifact missing after refresh")?;
+        crate::trigger_effects::on_artifact_board_event_in_tx(
+            db,
+            task_id,
+            at,
+            row["title"].as_str(),
+        )?;
         items.push(json!({ "row": row, "revision": bump_revision(db, task_id)? }));
     }
     Ok(json!({ "items": items }))
@@ -229,11 +289,20 @@ fn remove(
     if id.is_some() && items.is_empty() {
         return Ok(json!({ "allowed": true, "revision": null, "items": items }));
     }
-    db.execute(
-        "DELETE FROM artifacts WHERE task_id=?1 AND (?2 IS NULL OR id=?2)",
-        params![task_id, id],
-    )?;
+    delete_artifacts(db, task_id, id)?;
     Ok(json!({ "allowed": true, "revision": bump_revision(db, task_id)?, "items": items }))
+}
+
+pub(crate) fn delete_artifacts(db: &Connection, task_id: &str, id: Option<&str>) -> Result<()> {
+    for sql in [
+        "DELETE FROM artifact_file_dependencies WHERE artifact_id IN
+            (SELECT id FROM artifacts WHERE task_id=?1 AND (?2 IS NULL OR id=?2))",
+        "DELETE FROM artifact_message_refs WHERE task_id=?1 AND (?2 IS NULL OR artifact_id=?2)",
+        "DELETE FROM artifacts WHERE task_id=?1 AND (?2 IS NULL OR id=?2)",
+    ] {
+        db.execute(sql, params![task_id, id])?;
+    }
+    Ok(())
 }
 
 pub fn write(
@@ -242,12 +311,20 @@ pub fn write(
     operation_id: &str,
     mutation: Mutation,
 ) -> Result<Value> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    if let Some(receipt) = receipt(&tx, task_id, operation_id)? {
+    let hash = request_hash(&("metadata", &mutation))?;
+    let tx = db.transaction()?;
+    if let Some(receipt) = replay(&tx, task_id, operation_id, &hash)? {
         return Ok(receipt);
     }
     let result = match mutation {
-        Mutation::Register { row } => register(&tx, task_id, row)?,
+        Mutation::Register { row } => {
+            require_active_task(&tx, task_id)?;
+            if row.source_type != "workspace-file" {
+                return Err("受管成果须通过内容写入登记".into());
+            }
+            register(&tx, task_id, row)?
+        }
+        Mutation::RegisterWorkspaceOutput { row } => register_workspace_output(&tx, task_id, row)?,
         Mutation::Refresh {
             ids,
             at,
@@ -266,27 +343,55 @@ pub fn write(
             require_trashed,
         } => remove(&tx, task_id, id.as_deref(), require_trashed)?,
     };
-    store_receipt(&tx, task_id, operation_id, &result)?;
-    tx.commit()?;
+    store_receipt(&tx, task_id, operation_id, &hash, &result)?;
+    crate::request_control::commit(tx)?;
     Ok(result)
 }
 
-fn receipt(db: &Connection, task_id: &str, operation_id: &str) -> Result<Option<Value>> {
-    let value: Option<String> = db
+fn request_hash(request: &impl Serialize) -> Result<String> {
+    let mut digest = Sha256::new();
+    serde_json::to_writer(&mut digest, request)?;
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn receipt(db: &Connection, task_id: &str, operation_id: &str) -> Result<Option<(String, String)>> {
+    Ok(db
         .query_row(
-            "SELECT result_json FROM artifact_write_receipts WHERE task_id=? AND operation_id=?",
+            "SELECT request_hash,result_json FROM artifact_write_receipts WHERE task_id=? AND operation_id=?",
             params![task_id, operation_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()?;
-    value
-        .map(|value| Ok(serde_json::from_str(&value)?))
+        .optional()?)
+}
+
+pub(crate) fn read_receipt(
+    db: &Connection,
+    task_id: &str,
+    operation_id: &str,
+) -> Result<Option<Value>> {
+    receipt(db, task_id, operation_id)?
+        .map(|(_, value)| Ok(serde_json::from_str(&value)?))
         .transpose()
 }
 
-fn store_receipt(db: &Connection, task_id: &str, operation_id: &str, value: &Value) -> Result<()> {
-    db.execute("INSERT INTO artifact_write_receipts (task_id,operation_id,result_json) VALUES (?,?,?)
-        ON CONFLICT(task_id) DO UPDATE SET operation_id=excluded.operation_id,result_json=excluded.result_json",
-        params![task_id, operation_id, serde_json::to_string(value)?])?;
+fn replay(db: &Connection, task_id: &str, operation_id: &str, hash: &str) -> Result<Option<Value>> {
+    let Some((saved_hash, value)) = receipt(db, task_id, operation_id)? else {
+        return Ok(None);
+    };
+    if saved_hash != hash {
+        return Err("成果操作 ID 已用于另一笔写入".into());
+    }
+    Ok(Some(serde_json::from_str(&value)?))
+}
+
+fn store_receipt(
+    db: &Connection,
+    task_id: &str,
+    operation_id: &str,
+    hash: &str,
+    value: &Value,
+) -> Result<()> {
+    db.execute("INSERT INTO artifact_write_receipts (task_id,operation_id,request_hash,result_json) VALUES (?,?,?,?)",
+        params![task_id, operation_id, hash, serde_json::to_string(value)?])?;
     Ok(())
 }

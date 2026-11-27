@@ -1,21 +1,24 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import Database from "better-sqlite3";
-import { acquireCoreDatabaseGuard, connectCoreWorker, shutdownCoreWorker, type RuntimeCoreClient } from "../src/main/platform/core-client";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { ROOT_CONVERSATION_ID, type EntryId } from "@earendil-works/pi-durable";
+import { DuckDbStorage } from "../src/main/agent/durable/DuckDbStorage";
+import { acquireCoreDatabaseGuard, connectCoreWorker, initializeCoreDatabase, shutdownCoreWorker, type RuntimeCoreClient } from "../src/main/platform/core-client";
 import { locateRuntimeAudit, RuntimeAuditReader } from "../src/main/platform/runtime-audit";
-import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
 
 const executable = process.env.RUNTIME_AUDIT_BINARY ?? locateRuntimeAudit(process.cwd());
 assert(executable && existsSync(executable), "The real Rust worker is required");
 const tests = join(process.cwd(), "out", "tests"); mkdirSync(tests, { recursive: true });
 const directory = mkdtempSync(join(tests, "core-client-"));
 const dataDirectory = join(directory, "data"); mkdirSync(dataDirectory);
-const database = join(directory, "app.db"); writeFileSync(database, "");
-const historyPath = join(directory, "history.sqlite");
-const history = new Database(historyPath);
-history.exec("CREATE TABLE sample(value INTEGER); INSERT INTO sample VALUES(42)"); history.close();
+const database = join(directory, "app.duckdb");
+const historyPath = join(directory, "durable-history");
+const historyText = "Durable history stays readable across UI lifetimes";
+const engineSource = readFileSync(join(process.cwd(), "native/runtime-audit/src/database.rs"), "utf8");
+const schemaVersion = Number(/pub const DUCKDB_SCHEMA_VERSION: \w+ = (\d+);/.exec(engineSource)?.[1]);
+assert(Number.isSafeInteger(schemaVersion), "Expected the Rust database schema version");
 const endpointPath = join(dataDirectory, "core.json");
 const pids = new Set<number>();
 const clients = new Set<RuntimeCoreClient>();
@@ -73,11 +76,13 @@ try {
     await assert.rejects(acquireCoreDatabaseGuard(executable!, dataDirectory), /ownership guard unavailable/);
     await assert.rejects(connectCoreWorker(executable!, database, { dataDirectory, timeoutMs: 250 }), /Core did not become available/);
     assert(!existsSync(endpointPath), "Core must not start during a guarded schema replacement");
+    assert(!existsSync(database), "The client must not create the database while the guard is held");
   } finally { await within(guard.release()); }
   console.log("PASS database initialization guard excludes both a second initializer and Core startup");
 
   writeFileSync(endpointPath, "{}");
   const first = await open(); const a = endpoint(); await ping(first);
+  assert(existsSync(database), "The worker materialized the database during authenticated startup");
   await assert.rejects(acquireCoreDatabaseGuard(executable!, dataDirectory), /ownership guard unavailable/);
   await ping(first);
   await close(first);
@@ -92,12 +97,30 @@ try {
   await ping(second); await close(second);
   console.log("PASS aborted competing connection leaves the active production client intact");
 
+  const seedReader = new RuntimeAuditReader(executable, database, { coreDataDirectory: dataDirectory });
+  readers.add(seedReader);
+  const storage = await DuckDbStorage.openWriter(seedReader, historyPath);
+  try {
+    const id = await storage.mintId<EntryId>();
+    const result = await storage.commit([[
+      { type: "conversation", value: { id: ROOT_CONVERSATION_ID } },
+      { type: "entry", value: {
+        id, conversationId: ROOT_CONVERSATION_ID, kind: "pi.user",
+        model: [{ role: "user", content: historyText, timestamp: 1 }],
+      } },
+    ]], () => {}, BACKGROUND_CONTEXT);
+    assert.equal(result.stored, 1);
+  } finally {
+    await storage.close(BACKGROUND_CONTEXT);
+    await within(seedReader.close());
+    readers.delete(seedReader);
+  }
   // Sixteen is the real worker's snapshot cap. More reconnects prove abandoned
   // snapshots are released by the supervisor even when the UI omits snapshot.close.
   for (let index = 0; index < 18; index++) {
     const reader = new RuntimeAuditReader(executable!, database, { coreDataDirectory: dataDirectory }); readers.add(reader);
     const snapshot = await within(reader.openDurable(historyPath)); assert(snapshot, `snapshot ${index} must open via Core`);
-    assert.equal((await within(snapshot.select("SELECT value FROM sample", [], true)) as { value: number }).value, 42);
+    assert.equal(await within(snapshot.head(ROOT_CONVERSATION_ID, 100)), `用户：${historyText}`);
     await within(reader.close()); readers.delete(reader);
   }
   assert.equal(endpoint().workerPid, a.workerPid);
@@ -113,11 +136,12 @@ try {
 
   await within(shutdownCoreWorker(dataDirectory, database), 6_000);
   assert(!existsSync(endpointPath));
+  assert.equal(readFileSync(database).subarray(8, 12).toString("ascii"), "DUCK");
   console.log("PASS explicit fixture shutdown releases the detached Core");
 
   const aliasDataDirectory = join(directory, "data-alias");
   symlinkSync(dataDirectory, aliasDataDirectory, process.platform === "win32" ? "junction" : "dir");
-  const aliasDatabase = process.platform === "win32" ? join(directory, "APP.DB") : database;
+  const aliasDatabase = process.platform === "win32" ? join(directory, "APP.DUCKDB") : database;
   try {
     const startVia = async (dir: string, db: string) => {
       const client = await connectCoreWorker(executable!, db, { dataDirectory: dir, timeoutMs: 6_000 });
@@ -142,7 +166,8 @@ try {
   }
 
   const versionDirectory = join(directory, "versions"); mkdirSync(versionDirectory);
-  const versionDatabase = join(versionDirectory, "app.db"); writeFileSync(versionDatabase, "");
+  const versionDatabase = join(versionDirectory, "app.duckdb");
+  await initializeCoreDatabase(executable, versionDirectory, versionDatabase, schemaVersion);
   const updatableSource = join(directory, process.platform === "win32" ? "updatable-runtime.exe" : "updatable-runtime");
   copyFileSync(executable!, updatableSource);
   const versionOptions = { dataDirectory: versionDirectory, timeoutMs: 6_000 };
@@ -169,44 +194,6 @@ try {
     if (existsSync(join(versionDirectory, "core.json"))) { recordVersion(); await within(shutdownCoreWorker(versionDirectory, versionDatabase), 6_000); }
   }
 
-  const productionDirectory = join(directory, "production");
-  const productionDatabase = join(productionDirectory, "app.db");
-  const productionEndpoint = join(productionDirectory, "core.json");
-  const options = { runtimeAuditExecutable: executable!, runtimeAuditSupervised: true };
-  let app: AppDatabase | undefined;
-  const recordProduction = () => {
-    const value = JSON.parse(readFileSync(productionEndpoint, "utf8"));
-    pids.add(value.pid); pids.add(value.workerPid); return value;
-  };
-  try {
-    app = await within(AppDatabase.open(productionDatabase, options));
-    assert.equal(app.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION);
-    // First use includes publishing and hashing the immutable executable plus Core's
-    // bounded 12-second startup. This is a lifecycle deadline, not a warm-query budget.
-    const coldStarted = performance.now();
-    assert.equal((await within(app.runtimeAuditReader!.queryOperation("production-connect"), 15_000))?.state, "unknown");
-    console.log(`Core first production connection: ${Math.round(performance.now() - coldStarted)}ms`);
-    const live = recordProduction();
-    await within(app.runtimeAuditReader!.close()); app.close(); app = undefined;
-
-    app = await within(AppDatabase.open(productionDatabase, options));
-    assert.equal((await within(app.runtimeAuditReader!.queryOperation("production-reconnect")))?.state, "unknown");
-    assert.equal(recordProduction().workerPid, live.workerPid);
-    app.connection.exec("CREATE TABLE core_guard_sentinel(value TEXT); INSERT INTO core_guard_sentinel VALUES ('must survive')");
-    app.connection.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION - 1}`);
-    const original = statSync(productionDatabase);
-    assert.throws(() => new AppDatabase(productionDatabase), /Core 独占锁/,
-      "a CLI caller cannot bypass Core ownership by omitting native options");
-    await assert.rejects(AppDatabase.open(productionDatabase, options), /ownership guard unavailable/);
-    assert.equal(statSync(productionDatabase).ino, original.ino, "a live Core must protect the original database inode");
-    const sentinel = app.connection.prepare("SELECT value FROM core_guard_sentinel").get() as { value: string };
-    assert.equal(sentinel.value, "must survive");
-    app.connection.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION}`);
-    console.log("PASS production AppDatabase guarded creation and current-schema reconnect preserve Core; incompatible live schema is rejected before unlink");
-  } finally {
-    if (app) { await within(app.runtimeAuditReader!.close()); app.close(); }
-    if (existsSync(productionEndpoint)) { recordProduction(); await within(shutdownCoreWorker(productionDirectory, productionDatabase), 6_000); }
-  }
 } finally {
   await Promise.allSettled([...readers].map(reader => within(reader.close())));
   await Promise.allSettled([...clients].map(close));

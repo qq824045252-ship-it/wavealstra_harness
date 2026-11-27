@@ -1,8 +1,25 @@
 import { realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import type Database from "better-sqlite3";
+import type { NativePersistenceReply, RuntimeAuditReader } from "../../platform/runtime-audit";
 
 export type ReadMapping = { missing: string; found: string; cwd: string };
+type HintScope = { task: string; cwd: string };
+type Hint = ReadMapping & HintScope & { key: string; week: string; enabled: boolean };
+type HintMetrics = { hint: Hint; triggers: number; repaired: number; errors: number };
+
+export type ReadHintQuery =
+  | { kind: "list" }
+  | { kind: "state"; key: string }
+  | { kind: "has"; scope: HintScope }
+  | { kind: "lookup"; scope: HintScope; missing: string };
+
+export type ReadHintMutation = { scope: HintScope } & (
+  | { kind: "publish"; key: string; missing: string; found: string; week: string }
+  | { kind: "disable"; key: string }
+  | { kind: "recordUse"; key: string; missing: string; found: string; conversation: string; run: string; call: string }
+  | { kind: "repair"; found: string; conversation: string; run: string }
+);
+
 export const missingFile = (text: string) => /\bENOENT\b|no such file or directory|file not found/i.test(text);
 /** A direct request to locate a named file. Plain reads of an exact path keep their original meaning. */
 export function lookupFileName(text: string): string | undefined {
@@ -29,52 +46,62 @@ async function verified(mapping: ReadMapping): Promise<boolean> {
 }
 
 export class ReadRecoveryHints {
-  constructor(private readonly db: Database.Database) {
-    db.exec("CREATE TABLE IF NOT EXISTS path_hints(key TEXT PRIMARY KEY,task TEXT,cwd TEXT,missing TEXT,found TEXT,enabled INTEGER,week TEXT);" +
-      "CREATE INDEX IF NOT EXISTS hint_lookup ON path_hints(task,cwd,missing,enabled);" +
-      "CREATE TABLE IF NOT EXISTS path_hint_uses(key TEXT,conversation TEXT,run TEXT,call TEXT,repaired INTEGER DEFAULT 0,PRIMARY KEY(key,conversation,run,call))");
+  constructor(private readonly core: Pick<RuntimeAuditReader, "readPathHints" | "writePathHints"> | undefined) {}
+
+  private data<T>(reply: NativePersistenceReply<T> | undefined): T {
+    if (!reply) throw new Error("Core 路径经验存储不可用");
+    if (reply.status === "rejected") throw new Error(reply.message);
+    return reply.data;
   }
+
+  async list(): Promise<HintMetrics[]> {
+    return this.data(await this.core?.readPathHints<HintMetrics[]>({ kind: "list" }));
+  }
+
   async publish(key: string, task: string, evidence: ReadMapping, week: string) {
     const m = readMapping(evidence.missing,evidence.found,evidence.cwd);
     if (!m || !await verified(m)) return false;
-    // Conflicting locations are ambiguous. Withdraw the earlier suggestion and retain both records.
-    return this.db.transaction(() => {
-      const conflict = this.db.prepare("SELECT 1 FROM path_hints WHERE task=? AND cwd=? AND missing=? AND found<>?").get(task,m.cwd,m.missing,m.found);
-      if (conflict) this.db.prepare("UPDATE path_hints SET enabled=0 WHERE task=? AND cwd=? AND missing=?").run(task,m.cwd,m.missing);
-      return Boolean(this.db.prepare("INSERT OR IGNORE INTO path_hints VALUES(?,?,?,?,?,?,?)").run(key,task,m.cwd,m.missing,m.found,Number(!conflict),week).changes);
-    }).immediate();
+    return this.data(await this.core?.writePathHints<boolean>({
+      kind: "publish", scope: { task, cwd: m.cwd }, key, missing: m.missing, found: m.found, week,
+    }));
   }
-  state(key: string) {
-    return this.db.prepare("SELECT enabled,found,missing FROM path_hints WHERE key=?").get(key) as {enabled: number;found: string;missing: string} | undefined;
+
+  async state(key: string): Promise<Hint | null> {
+    return this.data(await this.core?.readPathHints<Hint | null>({ kind: "state", key }));
   }
-  disable(key: string) {
-    if (!this.db.prepare("UPDATE path_hints SET enabled=0 WHERE key=? AND enabled=1").run(key).changes) throw new Error("路径经验已停用");
+
+  async disable(key: string): Promise<void> {
+    const hint = await this.state(key);
+    if (!hint || !this.data(await this.core?.writePathHints<boolean>({
+      kind: "disable", scope: { task: hint.task, cwd: hint.cwd }, key,
+    }))) throw new Error("路径经验已停用");
   }
-  stats(key: string) {
-    const row = this.db.prepare("SELECT COUNT(*) triggers, COUNT(DISTINCT CASE WHEN repaired=1 THEN json_array(conversation,run) END) repaired FROM path_hint_uses WHERE key=?").get(key) as {triggers: number; repaired: number};
-    return { ...row, errors: 0 };
+
+  async has(task: string, cwd: string): Promise<boolean> {
+    return this.data(await this.core?.readPathHints<boolean>({ kind: "has", scope: { task, cwd } }));
   }
-  has(task: string, cwd: string) {
-    return Boolean(this.db.prepare("SELECT 1 FROM path_hints WHERE task=? AND cwd=? AND enabled=1 LIMIT 1").get(task,cwd));
-  }
+
   async observe(task: string, cwd: string, path: string, error: boolean, output: string, conversation: string, run: string, call: string) {
     if (!error) {
-      this.db.prepare("UPDATE path_hint_uses SET repaired=1 WHERE conversation=? AND run=? AND key IN (SELECT key FROM path_hints WHERE task=? AND cwd=? AND found=? AND enabled=1)")
-        .run(conversation,run,task,cwd,path);
+      this.data(await this.core?.writePathHints<null>({ kind: "repair", scope: { task, cwd }, found: path, conversation, run }));
       return;
     }
     if (!missingFile(output)) return;
     return this.suggest(task,cwd,path,conversation,run,call);
   }
+
   async suggest(task: string, cwd: string, path: string, conversation: string, run: string, call: string) {
-    const h = this.db.prepare("SELECT key,found FROM path_hints WHERE enabled=1 AND task=? AND cwd=? AND missing=?").get(task,cwd,path) as {key:string;found:string} | undefined;
+    const scope = { task, cwd };
+    const h = this.data(await this.core?.readPathHints<Hint | null>({ kind: "lookup", scope, missing: path }));
     if (!h) return;
     if (!await verified({ cwd, missing: path, found: h.found })) {
-      this.db.prepare("UPDATE path_hints SET enabled=0 WHERE key=?").run(h.key);
+      this.data(await this.core?.writePathHints<boolean>({ kind: "disable", scope, key: h.key }));
       return;
     }
-    if (!this.state(h.key)?.enabled) return;
-    this.db.prepare("INSERT OR IGNORE INTO path_hint_uses(key,conversation,run,call) VALUES(?,?,?,?)").run(h.key,conversation,run,call);
+    const recorded = this.data(await this.core?.writePathHints<boolean>({
+      kind: "recordUse", scope, key: h.key, missing: path, found: h.found, conversation, run, call,
+    }));
+    if (!recorded) return;
     return "本任务曾在 " + JSON.stringify(h.found) + " 成功读取同名文件。当前路径仍不存在；请先核对它是否是本次要找的文件。";
   }
 }

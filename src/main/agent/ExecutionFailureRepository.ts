@@ -18,8 +18,12 @@ interface ExecutionFailureNativeStore {
   readonly supervised?: boolean;
   executionFailures(taskId: string): Promise<ExecutionFailureRow[] | undefined>;
   dismissExecutionFailure(taskId: string, id: string, at: number): Promise<ExecutionFailureDismissReply | undefined>;
+  readDurableTaskBinding?(taskId: string): Promise<{ directory: string } | null | undefined>;
   writeExecutionFailures?<T = unknown>(request: Record<string, unknown>): Promise<T | undefined>;
 }
+
+type FailureInput = Omit<ExecutionFailureDto, "id" | "createdAt" | "resolvedAt" | "dismissedAt">;
+type FailureMatch = { target?: string; causeCodes?: readonly string[]; sideEffects?: ExecutionFailureDto["sideEffects"] };
 
 /**
  * 已完成 schema 保障与一次性遗留清理的连接。
@@ -31,8 +35,9 @@ const initializedConnections = new WeakSet<Database.Database>();
 export class ExecutionFailureRepository {
   private writeTail: Promise<unknown> = Promise.resolve();
 
-  constructor(private readonly db: Database.Database, private readonly native?: ExecutionFailureNativeStore) {
-    if (db.readonly || initializedConnections.has(db)) return;
+  constructor(private readonly fixture: Database.Database | undefined, private readonly native?: ExecutionFailureNativeStore) {
+    const db = fixture;
+    if (!db || db.readonly || initializedConnections.has(db)) return;
     db.exec(`CREATE TABLE IF NOT EXISTS execution_failures (
       id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, cause_code TEXT NOT NULL,
       record_json TEXT NOT NULL, created_at INTEGER NOT NULL, resolved_at INTEGER
@@ -46,31 +51,35 @@ export class ExecutionFailureRepository {
     initializedConnections.add(db);
   }
 
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("执行失败记录需要通过 Rust Core 读取或写入");
+    return this.fixture;
+  }
+
   flush(): Promise<void> {
     return this.writeTail.then(() => undefined, () => undefined);
   }
 
   private get rustRequired(): boolean {
-    return Boolean(this.db.readonly || this.native?.supervised);
+    return !this.fixture || Boolean(this.fixture.readonly || this.native?.supervised);
   }
 
   private enqueueRustWrite(request: Record<string, unknown>): void {
-    const store = this.native?.writeExecutionFailures?.bind(this.native);
-    if (!store) {
-      throw new Error("ExecutionFailureRepository 缺少 Rust 写入通道");
-    }
-    const next = this.writeTail.then(async () => {
-      const reply = await store(request);
-      if (reply === undefined) throw new Error(`执行失败记录写入未获 Rust 确认: ${String(request.kind)}`);
-      return reply;
-    });
+    const next = this.writeTail.then(() => this.writeRust(request));
     this.writeTail = next.catch((error) => {
       console.warn(`[ExecutionFailures] Rust write failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }
 
-  record(input: Omit<ExecutionFailureDto, "id" | "createdAt" | "resolvedAt" | "dismissedAt">): ExecutionFailureDto {
-    const record = { ...input, message: input.message.slice(0, 8000), nextAction: input.nextAction.slice(0, 2000), id: randomUUID(), createdAt: Date.now() };
+  private async writeRust<T>(request: Record<string, unknown>): Promise<T> {
+    if (!this.native?.writeExecutionFailures) throw new Error("ExecutionFailureRepository 缺少 Rust 写入通道");
+    const reply = await this.native.writeExecutionFailures<T>(request);
+    if (reply === undefined) throw new Error(`执行失败记录写入未获 Rust 确认: ${String(request.kind)}`);
+    return reply;
+  }
+
+  record(input: FailureInput): ExecutionFailureDto {
+    const record = prepareRecord(input);
     const recordJson = JSON.stringify(record);
     if (this.native?.writeExecutionFailures && this.rustRequired) {
       this.enqueueRustWrite({ kind: "record", id: record.id, taskId: record.taskId, causeCode: record.causeCode, recordJson, createdAt: record.createdAt });
@@ -85,28 +94,24 @@ export class ExecutionFailureRepository {
     return record;
   }
 
-  recordIfAbsent(input: Omit<ExecutionFailureDto, "id" | "createdAt" | "resolvedAt" | "dismissedAt">): ExecutionFailureDto {
+  recordIfAbsent(input: FailureInput): ExecutionFailureDto {
     // Dismissed failures are intentionally absent from list(); if the same failure happens again,
     // create a fresh visible record instead of reviving or silently swallowing the old one.
     const existing = this.list(input.taskId).find((item) => !item.resolvedAt && item.causeCode === input.causeCode
       && item.target === input.target && item.recovery === input.recovery && item.phase === input.phase);
     if (existing) return existing;
     if (this.native?.writeExecutionFailures && this.rustRequired) {
-      const record = { ...input, message: input.message.slice(0, 8000), nextAction: input.nextAction.slice(0, 2000), id: randomUUID(), createdAt: Date.now() };
-      this.enqueueRustWrite({
-        kind: "recordIfAbsent",
-        id: record.id,
-        taskId: record.taskId,
-        causeCode: record.causeCode,
-        target: record.target ?? null,
-        recovery: record.recovery,
-        phase: record.phase,
-        recordJson: JSON.stringify(record),
-        createdAt: record.createdAt,
-      });
+      const record = prepareRecord(input);
+      this.enqueueRustWrite(recordIfAbsentRequest(record));
       return record;
     }
     return this.record(input);
+  }
+
+  async recordIfAbsentAsync(input: FailureInput): Promise<ExecutionFailureDto> {
+    if (!this.rustRequired) return this.recordIfAbsent(input);
+    const { recordJson } = await this.writeRust<{ recordJson: string }>(recordIfAbsentRequest(prepareRecord(input)));
+    return JSON.parse(recordJson) as ExecutionFailureDto;
   }
 
   list(taskId: string, { includeDismissed = false, limit = 100 } = {}): ExecutionFailureDto[] {
@@ -135,6 +140,7 @@ export class ExecutionFailureRepository {
 
   async listForDisplay(taskId: string): Promise<ExecutionFailureDto[]> {
     const rows = await this.native?.executionFailures(taskId);
+    if (rows === undefined && this.rustRequired) throw new Error("执行失败记录读取未获 Rust 核心确认");
     const records = rows === undefined ? this.list(taskId) : this.projectRows(taskId, rows);
     const candidates = records.filter(row => !row.resolvedAt && row.phase === "verify" && row.recovery === "recoverable"
       && row.sideEffects !== "unknown" && row.executionId?.startsWith(`durable:${taskId}:`)
@@ -142,7 +148,8 @@ export class ExecutionFailureRepository {
       && row.message.startsWith("Computer Use ") && row.message.includes("the requested semantic postcondition"));
     if (!candidates.length) return records;
     try {
-      const binding = this.db.prepare("SELECT directory FROM durable_bot_bindings WHERE task_id=?").get(taskId) as { directory: string } | undefined;
+      const binding = this.rustRequired ? await this.native?.readDurableTaskBinding?.(taskId)
+        : this.db.prepare("SELECT directory FROM durable_bot_bindings WHERE task_id=?").get(taskId) as { directory: string } | undefined;
       if (binding) {
         const { computerToolFeedbackIds } = await import("./durable/DurableComputerUseFeedback");
         const feedback = await computerToolFeedbackIds(binding.directory, candidates);
@@ -178,7 +185,7 @@ export class ExecutionFailureRepository {
     throw new Error("无法确认恢复提示已隐藏");
   }
 
-  resolveMatching(taskId: string, input: { target?: string; causeCodes?: readonly string[]; sideEffects?: ExecutionFailureDto["sideEffects"] }): number {
+  resolveMatching(taskId: string, input: FailureMatch): number {
     const rows = this.db.prepare("SELECT id, cause_code, record_json FROM execution_failures WHERE task_id = ? AND resolved_at IS NULL ORDER BY created_at DESC, rowid DESC").all(taskId) as Array<{ id: string; cause_code: string; record_json: string }>;
     const ids = rows.flatMap((row) => {
       if (input.causeCodes?.length && !input.causeCodes.includes(row.cause_code)) return [];
@@ -193,14 +200,7 @@ export class ExecutionFailureRepository {
     });
     const now = Date.now();
     if (this.native?.writeExecutionFailures && this.rustRequired) {
-      this.enqueueRustWrite({
-        kind: "resolveMatching",
-        taskId,
-        target: input.target ?? null,
-        causeCodes: input.causeCodes ? [...input.causeCodes] : null,
-        sideEffects: input.sideEffects ?? null,
-        at: now,
-      });
+      this.enqueueRustWrite(resolveMatchingRequest(taskId, input, now));
       return ids.length;
     }
     if (!ids.length) return 0;
@@ -208,4 +208,33 @@ export class ExecutionFailureRepository {
     const update = this.db.prepare("UPDATE execution_failures SET resolved_at = ? WHERE id = ? AND task_id = ? AND resolved_at IS NULL");
     return this.db.transaction(() => ids.reduce((count, id) => count + update.run(now, id, taskId).changes, 0))();
   }
+
+  async resolveMatchingAsync(taskId: string, input: FailureMatch): Promise<number> {
+    if (!this.rustRequired) return this.resolveMatching(taskId, input);
+    const { changes } = await this.writeRust<{ changes: number }>(resolveMatchingRequest(taskId, input, Date.now()));
+    return changes;
+  }
+}
+
+function prepareRecord(input: FailureInput): ExecutionFailureDto {
+  return { ...input, message: input.message.slice(0, 8000), nextAction: input.nextAction.slice(0, 2000), id: randomUUID(), createdAt: Date.now() };
+}
+
+function recordIfAbsentRequest(record: ExecutionFailureDto) {
+  return {
+    kind: "recordIfAbsent",
+    id: record.id,
+    taskId: record.taskId,
+    causeCode: record.causeCode,
+    target: record.target ?? null,
+    recovery: record.recovery,
+    phase: record.phase,
+    recordJson: JSON.stringify(record),
+    createdAt: record.createdAt,
+  };
+}
+
+function resolveMatchingRequest(taskId: string, input: FailureMatch, at: number) {
+  return { kind: "resolveMatching", taskId, target: input.target ?? null,
+    causeCodes: input.causeCodes ? [...input.causeCodes] : null, sideEffects: input.sideEffects ?? null, at };
 }

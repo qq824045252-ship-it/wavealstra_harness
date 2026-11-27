@@ -24,9 +24,10 @@ import { EXECUTION_ATTEMPT_SCHEMA } from "../agent/ExecutionAttemptRepository";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
-import { getDbPath, getLibraryDir, mapLegacyRootPath } from "../paths";
-import { RuntimeAuditReader, type RuntimeDueTrashedTask, type RuntimeGatewayMessageWrite, type RuntimeWorkspaceLabel, type RuntimeWorkspaceQuery, type TaskArchivePurgeScope } from "../platform/runtime-audit";
-import { acquireCoreDatabaseGuard, initializeCoreDatabase } from "../platform/core-client";
+import { isDeepStrictEqual } from "node:util";
+import { getCoreDbPath, getDbPath, getLibraryDir, mapLegacyRootPath } from "../paths";
+import { getDefaultPiStorageClient, setDefaultPiStorageClient } from "../agent/durable/DurableStorage";
+import { RuntimeAuditReader, RuntimeAuditUnknownOperationError, type ApplicationDatabaseIdentity, type RuntimeCronDataQuery, type RuntimeDueTrashedTask, type RuntimeGatewayChannelTransition, type RuntimeGatewayMessageWrite, type RuntimeWorkspaceLabel, type RuntimeWorkspaceQuery, type TaskArchivePurgeScope } from "../platform/runtime-audit";
 import type { TrashedTaskDto } from "../../shared/archive-deletion";
 import type { ArchiveTaskCandidate } from "../task/ArchivedContentDeletion";
 import { insertCronRun, writeCronRun, type CronRunWrite } from "./CronRunPersistence";
@@ -36,6 +37,7 @@ import {
   runtimeAuditStorageBytes,
 } from "../agent/RuntimeAuditStorage";
 import { bindWorkDomainWriter, flushWorkDomainWrites } from "../agent/work/WorkDomainRuntime";
+import { TaskWriteQueue } from "./TaskWriteQueue";
 
 /**
  * cad_models 表建表 SQL（dormant：kernel 已拆除，停止新写；历史数据与迁移保留）。
@@ -276,11 +278,25 @@ function needsCoreDatabaseGuard(dbPath: string): boolean {
   finally { probe.close(); }
 }
 
-const CORE_DATABASE_GUARD = Symbol("core-database-guard");
 interface AppDatabaseOptions {
   runtimeAuditExecutable?: string;
   runtimeAuditSupervised?: boolean;
   readonly?: boolean;
+}
+
+interface CoreDatabaseConnection {
+  reader: RuntimeAuditReader;
+  identity: ApplicationDatabaseIdentity;
+}
+
+function legacyWorkspacePathChanges(rows: Array<{ id: string; path: string }>, oldRoot: string, newRoot: string): Array<[string, string, string]> {
+  const changes: Array<[string, string, string]> = [];
+  for (const { id, path } of rows) {
+    if (!isAbsolute(path) || existsSync(path)) continue;
+    const mapped = mapLegacyRootPath(oldRoot, newRoot, path);
+    if (mapped !== null && mapped !== path) changes.push([id, path, mapped]);
+  }
+  return changes;
 }
 
 function resetIncompatibleDatabaseFile(dbPath: string): void {
@@ -319,11 +335,12 @@ function resetIncompatibleDatabaseFile(dbPath: string): void {
 }
 
 export class AppDatabase {
-  private readonly db: Database.Database;
+  private readonly sqlite?: Database.Database;
+  readonly coreIdentity?: ApplicationDatabaseIdentity;
+  readonly databasePath: string;
   readonly runtimeAuditReader?: RuntimeAuditReader;
-  private taskDueDateTail: Promise<string | undefined> = Promise.resolve(undefined);
-  private taskSidebarTail: Promise<string | undefined> = Promise.resolve(undefined);
-  private taskRecordTail: Promise<string | undefined> = Promise.resolve(undefined);
+  private closed = false;
+  private readonly taskWrites = new TaskWriteQueue();
   private workspaceWriteTail: Promise<void> = Promise.resolve();
   private cronWriteTail: Promise<void> = Promise.resolve();
   private gatewayWriteTail: Promise<void> = Promise.resolve();
@@ -344,74 +361,94 @@ export class AppDatabase {
   }
 
   get readonly(): boolean {
-    return this.db.readonly;
+    return this.sqlite?.readonly ?? true;
   }
 
-  /** Production creation/reset delegates schema check/reset/materialization to Rust
-   * under the same OS guards as Core. A live background writer makes init fail. */
-  static async open(dbPath = getDbPath(), options: AppDatabaseOptions = {}): Promise<AppDatabase> {
+  get isOpen(): boolean {
+    return !this.closed && (this.sqlite?.open ?? this.coreIdentity !== undefined);
+  }
+
+  get inTransaction(): boolean {
+    return this.sqlite?.inTransaction === true;
+  }
+
+  get fixtureConnection(): Database.Database | undefined {
+    return this.sqlite;
+  }
+
+  private get db(): Database.Database {
+    if (!this.sqlite) throw new Error("此操作仍依赖本地 SQLite，Core 数据库要求使用领域 IPC");
+    return this.sqlite;
+  }
+
+  static async open(dbPath?: string, options: AppDatabaseOptions = {}): Promise<AppDatabase> {
     if (!options.runtimeAuditSupervised || dbPath === ":memory:") return new AppDatabase(dbPath, options);
     if (!options.runtimeAuditExecutable) throw new Error("Rust 核心程序缺失，无法初始化数据库");
-    if (!needsCoreDatabaseGuard(dbPath)) {
-      return new AppDatabase(dbPath, options, options.readonly ? CORE_DATABASE_GUARD : undefined);
+    const path = resolve(dbPath ?? getCoreDbPath());
+    const reader = new RuntimeAuditReader(options.runtimeAuditExecutable, path, { coreDataDirectory: dirname(path) });
+    try {
+      const identity = await reader.applicationDatabaseIdentity();
+      if (!identity?.databaseGeneration || !Number.isSafeInteger(identity.schemaVersion) || identity.schemaVersion < 1) {
+        throw new Error("Rust Core 未确认应用数据库身份");
+      }
+      return new AppDatabase(path, options, { reader, identity });
+    } catch (error) {
+      await reader.close();
+      throw error;
     }
-    await initializeCoreDatabase(options.runtimeAuditExecutable, dirname(dbPath), dbPath, CURRENT_DATABASE_SCHEMA_VERSION);
-    const guard = await acquireCoreDatabaseGuard(options.runtimeAuditExecutable, dirname(dbPath));
-    try { return new AppDatabase(dbPath, options, CORE_DATABASE_GUARD); }
-    finally { await guard.release(); }
   }
 
-  constructor(dbPath = getDbPath(), options: AppDatabaseOptions = {}, guard?: typeof CORE_DATABASE_GUARD) {
+  constructor(dbPath = getDbPath(), options: AppDatabaseOptions = {}, core?: CoreDatabaseConnection) {
+    if (core) {
+      this.databasePath = dbPath;
+      this.runtimeAuditReader = core.reader;
+      this.coreIdentity = core.identity;
+      setDefaultPiStorageClient(core.reader);
+      return;
+    }
     if (options.runtimeAuditSupervised && dbPath !== ":memory:") {
-      if (!options.runtimeAuditExecutable) throw new Error("Rust 核心程序缺失，无法初始化数据库");
+      throw new Error("受监督的数据库必须通过 AppDatabase.open 连接 Rust Core");
     }
     // A CLI/Host caller must not bypass protection simply by omitting native options
     // after a directory has been owned by Core. Persistent lock files are never unlinked.
-    if (dbPath !== ":memory:" && guard !== CORE_DATABASE_GUARD
-        && (options.runtimeAuditSupervised || ["core.lock", "core.lease", "core.json"]
-          .some(name => existsSync(join(dirname(dbPath), name))))
+    if (dbPath !== ":memory:" && ["core.lock", "core.lease", "core.json"]
+          .some(name => existsSync(join(dirname(dbPath), name)))
         && needsCoreDatabaseGuard(dbPath))
       throw new Error("数据库创建或重建需要 Core 独占锁，请使用 AppDatabase.open");
     const openReadonly = Boolean(options.readonly && dbPath !== ":memory:");
     if (!openReadonly) resetIncompatibleDatabaseFile(dbPath);
-    this.db = openReadonly ? new Database(dbPath, { readonly: true, fileMustExist: true }) : new Database(dbPath);
+    const sqlite = openReadonly ? new Database(dbPath, { readonly: true, fileMustExist: true }) : new Database(dbPath);
+    this.sqlite = sqlite;
+    this.databasePath = sqlite.name;
     if (openReadonly) {
-      this.db.pragma("query_only = ON");
-      if (guard === CORE_DATABASE_GUARD && this.schemaVersion !== CURRENT_DATABASE_SCHEMA_VERSION) {
-        this.db.close();
-        throw new Error(`数据库版本 ${this.schemaVersion} 与当前开发 schema ${CURRENT_DATABASE_SCHEMA_VERSION} 不一致；请先由 Core 初始化`);
-      }
+      sqlite.pragma("query_only = ON");
     } else {
-      this.db.pragma("journal_mode = WAL");
+      sqlite.pragma("journal_mode = WAL");
       // Table rebuild migrations must run with FK checks disabled. Enforcement is
       // enabled for every product connection immediately after migration.
-      this.db.pragma("foreign_keys = OFF");
+      sqlite.pragma("foreign_keys = OFF");
       try {
-        // When Rust --init-database already materialized CURRENT schema under CORE_DATABASE_GUARD,
-        // skip redundant Node schema materialization and seed repairs.
-        if (guard !== CORE_DATABASE_GUARD || this.schemaVersion !== CURRENT_DATABASE_SCHEMA_VERSION) {
-          this.migrate();
-        }
+        this.migrate();
       } catch (cause) {
-        this.db.close();
+        sqlite.close();
         throw new Error(`数据库初始化失败：${cause instanceof Error ? cause.message : String(cause)}`);
       }
-      this.db.pragma("foreign_keys = ON");
+      sqlite.pragma("foreign_keys = ON");
     }
     if (options.runtimeAuditExecutable) {
-      this.runtimeAuditReader = new RuntimeAuditReader(options.runtimeAuditExecutable, this.db.name,
-        options.runtimeAuditSupervised && this.db.name !== ":memory:" ? { coreDataDirectory: dirname(this.db.name) } : undefined);
-      bindWorkDomainWriter(this.db, this.runtimeAuditReader);
+      this.runtimeAuditReader = new RuntimeAuditReader(options.runtimeAuditExecutable, this.databasePath);
+      setDefaultPiStorageClient(this.runtimeAuditReader);
+      bindWorkDomainWriter(sqlite, this.runtimeAuditReader);
     }
   }
 
-  /** 共享 SQLite 连接（ArtifactRepository 复用同一连接，§6：优先使用现有 SQLite） */
+  /** SQLite 夹具的同步连接。Core 会话只有领域客户端。 */
   get connection(): Database.Database {
     return this.db;
   }
 
   get schemaVersion(): number {
-    return Number(this.db.pragma("user_version", { simple: true }));
+    return this.coreIdentity?.schemaVersion ?? Number(this.db.pragma("user_version", { simple: true }));
   }
 
   /** sqlite_master 中是否存在该表（current schema 幂等 materialization 用） */
@@ -2564,7 +2601,7 @@ export class AppDatabase {
   }
 
   async readWorkspaceData(query: RuntimeWorkspaceQuery) {
-    if (this.db.inTransaction) return;
+    if (this.inTransaction) return;
     const data = await this.runtimeAuditReader?.workspaceData(query);
     if (!data) return;
     return {
@@ -2574,7 +2611,10 @@ export class AppDatabase {
   }
 
   async readSpaces(): Promise<SpaceDto[]> {
-    return (await this.readWorkspaceData({ kind: "spaces" }))?.spaces ?? this.listSpaces();
+    const data = await this.readWorkspaceData({ kind: "spaces" });
+    if (data) return data.spaces;
+    if (this.coreIdentity) throw new Error("空间列表读取未获 Rust Core 确认");
+    return this.listSpaces();
   }
 
   /** 空间行 → SpaceDto（统一映射；effectiveArchived 可选，仅 list 时计算） */
@@ -2647,7 +2687,7 @@ export class AppDatabase {
   }
 
   private get requiresRustWrites(): boolean {
-    return Boolean(this.db.readonly || this.runtimeAuditReader?.supervised);
+    return this.readonly;
   }
 
   private requireBatch2Writer(context: string): RuntimeAuditReader {
@@ -2655,15 +2695,13 @@ export class AppDatabase {
     return this.runtimeAuditReader;
   }
 
-  private queueTaskBatch2Write<T = Record<string, unknown>>(context: string, request: Record<string, unknown>): Promise<T> {
+  private queueTaskBatch2Write<T = Record<string, unknown>>(taskIds: readonly string[], context: string, request: Record<string, unknown>): Promise<T> {
     const reader = this.requireBatch2Writer(context);
-    const operation = this.taskRecordTail.then(async () => {
+    return this.taskWrites.run(taskIds, async () => {
       const result = await reader.batch2Write<T>(request);
       if (result === undefined) throw new Error(`${context}：Rust 写入未收到确认`);
       return result;
     });
-    this.taskRecordTail = operation.then(() => undefined, () => undefined);
-    return operation;
   }
 
   writeWorkspaceUpsert(space: SpaceDto): Promise<SpaceDto> {
@@ -3240,9 +3278,14 @@ export class AppDatabase {
 
   async readNonTrashedTasks(options: { includeExpertBindings?: boolean } = {}): Promise<TaskDto[]> {
     const includeExpertBindings = options.includeExpertBindings !== false;
+    const supervised = this.runtimeAuditReader?.supervised === true;
     const rows = await this.runtimeAuditReader?.taskList(
-      DOTS_TASK_ID, includeExpertBindings && this.expertBindingBatchReader !== undefined,
+      DOTS_TASK_ID, includeExpertBindings && (supervised || this.expertBindingBatchReader !== undefined),
     );
+    if (supervised) {
+      if (!rows) throw new Error("任务列表读取未获 Rust 核心确认");
+      return rows.map(row => this.mapTaskRow(row, row.expertBinding));
+    }
     if (!rows) return includeExpertBindings ? this.listNonTrashedTasks() :
       this.taskListRows(true).map(row => this.mapTaskRow(row));
     if (includeExpertBindings && !this.expertBindingBatchReader && this.expertBindingReader) {
@@ -3280,12 +3323,24 @@ export class AppDatabase {
     return row ? this.mapTaskRow(row, this.expertBindingReader?.(row.id)) : undefined;
   }
 
+  async readTask(taskId: string, options: { includeExpertBinding?: boolean } = {}): Promise<TaskDto | undefined> {
+    const includeExpertBinding = options.includeExpertBinding !== false;
+    if (!this.runtimeAuditReader?.supervised) {
+      const task = this.getTask(taskId);
+      if (task && !includeExpertBinding) task.expertBinding = undefined;
+      return task;
+    }
+    const row = await this.runtimeAuditReader.taskRecord(taskId, includeExpertBinding);
+    if (row === undefined) throw new Error("任务读取未获 Rust 核心确认");
+    return row ? this.mapTaskRow(row, row.expertBinding) : undefined;
+  }
+
   openDots(): TaskDto {
     const now = Date.now();
     if (this.requiresRustWrites) {
       const existing = this.getTask(DOTS_TASK_ID);
       if (existing) return existing;
-      void this.queueTaskBatch2Write("初始化 Dots 对话", { kind: "openDots", at: now }).catch((err) => {
+      void this.queueTaskBatch2Write([DOTS_TASK_ID], "初始化 Dots 对话", { kind: "openDots", at: now }).catch((err) => {
         console.warn("[AppDatabase] openDots Rust 写入失败", err);
       });
       return {
@@ -3308,10 +3363,12 @@ export class AppDatabase {
 
   async openDotsAsync(): Promise<TaskDto> {
     if (!this.requiresRustWrites) return this.openDots();
-    const existing = this.getTask(DOTS_TASK_ID);
+    const existing = await this.readTask(DOTS_TASK_ID);
     if (existing) return existing;
-    await this.queueTaskBatch2Write("初始化 Dots 对话", { kind: "openDots", at: Date.now() });
-    return this.getTask(DOTS_TASK_ID) ?? this.openDots();
+    await this.queueTaskBatch2Write([DOTS_TASK_ID], "初始化 Dots 对话", { kind: "openDots", at: Date.now() });
+    const opened = await this.readTask(DOTS_TASK_ID);
+    if (!opened) throw new Error("未能读回 Dots 对话");
+    return opened;
   }
 
   private mapTaskRow(r: TaskRow, binding?: import("../../shared/expert-binding").TaskExpertBindingDto | null): TaskDto {
@@ -3362,49 +3419,38 @@ export class AppDatabase {
     legacyTrashRoot: string,
     newTrashRoot: string,
   ): { cwds: number; trashPaths: number } {
-    const cwdUpdates: Array<[string, string]> = [];
-    const tasks = this.db
-      .prepare(`SELECT id, cwd FROM tasks`)
-      .all() as Array<{ id: string; cwd: string | null }>;
-    for (const task of tasks) {
-      if (!task.cwd) continue;
-      const mapped = mapLegacyRootPath(legacyWorkspacesRoot, newWorkspacesRoot, task.cwd);
-      if (mapped === null) continue;
-      if (existsSync(task.cwd)) continue; // 旧路径仍存在：内容未随迁移移动，不得重写
-      cwdUpdates.push([task.id, mapped]);
-    }
-    const trashUpdates: Array<[string, string]> = [];
-    const states = this.db
-      .prepare(`SELECT task_id, trash_path FROM task_execution_workspace_state`)
-      .all() as Array<{ task_id: string; trash_path: string | null }>;
-    for (const state of states) {
-      if (!state.trash_path) continue;
-      const mapped = mapLegacyRootPath(legacyTrashRoot, newTrashRoot, state.trash_path);
-      if (mapped === null) continue;
-      if (existsSync(state.trash_path)) continue;
-      trashUpdates.push([state.task_id, mapped]);
-    }
-    if (this.requiresRustWrites) {
-      if (cwdUpdates.length || trashUpdates.length) {
-        void this.queueTaskBatch2Write("重绑旧版任务工作区路径", {
-          kind: "rebindLegacyTaskWorkspacePaths",
-          cwdUpdates,
-          trashUpdates,
-        }).catch((err) => {
-          console.warn("[AppDatabase] rebindLegacyTaskWorkspacePaths Rust 写入失败", err);
-        });
-      }
-      return { cwds: cwdUpdates.length, trashPaths: trashUpdates.length };
-    }
-    for (const [taskId, mapped] of cwdUpdates) {
+    const tasks = this.db.prepare("SELECT id, cwd AS path FROM tasks WHERE cwd IS NOT NULL").all() as Array<{ id: string; path: string }>;
+    const states = this.db.prepare("SELECT task_id AS id, trash_path AS path FROM task_execution_workspace_state WHERE trash_path IS NOT NULL").all() as Array<{ id: string; path: string }>;
+    const cwdUpdates = legacyWorkspacePathChanges(tasks, legacyWorkspacesRoot, newWorkspacesRoot);
+    const trashUpdates = legacyWorkspacePathChanges(states, legacyTrashRoot, newTrashRoot);
+    for (const [taskId, , mapped] of cwdUpdates) {
       this.db.prepare(`UPDATE tasks SET cwd = ? WHERE id = ?`).run(mapped, taskId);
     }
-    for (const [taskId, mapped] of trashUpdates) {
+    for (const [taskId, , mapped] of trashUpdates) {
       this.db
         .prepare(`UPDATE task_execution_workspace_state SET trash_path = ? WHERE task_id = ?`)
         .run(mapped, taskId);
     }
     return { cwds: cwdUpdates.length, trashPaths: trashUpdates.length };
+  }
+
+  async writeLegacyTaskWorkspacePaths(
+    legacyWorkspacesRoot: string,
+    newWorkspacesRoot: string,
+    legacyTrashRoot: string,
+    newTrashRoot: string,
+  ): Promise<{ cwds: number; trashPaths: number }> {
+    if (!this.requiresRustWrites) {
+      return this.rebindLegacyTaskWorkspacePaths(legacyWorkspacesRoot, newWorkspacesRoot, legacyTrashRoot, newTrashRoot);
+    }
+    const reader = this.requireBatch2Writer("重绑任务工作区路径");
+    const paths = await reader.taskWorkspacePaths();
+    if (!paths) throw new Error("任务工作区路径读取未获 Rust Core 确认");
+    const cwdUpdates = legacyWorkspacePathChanges(paths.cwds, legacyWorkspacesRoot, newWorkspacesRoot);
+    const trashUpdates = legacyWorkspacePathChanges(paths.trashPaths, legacyTrashRoot, newTrashRoot);
+    const taskIds = [...cwdUpdates.map(([id]) => id), ...trashUpdates.map(([id]) => id)];
+    if (taskIds.length === 0) return { cwds: 0, trashPaths: 0 };
+    return this.queueTaskBatch2Write(taskIds, "重绑任务工作区路径", { kind: "rebindLegacyTaskWorkspacePaths", cwdUpdates, trashUpdates });
   }
 
   /**
@@ -3414,7 +3460,7 @@ export class AppDatabase {
    */
   bindTaskExecutionWorkspaceCwd(taskId: string, cwd: string): void {
     if (this.requiresRustWrites) {
-      void this.queueTaskBatch2Write("绑定任务工作目录", {
+      void this.queueTaskBatch2Write([taskId], "绑定任务工作目录", {
         kind: "bindTaskExecutionWorkspaceCwd", taskId, cwd, at: Date.now(),
       }).catch((err) => {
         console.warn("[AppDatabase] bindTaskExecutionWorkspaceCwd Rust 写入失败", err);
@@ -3444,96 +3490,82 @@ export class AppDatabase {
       .run({ id: taskId, title, updatedAt: Date.now(), cwd });
   }
 
-  private async resolveTaskSpaceIdAsync(requestedId: string, cwd?: string): Promise<string> {
-    const cwdNorm = cwd ? cwd.replace(/[\\/]+$/, "") : undefined;
-    if (cwdNorm) {
-      const byPath = this.findSpaceByPath(cwdNorm);
-      if (byPath) return byPath.id;
-      const base = basename(cwdNorm) || requestedId;
-      const byName = this.findSpaceByName(base);
-      if (byName && (!byName.path || byName.path.replace(/[\\/]+$/, "") === cwdNorm)) {
-        return byName.id;
-      }
-      const name = this.uniqueSpaceName(base);
-      await this.writeWorkspaceUpsert({ id: requestedId, name, path: cwdNorm });
-      return requestedId;
-    }
-    const byName = this.findSpaceByName(requestedId);
-    if (byName) return byName.id;
-    await this.writeWorkspaceUpsert({ id: requestedId, name: requestedId, path: undefined });
-    return requestedId;
+  writeTaskRecord(task: TaskDto, options?: Parameters<AppDatabase["upsertTask"]>[1]): Promise<string | undefined> {
+    return this.taskWrites.run([task.id], () => this.applyTaskRecord(task, options));
   }
 
-  writeTaskRecord(task: TaskDto, options?: Parameters<AppDatabase["upsertTask"]>[1]): Promise<string | undefined> {
-    const operation = this.taskRecordTail.then(async () => {
-      const onHost = () => this.db.transaction(() => this.upsertTask(task, options)).immediate();
-      const nonFinite = [task.startAt, task.dueAt, task.spaceSortOrder, task.doneAckedAt]
-        .some(value => value != null && !Number.isFinite(value));
-      if (this.requiresRustWrites) {
-        if (nonFinite) throw new Error("任务时间或排序字段无效");
-        if (!this.runtimeAuditReader) throw new Error("任务保存：Rust 写入核心未就绪");
-        let normalized = task.id === DOTS_TASK_ID
-          ? { ...task, title: "Dots", spaceId: null, projectId: null, welcomeMode: "general" as const, modePresetId: "native", externalAgentPin: null, archived: false, isFavorited: false }
-          : isGatewayBotTaskId(task.id)
-            ? { ...task, welcomeMode: "general" as const, modePresetId: "native" }
-            : task;
-        const preserveWorkspace = options?.preserveWorkspace === true && normalized.id !== DOTS_TASK_ID;
-        const prev = this.db.prepare("SELECT space_id FROM tasks WHERE id = ?").get(normalized.id) as { space_id: string | null } | undefined;
-        const hasSpaceId = normalized.spaceId !== undefined && !(prev && preserveWorkspace);
-        if (isGatewayConversation(normalized.id)) {
-          if (normalized.projectId) throw new Error("网关对话不能绑定项目");
-          if (hasSpaceId) {
-            const channel = this.getTask(normalized.id)?.gatewaySidebarChannelId;
-            if (normalized.spaceId !== (channel ? gatewayChannelSpaceId(channel) : null)) {
-              throw new Error("网关对话不能绑定其他空间或解除渠道归属");
-            }
+  private async applyTaskRecord(task: TaskDto, options?: Parameters<AppDatabase["upsertTask"]>[1]): Promise<string | undefined> {
+    const onHost = () => this.db.transaction(() => this.upsertTask(task, options)).immediate();
+    const nonFinite = [task.startAt, task.dueAt, task.spaceSortOrder, task.doneAckedAt]
+      .some(value => value != null && !Number.isFinite(value));
+    if (this.requiresRustWrites) {
+      if (nonFinite) throw new Error("任务时间或排序字段无效");
+      if (!this.runtimeAuditReader) throw new Error("任务保存：Rust 写入核心未就绪");
+      const normalized = task.id === DOTS_TASK_ID
+        ? { ...task, title: "Dots", spaceId: null, projectId: null, welcomeMode: "general" as const, modePresetId: "native", externalAgentPin: null, archived: false, isFavorited: false }
+        : isGatewayBotTaskId(task.id)
+          ? { ...task, welcomeMode: "general" as const, modePresetId: "native" }
+          : task;
+      const preserveWorkspace = options?.preserveWorkspace === true && normalized.id !== DOTS_TASK_ID;
+      if (isGatewayConversation(normalized.id)) {
+        if (normalized.projectId) throw new Error("网关对话不能绑定项目");
+        if (normalized.spaceId !== undefined) {
+          const previous = await this.readTask(normalized.id, { includeExpertBinding: false });
+          const channel = previous?.gatewaySidebarChannelId;
+          if (!(previous && preserveWorkspace) && normalized.spaceId !== (channel ? gatewayChannelSpaceId(channel) : null)) {
+            throw new Error("网关对话不能绑定其他空间或解除渠道归属");
           }
         }
-        if (hasSpaceId && normalized.spaceId && !this.db.prepare("SELECT 1 FROM spaces WHERE id = ?").get(normalized.spaceId)) {
-          const resolvedSpaceId = await this.resolveTaskSpaceIdAsync(normalized.spaceId, normalized.cwd);
-          normalized = { ...normalized, spaceId: resolvedSpaceId };
-        }
-        const { id, title, spaceId, projectId, status, updatedAt, sessionFile, cwd, welcomeMode, modelId,
-          permissionMode, expertId, modePresetId, startAt, dueAt, spaceSortOrder, isFavorited, doneAckedAt, externalAgentPin } = normalized;
-        const result = await this.runtimeAuditReader.upsertTaskRecord({
-          id, title: title || "", spaceId, projectId, status, sessionFile, cwd,
-          welcomeMode, modePresetId,
-          modelId, permissionMode, expertId, startAt, dueAt, spaceSortOrder, doneAckedAt,
-          isFavorited: isFavorited === undefined ? undefined : Boolean(isFavorited),
-          externalAgentPinJson: externalAgentPin === undefined ? undefined : externalAgentPin ? JSON.stringify(externalAgentPin) : null,
-          updatedAt: activityTimeOrUndefined(updatedAt), at: Date.now(),
-          preserveTitle: options?.preserveTitle === true && normalized.id !== DOTS_TASK_ID,
-          expectedTitle: options?.expectedTitle,
-          preserveWorkspace,
-        });
-        if (result?.status === "saved") return result.previousProjectId ?? undefined;
-        if (result?.status === "rejected") throw new Error(result.message);
-        if (result?.status === "needsHost") throw new Error("任务保存无法回退到宿主 SQLite");
-        throw new Error("未收到任务保存确认，请刷新后查看状态");
-      }
-      if (!this.runtimeAuditReader || task.id === DOTS_TASK_ID || isGatewayConversation(task.id) || nonFinite) {
-        return onHost();
       }
       const { id, title, spaceId, projectId, status, updatedAt, sessionFile, cwd, welcomeMode, modelId,
-        permissionMode, expertId, modePresetId, startAt, dueAt, spaceSortOrder, isFavorited, doneAckedAt, externalAgentPin } = task;
-      const gatewayBot = isGatewayBotTaskId(id);
-      const result = await this.runtimeAuditReader.upsertTaskRecord({
+        permissionMode, expertId, modePresetId, startAt, dueAt, spaceSortOrder, isFavorited, doneAckedAt, externalAgentPin } = normalized;
+      const mutation = {
         id, title: title || "", spaceId, projectId, status, sessionFile, cwd,
-        welcomeMode: gatewayBot ? "general" : welcomeMode, modePresetId: gatewayBot ? "native" : modePresetId,
+        welcomeMode, modePresetId,
         modelId, permissionMode, expertId, startAt, dueAt, spaceSortOrder, doneAckedAt,
         isFavorited: isFavorited === undefined ? undefined : Boolean(isFavorited),
         externalAgentPinJson: externalAgentPin === undefined ? undefined : externalAgentPin ? JSON.stringify(externalAgentPin) : null,
         updatedAt: activityTimeOrUndefined(updatedAt), at: Date.now(),
-        preserveTitle: options?.preserveTitle === true, expectedTitle: options?.expectedTitle,
-        preserveWorkspace: options?.preserveWorkspace === true,
-      });
+        preserveTitle: options?.preserveTitle === true && normalized.id !== DOTS_TASK_ID,
+        expectedTitle: options?.expectedTitle,
+        preserveWorkspace,
+      };
+      let result = await this.runtimeAuditReader.upsertTaskRecord(mutation);
+      if (result?.status === "missingWorkspace" && spaceId) {
+        const path = cwd?.replace(/[\\/]+$/, "") || undefined;
+        const name = (path && basename(path)) || spaceId;
+        if (gatewayChannelForSpace(spaceId)) {
+          await this.writeWorkspaceUpsert({ id: spaceId, name, path });
+          result = await this.runtimeAuditReader.upsertTaskRecord(mutation);
+        } else {
+          result = await this.runtimeAuditReader.upsertTaskRecord({ ...mutation, workspaceFallback: { name, path } });
+        }
+      }
       if (result?.status === "saved") return result.previousProjectId ?? undefined;
-      if (result?.status === "needsHost") return onHost();
       if (result?.status === "rejected") throw new Error(result.message);
+      if (result?.status === "missingWorkspace") throw new Error("任务所属工作空间已变化，请刷新后重试");
       throw new Error("未收到任务保存确认，请刷新后查看状态");
+    }
+    if (!this.runtimeAuditReader || task.id === DOTS_TASK_ID || isGatewayConversation(task.id) || nonFinite) {
+      return onHost();
+    }
+    const { id, title, spaceId, projectId, status, updatedAt, sessionFile, cwd, welcomeMode, modelId,
+      permissionMode, expertId, modePresetId, startAt, dueAt, spaceSortOrder, isFavorited, doneAckedAt, externalAgentPin } = task;
+    const gatewayBot = isGatewayBotTaskId(id);
+    const result = await this.runtimeAuditReader.upsertTaskRecord({
+      id, title: title || "", spaceId, projectId, status, sessionFile, cwd,
+      welcomeMode: gatewayBot ? "general" : welcomeMode, modePresetId: gatewayBot ? "native" : modePresetId,
+      modelId, permissionMode, expertId, startAt, dueAt, spaceSortOrder, doneAckedAt,
+      isFavorited: isFavorited === undefined ? undefined : Boolean(isFavorited),
+      externalAgentPinJson: externalAgentPin === undefined ? undefined : externalAgentPin ? JSON.stringify(externalAgentPin) : null,
+      updatedAt: activityTimeOrUndefined(updatedAt), at: Date.now(),
+      preserveTitle: options?.preserveTitle === true, expectedTitle: options?.expectedTitle,
+      preserveWorkspace: options?.preserveWorkspace === true,
     });
-    this.taskRecordTail = operation.catch(() => undefined);
-    return operation;
+    if (result?.status === "saved") return result.previousProjectId ?? undefined;
+    if (result?.status === "needsHost" || result?.status === "missingWorkspace") return onHost();
+    if (result?.status === "rejected") throw new Error(result.message);
+    throw new Error("未收到任务保存确认，请刷新后查看状态");
   }
 
   upsertTask(task: TaskDto, options?: { preserveTitle: boolean; expectedTitle?: string; preserveWorkspace?: boolean }): string | undefined {
@@ -3682,7 +3714,7 @@ export class AppDatabase {
   deleteTask(id: string): void {
     if (id === DOTS_TASK_ID) throw new Error("Dots 对话不能作为普通任务删除");
     if (this.requiresRustWrites) {
-      void this.queueTaskBatch2Write("删除任务", { kind: "deleteTask", id }).catch((err) => {
+      void this.queueTaskBatch2Write([id], "删除任务", { kind: "deleteTask", id }).catch((err) => {
         console.warn("[AppDatabase] deleteTask Rust 写入失败", err);
       });
       return;
@@ -3719,7 +3751,7 @@ export class AppDatabase {
       return;
     }
     const p = params;
-    await this.queueTaskBatch2Write("创建分支任务", {
+    await this.queueTaskBatch2Write([p.parentTaskId, p.childTaskId], "创建分支任务", {
       kind: "createConversationBranch",
       childTaskId: p.childTaskId,
       parentTaskId: p.parentTaskId,
@@ -3913,14 +3945,22 @@ export class AppDatabase {
 
   listTaskWriteGrants(taskId: string): TaskWriteGrantRow[] {
     return this.db
-      .prepare(`SELECT task_id, path, created_at FROM task_write_grants WHERE task_id = ? ORDER BY created_at DESC`)
+      .prepare(`SELECT task_id AS taskId, path, created_at AS createdAt
+        FROM task_write_grants WHERE task_id = ? ORDER BY created_at DESC, path`)
       .all(taskId) as TaskWriteGrantRow[];
+  }
+
+  async readTaskWriteGrants(taskId: string): Promise<TaskWriteGrantRow[]> {
+    if (this.sqlite && !this.runtimeAuditReader?.supervised) return this.listTaskWriteGrants(taskId);
+    const grants = await this.runtimeAuditReader?.readTaskWriteGrants(taskId);
+    if (!grants) throw new Error("任务目录写授权读取未获 Rust 核心确认");
+    return grants;
   }
 
   /** 幂等写入任务级目录写 grant（调用方负责 canonicalize 路径） */
   addTaskWriteGrant(taskId: string, path: string): void {
     if (this.requiresRustWrites) {
-      void this.queueTaskBatch2Write("添加目录写授权", {
+      void this.queueTaskBatch2Write([taskId], "添加目录写授权", {
         kind: "addTaskWriteGrant", taskId, path, at: Date.now(),
       }).catch((err) => {
         console.warn("[AppDatabase] addTaskWriteGrant Rust 写入失败", err);
@@ -3940,7 +3980,7 @@ export class AppDatabase {
     if (this.requiresRustWrites) {
       const existed = Boolean(this.db.prepare("SELECT 1 FROM task_write_grants WHERE task_id = ? AND path = ?").get(taskId, path));
       if (!existed) return false;
-      void this.queueTaskBatch2Write("撤销目录写授权", {
+      void this.queueTaskBatch2Write([taskId], "撤销目录写授权", {
         kind: "deleteTaskWriteGrant", taskId, path,
       }).catch((err) => {
         console.warn("[AppDatabase] deleteTaskWriteGrant Rust 写入失败", err);
@@ -3952,7 +3992,7 @@ export class AppDatabase {
 
   async deleteTaskWriteGrantAsync(taskId: string, path: string): Promise<boolean> {
     if (!this.requiresRustWrites) return this.deleteTaskWriteGrant(taskId, path);
-    const res = await this.queueTaskBatch2Write<{ deleted: boolean }>("撤销目录写授权", {
+    const res = await this.queueTaskBatch2Write<{ deleted: boolean }>([taskId], "撤销目录写授权", {
       kind: "deleteTaskWriteGrant", taskId, path,
     });
     return Boolean(res.deleted);
@@ -3972,7 +4012,7 @@ export class AppDatabase {
   archiveTask(id: string, archived: boolean): void {
     if (id === DOTS_TASK_ID && archived) throw new Error("Dots 对话不能作为普通任务归档");
     if (this.requiresRustWrites) {
-      void this.queueTaskBatch2Write("归档任务", {
+      void this.queueTaskBatch2Write([id], "归档任务", {
         kind: "archiveTask", id, archived, at: Date.now(),
       }).catch((err) => {
         console.warn("[AppDatabase] archiveTask Rust 写入失败", err);
@@ -3987,7 +4027,7 @@ export class AppDatabase {
   async archiveTaskAsync(id: string, archived: boolean): Promise<void> {
     if (id === DOTS_TASK_ID && archived) throw new Error("Dots 对话不能作为普通任务归档");
     if (!this.requiresRustWrites) { this.archiveTask(id, archived); return; }
-    await this.queueTaskBatch2Write("归档任务", { kind: "archiveTask", id, archived, at: Date.now() });
+    await this.queueTaskBatch2Write([id], "归档任务", { kind: "archiveTask", id, archived, at: Date.now() });
   }
 
   /**
@@ -4003,24 +4043,26 @@ export class AppDatabase {
   }
 
   async writeTaskDoneAck(id: string, ackedAt?: number): Promise<boolean> {
-    const at = ackedAt ?? Date.now();
-    const reader = this.runtimeAuditReader;
-    if (!reader || !Number.isSafeInteger(at)) {
-      if (this.requiresRustWrites) throw new Error(!Number.isSafeInteger(at) ? "确认时间无效" : "任务状态确认：Rust 写入核心未就绪");
+    return this.taskWrites.run([id], async () => {
+      const at = ackedAt ?? Date.now();
+      const reader = this.runtimeAuditReader;
+      if (!reader || !Number.isSafeInteger(at)) {
+        if (this.requiresRustWrites) throw new Error(!Number.isSafeInteger(at) ? "确认时间无效" : "任务状态确认：Rust 写入核心未就绪");
+        return this.ackTaskDone(id, at);
+      }
+      const native = await reader.acknowledgeTaskDone(id, at);
+      if (native !== undefined) return native;
+      if (this.requiresRustWrites) throw new Error("未收到任务确认写入回执");
+      // `max(done_acked_at, at)` makes the replay converge; record that it happened.
+      reader.noteFallback("taskDoneAck");
       return this.ackTaskDone(id, at);
-    }
-    const native = await reader.acknowledgeTaskDone(id, at);
-    if (native !== undefined) return native;
-    if (this.requiresRustWrites) throw new Error("未收到任务确认写入回执");
-    // `max(done_acked_at, at)` makes the replay converge; record that it happened.
-    reader.noteFallback("taskDoneAck");
-    return this.ackTaskDone(id, at);
+    });
   }
 
   async writeTaskSidebar(edit: TaskSidebarEdit, draftCwd?: () => string | undefined): Promise<string | undefined> {
     if (edit.id === DOTS_TASK_ID) return;
     const next = edit.kind === "rename" ? { ...edit, updatedAt: advanceActivity(undefined, edit.updatedAt) } : edit;
-    const operation = this.taskSidebarTail.then(async () => {
+    return this.taskWrites.run([edit.id], async () => {
       const attempted = next.kind === "favorite" || Number.isSafeInteger(next.updatedAt);
       if (attempted && this.runtimeAuditReader) {
         const native = await this.runtimeAuditReader.editTaskSidebar(next);
@@ -4028,8 +4070,7 @@ export class AppDatabase {
         if (native?.status === "unavailable") throw new Error("任务已进入回收站");
         if (this.requiresRustWrites) {
           if (native?.status === "missing") {
-            const createdProjectId = await this.writeTaskRecord({ ...next, cwd: draftCwd?.() });
-            return createdProjectId;
+            return this.applyTaskRecord({ ...next, cwd: draftCwd?.() });
           }
           throw new Error("未收到侧栏任务更新确认");
         }
@@ -4040,8 +4081,6 @@ export class AppDatabase {
       }
       return this.writeTaskSidebarOnHost(next, draftCwd);
     });
-    this.taskSidebarTail = operation.catch(() => undefined);
-    return operation;
   }
 
   private writeTaskSidebarOnHost(edit: TaskSidebarEdit, draftCwd?: () => string | undefined): string | undefined {
@@ -4071,7 +4110,7 @@ export class AppDatabase {
     }
     // The first instant of the following local day also works across DST boundaries.
     const nextLocalDay = dueAt === null ? null : new Date(dueAt).setHours(24, 0, 0, 0);
-    const operation = this.taskDueDateTail.then(async () => {
+    return this.taskWrites.run([id], async () => {
       const native = nextLocalDay === null || Number.isFinite(nextLocalDay)
         ? await this.runtimeAuditReader?.setTaskDueDate(id, dueAt, nextLocalDay) : undefined;
       if (native?.status === "saved") return native.projectId ?? undefined;
@@ -4080,8 +4119,6 @@ export class AppDatabase {
       if (this.requiresRustWrites) throw new Error("未收到任务截止日期更新确认");
       return this.setTaskDueDateOnHost(id, dueAt);
     });
-    this.taskDueDateTail = operation.catch(() => undefined);
-    return operation;
   }
 
   private setTaskDueDateOnHost(id: string, dueAt: number | null): string | undefined {
@@ -4173,8 +4210,8 @@ export class AppDatabase {
           current.trashedAt !== trashedAt || current.trashPath !== trashPath) {
         throw new Error(`purge 中止：回收站条目已变化：${taskId}`);
       }
-      await this.queueTaskBatch2Write("清理已回收任务", { kind: "deleteTask", id: taskId });
-      await this.queueTaskBatch2Write("清理已回收工作区状态", { kind: "deleteTaskExecutionWorkspaceState", taskId });
+      await this.queueTaskBatch2Write([taskId], "清理已回收任务", { kind: "deleteTask", id: taskId });
+      await this.queueTaskBatch2Write([taskId], "清理已回收工作区状态", { kind: "deleteTaskExecutionWorkspaceState", taskId });
       return;
     }
     this.db.transaction(() => {
@@ -4195,7 +4232,7 @@ export class AppDatabase {
    */
   upsertTaskExecutionWorkspaceState(row: TaskExecutionWorkspaceStateRow): void {
     if (this.requiresRustWrites) {
-      void this.queueTaskBatch2Write("更新任务工作区状态", {
+      void this.queueTaskBatch2Write([row.taskId], "更新任务工作区状态", {
         kind: "upsertTaskExecutionWorkspaceState",
         taskId: row.taskId,
         directoryName: row.directoryName,
@@ -4237,7 +4274,7 @@ export class AppDatabase {
 
   deleteTaskExecutionWorkspaceState(taskId: string): void {
     if (this.requiresRustWrites) {
-      void this.queueTaskBatch2Write("删除任务工作区状态", {
+      void this.queueTaskBatch2Write([taskId], "删除任务工作区状态", {
         kind: "deleteTaskExecutionWorkspaceState", taskId,
       }).catch((err) => {
         console.warn("[AppDatabase] deleteTaskExecutionWorkspaceState Rust 写入失败", err);
@@ -4308,13 +4345,11 @@ export class AppDatabase {
 
   async flushPersistenceWrites(): Promise<void> {
     await Promise.all([
-      this.taskRecordTail,
+      this.taskWrites.flush(),
       this.workspaceWriteTail,
-      this.taskSidebarTail,
-      this.taskDueDateTail,
       this.cronWriteTail,
       this.gatewayWriteTail,
-      flushWorkDomainWrites(this.db),
+      this.sqlite ? flushWorkDomainWrites(this.sqlite) : undefined,
     ]);
   }
 
@@ -4639,15 +4674,13 @@ export class AppDatabase {
   }
 
   async readCronJobs(): Promise<CronJobDto[]> {
-    await this.cronWriteTail;
-    const rows = await this.runtimeAuditReader?.cronData<Array<Record<string, unknown>>>({ kind: "jobs" });
+    const rows = await this.readCronData<Array<Record<string, unknown>>>({ kind: "jobs" });
     return rows?.map(row => this.rowToCronJob(row)) ?? this.listCronJobs();
   }
 
   async readCronOverview(limit: number): Promise<CronOverviewDto> {
-    await this.cronWriteTail;
     type Row = Record<string, unknown>;
-    const rows = await this.runtimeAuditReader?.cronData<{ jobs: Row[]; runs: Row[] }>({ kind: "overview", limit });
+    const rows = await this.readCronData<{ jobs: Row[]; runs: Row[] }>({ kind: "overview", limit });
     if (!rows) return this.db.transaction(() => ({ jobs: this.listCronJobs(), runs: this.listCronRuns(limit) }))();
     return {
       jobs: rows.jobs.map(row => this.rowToCronJob(row)),
@@ -4718,7 +4751,7 @@ export class AppDatabase {
       if (this.requiresRustWrites) throw new Error("只读模式下禁止 Cron 计划回退宿主 SQLite 写入");
       return this.db.open && writeCronPlan(this.db, mutation);
     };
-    if (!this.runtimeAuditReader || this.db.inTransaction) return writeOnHost();
+    if (!this.runtimeAuditReader || (!this.requiresRustWrites && this.db.inTransaction)) return writeOnHost();
     return this.cronWriteTail
       .then(() => this.runtimeAuditReader!.writeCronPlan(mutation))
       .then(applied => {
@@ -4740,6 +4773,30 @@ export class AppDatabase {
     if (!row) return undefined;
     const { run_count: _count, ...expectedJob } = row;
     return { job: this.rowToCronJob(row), expectedJob };
+  }
+
+  async readCronJobState(id: string) {
+    type Row = Record<string, unknown>;
+    const state = await this.readCronData<{
+      row: Row; owner: { taskId: string | null; spaceId: string | null } | null;
+      activeRun: Row | null; latestRun: Row | null; unavailableReason: string | null;
+    } | null>({ kind: "jobState", jobId: id });
+    if (state === null) return;
+    if (state === undefined) {
+      const saved = this.getCronJobForExecution(id);
+      if (!saved) return;
+      return {
+        ...saved, owner: undefined, unavailableReason: undefined,
+        activeRun: this.listCronJobRuns(id, 1, undefined, "running")[0] ?? null,
+        latestRun: this.listCronJobRuns(id, 1)[0] ?? null,
+      };
+    }
+    const { run_count: _count, ...expectedJob } = state.row;
+    return {
+      job: this.rowToCronJob(state.row), expectedJob, owner: state.owner, unavailableReason: state.unavailableReason,
+      activeRun: state.activeRun ? this.rowToCronRun(state.activeRun) : null,
+      latestRun: state.latestRun ? this.rowToCronRun(state.latestRun) : null,
+    };
   }
 
   private getCronJobRow(id: string): Record<string, unknown> | undefined {
@@ -4819,11 +4876,11 @@ export class AppDatabase {
   }
 
   async readCronRuns(limit = 50, jobIds?: string[]): Promise<CronRunDto[]> {
-    await this.cronWriteTail;
     if (jobIds?.length === 0) return [];
-    const rows = Number.isSafeInteger(limit) ? await this.runtimeAuditReader?.cronData<Array<Record<string, unknown>>>(
+    if (!Number.isSafeInteger(limit)) throw new Error("自动化记录读取数量无效");
+    const rows = await this.readCronData<Array<Record<string, unknown>>>(
       { kind: "runs", limit, jobIds },
-    ) : undefined;
+    );
     return rows?.map(row => this.rowToCronRun(row)) ?? this.listCronRuns(limit, jobIds);
   }
 
@@ -4841,17 +4898,22 @@ export class AppDatabase {
   }
 
   async readCronJobRuns(jobId: string, limit: number, before?: { startedAt: number; id: string }): Promise<CronRunDto[]> {
-    await this.cronWriteTail;
-    const rows = await this.runtimeAuditReader?.cronData<Array<Record<string, unknown>>>({ kind: "jobRuns", jobId, limit, before });
+    const rows = await this.readCronData<Array<Record<string, unknown>>>({ kind: "jobRuns", jobId, limit, before });
     return rows?.map(row => this.rowToCronRun(row)) ?? this.listCronJobRuns(jobId, limit, before);
   }
 
   async readCronRunInput(runId: string): Promise<string | undefined> {
-    await this.cronWriteTail;
-    const result = await this.runtimeAuditReader?.cronData<string | null>({ kind: "runInput", runId });
+    const result = await this.readCronData<string | null>({ kind: "runInput", runId });
     if (result !== undefined) return result ?? undefined;
     return (this.db.prepare("SELECT request_json FROM cron_run_inputs WHERE run_id = ?").get(runId) as
       { request_json: string } | undefined)?.request_json;
+  }
+
+  private async readCronData<T>(query: RuntimeCronDataQuery): Promise<T | undefined> {
+    await this.cronWriteTail;
+    const result = await this.runtimeAuditReader?.cronData<T>(query);
+    if (result === undefined && this.runtimeAuditReader?.supervised) throw new Error("自动化读取未获 Rust 核心确认");
+    return result;
   }
 
   private rowToCronRun(r: Record<string, unknown>): CronRunDto {
@@ -4901,6 +4963,45 @@ export class AppDatabase {
     const byId = new Map(list.map(channel => [channel.id, channel]));
     for (const [id, pending] of this.pendingGatewayChannels) byId.set(id, pending);
     return [...byId.values()];
+  }
+
+  async readGatewayChannels(channelId?: string): Promise<GatewayChannelRecord[]> {
+    if (this.sqlite) {
+      const channels = this.listGatewayChannels();
+      return channelId === undefined ? channels : channels.filter(row => row.id === channelId);
+    }
+    const channels = await this.runtimeAuditReader?.readGatewayChannels(channelId);
+    if (channels === undefined) throw new Error("Core 未确认 Gateway 渠道读取");
+    return channels;
+  }
+
+  async writeGatewayChannel(channel: GatewayChannelRecord, expected: GatewayChannelRecord | null, options: {
+    expectedRevision?: number;
+    transition?: RuntimeGatewayChannelTransition;
+    applyFixture?: () => void;
+  } = {}): Promise<boolean> {
+    const fixture = this.sqlite;
+    if (fixture) {
+      return fixture.transaction(() => {
+        const current = this.listGatewayChannels().find(row => row.id === channel.id) ?? null;
+        if (!isDeepStrictEqual(current, expected)) return false;
+        upsertGatewayChannel(fixture, channel);
+        options.applyFixture?.();
+        return true;
+      }).immediate();
+    }
+    const reader = this.runtimeAuditReader;
+    if (!reader) throw new Error("Core Gateway 渠道写入服务尚未初始化");
+    const operationId = `gateway-channel-${randomUUID()}`;
+    const persist = () => reader.writeGatewayChannel(operationId, channel, expected, options.expectedRevision, options.transition);
+    const reply = await persist().catch(error => {
+      if (error instanceof RuntimeAuditUnknownOperationError) return persist();
+      throw error;
+    });
+    if (reply?.status === "saved") return true;
+    if (reply?.status === "conflict") return false;
+    if (reply) throw new Error("Core 拒绝 Gateway 渠道写入");
+    throw new Error("Core 未确认 Gateway 渠道写入");
   }
 
   upsertGatewayChannel(channel: GatewayChannelRecord): void {
@@ -4962,7 +5063,7 @@ export class AppDatabase {
     const native = this.runtimeAuditReader;
     // Inside a host transaction the worker's connection would queue behind our own
     // write lock, so the row joins the transaction that is already open.
-    if (!native || this.db.inTransaction) {
+    if (!native || this.inTransaction) {
       if (this.requiresRustWrites) throw new Error("只读模式下禁止网关消息回退宿主 SQLite 写入");
       return this.insertGatewayMessage(msg);
     }
@@ -4977,12 +5078,14 @@ export class AppDatabase {
 
   async readGatewayMessages(opts: GatewayListMessagesRequest): Promise<GatewayMessageDto[]> {
     const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000);
-    const rows = !this.db.inTransaction && Number.isInteger(limit) &&
+    const rows = !this.inTransaction && Number.isInteger(limit) &&
       (opts.channelId === undefined || typeof opts.channelId === "string") &&
       (opts.chatId === undefined || typeof opts.chatId === "string")
       ? await this.runtimeAuditReader?.readGatewayMessages({ channelId: opts.channelId, chatId: opts.chatId, limit })
       : undefined;
-    return rows ?? this.listGatewayMessages(opts);
+    if (rows) return rows;
+    if (!this.sqlite) throw new Error("Core 未确认网关消息读取");
+    return this.listGatewayMessages(opts);
   }
 
   listGatewayMessages(opts: GatewayListMessagesRequest): GatewayMessageDto[] {
@@ -5027,8 +5130,12 @@ export class AppDatabase {
   }
 
   close(): void {
+    this.closed = true;
+    if (this.runtimeAuditReader && getDefaultPiStorageClient() === this.runtimeAuditReader) {
+      setDefaultPiStorageClient(undefined);
+    }
     void this.runtimeAuditReader?.close();
-    this.db.close();
+    if (this.sqlite?.open) this.sqlite.close();
   }
 
   private rowToCronJob(r: Record<string, unknown>): CronJobDto {

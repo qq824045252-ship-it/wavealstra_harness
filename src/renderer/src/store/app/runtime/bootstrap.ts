@@ -87,10 +87,11 @@ function markStartup(name: string): void {
 }
 
 function afterInteractiveFrame(callback: () => void): void {
-  const raf = (globalThis as { requestAnimationFrame?: (cb: () => void) => number })
-    .requestAnimationFrame;
-  if (typeof raf === "function") raf(() => raf(callback));
-  else queueMicrotask(callback);
+  if (typeof globalThis.requestAnimationFrame === "function") {
+    globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(callback));
+  } else {
+    queueMicrotask(callback);
+  }
 }
 
 export async function loadRuntimeBootstrap(
@@ -102,14 +103,17 @@ export async function loadRuntimeBootstrap(
     context: { set },
     isActive,
   } = binding;
-  // Critical: without spaces, tasks, models and settings the first screen has nothing to show.
-  // Catalogs load afterwards, each with its own failure boundary.
+  // The model catalog uses the Pi host. The task list uses the independently available database.
+  const catalogBeforeRead = binding.context.get().models;
+  const pendingModels = Promise.resolve().then(() => api.agent.listModels()).then(mapModelCatalog).catch(error => {
+    if (isActive()) console.warn("[initRuntime] models failed to load", error);
+    return undefined;
+  });
   const critical = await Promise.all([
     api.db?.listSpaces() ?? Promise.resolve([]),
     api.db?.listTasks() ?? Promise.resolve([]),
     api.db?.listProjects?.() ?? Promise.resolve([]),
     api.db?.getSoul() ?? Promise.resolve(null),
-    api.agent.listModels(),
     api.agent.getAppSettings?.() ?? Promise.resolve(null),
   ]).catch((error: unknown) => {
     if (isActive())
@@ -117,84 +121,109 @@ export async function loadRuntimeBootstrap(
     return null;
   });
   if (!critical) return;
-  const [spaces, taskRows, projects, soul, models, appSettings] = critical;
+  const [spaces, taskRows, projects, soul, appSettings] = critical;
   // A disposed runtime must never replace the state populated by its successor.
   if (!isActive()) return;
-const mappedModels = mapModelCatalog(models);
-const enabledModels = mappedModels.filter(
-  (model) => model.enabled !== false,
-);
-// The same id set feeds every row; rebuilding it per task allocated one Set per task.
-const enabledModelIds = new Set(enabledModels.map((model) => model.id));
-const defaultModelId =
-  appSettings?.defaultModelId &&
-  enabledModels.some((model) => model.id === appSettings.defaultModelId)
-    ? appSettings.defaultModelId
-    : (enabledModels[0]?.id ?? "");
+  const current = binding.context.get();
+  const configuredDefaultModelId = appSettings?.defaultModelId ?? "";
+  const cachedModels = current.models ?? [];
+  const initialModels = cachedModels.filter(model => model.enabled !== false);
+  const initialModelIds = new Set(initialModels.map(model => model.id));
+  const initialDefaultModelId = initialModelIds.has(configuredDefaultModelId)
+    ? configuredDefaultModelId : (initialModels[0]?.id ?? "");
+  if (cachedModels.length === 0) {
+    // An unavailable catalog has not validated or invalidated any stored task selection yet.
+    for (const row of taskRows) if (row.modelId) initialModelIds.add(row.modelId);
+  }
 
-const mappedSpaces = helpers.recomputeEffectiveArchived(
-  (spaces as SpaceDto[]).map((space) => ({
-    id: space.id,
-    name: space.name,
-    icon: space.icon,
-    path: space.path,
-    archived: space.archived,
-    pathMissing: space.pathMissing,
-    parentId: space.parentId ?? null,
-    sortOrder: space.sortOrder ?? 0,
-    createdAt: space.createdAt,
-    effectiveArchived: space.effectiveArchived ?? Boolean(space.archived),
-  })),
-);
-const current = binding.context.get();
-const priorTasks = new Map(current.tasks.map(task => [task.id, task]));
-const mappedTasks = (taskRows as TaskDto[]).map(row => {
-  const metadata = helpers.mapTaskRowToTask(row, {
-    enabledModelIds, defaultModelId, permissionModeDefault: appSettings?.permissionMode ?? "default",
-    taskConnectorIds: appSettings?.taskConnectorIds,
+  const mappedSpaces = helpers.recomputeEffectiveArchived(
+    (spaces as SpaceDto[]).map((space) => ({
+      id: space.id,
+      name: space.name,
+      icon: space.icon,
+      path: space.path,
+      archived: space.archived,
+      pathMissing: space.pathMissing,
+      parentId: space.parentId ?? null,
+      sortOrder: space.sortOrder ?? 0,
+      createdAt: space.createdAt,
+      effectiveArchived: space.effectiveArchived ?? Boolean(space.archived),
+    })),
+  );
+  const priorTasks = new Map(current.tasks.map(task => [task.id, task]));
+  const mappedTasks = taskRows.map(row => {
+    const metadata = helpers.mapTaskRowToTask(row, {
+      enabledModelIds: initialModelIds,
+      defaultModelId: initialDefaultModelId,
+      permissionModeDefault: appSettings?.permissionMode ?? "default",
+      taskConnectorIds: appSettings?.taskConnectorIds,
+    });
+    const prior = priorTasks.get(row.id);
+    return prior ? { ...prior, ...metadata, messages: prior.messages, status: prior.durable ? prior.status : metadata.status } : metadata;
   });
-  const prior = priorTasks.get(row.id);
-  return prior ? { ...prior, ...metadata, messages: prior.messages, status: prior.durable ? prior.status : metadata.status } : metadata;
-});
-const dots = priorTasks.get(DOTS_TASK_ID);
-if (dots && !mappedTasks.some(task => task.id === DOTS_TASK_ID)) mappedTasks.push(dots);
-const selected = mappedTasks.find(task => task.id === current.activeTaskId);
-set({
-  spaces: mappedSpaces,
-  projects,
-  tasks: mappedTasks,
-  pinnedTaskIds: mappedTasks
-    .filter((task) => task.isFavorited)
-    .map((task) => task.id),
-  soul: soul ?? helpers.emptySoul,
-  models: mappedModels,
-  activeModelId: selected ? current.activeModelId : defaultModelId,
-  dotsModelId: resolveDotsPreferences(appSettings?.dotsSettings).modelId,
-  dotsFollowModelId: appSettings?.defaultModelId ?? "",
-  defaultModelId,
-  modelPreferences: appSettings?.modelPreferences ?? {},
-  contextWindowTokens: selected ? current.contextWindowTokens :
-    mappedModels.find((model) => model.id === defaultModelId)
-      ?.contextWindow || 128_000,
-  permissionMode: selected ? current.permissionMode : appSettings?.permissionMode ?? "default",
-  conversationBranchEnabled:
-    appSettings?.conversationBranchEnabled === true,
-  ...(!selected ? {
-    activeTaskId: null, notificationMessageTarget: undefined, panelOpen: false, artifactTabs: [], activeArtifactId: null,
-  } : {}),
-});
-if (selected?.durable) {
-  // Rebinding can miss the last delta even if no further event arrives.
-  void readTaskHistory(binding.context, selected.id).catch(error => {
-    if (isActive()) set(state => ({ tasks: state.tasks.map(task => task.id === selected.id
-      ? { ...task, historyError: String(error) } : task) }));
+  const dots = priorTasks.get(DOTS_TASK_ID);
+  if (dots && !mappedTasks.some(task => task.id === DOTS_TASK_ID)) mappedTasks.push(dots);
+  const selected = mappedTasks.find(task => task.id === current.activeTaskId);
+  const initialActiveModelId = selected ? current.activeModelId : initialDefaultModelId;
+  set({
+    spaces: mappedSpaces,
+    projects,
+    tasks: mappedTasks,
+    pinnedTaskIds: mappedTasks.filter(task => task.isFavorited).map(task => task.id),
+    soul: soul ?? helpers.emptySoul,
+    activeModelId: initialActiveModelId,
+    dotsModelId: resolveDotsPreferences(appSettings?.dotsSettings).modelId,
+    dotsFollowModelId: configuredDefaultModelId,
+    defaultModelId: initialDefaultModelId,
+    modelPreferences: appSettings?.modelPreferences ?? {},
+    contextWindowTokens: selected ? current.contextWindowTokens :
+      initialModels.find(model => model.id === initialDefaultModelId)?.contextWindow || 128_000,
+    permissionMode: selected ? current.permissionMode : appSettings?.permissionMode ?? "default",
+    conversationBranchEnabled: appSettings?.conversationBranchEnabled === true,
+    ...(!selected ? {
+      activeTaskId: null, notificationMessageTarget: undefined, panelOpen: false, artifactTabs: [], activeArtifactId: null,
+    } : {}),
   });
-}
-markStartup("bootstrapApplied");
-  // Two frames is the earliest proxy for "the task list can be clicked". The window is visible
-  // during measurement, so this observes a real frame; renderer-loaded alone is never interactive.
-// hint only; renderer-loaded alone is never reported as interactive.
-afterInteractiveFrame(() => markStartup("taskListInteractive"));
+  if (selected?.durable) {
+    // Rebinding can miss the last delta even if no further event arrives.
+    void readTaskHistory(binding.context, selected.id).catch(error => {
+      if (isActive()) set(state => ({ tasks: state.tasks.map(task => task.id === selected.id
+        ? { ...task, historyError: String(error) } : task) }));
+    });
+  }
+  markStartup("bootstrapApplied");
+  // Measure two actual frames after the task list state was applied.
+  afterInteractiveFrame(() => {
+    if (isActive()) markStartup("taskListInteractive");
+  });
+
+  const restoreModels = pendingModels.then(loadedModels => {
+    if (!loadedModels || !isActive()) return;
+    const persistedModels = new Map(taskRows.map(task => [task.id, task.modelId]));
+    const initialTaskModels = new Map(mappedTasks.map(task => [task.id, task.modelId]));
+    set(state => {
+      const models = state.models === catalogBeforeRead ? loadedModels : (state.models ?? loadedModels);
+      const enabled = models.filter(model => model.enabled !== false);
+      const enabledIds = new Set(enabled.map(model => model.id));
+      const preferred = state.defaultModelId === initialDefaultModelId ? configuredDefaultModelId : state.defaultModelId;
+      const defaultModelId = enabledIds.has(preferred) ? preferred : (enabled[0]?.id ?? "");
+      const tasks = state.tasks.map(task => {
+        const persisted = persistedModels.get(task.id);
+        if (!persistedModels.has(task.id) || task.modelId !== initialTaskModels.get(task.id)) return task;
+        const modelId = persisted && enabledIds.has(persisted) ? persisted : defaultModelId;
+        return task.modelId === modelId ? task : { ...task, modelId };
+      });
+      const followedDefault = state.activeTaskId === null && state.activeModelId === initialActiveModelId;
+      const activeModelId = followedDefault ? defaultModelId :
+        state.activeModelId || tasks.find(task => task.id === state.activeTaskId)?.modelId || defaultModelId;
+      return {
+        models, tasks, defaultModelId, activeModelId,
+        contextWindowTokens: followedDefault || !state.activeModelId
+          ? models.find(model => model.id === activeModelId)?.contextWindow ?? state.contextWindowTokens
+          : state.contextWindowTokens,
+      };
+    });
+  });
 
   if (appSettings) {
     binding.context.get().setDesktopAppearance(appSettings.desktopAppearance ?? getInitialAppearance(appSettings.theme));
@@ -229,6 +258,7 @@ afterInteractiveFrame(() => markStartup("taskListInteractive"));
     }
   };
   await Promise.all([
+    restoreModels,
     loadOptional("skills", async () => {
       const rows = await api.agent.listSkills();
       if (!isActive()) return;

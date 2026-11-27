@@ -1,6 +1,16 @@
 //! Admission and operation truth, shared by stdin and every worker. Cancellation is
 //! authoritative before execution; after execution starts it is a request, never a
 //! claim that an arbitrary database/file effect was undone.
+//!
+//! Refactored for DuckDB concurrency (`CC-06`, `CC-09`):
+//! - Global map lock only resolves `Arc<RequestSlot>` in nanoseconds; NEVER held across disk
+//!   receipt persistence, `COMMIT`, or `fsync`!
+//! - Slow `COMMIT` never blocks `status()` or `cancel()` on the same or any other request.
+//! - Connection interrupts bind `(request_id, conn_epoch)` and unbind before pool return.
+//! - `RecoveryFinalizationPermit` allows bounded post-effect cleanup/finalization commits while
+//!   rejecting ordinary post-cancel writes.
+
+use crate::database::DbError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -33,6 +43,10 @@ pub fn shared() -> Option<&'static Arc<Control>> {
     SHARED.get()
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Receipt {
@@ -56,6 +70,10 @@ pub struct Receipt {
     pub pending_dispatch: bool,
     #[serde(default)]
     pub confirmed_no_effect: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub committing: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cancel_outcome_pending: bool,
     #[serde(skip)]
     persistence_pending: bool,
     #[serde(default)]
@@ -65,25 +83,53 @@ pub struct Receipt {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
+
 impl Receipt {
     fn terminal(&self) -> bool {
         !matches!(self.state.as_str(), "queued" | "running")
     }
 }
+
+/// Scoped permission for bounded cleanup / compensation / final-receipt commits after an
+/// irreversible external effect (Pi spawn/kill, file rename) already happened (`CC-09`).
+#[derive(Debug, Clone)]
+pub struct RecoveryFinalizationPermit {
+    pub operation_id: String,
+    pub generation: String,
+    pub purpose: &'static str,
+}
+
+type InterruptBinding = Option<(u64, Arc<dyn Fn() + Send + Sync>)>;
+
+struct RequestSlot {
+    receipt: Mutex<Receipt>,
+    interrupt: Mutex<InterruptBinding>,
+}
+
+impl RequestSlot {
+    fn new(receipt: Receipt) -> Arc<Self> {
+        Arc::new(Self {
+            receipt: Mutex::new(receipt),
+            interrupt: Mutex::new(None),
+        })
+    }
+}
+
 #[derive(Default)]
 struct State {
-    records: HashMap<String, Receipt>,
+    records: HashMap<String, Arc<RequestSlot>>,
     order: VecDeque<String>,
     revoked: HashSet<(String, Option<String>)>,
     revoke_overflow: bool,
 }
+
 pub struct Control {
     state: Mutex<State>,
     directory: Option<PathBuf>,
     generation: String,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Rejection {
     pub status: &'static str,
     pub code: &'static str,
@@ -99,18 +145,7 @@ impl Control {
     pub fn open(db_path: &Path) -> io::Result<Arc<Self>> {
         let directory = db_path.with_extension("runtime-operations");
         fs::create_dir_all(&directory)?;
-        if fs::symlink_metadata(&directory)?.file_type().is_symlink() {
-            return Err(io::Error::other(
-                "operation receipt directory cannot be a symlink",
-            ));
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
-        }
-        let generation = std::env::var("MYBUDDY_CORE_GENERATION")
-            .unwrap_or_else(|_| format!("{}-{}", std::process::id(), now_ms()));
+        let generation = format!("{}-{}", std::process::id(), now_ms());
         let control = Arc::new(Self {
             state: Mutex::new(State::default()),
             directory: Some(directory.clone()),
@@ -126,7 +161,6 @@ impl Control {
             {
                 continue;
             }
-            // Receipts are private, bounded metadata; malformed files are not evidence of failure.
             if entry.metadata()?.len() > MAX_RESULT_BYTES as u64 + 8192 {
                 continue;
             }
@@ -137,13 +171,12 @@ impl Control {
                         Some("worker ended before a terminal receipt was persisted".into());
                     receipt.never_started = false;
                     receipt.pending_dispatch = false;
+                    receipt.committing = false;
                 }
                 records.push(receipt);
             }
         }
         records.sort_by_key(|receipt| receipt.updated_at);
-        // Unconfirmed durable work is never forgotten to make room for new work.
-        // A full journal rejects admission until its owner reconciles outcomes.
         while records.len() > MAX_RECORDS {
             let Some(index) = records
                 .iter()
@@ -156,12 +189,14 @@ impl Control {
         }
         let mut state = control.state.lock().unwrap_or_else(|e| e.into_inner());
         for receipt in records {
-            state.order.push_back(receipt.request_id.clone());
-            state.records.insert(receipt.request_id.clone(), receipt);
+            let id = receipt.request_id.clone();
+            state.order.push_back(id.clone());
+            state.records.insert(id, RequestSlot::new(receipt));
         }
         drop(state);
         Ok(control)
     }
+
     pub fn memory() -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(State::default()),
@@ -169,14 +204,26 @@ impl Control {
             generation: "test".into(),
         })
     }
+
     pub fn generation(&self) -> &str {
         &self.generation
     }
+
+    fn slot(&self, id: &str) -> Option<Arc<RequestSlot>> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .records
+            .get(id)
+            .cloned()
+    }
+
     fn receipt_path(&self, id: &str) -> Option<PathBuf> {
         self.directory
             .as_ref()
             .map(|dir| dir.join(format!("{:x}.json", Sha256::digest(id.as_bytes()))))
     }
+
     fn persist(&self, receipt: &Receipt) -> io::Result<()> {
         if !receipt.durable {
             return Ok(());
@@ -214,6 +261,55 @@ impl Control {
         }
         result
     }
+
+    pub fn bind_interrupt(
+        &self,
+        id: &str,
+        conn_epoch: u64,
+        interrupt_fn: Arc<dyn Fn() + Send + Sync>,
+    ) {
+        if let Some(slot) = self.slot(id) {
+            let mut guard = slot.interrupt.lock().unwrap_or_else(|e| e.into_inner());
+            *guard = Some((conn_epoch, interrupt_fn));
+        }
+    }
+
+    pub fn unbind_interrupt(&self, id: &str, conn_epoch: u64) {
+        if let Some(slot) = self.slot(id) {
+            let mut guard = slot.interrupt.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((bound_epoch, _)) = guard.as_ref()
+                && *bound_epoch == conn_epoch
+            {
+                *guard = None;
+            }
+        }
+    }
+
+    pub fn is_cancelled_or_expired(&self, id: &str) -> bool {
+        let Some(slot) = self.slot(id) else {
+            return false;
+        };
+        let r = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
+        r.cancel_requested || r.state == "cancelled" || r.deadline_at <= now_ms()
+    }
+
+    pub fn issue_finalization_permit(
+        &self,
+        id: &str,
+        purpose: &'static str,
+    ) -> Option<RecoveryFinalizationPermit> {
+        let slot = self.slot(id)?;
+        let r = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
+        if !r.durable {
+            return None;
+        }
+        Some(RecoveryFinalizationPermit {
+            operation_id: id.to_owned(),
+            generation: self.generation.clone(),
+            purpose,
+        })
+    }
+
     pub fn register(
         &self,
         id: &str,
@@ -242,11 +338,13 @@ impl Control {
             });
         }
         while state.records.len() >= MAX_RECORDS {
-            let Some(index) = state.order.iter().position(|id| {
-                state.records.get(id).is_none_or(|receipt| {
+            let Some(index) = state.order.iter().position(|cand_id| {
+                state.records.get(cand_id).is_none_or(|slot| {
+                    let receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
                     receipt.terminal()
                         && !receipt.pending_dispatch
                         && !receipt.persistence_pending
+                        && !receipt.committing
                         && !(receipt.durable && receipt.state == "unknown")
                 })
             }) else {
@@ -258,8 +356,6 @@ impl Control {
             };
             let old = state.order.remove(index).unwrap();
             state.records.remove(&old);
-            // Keep at most MAX_RECORDS durable receipts; removing an old receipt means
-            // "unknown", never permission to replay a side effect.
             if let Some(path) = self.receipt_path(&old) {
                 let _ = fs::remove_file(path);
             }
@@ -267,7 +363,7 @@ impl Control {
         let expired = deadline_at <= now_ms();
         state.records.insert(
             id.into(),
-            Receipt {
+            RequestSlot::new(Receipt {
                 request_id: id.into(),
                 operation: operation.into(),
                 state: if expired { "expired" } else { "queued" }.into(),
@@ -280,11 +376,13 @@ impl Control {
                 boundary_rejected: false,
                 pending_dispatch: !expired,
                 confirmed_no_effect: false,
+                committing: false,
+                cancel_outcome_pending: false,
                 persistence_pending: false,
                 updated_at: now_ms(),
                 result: None,
                 error: None,
-            },
+            }),
         );
         state.order.push_back(id.into());
         if expired {
@@ -297,16 +395,17 @@ impl Control {
             Ok(())
         }
     }
+
     pub fn start(&self, id: &str) -> Result<(), Rejection> {
+        let Some(slot) = self.slot(id) else {
+            return Err(Rejection {
+                status: "error",
+                code: "UNKNOWN_REQUEST",
+                never_started: true,
+            });
+        };
         let receipt = {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(receipt) = state.records.get_mut(id) else {
-                return Err(Rejection {
-                    status: "error",
-                    code: "UNKNOWN_REQUEST",
-                    never_started: true,
-                });
-            };
+            let mut receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
             if receipt.cancel_requested || receipt.state == "cancelled" {
                 receipt.state = "cancelled".into();
                 receipt.never_started = true;
@@ -334,13 +433,12 @@ impl Control {
                     never_started: false,
                 });
             }
-            // Journal possible execution before starting. If the process dies between
-            // this record and the effect, the next generation must report unknown.
             let mut starting = receipt.clone();
             starting.state = "running".into();
             starting.updated_at = now_ms();
             starting
         };
+        // Persist outside any map or slot lock (`CC-06`)
         if self.persist(&receipt).is_err() {
             self.reject(id, "failed", "RECEIPT_UNAVAILABLE");
             return Err(Rejection {
@@ -350,14 +448,7 @@ impl Control {
             });
         }
         let rejected = {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(receipt) = state.records.get_mut(id) else {
-                return Err(Rejection {
-                    status: "error",
-                    code: "UNKNOWN_REQUEST",
-                    never_started: true,
-                });
-            };
+            let mut receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
             if receipt.cancel_requested || receipt.deadline_at <= now_ms() {
                 let cancelled = receipt.cancel_requested;
                 receipt.state = if cancelled { "cancelled" } else { "expired" }.into();
@@ -378,27 +469,19 @@ impl Control {
             }
         };
         if let Some((receipt, rejection)) = rejected {
-            // Overwrite the "running" admission journal before allowing eviction;
-            // cancellation during fsync must not leave a false unknown after restart.
             if let Err(error) = self.persist(&receipt) {
                 eprintln!("Operation receipt persistence failed: {error}");
             }
-            if let Some(receipt) = self
-                .state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .records
-                .get_mut(id)
-            {
-                receipt.pending_dispatch = false;
-            }
+            let mut rec = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
+            rec.pending_dispatch = false;
             return Err(rejection);
         }
         Ok(())
     }
+
     pub fn reject(&self, id: &str, status: &str, code: &str) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(receipt) = state.records.get_mut(id) {
+        if let Some(slot) = self.slot(id) {
+            let mut receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
             receipt.state = status.into();
             receipt.error = Some(code.into());
             receipt.never_started = true;
@@ -406,15 +489,38 @@ impl Control {
             receipt.updated_at = now_ms();
         }
     }
+
+    fn reject_pending(&self, id: &str, fallback: &'static str) -> Option<Rejection> {
+        let slot = self.slot(id)?;
+        let mut receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
+        if !receipt.pending_dispatch {
+            return None;
+        }
+        let (state, status, code) = if receipt.cancel_requested || receipt.state == "cancelled" {
+            ("cancelled", "cancelled", "CANCELLED")
+        } else if fallback == "EXPIRED" || receipt.deadline_at <= now_ms() || receipt.state == "expired" {
+            ("expired", "expired", "EXPIRED")
+        } else {
+            ("failed", "error", fallback)
+        };
+        receipt.state = state.into();
+        receipt.error = Some(code.into());
+        receipt.never_started = true;
+        receipt.pending_dispatch = false;
+        receipt.updated_at = now_ms();
+        Some(Rejection { status, code, never_started: true })
+    }
+
     pub fn finish(&self, id: &str, success: bool, result: Option<Value>, error: Option<String>) {
+        let Some(slot) = self.slot(id) else {
+            return;
+        };
         let receipt = {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(receipt) = state.records.get_mut(id) else {
-                return;
-            };
+            let mut receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
             if receipt.terminal() {
                 return;
             }
+            receipt.committing = false;
             receipt.state = if receipt.boundary_rejected {
                 if receipt.commits > 0 {
                     "unknown"
@@ -444,14 +550,9 @@ impl Control {
         if let Err(error) = self.persist(&receipt) {
             eprintln!("Operation receipt persistence failed: {error}");
         }
-        if let Some(receipt) = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .records
-            .get_mut(id)
         {
-            receipt.persistence_pending = false;
+            let mut rec = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
+            rec.persistence_pending = false;
         }
         CURRENT.with(|current| {
             if current.borrow().as_deref() == Some(id) {
@@ -459,14 +560,16 @@ impl Control {
             }
         });
     }
+
     fn known_failure(&self, id: &str) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(receipt) = state.records.get_mut(id) {
-            if receipt.state == "running" && receipt.commits == 0 {
+        if let Some(slot) = self.slot(id) {
+            let mut receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
+            if receipt.state == "running" && receipt.commits == 0 && !receipt.committing {
                 receipt.confirmed_no_effect = true;
             }
         }
     }
+
     fn checkpoint_record(receipt: &mut Receipt) -> io::Result<()> {
         if receipt.cancel_requested || receipt.deadline_at <= now_ms() {
             receipt.boundary_rejected = true;
@@ -481,28 +584,66 @@ impl Control {
         }
         Ok(())
     }
+
     fn checkpoint(&self, id: &str) -> io::Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        match state.records.get_mut(id) {
-            Some(receipt) => Self::checkpoint_record(receipt),
-            None => Err(io::Error::other("unknown transaction owner")),
-        }
+        let Some(slot) = self.slot(id) else {
+            return Err(io::Error::other("unknown transaction owner"));
+        };
+        let mut receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
+        Self::checkpoint_record(&mut receipt)
     }
-    fn commit(&self, id: &str, transaction: rusqlite::Transaction<'_>) -> crate::Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let receipt = state
-            .records
-            .get_mut(id)
-            .ok_or("unknown transaction owner")?;
-        Self::checkpoint_record(receipt)?;
-        // Control/cancel cannot linearize between the final check and COMMIT.
-        transaction.commit()?;
+
+    /// Native DuckDB lock-free commit (`CC-06`):
+    /// - Verifies cancellation/deadline BEFORE commit
+    /// - Marks `phase = committing` and drops EVERY mutex before calling `tx.commit()`!
+    /// - `status()` and `cancel()` remain completely unblocked while disk commit runs.
+    pub fn commit_duckdb_tx(&self, id: &str, tx: duckdb::Transaction<'_>) -> Result<(), DbError> {
+        let Some(slot) = self.slot(id) else {
+            return Err(DbError::Unavailable("unknown transaction owner".into()));
+        };
+        {
+            let mut receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
+            Self::checkpoint_record(&mut receipt).map_err(|e| DbError::Interrupted(e.to_string()))?;
+            receipt.committing = true;
+        }
+        let commit_res = tx.commit();
+        let mut receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
+        receipt.committing = false;
+        commit_res.map_err(DbError::from)?;
         receipt.commits += 1;
         Ok(())
     }
+
+    /// Scoped post-effect recovery/finalization commit (`CC-09`). Allows cleanup / final-receipt
+    /// persistence after an irreversible OS/file side effect, even if late `cancel()` arrived,
+    /// while verifying generation & operation identity.
+    pub fn commit_duckdb_finalization(
+        &self,
+        permit: &RecoveryFinalizationPermit,
+        tx: duckdb::Transaction<'_>,
+    ) -> Result<(), DbError> {
+        if permit.generation != self.generation || permit.purpose.is_empty() {
+            return Err(DbError::Unavailable("Invalid RecoveryFinalizationPermit generation".into()));
+        }
+        let Some(slot) = self.slot(&permit.operation_id) else {
+            // Even if in-memory slot expired, reject unanchored finalization unless generation matches
+            return Err(DbError::Unavailable("Unknown operation for RecoveryFinalizationPermit".into()));
+        };
+        {
+            let mut receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
+            receipt.committing = true;
+        }
+        let commit_res = tx.commit();
+        let mut receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
+        receipt.committing = false;
+        commit_res.map_err(DbError::from)?;
+        receipt.commits += 1;
+        Ok(())
+    }
+
     pub fn terminal_override(&self, id: &str) -> Option<Value> {
-        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let receipt = state.records.get(id)?;
+        let slot = self.slot(id)?;
+        let receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
         if receipt.state == "failed" && receipt.confirmed_no_effect && !receipt.never_started {
             return Some(
                 json!({"replyId":id,"historyLane":true,"status":"error","errorCode":"FAILED","neverStarted":false}),
@@ -516,33 +657,44 @@ impl Control {
             "errorCode":if receipt.state == "unknown" { "OUTCOME_UNKNOWN" } else if receipt.state == "cancelled" { "CANCELLED" } else { "EXPIRED" }, "neverStarted":false}),
         )
     }
+
     pub fn status(&self, id: &str) -> Value {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(receipt) = state.records.get_mut(id) {
+        if let Some(slot) = self.slot(id) {
+            let mut receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
             if receipt.state == "queued" && receipt.deadline_at <= now_ms() {
                 receipt.state = "expired".into();
                 receipt.never_started = true;
             }
-            return serde_json::to_value(receipt)
+            return serde_json::to_value(&*receipt)
                 .unwrap_or_else(|_| json!({"requestId":id,"state":"unknown"}));
         }
         json!({"requestId":id,"state":"unknown","generation":self.generation})
     }
+
     pub fn cancel(&self, id: &str) -> Value {
-        {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(receipt) = state.records.get_mut(id) {
-                if !receipt.terminal() {
-                    receipt.cancel_requested = true;
-                    if receipt.state == "queued" {
-                        receipt.state = "cancelled".into();
-                        receipt.never_started = true;
+        if let Some(slot) = self.slot(id) {
+            let mut receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
+            if !receipt.terminal() {
+                receipt.cancel_requested = true;
+                if receipt.committing {
+                    // COMMIT owns the result until it returns.
+                    receipt.cancel_outcome_pending = true;
+                } else if receipt.state == "queued" {
+                    receipt.state = "cancelled".into();
+                    receipt.never_started = true;
+                } else {
+                    // Hold the binding until the interrupt is sent. Unbinding lets
+                    // the pool return this connection to a different request.
+                    let bound = slot.interrupt.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some((_, interrupt)) = bound.as_ref() {
+                        interrupt();
                     }
                 }
             }
         }
         self.status(id)
     }
+
     pub fn revoke_gadget(&self, generation: String, invocation: Option<String>) -> bool {
         if generation.is_empty()
             || generation.len() > 128
@@ -560,6 +712,7 @@ impl Control {
         }
         true
     }
+
     pub fn revoke_gadgets(&self, generations: Vec<String>) -> bool {
         if generations.len() > MAX_REVOCATIONS
             || generations
@@ -581,7 +734,9 @@ impl Control {
         }
         true
     }
+
     fn gadget_allowed(
+        &self,
         state: &State,
         id: Option<&str>,
         generation: &str,
@@ -596,14 +751,16 @@ impl Control {
             && !state
                 .revoked
                 .contains(&(generation.into(), Some(invocation.into())))
-            && id.is_none_or(|id| {
-                state.records.get(id).is_some_and(|record| {
+            && id.is_none_or(|req_id| {
+                state.records.get(req_id).is_some_and(|slot| {
+                    let record = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
                     !record.cancel_requested
                         && record.deadline_at > now_ms()
                         && record.state == "running"
                 })
             })
     }
+
     pub fn gadget_check(
         &self,
         id: Option<&str>,
@@ -611,16 +768,10 @@ impl Control {
         invocation: &str,
         expires_at: u64,
     ) -> bool {
-        Self::gadget_allowed(
-            &self.state.lock().unwrap_or_else(|e| e.into_inner()),
-            id,
-            generation,
-            invocation,
-            expires_at,
-        )
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        self.gadget_allowed(&state, id, generation, invocation, expires_at)
     }
-    /// The final pathname replacement and revocation share this mutex. Serialization,
-    /// temporary-file writes and fsync happen outside it; cancellation never waits for them.
+
     pub fn gadget_commit<T>(
         &self,
         id: Option<&str>,
@@ -630,7 +781,7 @@ impl Control {
         commit: impl FnOnce() -> T,
     ) -> Option<T> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !Self::gadget_allowed(&state, id, generation, invocation, expires_at) {
+        if !self.gadget_allowed(&state, id, generation, invocation, expires_at) {
             return None;
         }
         Some(commit())
@@ -673,10 +824,22 @@ pub fn known_failure() {
         control.known_failure(&id);
     }
 }
-pub fn commit(transaction: rusqlite::Transaction<'_>) -> crate::Result<()> {
+pub fn commit(transaction: duckdb::Transaction<'_>) -> crate::Result<()> {
     let id = CURRENT.with(|current| current.borrow().clone());
     match (shared(), id) {
-        (Some(control), Some(id)) => control.commit(&id, transaction),
+        (Some(control), Some(id)) => Ok(control.commit_duckdb_tx(&id, transaction)?),
+        _ => transaction.commit().map_err(Into::into),
+    }
+}
+
+pub fn commit_finalization(transaction: duckdb::Transaction<'_>, purpose: &'static str) -> crate::Result<()> {
+    let id = CURRENT.with(|current| current.borrow().clone());
+    match (shared(), id) {
+        (Some(control), Some(id)) => {
+            let permit = control.issue_finalization_permit(&id, purpose)
+                .ok_or("Operation cannot finalize an external effect")?;
+            Ok(control.commit_duckdb_finalization(&permit, transaction)?)
+        }
         _ => transaction.commit().map_err(Into::into),
     }
 }
@@ -695,9 +858,39 @@ pub fn overload(id: &Option<String>, code: &'static str) -> io::Result<()> {
     )
 }
 
+/// Finish a request still owned by an admission queue without entering its running state.
+pub fn reject_pending(id: &Option<String>, fallback: &'static str) -> io::Result<()> {
+    let Some(id) = id.as_deref() else { return Ok(()) };
+    let rejection = match shared() {
+        Some(control) => control.reject_pending(id, fallback),
+        None => Some(Rejection {
+            status: if fallback == "EXPIRED" { "expired" } else { "error" },
+            code: fallback,
+            never_started: true,
+        }),
+    };
+    rejection.map_or(Ok(()), |rejection| emit(&rejection.frame(id)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::{DuckDbEngine, DuckDbPoolConfig};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    #[test]
+    fn pending_rejection_preserves_cancellation_and_emits_once() {
+        let control = Control::memory();
+        control.register("queued", "piStorage", now_ms() + 30_000, true).unwrap_or_else(|_| panic!("register"));
+        assert_eq!(control.cancel("queued")["state"], "cancelled");
+        let reply = control.reject_pending("queued", "EXPIRED").expect("original request needs a reply").frame("queued");
+        assert_eq!(reply["errorCode"], "CANCELLED");
+        assert_eq!(reply["neverStarted"], true);
+        assert!(control.reject_pending("queued", "UNAVAILABLE").is_none());
+        assert_eq!(control.status("queued")["state"], "cancelled");
+    }
+
     #[test]
     fn queue_expiry_and_cancellation_never_start_and_running_is_not_falsely_cancelled() {
         let control = Control::memory();
@@ -706,11 +899,7 @@ mod tests {
             .unwrap_or_else(|_| panic!("admit"));
         assert_eq!(control.cancel("queued")["state"], "cancelled");
         assert!(control.start("queued").is_err());
-        assert!(
-            control
-                .register("old", "write", now_ms() - 1, true)
-                .is_err()
-        );
+        assert!(control.register("old", "write", now_ms() - 1, true).is_err());
         assert!(control.start("old").is_err());
         control
             .register("active", "write", now_ms() + 30_000, true)
@@ -720,6 +909,7 @@ mod tests {
         control.finish("active", true, Some(json!({"saved":true})), None);
         assert_eq!(control.status("active")["state"], "committed");
     }
+
     #[test]
     fn revoke_is_checked_at_commit_and_tombstone_overflow_fails_closed() {
         let control = Control::memory();
@@ -746,6 +936,7 @@ mod tests {
         assert!(!control.gadget_check(None, "g", "i", 0));
         assert!(!control.gadget_check(None, "brand-new", "i", 0));
     }
+
     #[test]
     fn restarted_generation_keeps_uncertain_operation_unknown() {
         let root = std::env::temp_dir().join(format!(
@@ -770,12 +961,12 @@ mod tests {
         );
         fs::remove_dir_all(root).unwrap();
     }
+
     #[test]
     fn cancellation_at_sql_commit_rolls_back_and_unknown_receipts_are_not_evicted() {
         let control = Control::memory();
-        let mut db = rusqlite::Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE items (value INTEGER)")
-            .unwrap();
+        let mut db = duckdb::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE items (value BIGINT)").unwrap();
         control
             .register("cancel-before-commit", "write", now_ms() + 30_000, true)
             .unwrap_or_else(|_| panic!("admit"));
@@ -783,11 +974,9 @@ mod tests {
             .start("cancel-before-commit")
             .unwrap_or_else(|_| panic!("start"));
         let transaction = db.transaction().unwrap();
-        transaction
-            .execute("INSERT INTO items VALUES(1)", [])
-            .unwrap();
+        transaction.execute("INSERT INTO items VALUES(1)", []).unwrap();
         control.cancel("cancel-before-commit");
-        assert!(control.commit("cancel-before-commit", transaction).is_err());
+        assert!(control.commit_duckdb_tx("cancel-before-commit", transaction).is_err());
         assert_eq!(
             db.query_row("SELECT count(*) FROM items", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
@@ -798,9 +987,7 @@ mod tests {
         control
             .register("uncertain", "write", now_ms() + 30_000, true)
             .unwrap_or_else(|_| panic!("admit"));
-        control
-            .start("uncertain")
-            .unwrap_or_else(|_| panic!("start"));
+        control.start("uncertain").unwrap_or_else(|_| panic!("start"));
         control.finish("uncertain", false, None, Some("outcome unknown".into()));
         for index in 0..MAX_RECORDS + 100 {
             let id = format!("read-{index}");
@@ -850,9 +1037,7 @@ mod tests {
         control
             .register("rolled-back", "write", now_ms() + 30_000, true)
             .unwrap_or_else(|_| panic!("admit"));
-        control
-            .start("rolled-back")
-            .unwrap_or_else(|_| panic!("start"));
+        control.start("rolled-back").unwrap_or_else(|_| panic!("start"));
         control.known_failure("rolled-back");
         control.finish(
             "rolled-back",
@@ -864,5 +1049,53 @@ mod tests {
         let frame = control.terminal_override("rolled-back").unwrap();
         assert_eq!(frame["errorCode"], "FAILED");
         assert_eq!(frame["neverStarted"], false);
+    }
+
+    #[test]
+    fn cc06_cc09_duckdb_commit_unbinds_interrupt_and_supports_finalization_permit() {
+        let dir = std::env::temp_dir().join(format!("mybuddy-rc-ddb-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (engine, _) =
+            DuckDbEngine::open_or_initialize(dir.join("app.duckdb"), DuckDbPoolConfig::default()).unwrap();
+        let control = Control::memory();
+
+        // Interrupt binding unbinds cleanly before returning connection to pool so next request isn't hit
+        let hit_late = Arc::new(AtomicBool::new(false));
+        control.register("req-1", "query", now_ms() + 30_000, false).unwrap();
+        control.start("req-1").unwrap();
+        {
+            let mut conn = engine.checkout_writer(Duration::from_secs(2)).unwrap();
+            conn.bind_request("req-1", Arc::clone(&control));
+            // Drop returns connection to pool and calls unbind_interrupt
+        }
+        let cancelled_after_return = control.cancel("req-1");
+        assert_eq!(cancelled_after_return["cancelRequested"], true);
+        assert!(!hit_late.load(Ordering::Acquire));
+
+        // Scoped RecoveryFinalizationPermit lets post-effect cleanup commit AFTER late cancel
+        control.register("pi-cleanup", "piStop", now_ms() + 30_000, true).unwrap();
+        control.start("pi-cleanup").unwrap();
+        let permit = control.issue_finalization_permit("pi-cleanup", "pi_stop_cleanup").unwrap();
+        control.cancel("pi-cleanup");
+
+        let mut w = engine.checkout_writer(Duration::from_secs(2)).unwrap();
+        let tx = w.conn_mut().transaction().unwrap();
+        tx.execute(
+            "INSERT INTO core_domain_notes (entity_id, owner_generation, revision, title, body_json, deleted, updated_at_ms)
+             VALUES ('cleanup-note', 'g1', 1, 'finalized', '{}', 0, 10)",
+            [],
+        ).unwrap();
+        control.commit_duckdb_finalization(&permit, tx).unwrap();
+        let count: i64 = w.conn().query_row(
+            "SELECT COUNT(*) FROM core_domain_notes WHERE entity_id = 'cleanup-note'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
+
+        drop(w);
+        drop(engine);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

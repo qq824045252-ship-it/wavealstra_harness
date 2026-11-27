@@ -2,6 +2,7 @@ import { botMemorySource } from "./BotMemorySource";
 import { createHash, randomUUID } from "node:crypto";
 import type { AppDatabase } from "../db/AppDatabase";
 import { LOCAL_USER_ID } from "../../shared/bot-work";
+import { RuntimeAuditUnknownOperationError } from "../platform/runtime-audit";
 import type { MemoryPipelineStateDto, MemorySkillLearningStatusDto, MemoryTurnDto, MemoryTurnExtractionState, MemoryTurnListRequest, MemoryTurnTaskDto } from "../../shared/memory-kernel";
 
 function hashTurn(userText: string, assistantText: string): string {
@@ -43,6 +44,8 @@ export type DurableMemoryTurn = CaptureMemoryTurnInput & { entryId: number; skip
 export type RuntimeMemoryTurnQuery =
   | ({ kind: "list"; limit: number } & Omit<MemoryTurnListRequest, "limit">)
   | { kind: "detail"; id: string }
+  | { kind: "hasPending"; taskId: string }
+  | ({ kind: "extractionCurrent" } & MemoryExtractionLease)
   | { kind: "tasks" }
   | { kind: "skillLearningStatus" };
 
@@ -52,12 +55,26 @@ type SkillLearningCounts = Omit<MemorySkillLearningStatusDto, "distillation" | "
 export type RuntimeMemoryTurnData =
   | { kind: "list"; turns: RuntimeMemoryTurnRow[] }
   | { kind: "detail"; turn: RuntimeMemoryTurnRow | null }
+  | { kind: "hasPending"; pending: boolean }
+  | { kind: "extractionCurrent"; current: boolean }
   | { kind: "tasks"; tasks: MemoryTurnTaskDto[] }
   | ({ kind: "skillLearningStatus"; latestError: string | null } & Omit<SkillLearningCounts, "latestError">);
 
 function projectRuntimeTurn({ metadataJson, ...turn }: RuntimeMemoryTurnRow): MemoryTurnDto {
   return { ...turn, metadata: parseObject(metadataJson) };
 }
+
+export type MemoryExtractionLease = { taskId: string; owner: string; token: string };
+export type RuntimeMemoryTurnExtractionCommand = MemoryExtractionLease & (
+  | { kind: "claim"; capturedThrough: number; limit: number; leaseMs?: number }
+  | { kind: "renew"; leaseMs?: number }
+  | { kind: "settle"; disposition: "completed" | "failed" | "release"; error?: string }
+);
+type ExtractionClaim<Row> = { status: "claimed"; turns: Row[]; leaseExpiresAt: number }
+  | { status: "empty" | "busy" | "stale" | "ineligible" };
+export type RuntimeMemoryTurnExtractionReply = ExtractionClaim<RuntimeMemoryTurnRow>
+  | { status: "renewed"; leaseExpiresAt: number }
+  | { status: "completed" | "failed" | "released" };
 
 export function prepareMemoryTurn(input: CaptureMemoryTurnInput): PreparedTurn {
   return {
@@ -310,6 +327,57 @@ export class MemoryTurnRepository {
        WHERE task_id=? AND extraction_state IN ('pending','failed') AND attempt_count < 3 AND captured_at<=?
        ORDER BY captured_at ASC,rowid ASC LIMIT ?`,
     ).all(taskId, capturedThrough, Math.max(1, Math.min(50, limit))) as Array<Record<string, unknown>>).map((row) => this.mapTurn(row));
+  }
+
+  /** Recovery only needs a witness. Extraction must still claim a batch through its writer. */
+  async hasPending(taskId: string): Promise<boolean> {
+    if (this.db.fixtureConnection) return this.listPending(taskId, 1).length > 0;
+    const reader = this.db.runtimeAuditReader;
+    if (!reader || !taskId.trim()) throw new Error("Core 记忆提炼恢复查询尚未就绪");
+    const result = await reader.memoryTurnData({ kind: "hasPending", taskId }, LOCAL_USER_ID);
+    if (result?.kind !== "hasPending") throw new Error("Core 未能确认原任务是否还有可重试的记忆轮次");
+    return result.pending;
+  }
+
+  async claimExtraction(lease: MemoryExtractionLease, options: { capturedThrough: number; limit: number; leaseMs?: number }): Promise<ExtractionClaim<MemoryTurnDto>> {
+    const reply = await this.writeExtraction({ ...lease, ...options, kind: "claim" });
+    switch (reply.status) {
+      case "claimed": return { ...reply, turns: reply.turns.map(projectRuntimeTurn) };
+      case "empty": case "busy": case "stale": case "ineligible": return reply;
+      default: throw new Error("Core 返回了无效的记忆提炼认领回执");
+    }
+  }
+
+  async renewExtraction(lease: MemoryExtractionLease, leaseMs?: number): Promise<number | undefined> {
+    const reply = await this.writeExtraction({ ...lease, kind: "renew", leaseMs });
+    if (reply.status === "renewed") return reply.leaseExpiresAt;
+    if (reply.status !== "stale") throw new Error("Core 返回了无效的记忆提炼续期回执");
+  }
+
+  async settleExtraction(lease: MemoryExtractionLease, disposition: "completed" | "failed" | "release", error?: string) {
+    const reply = await this.writeExtraction({ ...lease, kind: "settle", disposition, error });
+    switch (reply.status) {
+      case "completed": case "failed": case "released": case "stale": return reply.status;
+      default: throw new Error("Core 返回了无效的记忆提炼结算回执");
+    }
+  }
+
+  async extractionCurrent(lease: MemoryExtractionLease): Promise<boolean> {
+    const data = await this.db.runtimeAuditReader?.memoryTurnData({ ...lease, kind: "extractionCurrent" }, LOCAL_USER_ID);
+    if (data?.kind !== "extractionCurrent") throw new Error("Core 未确认原记忆提炼是否有效");
+    return data.current;
+  }
+
+  private async writeExtraction(command: RuntimeMemoryTurnExtractionCommand): Promise<RuntimeMemoryTurnExtractionReply> {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader?.supervised) throw new Error("持有者认领需要 Rust Core");
+    const write = () => reader.writeMemoryTurnExtraction(command, LOCAL_USER_ID);
+    const result = await write().catch(error => {
+      if (error instanceof RuntimeAuditUnknownOperationError) return write();
+      throw error;
+    });
+    if (!result) throw new Error("Core 未确认记忆提炼状态写入");
+    return result;
   }
 
   canExtractTask(taskId: string): boolean {

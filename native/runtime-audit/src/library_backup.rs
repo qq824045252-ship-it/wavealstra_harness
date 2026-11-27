@@ -3,7 +3,7 @@ use crate::{
 };
 use base64::{engine::general_purpose::STANDARD, write::EncoderWriter};
 use flate2::{Compression, write::GzEncoder};
-use rusqlite::{Connection, DatabaseName};
+use duckdb::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -54,13 +54,13 @@ pub(crate) fn spaces(db: &Connection, owner: &Owner) -> Result<Vec<String>> {
     let mut query = db.prepare(&format!(
         "SELECT id FROM library_spaces WHERE {condition} ORDER BY CASE kind WHEN 'personal' THEN 0 ELSE 1 END,created_at,rowid",
     ))?;
-    let map = |row: &rusqlite::Row<'_>| row.get::<_, String>(0);
+    let map = |row: &duckdb::Row<'_>| row.get::<_, String>(0);
     Ok(if let Some(id) = owner_id {
         query
             .query_map([id.trim_matches(javascript_whitespace)], map)?
-            .collect::<rusqlite::Result<_>>()?
+            .collect::<duckdb::Result<_>>()?
     } else {
-        query.query_map([], map)?.collect::<rusqlite::Result<_>>()?
+        query.query_map([], map)?.collect::<duckdb::Result<_>>()?
     })
 }
 
@@ -239,7 +239,7 @@ fn write_history(
 ) -> Result<()> {
     let versions = records(db,
         "SELECT id,version,content_hash AS contentHash,created_by AS createdBy,created_at AS createdAt,
-                rowid,path,snapshot IS NOT NULL AS has_snapshot
+                path,snapshot IS NOT NULL AS has_snapshot
          FROM library_versions WHERE item_id=?1 ORDER BY version DESC",
         [item_id],
     )?;
@@ -259,19 +259,16 @@ fn write_history(
         let hash = version["contentHash"]
             .as_str()
             .ok_or("invalid library version hash")?;
-        if version["has_snapshot"].as_i64() == Some(1) {
-            let rowid = version["rowid"]
-                .as_i64()
-                .ok_or("missing library snapshot")?;
-            let snapshot = db.blob_open(
-                DatabaseName::Main,
-                "library_versions",
-                "snapshot",
-                rowid,
-                true,
+        let version_id = version["id"].as_str().ok_or("invalid library version id")?;
+        if version["has_snapshot"].as_bool() == Some(true) || version["has_snapshot"].as_i64() == Some(1) {
+            let bytes: Vec<u8> = db.query_row(
+                "SELECT snapshot FROM library_versions WHERE id=?1",
+                [version_id],
+                |r| r.get(0),
             )?;
-            let len = snapshot.len();
-            write_version_body(out, snapshot, len as u64, hash)?;
+            let len = bytes.len() as u64;
+            let cursor = std::io::Cursor::new(bytes);
+            write_version_body(out, cursor, len, hash)?;
         } else if let Some(file) = version["path"]
             .as_str()
             .and_then(|path| open_history(root, Path::new(path)))
@@ -298,7 +295,7 @@ fn write_archive(
     for id in spaces {
         for folder in records(db,
             "SELECT id,space_id AS spaceId,parent_id AS parentId,name,owner,created_at AS createdAt,updated_at AS updatedAt
-             FROM library_collections WHERE space_id=?1 ORDER BY name COLLATE NOCASE,rowid",
+             FROM library_collections WHERE space_id=?1 ORDER BY lower(name),rowid",
             [id],
         )? {
             if !first {
@@ -314,7 +311,7 @@ fn write_archive(
         for row in records(
             db,
             &format!(
-                "SELECT {ITEMS} FROM library_items WHERE space_id=?1 ORDER BY title COLLATE NOCASE,rowid",
+                "SELECT {ITEMS} FROM library_items WHERE space_id=?1 ORDER BY lower(title),rowid",
             ),
             [space],
         )? {

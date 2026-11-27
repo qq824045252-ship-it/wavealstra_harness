@@ -16,6 +16,7 @@ export type RuntimeDurableTaskProjectionRequest = {
   | { kind: "snapshot"; status: string; activityAt?: number; workspaces: MessageWorkspace[] }
   | { kind: "rememberWorkspaces"; workspaces: MessageWorkspace[] }
   | { kind: "bindBot"; directory: string; cwd: string; updateCwdIfExists?: boolean }
+  | { kind: "bindWorkspaceCwd"; expectedVersion: string; cwd: string; at: number }
   | { kind: "commitBranch"; directory: string; cwd: string; inheritedLastEntryId: number }
   | { kind: "rebindGatewayDirectory"; previousDirectory: string; nextDirectory: string }
   | { kind: "queueWorkspaceMove"; fromCwd: string; toCwd: string }
@@ -23,6 +24,7 @@ export type RuntimeDurableTaskProjectionRequest = {
 
 export type RuntimeDurableTaskProjectionReply =
   | ({ status: "applied" } & TaskProjection)
+  | { status: "workspaceBound"; version: string }
   | { status: "rejected"; message: string }
   | { status: "needsHost" };
 
@@ -31,9 +33,13 @@ export class DurableTaskProjection {
   private applyOnHost?: ReturnType<typeof hostProjection>;
 
   constructor(
-    private readonly db: Database,
+    private readonly fixture: Database | undefined,
     private readonly rust?: Pick<RuntimeAuditReader, "writeDurableTaskProjection" | "supervised">,
   ) {}
+
+  private get writableFixture(): Database | undefined {
+    return this.fixture && !this.fixture.readonly && !this.rust?.supervised ? this.fixture : undefined;
+  }
 
   /** Publish the stored activity time and the original workspace for each requested message. */
   async writeSnapshot(taskId: string, status: string, at: unknown, workspaces: MessageWorkspace[]): Promise<TaskProjection> {
@@ -45,34 +51,38 @@ export class DurableTaskProjection {
   }
 
   async bindBot(taskId: string, directory: string, cwd: string, updateCwdIfExists = false): Promise<void> {
-    if (!this.db.readonly) {
-      this.db.prepare("INSERT OR IGNORE INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, directory, cwd);
-      if (updateCwdIfExists) this.db.prepare("UPDATE durable_bot_bindings SET cwd = ? WHERE task_id = ?").run(cwd, taskId);
+    const fixture = this.writableFixture;
+    if (fixture) {
+      fixture.prepare("INSERT OR IGNORE INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, directory, cwd);
+      if (updateCwdIfExists) fixture.prepare("UPDATE durable_bot_bindings SET cwd = ? WHERE task_id = ?").run(cwd, taskId);
       return;
     }
     await this.write({ kind: "bindBot", taskId, directory, cwd, updateCwdIfExists });
   }
 
   async commitBranch(taskId: string, directory: string, cwd: string, inheritedLastEntryId: number): Promise<void> {
-    if (!this.db.readonly) {
-      this.db.prepare("INSERT INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, directory, cwd);
-      this.db.prepare("INSERT INTO durable_bot_memory_projection(task_id, entry_id) VALUES (?, ?)").run(taskId, inheritedLastEntryId);
+    const fixture = this.writableFixture;
+    if (fixture) {
+      fixture.prepare("INSERT INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, directory, cwd);
+      fixture.prepare("INSERT INTO durable_bot_memory_projection(task_id, entry_id) VALUES (?, ?)").run(taskId, inheritedLastEntryId);
       return;
     }
     await this.write({ kind: "commitBranch", taskId, directory, cwd, inheritedLastEntryId });
   }
 
   async rebindGatewayDirectory(taskId: string, previousDirectory: string, nextDirectory: string): Promise<void> {
-    if (!this.db.readonly) {
-      this.db.prepare("UPDATE durable_bot_bindings SET directory = ? WHERE task_id = ? AND directory = ?").run(nextDirectory, taskId, previousDirectory);
+    const fixture = this.writableFixture;
+    if (fixture) {
+      fixture.prepare("UPDATE durable_bot_bindings SET directory = ? WHERE task_id = ? AND directory = ?").run(nextDirectory, taskId, previousDirectory);
       return;
     }
     await this.write({ kind: "rebindGatewayDirectory", taskId, previousDirectory, nextDirectory });
   }
 
   async queueWorkspaceMove(taskId: string, fromCwd: string, toCwd: string): Promise<void> {
-    if (!this.db.readonly) {
-      this.db.prepare("INSERT OR REPLACE INTO durable_bot_workspace_moves VALUES (?, ?, ?)").run(taskId, fromCwd, toCwd);
+    const fixture = this.writableFixture;
+    if (fixture) {
+      fixture.prepare("INSERT OR REPLACE INTO durable_bot_workspace_moves VALUES (?, ?, ?)").run(taskId, fromCwd, toCwd);
       return;
     }
     await this.write({ kind: "queueWorkspaceMove", taskId, fromCwd, toCwd });
@@ -95,10 +105,11 @@ export class DurableTaskProjection {
         throw new Error("Durable 任务投影需要 Rust 核心确认，不会回退到 Node 写入");
       }
     }
-    if (this.rust?.supervised || this.db.readonly) {
+    const fixture = this.writableFixture;
+    if (!fixture) {
       throw new Error("只读模式下 Durable 任务投影需要 Rust 核心确认");
     }
-    this.applyOnHost ??= hostProjection(this.db);
+    this.applyOnHost ??= hostProjection(fixture);
     return this.applyOnHost.immediate(request);
   }
 }

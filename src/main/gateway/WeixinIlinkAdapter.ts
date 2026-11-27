@@ -36,7 +36,8 @@ export class WeixinIlinkAdapter implements ChannelAdapter {
   isConnected(): boolean { return this.connected; }
   statusText(): string { return this.status; }
   gatewayConnectionGeneration(): unknown { return this.controller; }
-  workConnectionKey(): string | undefined { return this.connected && this.activated && this.config
+  workConnectionKey(): string | undefined { return this.activated ? this.gatewayPreparedConnectionKey() : undefined; }
+  gatewayPreparedConnectionKey(): string | undefined { return this.connected && this.config
     ? gatewayConnectionKey(this.type, [this.config.accountId, this.config.userId]) : undefined; }
   private report(text: string): void { this.status = text; this.options.onStatus?.(text); }
   async connect(raw: ChannelConfig): Promise<void> {

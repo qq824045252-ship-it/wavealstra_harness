@@ -21,6 +21,7 @@ process.env.HOME = root;
 mkdirSync(join(root, ".mybuddy", "plugins", "mcp"), { recursive: true });
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
 const { DotsActions } = await import("../src/main/dots/DotsActions");
+const { fixtureTaskBoard } = await import("./fixtures/legacy-task-board-store");
 const { createArtifactDomain } = await import("../src/main/artifact/ArtifactDomainSetup");
 const { CronService } = await import("../src/main/cron/CronService");
 const { TerminalHost } = await import("../src/main/terminal/TerminalHost");
@@ -419,9 +420,9 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
     observeTool:event => journal.observeTool(event),
     list:() => journal.list(), changed:() => journal.refresh(), failed:(...args) => journal.failed(...args),
     preferences:() => resolveDotsPreferences(agent.getAppSettings().dotsSettings),
-    fileNotice:notice => fileNotices.push(notice.id),
+    fileNotice: notice => { fileNotices.push(notice.id); },
     progressNotice:notice => progressNotices.set(notice.operationId,notice.text),
-  });
+  }, fixtureTaskBoard(db.connection));
   agent.setDotsActions(actions);
   let faultReached = false;
   let stoppedTarget: string | undefined;

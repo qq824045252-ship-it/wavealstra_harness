@@ -2,6 +2,7 @@ import { existsSync, lstatSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { assertPathInsideTask, MANIFEST_FILENAME } from "../../task/TaskExecutionWorkspace";
 import { assertGatewayDotsMemoryCurrent } from "../../gateway/GatewayDotsBindings";
+import { rejectGatewayExecution } from "../../gateway/GatewayExecutionAuthority";
 import { durableReadPathVariants, durableToolPath } from "./DurableFilePath";
 import type { DurableBotServiceOptions } from "./DurableBotService";
 import { gatewayChannelSpaceId, isGatewayConversation } from "../../../shared/gateway-task";
@@ -50,8 +51,11 @@ function assertGatewayPath(root: string, path: string): void {
 
 /** Recheck channel ownership before submission, model calls and tool execution, including after reopen. */
 export function isolateGatewayConversations(base: DurableBotServiceOptions): DurableBotServiceOptions {
-  const check = (id: string) => {
-    assertGatewayDotsMemoryCurrent(base.db.connection, id);
+  const reader = base.db.runtimeAuditReader;
+  const checkFixture = (id: string) => {
+    const fixture = base.db.fixtureConnection;
+    if (!fixture) rejectGatewayExecution();
+    assertGatewayDotsMemoryCurrent(fixture, id);
     const task = base.db.getTask(id);
     if (!task?.gatewaySidebarChannelId || task.spaceId !== gatewayChannelSpaceId(task.gatewaySidebarChannelId)
       || task.projectId || task.sessionFile) {
@@ -59,8 +63,21 @@ export function isolateGatewayConversations(base: DurableBotServiceOptions): Dur
     }
   };
   return { ...base,
-    beforeSubmit: request => { if (isGatewayConversation(request.taskId)) check(request.taskId); base.beforeSubmit?.(request); },
-    beforeModelRequest: id => { if (isGatewayConversation(id)) check(id); base.beforeModelRequest?.(id); },
+    validateGatewayWorkspace: async (id, cwd, from) => {
+      await base.validateGatewayWorkspace?.(id, cwd, from);
+      if (reader?.supervised) {
+        const authority = await reader.readGatewayExecutionAuthority(id);
+        if (authority?.status !== "allowed") rejectGatewayExecution(authority);
+      }
+    },
+    beforeSubmit: request => {
+      if (!reader?.supervised && isGatewayConversation(request.taskId)) checkFixture(request.taskId);
+      return base.beforeSubmit?.(request);
+    },
+    beforeModelRequest: id => {
+      if (!reader?.supervised && isGatewayConversation(id)) checkFixture(id);
+      return base.beforeModelRequest?.(id);
+    },
     mcpSelection: task => isGatewayConversation(task.id) ? []
       : base.mcpSelection ? base.mcpSelection(task) : base.expertBindings?.active(task.id)?.mcpIds,
     toolMode: task => isGatewayConversation(task.id) ? "native" : base.toolMode(task),

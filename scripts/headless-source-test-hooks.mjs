@@ -1,8 +1,9 @@
 /** Node-only headless fixtures: no bundler, no provider calls. */
-import {registerHooks,stripTypeScriptTypes} from 'node:module';
+import {registerHooks} from 'node:module';
 import {readFileSync,existsSync,statSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {pathToFileURL,fileURLToPath} from 'node:url';
+import {transformSync} from 'esbuild';
 const root=fileURLToPath(new URL('../',import.meta.url));
 registerHooks({
  resolve(specifier,context,next){
@@ -17,7 +18,13 @@ registerHooks({
   return next(specifier,context);
  },
  load(url,context,next){
-  if(url.startsWith('file:')&&url.endsWith('.ts'))return {format:'module',source:stripTypeScriptTypes(readFileSync(fileURLToPath(url),'utf8'),{mode:'transform',sourceUrl:url}),shortCircuit:true};
+  if (url.startsWith('file:') && url.endsWith('.ts')) {
+    const filename = fileURLToPath(url);
+    const {code} = transformSync(readFileSync(filename, 'utf8'), {
+      loader: 'ts', format: 'esm', sourcefile: filename, sourcemap: 'inline',
+    });
+    return {format: 'module', source: code, shortCircuit: true};
+  }
   return next(url,context);
  }
 });

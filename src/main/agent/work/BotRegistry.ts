@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import { RuntimeAuditUnknownOperationError, type RuntimeAuditReader } from "../../platform/runtime-audit";
 import type {
   BotChannelBindingDto,
   BotDto,
@@ -26,6 +27,12 @@ type BotRow = {
   created_at: number;
   updated_at: number;
 };
+
+export type RuntimeBotRow = BotRow & { is_primary: boolean };
+export type RuntimeBotListQuery = { kind: "list"; userId: string };
+export type RuntimeBotLookup = { kind: "bot"; botId: string }
+  | { kind: "channel"; userId: string; channelType: BotChannelBindingDto["channelType"]; channelIdentifier: string };
+export type RuntimeBotRegistrationReply = { ok: true; bot: RuntimeBotRow } | { ok: false; reason: "owner_mismatch" };
 
 type ExpertVersionRow = {
   bot_id: string;
@@ -111,43 +118,109 @@ function activeSnapshot(profile: ExpertProfileDto): ExpertConfigSnapshotDto {
   };
 }
 
+function botRegistration(input: RegisterBotInput) {
+  const botId = input.botId ?? DEFAULT_BOT_ID;
+  const profile: ExpertProfileDto = { ...defaultExpertProfile(), ...input.expertProfile };
+  profile.activeVersion = profile.desiredVersion;
+  return {
+    botId, userId: input.userId, displayName: input.displayName,
+    responsibilitySummary: input.responsibilitySummary ?? "",
+    expertProfileJson: JSON.stringify(profile),
+    memoryScopeJson: JSON.stringify({
+      personalMemoryNamespace: `mem-${botId}`,
+      sharePersonalMemoryWithTeam: false,
+      allowUnconfirmedSpeculationInMemory: false,
+      ...input.memoryScope,
+    }),
+    authorizationJson: JSON.stringify(normalizeAuthorization(input.authorization)),
+    foregroundAllowedToolsJson: JSON.stringify(input.foregroundAllowedTools ?? []),
+    notificationPolicyJson: input.notificationPolicyJson ?? JSON.stringify({ inAppCard: true }),
+    status: input.status ?? "active", now: Date.now(),
+    activeVersion: profile.activeVersion, expertId: profile.expertId, sourceRevision: profile.revision,
+    systemPromptHash: profile.systemPromptHash,
+    allowedMcpIdsJson: JSON.stringify(profile.allowedMcpIds),
+    allowedSkillIdsJson: JSON.stringify(profile.allowedSkillIds),
+    allowedConnectorIdsJson: JSON.stringify(profile.allowedConnectorIds),
+    configurationJson: JSON.stringify(profile.configuration ?? null),
+    skillPackagesJson: JSON.stringify(profile.skillPackages ?? []),
+  };
+}
+
+function defaultBot(userId: string): RegisterBotInput {
+  return { botId: DEFAULT_BOT_ID, userId, displayName: "MyBuddy", responsibilitySummary: "默认长期主负责人 Bot" };
+}
+
+export type RuntimeBotRegistration = ReturnType<typeof botRegistration> & { primary: boolean; operationId: string };
+
 export class BotRegistry {
-  constructor(private readonly db: Database.Database) {
-    if (!db.readonly) {
-      db.exec(`CREATE TABLE IF NOT EXISTS bot_identity_roles (
+  constructor(private readonly fixture?: Database.Database, private readonly core?: RuntimeAuditReader) {
+    if (fixture && !fixture.readonly) {
+      fixture.exec(`CREATE TABLE IF NOT EXISTS bot_identity_roles (
         user_id TEXT NOT NULL, role TEXT NOT NULL CHECK(role='primary'),
         bot_id TEXT NOT NULL UNIQUE REFERENCES bots(bot_id) ON DELETE CASCADE,
         assigned_at INTEGER NOT NULL, PRIMARY KEY(user_id,role));`);
     }
   }
 
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("Bot 注册表要求使用 Core");
+    return this.fixture;
+  }
+
+  async ensureDefaultBotSaved(userId: string): Promise<BotDto> {
+    if (!this.core) return this.ensureDefaultBot(userId);
+    return this.registerSaved(defaultBot(userId), true);
+  }
+
+  async registerSaved(input: RegisterBotInput, primary = false): Promise<BotDto> {
+    if (!this.core) return this.registerBot(input);
+    const request = { ...botRegistration(input), primary, operationId: randomUUID() };
+    let result: RuntimeBotRegistrationReply | undefined;
+    try {
+      result = await this.core.registerBot(request);
+    } catch (error) {
+      if (!(error instanceof RuntimeAuditUnknownOperationError)) throw error;
+    }
+    result ??= await this.core.registerBot(request);
+    if (!result) throw new Error("Core 未确认 Bot 登记");
+    if (!result.ok) throw new Error("Bot 不属于该用户");
+    return this.mapBot(result.bot, result.bot.is_primary);
+  }
+
+  async readBot(botId: string): Promise<BotDto | undefined> {
+    if (!this.core) return this.getBot(botId);
+    const row = await this.core.readBotRegistry({ kind: "bot", botId });
+    if (row === undefined) throw new Error("Core 未确认 Bot 查询");
+    return row ? this.mapBot(row, row.is_primary) : undefined;
+  }
+
+  async readBots(userId: string): Promise<BotDto[]> {
+    if (!this.core) return this.listBots(userId);
+    const rows = await this.core.readBotRegistry({ kind: "list", userId });
+    if (!rows) throw new Error("Core 未确认 Bot 列表查询");
+    return rows.map(row => this.mapBot(row, row.is_primary));
+  }
+
+  async readChannelBot(userId: string, channelType: BotChannelBindingDto["channelType"], channelIdentifier: string): Promise<BotDto | undefined> {
+    if (!this.core) {
+      const bot = this.resolveBotByChannel(channelType, channelIdentifier);
+      return bot?.userId === userId ? bot : undefined;
+    }
+    const row = await this.core.readBotRegistry({ kind: "channel", userId, channelType, channelIdentifier });
+    if (row === undefined) throw new Error("Core 未确认 Bot 频道查询");
+    return row ? this.mapBot(row, row.is_primary) : undefined;
+  }
+
   registerBot(input: RegisterBotInput): BotDto {
-    const now = Date.now();
-    const botId = input.botId ?? DEFAULT_BOT_ID;
-    const existing = this.getBot(botId);
+    const existing = this.getBot(input.botId ?? DEFAULT_BOT_ID);
     if (existing) {
       if (existing.userId !== input.userId) throw new Error("Bot 不属于该用户");
       return existing;
     }
-    const profile: ExpertProfileDto = { ...defaultExpertProfile(), ...input.expertProfile };
-    profile.activeVersion = profile.desiredVersion;
-    const authorization = normalizeAuthorization(input.authorization);
-    const expertProfileJson = JSON.stringify(profile);
-    const memoryScopeJson = JSON.stringify({
-      personalMemoryNamespace: `mem-${botId}`,
-      sharePersonalMemoryWithTeam: false,
-      allowUnconfirmedSpeculationInMemory: false,
-      ...input.memoryScope,
-    });
-    const authorizationJson = JSON.stringify(authorization);
-    const foregroundAllowedToolsJson = JSON.stringify(input.foregroundAllowedTools ?? []);
-    const notificationPolicyJson = input.notificationPolicyJson ?? JSON.stringify({ inAppCard: true });
-    const status = input.status ?? "active";
-    const allowedMcpIdsJson = JSON.stringify(profile.allowedMcpIds);
-    const allowedSkillIdsJson = JSON.stringify(profile.allowedSkillIds);
-    const allowedConnectorIdsJson = JSON.stringify(profile.allowedConnectorIds);
-    const configurationJson = JSON.stringify(profile.configuration ?? null);
-    const skillPackagesJson = JSON.stringify(profile.skillPackages ?? []);
+    const registration = botRegistration(input);
+    const { botId, now, expertProfileJson, memoryScopeJson, authorizationJson, foregroundAllowedToolsJson,
+      notificationPolicyJson, status, activeVersion, expertId, sourceRevision, systemPromptHash,
+      allowedMcpIdsJson, allowedSkillIdsJson, allowedConnectorIdsJson, configurationJson, skillPackagesJson } = registration;
     if (requiresWorkRustWrites(this.db)) {
       overlaySet(this.db, "bots", botId, {
         bot_id: botId, user_id: input.userId, display_name: input.displayName,
@@ -156,38 +229,26 @@ export class BotRegistry {
         authorization_json: authorizationJson, foreground_allowed_tools_json: foregroundAllowedToolsJson,
         notification_policy_json: notificationPolicyJson, status, created_at: now, updated_at: now,
       });
-      overlaySet(this.db, "bot_expert_versions", `${botId}\0${profile.activeVersion}`, {
-        bot_id: botId, version: profile.activeVersion, state: "active", expert_id: profile.expertId,
-        source_revision: profile.revision, system_prompt_hash: profile.systemPromptHash,
+      overlaySet(this.db, "bot_expert_versions", `${botId}\0${activeVersion}`, {
+        bot_id: botId, version: activeVersion, state: "active", expert_id: expertId,
+        source_revision: sourceRevision, system_prompt_hash: systemPromptHash,
         allowed_mcp_ids_json: allowedMcpIdsJson, allowed_skill_ids_json: allowedSkillIdsJson,
         allowed_connector_ids_json: allowedConnectorIdsJson, staged_by: "host", created_at: now, adopted_at: now,
         configuration_json: configurationJson, skill_packages_json: skillPackagesJson,
       });
-      enqueueWorkOp(this.db, {
-        op: "botUpsert", botId, userId: input.userId, displayName: input.displayName,
-        responsibilitySummary: input.responsibilitySummary ?? "", expertProfileJson, memoryScopeJson,
-        authorizationJson, foregroundAllowedToolsJson, notificationPolicyJson, status, now,
-        activeVersion: profile.activeVersion, expertId: profile.expertId, sourceRevision: profile.revision,
-        systemPromptHash: profile.systemPromptHash, allowedMcpIdsJson, allowedSkillIdsJson,
-        allowedConnectorIdsJson, configurationJson, skillPackagesJson,
-      });
+      enqueueWorkOp(this.db, { op: "botUpsert", ...registration });
       return this.getBot(botId)!;
     }
     this.db.prepare(`INSERT INTO bots (
       bot_id,user_id,display_name,responsibility_summary,expert_profile_json,memory_scope_json,
       authorization_json,foreground_allowed_tools_json,notification_policy_json,status,created_at,updated_at
     ) VALUES (@botId,@userId,@displayName,@responsibilitySummary,@expertProfileJson,@memoryScopeJson,
-      @authorizationJson,@foregroundAllowedToolsJson,@notificationPolicyJson,@status,@now,@now)`).run({
-      botId, userId: input.userId, displayName: input.displayName,
-      responsibilitySummary: input.responsibilitySummary ?? "",
-      expertProfileJson, memoryScopeJson, authorizationJson, foregroundAllowedToolsJson,
-      notificationPolicyJson, status, now,
-    });
+      @authorizationJson,@foregroundAllowedToolsJson,@notificationPolicyJson,@status,@now,@now)`).run(registration);
     this.db.prepare(`INSERT OR IGNORE INTO bot_expert_versions (
       bot_id,version,state,expert_id,source_revision,system_prompt_hash,allowed_mcp_ids_json,
       allowed_skill_ids_json,allowed_connector_ids_json,configuration_json,skill_packages_json,staged_by,created_at,adopted_at
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      botId, profile.activeVersion, "active", profile.expertId, profile.revision, profile.systemPromptHash,
+      botId, activeVersion, "active", expertId, sourceRevision, systemPromptHash,
       allowedMcpIdsJson, allowedSkillIdsJson, allowedConnectorIdsJson, configurationJson,
       skillPackagesJson, "host", now, now,
     );
@@ -196,12 +257,7 @@ export class BotRegistry {
 
   ensureDefaultBot(userId: string): BotDto {
     return workDomainRunTx(this.db, () => {
-      const bot = this.registerBot({
-        botId: DEFAULT_BOT_ID,
-        userId,
-        displayName: "MyBuddy",
-        responsibilitySummary: "默认长期主负责人 Bot",
-      });
+      const bot = this.registerBot(defaultBot(userId));
       const assignedAt = Date.now();
       if (requiresWorkRustWrites(this.db)) {
         overlayMutate(this.db, "bot_identity_roles", `${userId}\0primary`, () =>
@@ -492,11 +548,11 @@ export class BotRegistry {
       .run(JSON.stringify(profile), now, botId);
   }
 
-  private mapBot(row: BotRow): BotDto {
+  private mapBot(row: BotRow, isPrimary = this.isPrimaryBot(row.user_id, row.bot_id)): BotDto {
     return {
       botId: row.bot_id,
       userId: row.user_id,
-      organizationRole: this.isPrimaryBot(row.user_id, row.bot_id) ? "primary" : "ordinary",
+      organizationRole: isPrimary ? "primary" : "ordinary",
       displayName: row.display_name,
       responsibilitySummary: row.responsibility_summary,
       expertProfile: parseJson<ExpertProfileDto>(row.expert_profile_json, defaultExpertProfile()),

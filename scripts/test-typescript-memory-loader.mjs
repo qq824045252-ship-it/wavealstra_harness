@@ -1,9 +1,10 @@
-// Node 24's built-in TypeScript transform: no bundler, emitted files, or caches.
+// Transform modules in memory without bundling or emitting files.
 // This runner covers .ts behavior tests only, not TSX or browser/layout tests.
-import { registerHooks, stripTypeScriptTypes } from 'node:module';
+import { registerHooks } from 'node:module';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve, join, extname, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { transformSync } from 'esbuild';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const local = filename => filename.startsWith(root + sep) && !filename.includes(`${sep}node_modules${sep}`);
@@ -27,7 +28,10 @@ registerHooks({
     if (url.startsWith('file:')) {
       const filename = fileURLToPath(url);
       if (local(filename) && filename.endsWith('.ts')) {
-        return { format:'module', source:stripTypeScriptTypes(readFileSync(filename, 'utf8'), {mode:'transform',sourceUrl:url}), shortCircuit:true };
+        const { code } = transformSync(readFileSync(filename, 'utf8'), {
+          loader: 'ts', format: 'esm', sourcefile: filename, sourcemap: 'inline',
+        });
+        return { format: 'module', source: code, shortCircuit: true };
       }
     }
     return nextLoad(url, context);

@@ -338,19 +338,24 @@ export class UsageStatsService {
   private coverageAvailable = true;
   private writesClosed = false;
   private writeTail: Promise<void> = Promise.resolve();
-  constructor(private readonly db: Database, private readonly reader?: RuntimeAuditReader) {
-    if (db.readonly) {
+  constructor(private readonly fixture: Database | undefined, private readonly reader?: RuntimeAuditReader) {
+    if (fixture?.readonly) {
       this.coverageAvailable = this.hasTable("usage_event_coverage");
-    } else {
+    } else if (fixture) {
       try {
-        db.exec(`CREATE TABLE IF NOT EXISTS usage_event_coverage (entry_id TEXT PRIMARY KEY REFERENCES usage_events(entry_id) ON DELETE CASCADE ON UPDATE CASCADE,
+        fixture.exec(`CREATE TABLE IF NOT EXISTS usage_event_coverage (entry_id TEXT PRIMARY KEY REFERENCES usage_events(entry_id) ON DELETE CASCADE ON UPDATE CASCADE,
           input_known INTEGER NOT NULL, output_known INTEGER NOT NULL, cache_read_known INTEGER NOT NULL, cache_write_known INTEGER NOT NULL, cost_known INTEGER NOT NULL)`);
       } catch { this.coverageAvailable = false; }
     }
     if (this.coverageAvailable) {
       if (reader) void this.runWrite({ kind: "repairCoverage" }, () => this.repairLegacyCoverage()).catch(() => {});
-      else if (!db.readonly) this.repairLegacyCoverage();
+      else if (fixture && !fixture.readonly) this.repairLegacyCoverage();
     }
+  }
+
+  private get db(): Database {
+    if (!this.fixture) throw new Error("用量数据需要通过 Rust Core 读取或写入");
+    return this.fixture;
   }
 
   /**
@@ -1063,7 +1068,7 @@ export class UsageStatsService {
 
   private runWrite(job: RuntimeUsageJob, fallback: () => number): Promise<number> {
     if (this.writesClosed) return Promise.resolve(0);
-    const rustRequired = Boolean(this.db.readonly || this.reader?.supervised);
+    const rustRequired = !this.fixture || Boolean(this.fixture.readonly || this.reader?.supervised);
     const pending = this.writeTail.then(async () => {
       if (!this.reader) {
         if (rustRequired) throw new Error("只读数据库模式下无法写入用量统计");
@@ -1167,9 +1172,14 @@ export class UsageStatsService {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM usage_events`).get() as { n: number }).n;
   }
 
-  listSessionFiles(): Array<{ sessionFile: string | null }> {
+  async listSessionFiles(): Promise<Array<{ sessionFile: string }>> {
+    if (this.reader?.supervised) {
+      const rows = await this.reader.usageSessionFiles();
+      if (!rows) throw new Error("Core 未确认用量回填的会话路径");
+      return rows.map(row => ({ sessionFile: row.session_file }));
+    }
     return this.db.prepare(`SELECT session_file AS sessionFile FROM tasks WHERE session_file IS NOT NULL`).all() as Array<{
-      sessionFile: string | null;
+      sessionFile: string;
     }>;
   }
 }

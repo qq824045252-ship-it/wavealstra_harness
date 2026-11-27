@@ -22,6 +22,7 @@ process.env.HOME = root;
 mkdirSync(join(root, ".mybuddy", "plugins", "mcp"), { recursive: true });
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
 const { DotsActions } = await import("../src/main/dots/DotsActions");
+const { fixtureTaskBoard } = await import("./fixtures/legacy-task-board-store");
 const { DotsDelegations } = await import("../src/main/dots/DotsDelegations");
 const { createArtifactDomain } = await import("../src/main/artifact/ArtifactDomainSetup");
 const { createAgentDurableFixture } = await import("./agent-durable-fixture");
@@ -413,7 +414,7 @@ const makeActions = () =>
     failed: (...args) => journal.failed(...args),
     changed: () => journal.refresh(),
     preferences: () => resolveDotsPreferences(agent.getAppSettings().dotsSettings),
-  });
+  }, fixtureTaskBoard(db.connection));
 let actions = makeActions();
 agent.setDotsActions(actions);
 let heldSource: string | undefined;

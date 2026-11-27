@@ -11,6 +11,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DOTS_TASK_ID } from "../src/shared/dots";
 import { AgentService } from "../src/main/agent/AgentService";
 import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
 import { createDurableBotExecutionRunner } from "../src/main/host/ExecutionHostBridge";
@@ -77,7 +78,7 @@ async function runNegativeRunnerAndDotsSchedulerProofs(dataDir: string, dbPath: 
       sourceRole: "service",
       sourceClientId: "core-dots",
       sourceEpoch: 0,
-      taskId: "dots-internal",
+      taskId: DOTS_TASK_ID,
       kind: "dots_control",
       payload: { dotsControlCycle: "google" },
       status: "dispatching",
@@ -130,7 +131,7 @@ async function runNegativeRunnerAndDotsSchedulerProofs(dataDir: string, dbPath: 
     await bg.submitExecution({
       executionId: execId,
       idempotencyKey: execId,
-      taskId: "dots-internal",
+      taskId: DOTS_TASK_ID,
       kind: "dots_control",
       payload: { dotsControlCycle: "google" },
     });
@@ -230,7 +231,7 @@ async function main(): Promise<void> {
     const heldSubmit = await bg.submitExecution({
       executionId: "w2-dots-held-1",
       idempotencyKey: "w2-dots-held-1",
-      taskId: "dots-internal",
+      taskId: DOTS_TASK_ID,
       kind: "dots_control",
       payload: { dotsControlCycle: "discovery" },
     });
@@ -325,7 +326,7 @@ async function main(): Promise<void> {
     const snap1 = await ui.openUiSession();
     const coreGen1 = snap1.coreGeneration;
 
-    mainAgent = new AgentService(db, undefined, {
+    mainAgent = await AgentService.open(db, undefined, {
       executionMode: "isolated-client",
       coreClient: () => ui?.getClient(),
     });

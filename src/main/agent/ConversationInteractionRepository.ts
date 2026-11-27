@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import { TaskWriteQueue } from "../db/TaskWriteQueue";
+import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import type {
   ConversationInteractionAnswer,
   ConversationInteractionDto,
@@ -7,7 +9,7 @@ import type {
   ConversationInteractionStatus,
 } from "../../shared/conversation-interaction";
 
-type Row = {
+export type RuntimeConversationInteractionRow = {
   id: string; task_id: string; execution_id: string; assistant_message_id: string;
   kind: ConversationInteractionKind; title: string; description: string | null; options_json: string;
   min_selections: number | null; max_selections: number | null; allow_custom: number;
@@ -15,33 +17,44 @@ type Row = {
   version: number; created_at: number; resolved_at: number | null;
 };
 
+type Row = RuntimeConversationInteractionRow;
+
 export class ConversationInteractionRepository {
-  private writeTail: Promise<unknown> = Promise.resolve();
+  private readonly writes = new TaskWriteQueue();
 
   constructor(
-    private readonly db: Database.Database,
+    private readonly fixture: Database.Database | undefined,
     private readonly reader?: import("../platform/runtime-audit").RuntimeAuditReader,
   ) {}
 
-  flush(): Promise<void> {
-    return this.writeTail.then(() => undefined, () => undefined);
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("对话交互记录需要通过 Rust Core 读取或写入");
+    return this.fixture;
+  }
+
+  flush(taskId?: string): Promise<void> {
+    return this.writes.flush(taskId);
   }
 
   private get rustRequired(): boolean {
-    return Boolean(this.db.readonly || this.reader?.supervised);
+    return !this.fixture || Boolean(this.fixture.readonly || this.reader?.supervised);
   }
 
-  private enqueueRustWrite(request: Record<string, unknown>): void {
-    const reader = this.reader;
-    if (!reader) throw new Error("ConversationInteractionRepository 缺少 Rust 写入通道");
-    const next = this.writeTail.then(async () => {
-      const reply = await reader.batch1Write(request);
-      if (reply === undefined) throw new Error(`交互状态写入未获 Rust 确认: ${String(request.kind)}`);
-      return reply;
-    });
-    this.writeTail = next.catch(error => {
+  private enqueueRustWrite(request: Record<string, unknown> & { taskId?: string }): void {
+    void this.writeRust(request).catch(error => {
       console.warn(`[ConversationInteractions] Rust write failed: ${error instanceof Error ? error.message : String(error)}`);
     });
+  }
+
+  private writeRust<T>(request: Record<string, unknown> & { taskId?: string }): Promise<T> {
+    const reader = this.reader;
+    if (!reader) throw new Error("ConversationInteractionRepository 缺少 Rust 写入通道");
+    const write = async () => {
+      const reply = await reader.batch1Write<T>(request);
+      if (reply === undefined) throw new Error(`交互状态写入未获 Rust 确认: ${String(request.kind)}`);
+      return reply;
+    };
+    return request.taskId === undefined ? this.writes.runExclusive(write) : this.writes.run([request.taskId], write);
   }
 
   insert(value: ConversationInteractionDto): ConversationInteractionDto {
@@ -91,13 +104,13 @@ export class ConversationInteractionRepository {
 
   get(id: string): ConversationInteractionDto | undefined {
     const row = this.db.prepare("SELECT * FROM conversation_interactions WHERE id = ?").get(id) as Row | undefined;
-    return row ? mapRow(row) : undefined;
+    return row ? mapConversationInteraction(row) : undefined;
   }
 
   listByTask(taskId: string): ConversationInteractionDto[] {
     return (this.db.prepare(
       "SELECT * FROM conversation_interactions WHERE task_id=? ORDER BY created_at ASC, rowid ASC",
-    ).all(taskId) as Row[]).map(mapRow);
+    ).all(taskId) as Row[]).map(mapConversationInteraction);
   }
 
   deleteFrom(taskId: string, createdAt: number): number {
@@ -118,7 +131,7 @@ export class ConversationInteractionRepository {
     if (this.reader && this.rustRequired) {
       const current = this.get(id);
       if (!current || current.status !== "pending") return undefined;
-      this.enqueueRustWrite({ kind: "interactionSettle", id, status, answerJson, resolvedAt: now });
+      this.enqueueRustWrite({ kind: "interactionSettle", id, taskId: current.taskId, status, answerJson, resolvedAt: now });
       return { ...current, status, answer, version: current.version + 1, resolvedAt: now };
     }
     if (this.db.readonly) throw new Error("只读数据库模式下无法更新 conversation_interactions");
@@ -128,16 +141,34 @@ export class ConversationInteractionRepository {
     return result.changes > 0 ? this.get(id) : undefined;
   }
 
+  async cancelForTask(taskId: string, id: string): Promise<ConversationInteractionDto | undefined> {
+    if (!this.rustRequired) return this.get(id)?.taskId === taskId ? this.settle(id, "cancelled") : undefined;
+    const reply = await this.writeRust<{ row: Row | null }>({
+      kind: "interactionSettle", taskId, id, status: "cancelled", answerJson: null, resolvedAt: Date.now(),
+    });
+    return reply.row ? mapConversationInteraction(reply.row) : undefined;
+  }
+
+  async cancelPendingInExecution(context: ConversationExecutionContext): Promise<ConversationInteractionDto[]> {
+    if (!this.rustRequired) return this.listPendingByExecution(context.executionId).flatMap(pending => {
+      if (pending.taskId !== context.taskId || pending.assistantMessageId !== context.assistantMessageId) return [];
+      const cancelled = this.settle(pending.id, "cancelled");
+      return cancelled ? [cancelled] : [];
+    });
+    const reply = await this.writeRust<{ rows: Row[] }>({ kind: "interactionCancelExecution", ...context, resolvedAt: Date.now() });
+    return reply.rows.map(mapConversationInteraction);
+  }
+
   pendingByExecution(executionId: string): ConversationInteractionDto | undefined {
     const row = this.db.prepare(
       "SELECT * FROM conversation_interactions WHERE execution_id=? AND status='pending' ORDER BY created_at DESC LIMIT 1",
     ).get(executionId) as Row | undefined;
-    return row ? mapRow(row) : undefined;
+    return row ? mapConversationInteraction(row) : undefined;
   }
 
   listPendingByExecution(executionId: string): ConversationInteractionDto[] {
     return (this.db.prepare("SELECT * FROM conversation_interactions WHERE execution_id=? AND status='pending' ORDER BY created_at, rowid")
-      .all(executionId) as Row[]).map(mapRow);
+      .all(executionId) as Row[]).map(mapConversationInteraction);
   }
 
   expireAllPending(): ConversationInteractionDto[] {
@@ -145,7 +176,7 @@ export class ConversationInteractionRepository {
     const now = Date.now();
     if (this.reader && this.rustRequired) {
       this.enqueueRustWrite({ kind: "interactionExpireAllPending", resolvedAt: now });
-      return rows.map((row) => ({ ...mapRow(row), status: "expired" as const, version: row.version + 1, resolvedAt: now }));
+      return rows.map((row) => ({ ...mapConversationInteraction(row), status: "expired" as const, version: row.version + 1, resolvedAt: now }));
     }
     if (this.db.readonly) throw new Error("只读数据库模式下无法更新 conversation_interactions");
     const settle = this.db.prepare(
@@ -156,7 +187,7 @@ export class ConversationInteractionRepository {
   }
 }
 
-function mapRow(row: Row): ConversationInteractionDto {
+export function mapConversationInteraction(row: RuntimeConversationInteractionRow): ConversationInteractionDto {
   return {
     id: row.id,
     taskId: row.task_id,

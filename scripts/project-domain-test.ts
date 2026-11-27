@@ -863,7 +863,7 @@ try {
     resolvedCapabilities: [],
     warnings: [],
   });
-  auditRepository.finish(runningAudit.executionId, "failed", "expected failure");
+  auditRepository.finish(runningAudit.taskId, runningAudit.executionId, "failed", "expected failure");
   assert.equal(auditRepository.list("audit-task", 1)[0]?.status, "failed");
   assert.equal(auditRepository.list("audit-task", 1)[0]?.error, "expected failure");
   assert.equal(auditRepository.list("audit-task", 1)[0]?.workingDirectory, root);

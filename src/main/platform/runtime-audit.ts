@@ -7,6 +7,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Readable, Writable } from "node:stream";
 import type { EventEmitter } from "node:events";
 import type { TaskDiagnosticsDto, ToolDiagnosticEvent } from "../../shared/task-diagnostics";
+import type { ExternalAgentHistoryCursor, ExternalAgentHistoryPage } from "../external-agent/ExternalAgentHistoryData";
+import type { ConversationBranchInfoDto } from "../../shared/conversation-branch";
 import type { SpaceDto, TaskDto, TaskSidebarEdit, TaskUserQuestionsDto } from "../../shared/agent-ipc";
 import type { TrashedTaskDto } from "../../shared/archive-deletion";
 import type { WorkspaceIconAppearance } from "../../shared/workspace-icon";
@@ -15,12 +17,28 @@ import type { LibraryItemDto, LibraryOwnerScope } from "../../shared/library-ipc
 import type { RuntimeSnapshotMutation, RuntimeSnapshotPage } from "../agent/RuntimeContextSnapshotRepository";
 import type { RuntimeDiagnosticTrace } from "../agent/TaskDiagnosticsRepository";
 import type { ExecutionFailureDismissReply, ExecutionFailureRow } from "../agent/ExecutionFailureRepository";
+import type { ExecutionAttempt } from "../agent/ExecutionAttemptRepository";
+import type { ConversationExecutionContext } from "../agent/ConversationExecutionContext";
 import type { TaskContextUsageSnapshot } from "../agent/TaskContextUsageWrites";
 import type { RuntimeNotificationMutation, RuntimeNotificationQuery, RuntimeNotificationSqlRow, RuntimeNotificationWriteReply } from "../notification/NotificationRepository";
+import type { NativeHookMutation, NativeHookQuery } from "../agent/hooks/NativeHookStore";
+import type { ReadHintMutation, ReadHintQuery } from "../agent/hooks/ReadRecoveryHints";
+import type { ImprovementPackageMutation, ImprovementPackageQuery } from "../agent/hooks/ImprovementPackages";
+import type { ImprovementReviewMutation, ImprovementReviewQuery } from "../agent/hooks/ImprovementReviewStore";
 import type { RuntimeWorkGraphMutation, RuntimeWorkGraphQuery, RuntimeWorkGraphReply } from "../workgraph/WorkGraphService";
 import type { WorkGraphEdgeDto } from "../../shared/work-graph";
 import type { FileBackupInfoDto } from "../../shared/agent-ipc";
 import type { GatewayListMessagesRequest, GatewayMessageDto } from "../../shared/gateway-ipc-types";
+import type { TaskWriteGrantRow } from "../../shared/external-write";
+import type { GatewayChannelRecord } from "../db/gateway-channel-store";
+import type { DotsAssistantReply, DotsDelegation, DotsTaskDelivery } from "../../shared/dots";
+import type { DotsSchedulingPolicy } from "../../shared/answer-routing";
+import type { DotsForegroundCommand, DotsForegroundQuery } from "../dots/DotsForegroundReads";
+import type { DeferredRequirementsCommand, DeferredRequirementsQuery } from "../dots/DotsDeferredRequirements";
+import type { DotsActivityCursor, DotsActivityPage } from "../dots/DotsActivity";
+import type { GatewayInboxEntry, GatewayOutboxEntry } from "../gateway/GatewayDeliveryJournal";
+import type { GatewayExecutionAuthority, GatewayTaskMaterialization, GatewayTaskMaterializationResult } from "../gateway/GatewayExecutionAuthority";
+import type { GatewayBotOrigin } from "../agent/work/BotTurnOrigins";
 import type { RuntimeFileBackupRestoreRequest, RuntimeFileBackupRestoreReply } from "../agent/FileBackupService";
 import type { RuntimeSubagentSettingsRequest, RuntimeSubagentSettingsReply } from "../agent/SubagentSettingsPersistence";
 import type { RuntimeMaterialRetrievalRequest, RuntimeMaterialRetrievalReply } from "../library/MaterialRetrievalSettings";
@@ -31,13 +49,19 @@ import type { RuntimeDurableWorkspaceMoveReply, RuntimeDurableWorkspaceMoveReque
 import type { RuntimeTaskExpertBindingState, RuntimeTaskExpertBindingMutation, RuntimeTaskExpertBindingWriteReply } from "../experts/TaskExpertBindingService";
 import type { RuntimeMemoryOrganizationProgress } from "../memory/MemoryOrganizationService";
 import type { RuntimeAnswerRoutingRequest, RuntimeAnswerRoutingReply } from "../agent/AnswerRoutingService";
+import type { RuntimeLoadoutObservationRow } from "../agent/AgentLoadoutObservationService";
 import type { RuntimeBotHistoryPage, RuntimeBotHistoryQuery } from "../agent/work/BotHistoryData";
+import type { RuntimeBotListQuery, RuntimeBotLookup, RuntimeBotRegistration, RuntimeBotRegistrationReply, RuntimeBotRow } from "../agent/work/BotRegistry";
+import type { RuntimeConversationGoalCreateReply, RuntimeConversationGoalDraft, RuntimeConversationSnapshot, WorkTaskAccess } from "../agent/ConversationRuntimeData";
 import type { IntegrityReport, RepairPreview, RuntimeWorkGraphRepairReply } from "../workgraph/WorkGraphIntegrity";
 import type { RuntimeDurableTaskProjectionRequest, RuntimeDurableTaskProjectionReply } from "../agent/durable/DurableTaskProjection";
+import type { TaskWorkspaceAuthority } from "../task/TaskWorkspaceResolver";
+import type { RuntimeDurableOpenState } from "../agent/durable/DurableBotService";
+import type { RuntimeWorkExecutionMetrics } from "../agent/work/WorkExecutionMetrics";
 import type { RuntimeWorkspaceSharedData } from "../workspace/WorkspaceSharedContextService";
 import type { RuntimeWorkspaceBindingSnapshot } from "../workspace/WorkspaceLibraryBindingView";
 import type { RuntimeWorkspaceBindingMutation } from "../workspace/WorkspaceLibraryBindingService";
-import type { RuntimeMemoryTurnData, RuntimeMemoryTurnQuery } from "../memory/MemoryTurnRepository";
+import type { RuntimeMemoryTurnData, RuntimeMemoryTurnQuery, RuntimeMemoryTurnExtractionCommand, RuntimeMemoryTurnExtractionReply } from "../memory/MemoryTurnRepository";
 import type { RuntimeMemoryRecordsQuery, RuntimeMemoryRecordsData } from "../memory/MemoryRecordsData";
 import type { RuntimeMemoryRecordWriteRequest, RuntimeMemoryRecordWriteReply } from "../memory/MemoryRecordWrite";
 import type { RuntimeProjectEventRequest, RuntimeProjectEventReply, RuntimeProjectPinRequest, RuntimeProjectPinReply, RuntimeProjectPostRequest, RuntimeProjectPostReply } from "../project/ProjectRepository";
@@ -54,6 +78,7 @@ import type {
 import type { CronRunWrite } from "../db/CronRunPersistence";
 import type { CronPlanWrite } from "../db/CronPlanPersistence";
 import type { ArtifactRow, StoredArtifactSnapshot } from "../artifact/ArtifactRepository";
+import type { ArtifactDescriptor, ArtifactFileDependency, ArtifactMessageRef } from "../../shared/artifact-types";
 import type { TaskExpertBindingDto } from "../../shared/expert-binding";
 import type { RuntimeMemoryCapture } from "../memory/MemoryTurnRepository";
 import type { MemoryBaselineCandidate } from "../memory/MemorySearchScope";
@@ -102,6 +127,15 @@ export type RuntimeWorkspaceQuery =
   | { kind: "spaces" }
   | { kind: "visibleSpaces" | "navigation"; userId: string };
 
+export interface RuntimePythonProjectBinding {
+  dir_key: string;
+  project_dir: string;
+  python_path: string;
+  python_version: string | null;
+  manifest_path: string | null;
+  bound_at: number;
+}
+
 /** One gateway log row as the Rust writer appends it. */
 export interface RuntimeGatewayMessageWrite {
   channelId: string;
@@ -115,6 +149,51 @@ export interface RuntimeGatewayMessageWrite {
 
 /** `needsHost` is the writer declining ownership; a missing reply stays unknown. */
 export type RuntimeGatewayMessageWriteReply = { status: "saved" } | { status: "needsHost" };
+export type RuntimeGatewayChannelWriteReply = { status: "saved" | "conflict" | "invalid" | "operationReused" };
+export type RuntimeGatewayChannelState = { channel: GatewayChannelRecord | null; revision: number; isolationInstalledAt: number };
+export type RuntimeDotsRecoveryRow = { sequence: number; operationId: string; taskId: string };
+export type RuntimeDotsActiveDelegation = Pick<DotsDelegation, "id" | "taskId" | "sourceMessageId" | "title" | "createdAt" | "updatedAt">
+  & { sequence: number; status: "pending" | "running" | "blocked"; goalId: string | null; waitingOnPrerequisite: boolean;
+    trackingRevoked: boolean; trackingPolicy: DotsSchedulingPolicy["trackingPolicy"] | null };
+export type RuntimeDotsRecoveryGuard = { sequence: number; spaceIds: string[] | null; allowAutomatic: boolean };
+type RuntimeDotsPage<Row> = { rows: Row[]; nextAfterSeq: number | null };
+type RuntimeDotsReplyState = { status: "prepared"; reply: DotsAssistantReply }
+  | { status: "settled" | "missing" | "held" | "stale" | "invalid" };
+export type RuntimeGatewayChannelTransition =
+  | { kind: "connect"; accountKey: string | null; personalMemoryOwnerId?: string }
+  | { kind: "restore"; accountKey: string | null }
+  | { kind: "disconnect" };
+export type RuntimeGatewayAdmission = {
+  platform: string;
+  accountKey: string;
+  sessionKey: string;
+  payloadJson: string;
+  replayNativeReceipts: boolean;
+  maxPending: number;
+  maxReceipts: number;
+  retentionMs: number;
+};
+export type RuntimeGatewayAdmissionReply = { status: "accepted"; entry: GatewayInboxEntry; duplicate: boolean }
+  | { status: "rejected"; code: string };
+export type RuntimeGatewayAssignment = { status: "assigned"; taskId: string; currentTaskId: string; command: boolean;
+  oldTaskAvailable: boolean; personalMemoryBindingId: string | null } | { status: "rejected"; code: string };
+export type RuntimeGatewayRecoveryQuery = { channelId: string; accountKey?: string; sessionKey?: string; cutoff: number; limit: number;
+  retryBlocked: boolean; continuationsOnly: boolean };
+export type RuntimeGatewayRecovery = { kind: "recovery"; pending: GatewayInboxEntry[]; counts: Record<string, number>;
+  nextRetryAt: number | null; truncated: boolean };
+export type RuntimeGatewayReplyOutcome = "sent" | "pending" | "blocked" | "failed" | "unknown";
+export type RuntimeGatewayExecutionOutcome = "completed" | "interrupted" | "failed";
+export type RuntimeGatewayDeliveryCommand =
+  | { action: "claimExecution" }
+  | { action: "claimReply"; maxAttempts: number }
+  | { action: "queueReply"; attempt: number; text: string }
+  | { action: "finishExecution"; attempt: number; outcome: RuntimeGatewayExecutionOutcome }
+  | { action: "finishReply"; attempt: number; outcome: RuntimeGatewayReplyOutcome; reason?: string; nextAttemptAt?: number };
+export type RuntimeGatewayDeliveryReply =
+  | { status: "claimed"; attempt: number }
+  | { status: "sending"; entry: GatewayOutboxEntry }
+  | { status: "waiting"; nextAttemptAt: number }
+  | { status: "applied" | "sent" | "unavailable" | "stale" | "invalid" | "conflict" | "integrity" | "exhausted" };
 
 interface RuntimeWorkspaceData {
   spaces: Array<SpaceRow & { effective_archived: boolean; path_missing: boolean }>;
@@ -131,6 +210,12 @@ export interface RuntimeOperationReceipt {
 }
 
 /** A dispatched write cannot be declared failed just because its reply was lost. */
+export interface ApplicationDatabaseIdentity {
+  format: string;
+  schemaVersion: number;
+  databaseGeneration: string;
+}
+
 export class RuntimeAuditUnknownOperationError extends Error {
   readonly code = "RUNTIME_OPERATION_UNKNOWN";
   constructor(readonly requestId: string, readonly operation: string) {
@@ -168,8 +253,17 @@ export interface RuntimeAuditReaderOptions {
   maxConcurrentWrites?: number;
 }
 
+export interface PiStorageClient {
+  piStorage<T = Record<string, unknown>>(
+    command: Record<string, unknown> & { action: string },
+    signal?: AbortSignal,
+  ): Promise<T | undefined>;
+}
+
+export type NativePersistenceReply<T> = { status: "ok"; data: T } | { status: "rejected"; message: string };
+
 /** One worker per host database for read-only queries and bounded writes. */
-export class RuntimeAuditReader {
+export class RuntimeAuditReader implements PiStorageClient {
   private readonly queues: Record<AuditLane, AuditRequest[]> = {
     database: [], inference: [], maintenance: [], scan: [],
   };
@@ -352,6 +446,46 @@ export class RuntimeAuditReader {
     return this.read({ operation: "corePiHost", ...command }, "database", false, 20_000);
   }
 
+  piStorage<T = Record<string, unknown>>(
+    command: Record<string, unknown> & { action: string },
+    signal?: AbortSignal,
+  ): Promise<T | undefined> {
+    if (!this.executable) return Promise.resolve(undefined);
+    return this.read({ operation: "piStorage", payload: command }, "database", false, 30_000, undefined, undefined, signal);
+  }
+
+  readNativeHooks<T>(query: NativeHookQuery, signal?: AbortSignal): Promise<NativePersistenceReply<T> | undefined> {
+    return this.read({ operation: "readNativeHooks", query }, "database", false, 10_000, undefined, undefined, signal);
+  }
+
+  writeNativeHooks<T>(mutation: NativeHookMutation): Promise<NativePersistenceReply<T> | undefined> {
+    return this.read({ operation: "writeNativeHooks", mutation });
+  }
+
+  readPathHints<T>(query: ReadHintQuery): Promise<NativePersistenceReply<T> | undefined> {
+    return this.read({ operation: "readPathHints", query });
+  }
+
+  writePathHints<T>(mutation: ReadHintMutation): Promise<NativePersistenceReply<T> | undefined> {
+    return this.read({ operation: "writePathHints", mutation });
+  }
+
+  readImprovementPackages<T>(query: ImprovementPackageQuery): Promise<NativePersistenceReply<T> | undefined> {
+    return this.read({ operation: "readImprovementPackages", query });
+  }
+
+  writeImprovementPackages<T>(mutation: ImprovementPackageMutation): Promise<NativePersistenceReply<T> | undefined> {
+    return this.read({ operation: "writeImprovementPackages", mutation }, "database", false, 30_000);
+  }
+
+  readImprovementReview<T>(query: ImprovementReviewQuery): Promise<NativePersistenceReply<T> | undefined> {
+    return this.read({ operation: "readImprovementReview", query });
+  }
+
+  writeImprovementReview<T>(mutation: ImprovementReviewMutation): Promise<NativePersistenceReply<T> | undefined> {
+    return this.read({ operation: "writeImprovementReview", mutation });
+  }
+
   maintenanceScheduler<T = Record<string, unknown>>(command: Record<string, unknown> & { action: string }): Promise<T | undefined> {
     if (!this.supervised) return Promise.resolve(undefined);
     return this.read({ operation: "coreMaintenanceScheduler", ...command }, "database", false, 15_000);
@@ -413,6 +547,25 @@ export class RuntimeAuditReader {
       console.info("[RuntimeAudit] Rust artifact writer ready");
     }
     return result;
+  }
+
+  artifactById(id: string): Promise<ArtifactDescriptor | null | undefined> {
+    return this.read({ operation: "artifactData", query: { kind: "byId", id } });
+  }
+
+  artifactWriteReceipt<T>(taskId: string, operationId: string): Promise<T | null | undefined> {
+    return this.read({ operation: "artifactData", query: { kind: "receipt", taskId, operationId } });
+  }
+
+  async artifactMessageRefs(taskId: string, filter?: { messageId?: string; artifactId?: string }): Promise<ArtifactMessageRef[] | undefined> {
+    const rows = await this.read<Array<Omit<ArtifactMessageRef, "toolCallId"> & { toolCallId: string | null }>>({
+      operation: "artifactData", query: { kind: "messageRefs", taskId, ...filter },
+    });
+    return rows?.map(row => ({ ...row, toolCallId: row.toolCallId ?? undefined }));
+  }
+
+  artifactFileDependencies(artifactId: string): Promise<ArtifactFileDependency[] | undefined> {
+    return this.read({ operation: "artifactData", query: { kind: "fileDependencies", artifactId } });
   }
 
   private supportsManagedArtifactFiles(): Promise<boolean> {
@@ -637,6 +790,27 @@ export class RuntimeAuditReader {
     }
   }
 
+  async pythonProjectBindings(ancestors?: string[]): Promise<RuntimePythonProjectBinding[] | undefined> {
+    const rows = await this.read<RuntimePythonProjectBinding[]>({ operation: "pythonProjectBindings", ancestors });
+    return Array.isArray(rows) ? rows : undefined;
+  }
+
+  taskRecord(taskId: string, includeExpertBindings: boolean): Promise<(TaskRow & { expertBinding?: TaskExpertBindingDto }) | null | undefined> {
+    return this.read({ operation: "taskRecord", taskId, includeExpertBindings });
+  }
+
+  externalAgentHistoryPage(taskId: string, after?: ExternalAgentHistoryCursor): Promise<ExternalAgentHistoryPage | undefined> {
+    return this.read({ operation: "externalAgentHistoryPage", taskId, after });
+  }
+
+  applicationDatabaseIdentity(): Promise<ApplicationDatabaseIdentity | undefined> {
+    return this.read({ operation: "applicationDatabaseIdentity" });
+  }
+
+  taskWorkspacePaths(): Promise<{ cwds: Array<{ id: string; path: string }>; trashPaths: Array<{ id: string; path: string }> } | undefined> {
+    return this.read({ operation: "taskWorkspacePaths" });
+  }
+
   async workspaceData(query: RuntimeWorkspaceQuery): Promise<RuntimeWorkspaceData | undefined> {
     const data = await this.read<RuntimeWorkspaceData>({ operation: "workspaceData", query });
     if (!data || !Array.isArray(data.spaces)) return;
@@ -707,6 +881,10 @@ export class RuntimeAuditReader {
   async memoryTurnData(query: RuntimeMemoryTurnQuery, userId: string): Promise<RuntimeMemoryTurnData | undefined> {
     const data = await this.read<RuntimeMemoryTurnData>({ operation: "memoryTurnData", query, userId });
     return data?.kind === query.kind ? data : undefined;
+  }
+
+  writeMemoryTurnExtraction(command: RuntimeMemoryTurnExtractionCommand, userId: string): Promise<RuntimeMemoryTurnExtractionReply | undefined> {
+    return this.read({ operation: "writeMemoryTurnExtraction", command, userId });
   }
 
   async projectPosts(request: RuntimeProjectPostRequest): Promise<RuntimeProjectPostReply | undefined> {
@@ -810,6 +988,171 @@ export class RuntimeAuditReader {
     if (!await this.fileBackupListCapability) return;
     const rows = await this.read<FileBackupInfoDto[]>({ operation: "fileBackupList", query: { root, taskId } }, "scan", false, 60_000);
     if (Array.isArray(rows)) return rows;
+  }
+
+  async readGatewayChannels(channelId?: string): Promise<GatewayChannelRecord[] | undefined> {
+    const rows = await this.read<GatewayChannelRecord[]>({ operation: "readGatewayChannels", channelId });
+    if (Array.isArray(rows)) return rows;
+  }
+
+  readGatewayChannelState(channelId: string): Promise<RuntimeGatewayChannelState | undefined> {
+    return this.read({ operation: "readGatewayChannelState", channelId });
+  }
+
+  async readDotsDelegations(sourceIds?: string[], spaceIds?: string[] | null): Promise<DotsDelegation[]> {
+    if (sourceIds?.length === 0 || spaceIds?.length === 0) return [];
+    const rows: DotsDelegation[] = [];
+    let afterSeq = 0;
+    for (;;) {
+      const page = await this.read<RuntimeDotsPage<DotsDelegation>>({ operation: "readDotsDelegationData",
+        query: { kind: "list", sourceIds, spaceIds, afterSeq, limit: 256 } });
+      if (!page || !Array.isArray(page.rows)) throw new Error("Core 未确认 Dots 委派列表");
+      rows.push(...page.rows);
+      if (page.nextAfterSeq === null) return rows;
+      if (!Number.isSafeInteger(page.nextAfterSeq) || page.nextAfterSeq <= afterSeq) throw new Error("Core 的 Dots 委派分页位置无效");
+      afterSeq = page.nextAfterSeq;
+    }
+  }
+
+  readDotsRecoveryPage(afterSeq: number): Promise<RuntimeDotsPage<RuntimeDotsRecoveryRow> | undefined> {
+    return this.read({ operation: "readDotsDelegationData", query: { kind: "recovery", afterSeq, limit: 128 } });
+  }
+
+  readDotsActivityPage(spaceIds: readonly string[] | null, after?: DotsActivityCursor): Promise<DotsActivityPage | undefined> {
+    return this.read({ operation: "readDotsActivityData", query: { spaceIds, after } });
+  }
+
+  dotsDeferredRead<T>(query: DeferredRequirementsQuery): Promise<T | undefined> {
+    return this.read({ operation: "readDotsDeferredData", query });
+  }
+
+  dotsDeferredWrite<T>(command: DeferredRequirementsCommand): Promise<T | undefined> {
+    return this.read({ operation: "writeDotsDeferredData", command });
+  }
+
+  readDotsFollowupData<T>(query: Record<string, unknown>): Promise<T | undefined> {
+    return this.read({ operation: "readDotsFollowupData", query });
+  }
+
+  writeDotsFollowupData<T>(command: Record<string, unknown>): Promise<T | undefined> {
+    return this.read({ operation: "writeDotsFollowupData", command });
+  }
+
+  readDotsForegroundData<T>(query: DotsForegroundQuery): Promise<T | undefined> {
+    return this.read({ operation: "readDotsForegroundData", query });
+  }
+
+  writeDotsForegroundData<T>(command: DotsForegroundCommand): Promise<T | undefined> {
+    return this.read({ operation: "writeDotsForegroundData", command });
+  }
+
+  readDotsProactiveData<T>(query: Record<string, unknown>): Promise<T | undefined> {
+    return this.read({ operation: "readDotsProactiveData", query });
+  }
+
+  writeDotsProactiveData<T>(command: Record<string, unknown>): Promise<T | undefined> {
+    return this.read({ operation: "writeDotsProactiveData", command });
+  }
+
+  readDotsFileWatchData<T>(query: Record<string, unknown>): Promise<T | undefined> {
+    return this.read({ operation: "readDotsFileWatchData", query });
+  }
+
+  writeDotsFileWatchData<T>(command: Record<string, unknown>): Promise<T | undefined> {
+    return this.read({ operation: "writeDotsFileWatchData", command });
+  }
+
+  async *readActiveDotsDelegations(taskId?: string): AsyncGenerator<RuntimeDotsActiveDelegation> {
+    let beforeSeq: number | undefined;
+    for (;;) {
+      const page: { rows: RuntimeDotsActiveDelegation[]; nextBeforeSeq: number | null } | undefined = await this.read({
+        operation: "readDotsDelegationData", query: { kind: "active", taskId, beforeSeq, limit: 128 },
+      });
+      if (!page || !Array.isArray(page.rows)) throw new Error("Core 未确认待对账的 Dots 委派");
+      yield* page.rows;
+      if (page.nextBeforeSeq === null) return;
+      if (!Number.isSafeInteger(page.nextBeforeSeq) || page.nextBeforeSeq <= 0 || (beforeSeq !== undefined && page.nextBeforeSeq >= beforeSeq)) {
+        throw new Error("Core 的 Dots 委派对账分页位置无效");
+      }
+      beforeSeq = page.nextBeforeSeq;
+    }
+  }
+
+  readDotsPendingReplies(afterKey?: string): Promise<{ rows: { eventKey: string; taskId: string }[]; nextKey: string | null } | undefined> {
+    return this.read({ operation: "readDotsReplyData", query: { kind: "pending", afterKey, limit: 128 } });
+  }
+
+  prepareDotsReply(eventKey: string, expectedSnapshot: string, reply: DotsAssistantReply): Promise<RuntimeDotsReplyState | undefined> {
+    return this.read({ operation: "writeDotsReplyData", command: { kind: "prepare", eventKey, expectedSnapshot, reply } });
+  }
+
+  inspectDotsReply(eventKey: string): Promise<RuntimeDotsReplyState | undefined> {
+    return this.read({ operation: "writeDotsReplyData", command: { kind: "inspect", eventKey } });
+  }
+
+  readDotsReportContext(operationId: string, deliveryKey: string): Promise<{
+    goal: string | null; format: string | null; saved: string | null; previous: string | null; newerSample: boolean;
+  } | undefined> {
+    return this.read({ operation: "readDotsReplyData", query: { kind: "report", operationId, deliveryKey } });
+  }
+
+  async readLatestDotsReply(taskId: string, spaceIds: string[] | null): Promise<DotsTaskDelivery | undefined> {
+    const result = await this.read<DotsTaskDelivery | null>({ operation: "readDotsReplyData", query: { kind: "latest", taskId, spaceIds } });
+    if (result === undefined) throw new Error("Core 未确认 Dots 原对话交付");
+    return result ?? undefined;
+  }
+
+  async dotsRecoveryCurrent(taskId: string, operationId: string, guard: RuntimeDotsRecoveryGuard): Promise<boolean> {
+    const state = await this.read<{ current: boolean }>({ operation: "readDotsDelegationData",
+      query: { kind: "current", taskId, operationId, guard } });
+    if (typeof state?.current !== "boolean") throw new Error("Core 未确认 Dots 恢复范围");
+    return state.current;
+  }
+
+  readDotsWorkerAuthority(taskId: string, operationId: string, spaceIds: string[] | null, hostGeneration?: string) {
+    return this.read<{ spaceId: string | null; privateCwd: string | null } | null>({ operation: "readDotsDelegationData",
+      query: { kind: "worker", taskId, operationId, spaceIds, hostGeneration } });
+  }
+
+  writeGatewayChannel(operationId: string, channel: GatewayChannelRecord, expected: GatewayChannelRecord | null,
+    expectedRevision?: number, transition?: RuntimeGatewayChannelTransition): Promise<RuntimeGatewayChannelWriteReply | undefined> {
+    return this.read({ operation: "writeGatewayChannel", operationId, draft: { channel, expected, expectedRevision, transition } });
+  }
+
+  readGatewayOutbox(deliveryId: string): Promise<GatewayOutboxEntry | null | undefined> {
+    return this.read({ operation: "readGatewayOutbox", deliveryId });
+  }
+
+  readGatewayInbox(deliveryId: string): Promise<GatewayInboxEntry | null | undefined> {
+    return this.read({ operation: "readGatewayInbox", deliveryId });
+  }
+
+  readGatewayRecovery(query: RuntimeGatewayRecoveryQuery): Promise<RuntimeGatewayRecovery | undefined> {
+    return this.read({ operation: "readGatewayQueue", query: { kind: "recovery", ...query } });
+  }
+
+  readGatewayContinuation(deliveryId: string): Promise<{ kind: "continuation"; operationId: string | null } | undefined> {
+    return this.read({ operation: "readGatewayQueue", query: { kind: "continuation", deliveryId } });
+  }
+
+  readGatewayAssignment({ channelId, connectionKey, chatId, senderId, messageId }: Pick<GatewayBotOrigin, "channelId" | "connectionKey" | "chatId" | "senderId" | "messageId">): Promise<RuntimeGatewayAssignment | undefined> {
+    return this.read({ operation: "readGatewayAssignment", origin: { channelId, connectionKey, chatId, senderId, messageId } });
+  }
+
+  readGatewayExecutionAuthority(taskId: string): Promise<GatewayExecutionAuthority | undefined> {
+    return this.read({ operation: "readGatewayExecutionAuthority", taskId });
+  }
+
+  materializeGatewayTask(command: GatewayTaskMaterialization): Promise<GatewayTaskMaterializationResult | undefined> {
+    return this.read({ operation: "materializeGatewayTask", command });
+  }
+
+  admitGatewayInbound(draft: RuntimeGatewayAdmission): Promise<RuntimeGatewayAdmissionReply | undefined> {
+    return this.read({ operation: "gatewayAdmitInbound", draft });
+  }
+
+  gatewayDeliveryControl(deliveryId: string, operationId: string, command: RuntimeGatewayDeliveryCommand): Promise<RuntimeGatewayDeliveryReply | undefined> {
+    return this.read({ operation: "gatewayDeliveryControl", deliveryId, operationId, command });
   }
 
   async readGatewayMessages(query: GatewayListMessagesRequest & { limit: number }): Promise<GatewayMessageDto[] | undefined> {
@@ -916,6 +1259,34 @@ export class RuntimeAuditReader {
     return result;
   }
 
+  async readTaskWorkspaceAuthority(taskId: string): Promise<TaskWorkspaceAuthority | null | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "workspaceAuthority", taskId } });
+  }
+
+  readTaskWriteGrants(taskId: string): Promise<TaskWriteGrantRow[] | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "taskWriteGrants", taskId } });
+  }
+
+  readExecutionAttempt(id: string, execution: ConversationExecutionContext, toolCallId: string): Promise<ExecutionAttempt | null | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "executionAttempt", ...execution, toolCallId, id } });
+  }
+
+  readDurableTaskBinding(taskId: string): Promise<{ directory: string; cwd: string; trashed: boolean } | null | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "binding", taskId } });
+  }
+
+  readDurableOpenState(taskId: string): Promise<RuntimeDurableOpenState | null | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "openState", taskId } });
+  }
+
+  readWorkExecutionMetrics(taskId: string, includeFacts: boolean): Promise<RuntimeWorkExecutionMetrics | null | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "workMetrics", taskId, includeFacts } });
+  }
+
+  readDurableResumePage(after?: string): Promise<{ taskIds: string[]; next: string | null } | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "resumePage", after } });
+  }
+
   private supportsNotificationData(): Promise<boolean> {
     this.notificationDataCapability ??= this.read<boolean>({ operation: "notificationDataSupported" }).then(result => result === true);
     return this.notificationDataCapability;
@@ -925,6 +1296,10 @@ export class RuntimeAuditReader {
     if (!await this.supportsNotificationData()) return;
     const result = await this.read<RuntimeNotificationSqlRow[] | number>({ operation: "notificationData", query });
     if (Array.isArray(result) || typeof result === "number") return result;
+  }
+
+  async notificationActivation(id: string, now: number): Promise<{ target: unknown } | undefined> {
+    return this.read<{ target: unknown }>({ operation: "notificationData", query: { kind: "activation", id, now } });
   }
 
   async writeNotification(mutation: RuntimeNotificationMutation): Promise<RuntimeNotificationWriteReply | undefined> {
@@ -1004,9 +1379,51 @@ export class RuntimeAuditReader {
     return result;
   }
 
+  registerBot(request: RuntimeBotRegistration): Promise<RuntimeBotRegistrationReply | undefined> {
+    return this.batch4bWrite<RuntimeBotRegistrationReply>({ op: "botUpsert", ...request });
+  }
+
+  readBotRegistry(query: RuntimeBotListQuery): Promise<RuntimeBotRow[] | undefined>;
+  readBotRegistry(query: RuntimeBotLookup): Promise<RuntimeBotRow | null | undefined>;
+  readBotRegistry(query: RuntimeBotListQuery | RuntimeBotLookup): Promise<RuntimeBotRow[] | RuntimeBotRow | null | undefined> {
+    return this.read({ operation: "readBotRegistry", query });
+  }
+
+  readConversationRuntime(taskId: string, userId: string): Promise<RuntimeConversationSnapshot | null | undefined> {
+    return this.read({ operation: "readConversationRuntime", query: { kind: "snapshot", taskId, userId } });
+  }
+
+  readConversationGoalGeneration(taskId: string, userId: string, conversationId: string, generationTaskId: number): Promise<import("../agent/ConversationGoalActivity").OwnedGoalRun | null | undefined> {
+    return this.read({ operation: "readConversationRuntime", query: { kind: "goalActivityGeneration", taskId, userId, conversationId, generationTaskId } });
+  }
+
+  readConversationGoalActivityOwner(taskId: string, userId: string, conversationId: string, messageId: string): Promise<import("../../shared/conversation-goal-activity").GoalActivityOwner | null | undefined> {
+    return this.read({ operation: "readConversationRuntime", query: { kind: "goalActivityOwner", taskId, userId, conversationId, messageId } });
+  }
+
+  hasAuthoredGoalSkillAtPath(pathKey: string): Promise<boolean | undefined> {
+    return this.read({ operation: "readConversationRuntime", query: { kind: "authoredGoalSkillAtPath", pathKey } });
+  }
+
+  readLoadoutObservations(taskId: string, limit: number): Promise<RuntimeLoadoutObservationRow[] | undefined> {
+    return this.read({ operation: "readLoadoutObservations", taskId, limit });
+  }
+
+  createConversationGoal(operationId: string, draft: RuntimeConversationGoalDraft): Promise<RuntimeConversationGoalCreateReply | undefined> {
+    return this.read({ operation: "createConversationGoal", operationId, draft });
+  }
+
+  readWorkTaskAccess(taskId: string): Promise<WorkTaskAccess | undefined> {
+    return this.read({ operation: "readConversationRuntime", query: { kind: "taskAccess", taskId } });
+  }
+
   async branchTitle(sourceTitle: string, dotsTaskId: string): Promise<string | undefined> {
     const title = await this.read<string>({ operation: "branchTitle", sourceTitle, dotsTaskId });
     return typeof title === "string" ? title : undefined;
+  }
+
+  readConversationBranchData(kind: "info" | "children", taskId: string): Promise<{ rows: ConversationBranchInfoDto[] } | undefined> {
+    return this.read({ operation: "readConversationBranchData", query: { kind, taskId } });
   }
 
   async archivedTaskCandidates(dotsTaskId: string, taskIds: string[], spaceIds: string[]): Promise<ArchiveTaskCandidate[] | undefined> {
@@ -1067,11 +1484,15 @@ export class RuntimeAuditReader {
     action: import("../../shared/task-board").BoardAction;
     now: number;
     laterUntil: number | null;
-    visibilitySql: string;
   }): Promise<boolean> {
     const saved = await this.read<boolean>({ operation: "writeTaskBoardAction", input });
     if (saved === undefined) await this.stopping;
     return saved === true;
+  }
+
+  async writeTaskBoardNote(note: { id: string; kindName: "follow" | "visit" | "read" | "result"; detail: string; at: number }): Promise<boolean> {
+    const result = await this.batch2Write<{ ok: boolean }>({ kind: "taskBoardNote", ...note });
+    return result?.ok === true;
   }
 
   async acknowledgeTaskDone(taskId: string, at: number): Promise<boolean | undefined> {
@@ -1634,6 +2055,10 @@ export class RuntimeAuditReader {
     return result;
   }
 
+  usageSessionFiles(): Promise<Array<{ session_file: string }> | undefined> {
+    return this.read({ operation: "usageSessionFiles" });
+  }
+
   async usageHistory(job: RuntimeUsageJob): Promise<number | "changed" | undefined> {
     const result = await this.read<number | "changed">({ operation: "usageHistory", job });
     if (result === "changed") return result;
@@ -1665,8 +2090,8 @@ export class RuntimeAuditReader {
     return saved;
   }
 
-  async mutateSnapshot(epoch: number, writeId: string, mutation: RuntimeSnapshotMutation): Promise<number | undefined> {
-    const count = await this.read<number>({ operation: "mutateSnapshot", epoch, writeId, mutation });
+  async mutateSnapshot(writeId: string, mutation: RuntimeSnapshotMutation): Promise<number | undefined> {
+    const count = await this.read<number>({ operation: "mutateSnapshot", writeId, mutation });
     if (count === undefined || !Number.isSafeInteger(count) || count < 0) {
       await this.stopping;
       return undefined;
@@ -1678,6 +2103,10 @@ export class RuntimeAuditReader {
     return count;
   }
 
+  snapshotReceipt(writeId: string): Promise<number | null | undefined> {
+    return this.read({ operation: "snapshotReceipt", writeId });
+  }
+
   diagnostics(taskId: string, limit?: number, offset = 0): Promise<TaskDiagnosticsDto | undefined> {
     const bound = typeof limit === "number" && Number.isFinite(limit) && limit > 0
       ? Math.max(1, Math.min(500, Math.floor(limit))) : undefined;
@@ -1685,8 +2114,8 @@ export class RuntimeAuditReader {
     return this.read({ operation: "diagnostics", taskId, limit: bound, offset: skip, capturedAt: Date.now() });
   }
 
-  async writeDiagnostics(epoch: number, sequence: number, writes: RuntimeDiagnosticWrite[]): Promise<boolean> {
-    const committed = await this.read<boolean>({ operation: "writeDiagnostics", epoch, sequence, writes });
+  async writeDiagnostics(writerId: string, sequence: number, writes: RuntimeDiagnosticWrite[]): Promise<boolean> {
+    const committed = await this.read<boolean>({ operation: "writeDiagnostics", writerId, sequence, writes });
     if (committed === true && !this.diagnosticWriterReady) {
       this.diagnosticWriterReady = true;
       console.info("[RuntimeAudit] Rust diagnostics writer ready");
@@ -1814,7 +2243,7 @@ export class RuntimeAuditReader {
     return undefined;
   }
 
-  async openDurable(path: string): Promise<RuntimeAuditDurableSnapshot | undefined> {
+  async openDurable(path: string, expectedIncarnation?: string): Promise<RuntimeAuditDurableSnapshot | undefined> {
     if (this.closed || !this.executable || !this.dbPath || this.dbPath === ":memory:") return undefined;
     const owner = await this.obtainSession();
     if (!owner) return undefined;
@@ -1828,7 +2257,7 @@ export class RuntimeAuditReader {
     if (!separate || owner !== this.session) return undefined;
     const session = randomUUID();
     const request = <T>(action: { action: string; [key: string]: unknown }) => this.historyRequest<T>(owner, session, action);
-    if (await request<boolean>({ action: "open", path }) !== true) return undefined;
+    if (await request<boolean>({ action: "open", path: resolve(path), expectedIncarnation }) !== true) return undefined;
     let closing: Promise<void> | undefined;
     return {
       select: (sql, parameters, first) => request({ action: "select", sql, parameters, first }),
@@ -2503,13 +2932,12 @@ export class RuntimeAuditReader {
   }
 }
 
-export interface RuntimeTaskBoardQuery {
-  sql: string;
-  countSql?: string;
-  parameters: Record<string, string | number | null>;
-  size: number;
-  hasCursor: boolean;
-}
+export type RuntimeTaskBoardQuery = Omit<import("../../shared/task-board").BoardQuery, "scope"> & {
+  scope?: { spaceId: string | null };
+  ordinary?: { taskId?: string; spaceIds?: readonly string[] | null };
+  calendar: { now: number; today: number; tomorrow: number; recentFrom: number; weekFrom: number; weekUntil: number; automationFrom: number };
+  waits: { id: string; token: string; message: string | null; detail: string; at: number }[];
+};
 
 export interface RuntimeTaskBoardPage<Row> {
   rows: Row[];
@@ -2535,7 +2963,8 @@ type RuntimeScopedNoteReply =
   | { status: "missing" | "archived" | "conflict" };
 
 type RuntimeLibraryMetadataQuery =
-  | { kind: "catalog"; spaceIds?: string[]; itemId?: string }
+  | { kind: "catalog"; spaceIds?: string[]; itemId?: string; owner?: LibraryOwnerScope }
+  | { kind: "taskScope"; taskId?: string; projectId?: string; workspaceId?: string; itemIds?: string[] }
   | { kind: "trash"; spaceIds: string[] }
   | { kind: "versions"; itemId: string }
   | { kind: "textBody"; itemId: string; root: string; maxChars?: number }
@@ -2599,8 +3028,10 @@ type RuntimeLibraryNoteWriteReply<Row> =
   | { status: "scopeChanged" | "folderChanged" | "needsHost" | "sourceUnavailable" };
 
 type RuntimeProjectMetadataQuery =
+  | { kind: "writeReceipt"; operationId: string }
   | { kind: "list"; includeArchived: boolean }
   | { kind: "details"; projectId: string }
+  | { kind: "contextSnapshot" | "contextWitness"; projectId: string }
   | { kind: "todos"; projectId: string }
   | { kind: "memories"; projectId: string }
   | { kind: "todo"; id: string }
@@ -2610,6 +3041,7 @@ type RuntimeProjectMetadataQuery =
 
 export type RuntimeArtifactMutation =
   | { kind: "register"; row: ArtifactRow }
+  | { kind: "registerWorkspaceOutput"; row: ArtifactRow }
   | { kind: "refresh"; ids: string[]; at: number; messageId?: string; toolCallId?: string }
   | { kind: "remove"; id?: string; requireTrashed: boolean };
 
@@ -2624,7 +3056,7 @@ export type RuntimeArtifactContent =
   | { kind: "text"; content: string }
   | ({ kind: "gadget" } & RuntimeGadgetArtifactSource);
 
-type RuntimeManagedArtifactWrite =
+export type RuntimeManagedArtifactWrite =
   | { status: "saved"; revision: number }
   | { status: "failed"; message: string };
 
@@ -2695,12 +3127,15 @@ interface RuntimeArtifactCleanup {
   failed: string[];
 }
 
-type RuntimeCronDataQuery =
+export type RuntimeCronDataQuery =
   | { kind: "jobs" }
+  | { kind: "jobState"; jobId: string }
   | { kind: "overview"; limit: number }
   | { kind: "runs"; limit: number; jobIds?: string[] }
   | { kind: "jobRuns"; jobId: string; limit: number; before?: { startedAt: number; id: string } }
-  | { kind: "runInput"; runId: string };
+  | { kind: "runInput"; runId: string }
+  | { kind: "dotsRunAuthorization"; source: string; purpose: "continuation" | "notification" }
+  | { kind: "dotsRunAuthorization"; source: string; purpose: "admission"; assistantMessageId: string; textHash: string };
 
 export interface RuntimeGadgetSourceData {
   manifest: string;
@@ -2751,6 +3186,7 @@ interface RuntimeGadgetCreateFiles {
 interface RuntimeGadgetExportFiles {
   root: string;
   id: string;
+  taskId?: string;
   token: string;
   taskDirectory: string;
   basename: string;
@@ -2767,27 +3203,32 @@ type RuntimeGadgetFileReply =
 interface RuntimeGadgetSourceSave {
   root: string;
   id: string;
+  taskId?: string;
   operationId: string;
   token: string;
   updatedAt: number;
   files: RuntimeGadgetFile[];
   manifest?: string;
-  update?: Pick<RuntimeGadgetUpdate, "name" | "description" | "metadataJson">;
+  update?: RuntimeGadgetPatch;
 }
 
 type RuntimeGadgetSourceSaved =
   | { status: "saved"; source: RuntimeGadgetSourceData }
-  | { status: "conflict" | "needsHost" | "manifestSaved" }
+  | { status: "conflict" | "scopeChanged" | "needsHost" | "manifestSaved" }
   | { status: "failed"; message: string };
 
 type RuntimeWorkbenchDataQuery =
   | { kind: "gadgets"; scopes?: Array<{ scopeType: "global" | "workspace" | "task"; scopeId: string | null }> }
   | { kind: "gadget"; id: string }
+  | { kind: "gadgetForTask"; id: string; taskId: string }
+  | { kind: "inheritedGadgets"; scope: RuntimeGadgetScope }
   | { kind: "blueprint"; id: string }
-  | { kind: "blueprints" };
+  | { kind: "blueprints" }
+  | { kind: "workbenchReceipt" | "blueprintReceipt"; operationId: string };
 
 type RuntimeGadgetScope = { scopeType: "global" | "workspace" | "task"; scopeId: string | null };
 type RuntimeGadgetUpdate = { id: string; name: string; description: string | null; metadataJson: string; updatedAt: number };
+export type RuntimeGadgetPatch = { name?: string; description?: { value: string | null }; metadataJson?: string };
 export type RuntimeGadgetOrigin = { kind: "generated" } | { kind: "copy"; sourceId: string };
 type RuntimeBlueprintDefinition = { kind: string; schemaVersion: number; definitionJson: string };
 export type RuntimeGadgetInsert = RuntimeGadgetUpdate & {
@@ -2797,7 +3238,7 @@ export type RuntimeGadgetInsert = RuntimeGadgetUpdate & {
 
 export type RuntimeWorkbenchMutation =
   | { kind: "createGadget"; origin: RuntimeGadgetOrigin; gadget: RuntimeGadgetInsert }
-  | ({ kind: "updateGadget" } & RuntimeGadgetUpdate)
+  | ({ kind: "updateGadget"; id: string; updatedAt: number } & RuntimeGadgetPatch)
   | { kind: "touchGadget"; id: string; updatedAt: number }
   | { kind: "moveGadget"; id: string; scope: RuntimeGadgetScope; updatedAt: number }
   | { kind: "deleteGadget" | "deleteBlueprint"; id: string }
@@ -2869,12 +3310,13 @@ type RuntimeTaskRecord = Pick<TaskDto, "id" | "title" | "spaceId" | "projectId" 
   expectedTitle?: string;
   preserveTitle: boolean;
   preserveWorkspace: boolean;
+  workspaceFallback?: { name: string; path?: string };
   externalAgentPinJson?: string | null;
 };
 
 type RuntimeTaskRecordReply =
   | { status: "saved"; previousProjectId: string | null }
-  | { status: "needsHost" }
+  | { status: "needsHost" | "missingWorkspace" }
   | { status: "rejected"; message: string };
 
 export interface RuntimeDueTrashedTask {
@@ -3181,6 +3623,10 @@ function mutatesPersistentState(request: object, lane: AuditLane): boolean {
   if (operation === "corePiHost") {
     return !["status", "verifyLease"].includes(value.action ?? "");
   }
+  if (operation === "piStorage") {
+    const payload = (request as { payload?: { action?: string } }).payload;
+    return !PI_STORAGE_READ_ONLY_ACTIONS.has(payload?.action ?? value.action ?? "");
+  }
   if (operation === "coreMaintenanceScheduler") {
     return value.action !== "status";
   }
@@ -3209,16 +3655,24 @@ function isCapabilityRequest(request: object): boolean {
     || (value.operation === "gadgetState" && value.request?.kind === "supported");
 }
 
+const PI_STORAGE_READ_ONLY_ACTIONS = new Set([
+  "resolveStoreId", "storeInfo", "openReadOnly", "conversation", "scanConversations", "entry",
+  "findLatestHeadMarker", "scanEntries", "task", "scanTasks", "submission", "scanSubmissions",
+  "submissionByRequest", "findDocument", "document", "scanDocuments",
+]);
+
 const READ_ONLY_OPERATIONS = new Set([
-  "snapshots", "artifactSnapshots", "readManagedArtifact", "nextManagedArtifact", "closeManagedArtifact",
+  "externalAgentHistoryPage", "readLoadoutObservations", "readGatewayExecutionAuthority",
+  "snapshots", "snapshotReceipt", "artifactSnapshots", "artifactData", "readManagedArtifact", "nextManagedArtifact", "closeManagedArtifact",
   "workspaceFilePreview", "workspaceScan", "dotsFileRevision", "startDotsFileWatch", "stopDotsFileWatch",
   "openWorkspaceArtifact", "openManagedArtifactImage",
-  "openRemoteArtifactImage", "taskList", "workspaceData", "readWorkQueue", "readBotHistoryPage", "workspaceSharedData",
-  "readWorkGraph", "scanWorkGraphIntegrity", "fileBackupList", "readGatewayMessages", "codeReviewData",
-  "readTaskExpertBinding", "memoryOrganizationLatest", "notificationData", "executionFailures", "branchTitle",
+  "openRemoteArtifactImage", "taskList", "taskRecord", "applicationDatabaseIdentity", "taskWorkspacePaths", "workspaceData", "readWorkQueue", "readBotHistoryPage", "readBotRegistry", "workspaceSharedData", "pythonProjectBindings",
+  "readWorkGraph", "scanWorkGraphIntegrity", "fileBackupList", "readGatewayChannels", "readGatewayChannelState", "readDotsDelegationData", "readDotsReplyData", "readDotsActivityData", "readDotsDeferredData", "readDotsFollowupData", "readDotsForegroundData", "readDotsProactiveData", "readDotsFileWatchData", "readGatewayOutbox", "readGatewayInbox", "readGatewayAssignment", "readGatewayQueue", "readGatewayMessages", "codeReviewData", "readConversationRuntime", "readDurableTaskProjection",
+  "readTaskExpertBinding", "memoryOrganizationLatest", "notificationData", "readNativeHooks", "readPathHints",
+  "readImprovementPackages", "readImprovementReview", "executionFailures", "branchTitle", "readConversationBranchData",
   "archivedTaskCandidates", "listTrashedTasks", "dueTrashedTasks", "taskBoard", "libraryMetadata", "readScopedNote",
   "projectMetadata", "cronData", "workbenchData",
-  "captureBlueprintWorkspace", "scanPluginCatalog", "pluginCatalog", "readPluginConfig", "usageReport", "usageCsv",
+  "captureBlueprintWorkspace", "scanPluginCatalog", "pluginCatalog", "readPluginConfig", "usageReport", "usageCsv", "usageSessionFiles",
   "diagnostics", "semantic", "embeddingIndex", "memoryLexical", "memoryLexicalScores", "memoryBaselines",
   "historyRead", "durable", "coreEventsSnapshot", "coreEventsReplay",
 ]);

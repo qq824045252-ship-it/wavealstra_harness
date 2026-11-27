@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { defaultAnswerRuleId, defaultDotsSchedulingPolicy, type AnswerRule, type DotsSchedulingPolicy } from "../../shared/answer-routing";
 import { DOTS_TASK_ID, type DotsReplyOrigin } from "../../shared/dots";
 import type { AgentPromptRequest } from "../../shared/agent-ipc";
-import type { RuntimeAuditReader } from "../platform/runtime-audit";
+import { RuntimeAuditUnknownOperationError, type RuntimeAuditReader } from "../platform/runtime-audit";
 
 export type ForegroundRead = { source: string; description: string; characters: number; excerpt?: string };
 type Limits = DotsSchedulingPolicy["foregroundReadLimits"];
@@ -10,7 +10,13 @@ type Turn = { policy: DotsSchedulingPolicy; calls: number; characters: number; e
 export type ForegroundInput = { id: string; text: string; entryId: number; createdAt?: number; attachments?: AgentPromptRequest["attachments"] };
 
 type Handoff = { spaceId: string; targetTaskId?: string; priorOperationId?: string; text: string; inputs: readonly ForegroundInput[]; origin: DotsReplyOrigin };
-type ForegroundNative = Pick<RuntimeAuditReader, "batch4aWrite" | "supervised">;
+type ForegroundNative = Pick<RuntimeAuditReader, "batch4aWrite" | "supervised" | "readDotsForegroundData" | "writeDotsForegroundData">;
+type ChargeOptions = { rule?: { id: string; revision: number }; relatedInputIds?: string[]; fixturePolicy?: DotsSchedulingPolicy };
+export type DotsForegroundQuery = { kind: "state"; inputId: string } | { kind: "unlinked"; afterInputId?: string };
+export type DotsForegroundCommand = { kind: "freeze" | "linked"; inputId: string }
+  | { kind: "handoff"; inputId: string; candidate: Handoff }
+  | { kind: "charge"; inputId: string; callId: string; source: string; description: string; text: string;
+    rule?: ChargeOptions["rule"]; relatedInputIds?: string[] };
 
 export class DotsForegroundUnavailable extends Error {}
 
@@ -21,8 +27,9 @@ export class DotsForegroundReads {
   private readonly pendingHandoffs = new Map<string, { data: string; linked: number }>();
   private readonly pendingReads = new Map<string, Array<{ callId: string; read: ForegroundRead }>>();
 
-  constructor(private readonly db: Database.Database, private readonly native?: ForegroundNative) {
-    if (!db.readonly) {
+  constructor(private readonly fixture: Database.Database | undefined, private readonly native?: ForegroundNative) {
+    const db = fixture;
+    if (db && !db.readonly) {
       db.exec(`CREATE TABLE IF NOT EXISTS dots_foreground_reads (
         input_id TEXT NOT NULL, call_id TEXT NOT NULL, source TEXT NOT NULL, description TEXT NOT NULL,
         characters INTEGER NOT NULL, PRIMARY KEY(input_id,call_id));
@@ -36,12 +43,78 @@ export class DotsForegroundReads {
     }
   }
 
+  private get db(): Database.Database {
+    if (!this.fixture) throw new DotsForegroundUnavailable("Dots 本轮读取记录需要通过 Rust Core 读取");
+    return this.fixture;
+  }
+
   private get requiresRustWrites(): boolean {
-    return this.db.readonly || Boolean(this.native?.supervised);
+    return !this.fixture || this.fixture.readonly || Boolean(this.native?.supervised);
   }
 
   flushWrites(): Promise<void> {
     return this.writeTail;
+  }
+
+  async readState(inputId: string): Promise<Turn> {
+    if (this.fixture) return this.state(inputId);
+    const reply = await this.native?.readDotsForegroundData<{ status: "ready"; state: Turn } | { status: "revoked" }>({ kind: "state", inputId });
+    if (reply?.status !== "ready") throw new DotsForegroundUnavailable(reply?.status === "revoked" ? "本轮策略授权已撤销" : "Core 未确认本轮读取记录");
+    return reply.state;
+  }
+
+  async freezeForInput(inputId: string): Promise<Turn> {
+    if (this.fixture) return this.freeze(inputId);
+    const reply = await this.writeCore<{ status: "ready"; state: Turn } | { status: "revoked" }>({ kind: "freeze", inputId });
+    if (reply.status !== "ready") throw new DotsForegroundUnavailable("本轮策略授权已撤销");
+    return reply.state;
+  }
+
+  async chargeRead(inputId: string, callId: string, source: string, description: string, text: string, options?: ChargeOptions) {
+    if (this.fixture) return this.charge(inputId, callId, source, description, text, options?.fixturePolicy);
+    const reply = await this.writeCore<{ status: "charged"; text: string; exhausted: boolean } | { status: "revoked" | "callReused" }>({
+      kind: "charge", inputId, callId, source, description, text, rule: options?.rule, relatedInputIds: options?.relatedInputIds,
+    });
+    if (reply.status !== "charged") throw new DotsForegroundUnavailable(reply.status === "revoked" ? "本轮策略授权已撤销" : "本次读取标识已用于其他资料或版本");
+    return { text: reply.text, exhausted: reply.exhausted };
+  }
+
+  async prepareHandoff(inputId: string, candidate: Handoff): Promise<Handoff> {
+    if (this.fixture) return this.handoff(inputId, candidate);
+    const reply = await this.writeCore<{ status: "prepared"; handoff: Handoff } | { status: "revoked" }>({ kind: "handoff", inputId, candidate });
+    if (reply.status !== "prepared") throw new DotsForegroundUnavailable("本轮策略授权已撤销");
+    return validateHandoff(reply.handoff, candidate);
+  }
+
+  async readUnlinked(): Promise<Handoff[]> {
+    if (this.fixture) return this.unlinked();
+    const rows: Handoff[] = [];
+    let afterInputId: string | undefined;
+    for (;;) {
+      const page: { rows: Handoff[]; nextInputId: string | null } | undefined = await this.native?.readDotsForegroundData({ kind: "unlinked", afterInputId });
+      if (!page || !Array.isArray(page.rows)) throw new DotsForegroundUnavailable("Core 未确认待移交的前台资料");
+      rows.push(...page.rows);
+      if (page.nextInputId === null) return rows;
+      if (!page.nextInputId || page.nextInputId === afterInputId) throw new DotsForegroundUnavailable("Core 的前台移交分页位置无效");
+      afterInputId = page.nextInputId;
+    }
+  }
+
+  async markLinked(inputId: string): Promise<void> {
+    if (this.fixture) { this.linked(inputId); return; }
+    await this.writeCore({ kind: "linked", inputId });
+  }
+
+  private async writeCore<T>(command: DotsForegroundCommand): Promise<T> {
+    const native = this.native;
+    if (!native?.supervised) throw new DotsForegroundUnavailable("Dots 前台读取需要 Core");
+    const write = () => native.writeDotsForegroundData<T>(command);
+    const reply = await write().catch(error => {
+      if (error instanceof RuntimeAuditUnknownOperationError) return write();
+      throw error;
+    });
+    if (reply === undefined) throw new DotsForegroundUnavailable("Core 未确认本轮读取写入");
+    return reply;
   }
 
   private enqueue(request: Record<string, unknown>, label: string): void {
@@ -112,11 +185,7 @@ export class DotsForegroundReads {
       storedData = this.db.prepare("SELECT data FROM dots_foreground_handoffs WHERE input_id=?")
         .pluck().get(inputId) as string;
     }
-    const stored = JSON.parse(storedData) as Handoff;
-    if (stored.spaceId !== candidate.spaceId || stored.targetTaskId !== candidate.targetTaskId ||
-        stored.priorOperationId !== candidate.priorOperationId || stored.inputs.length !== candidate.inputs.length || stored.inputs.some((input, index) => input.id !== candidate.inputs[index].id))
-      throw new DotsForegroundUnavailable("本事项已准备过旧修订的移交。当前修订未自动派发。");
-    return stored;
+    return validateHandoff(JSON.parse(storedData) as Handoff, candidate);
   }
 
   unlinked(): Handoff[] {
@@ -244,4 +313,14 @@ export class DotsForegroundReads {
       return { text: prefix, exhausted };
     }).immediate();
   }
+}
+
+function validateHandoff(stored: Handoff, candidate: Handoff): Handoff {
+  if (stored.spaceId !== candidate.spaceId || stored.targetTaskId !== candidate.targetTaskId ||
+      stored.priorOperationId !== candidate.priorOperationId || stored.origin.conversationId !== candidate.origin.conversationId ||
+      stored.origin.entryId !== candidate.origin.entryId || stored.inputs.length !== candidate.inputs.length ||
+      stored.inputs.some((input, index) => input.id !== candidate.inputs[index].id)) {
+    throw new DotsForegroundUnavailable("本事项已准备过旧修订的移交。当前修订未自动派发。");
+  }
+  return stored;
 }

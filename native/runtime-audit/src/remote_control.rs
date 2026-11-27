@@ -6,7 +6,7 @@ use crate::business_protocol::{
     ensure_tables as ensure_protocol_tables,
 };
 use crate::work_scheduler::{now_ms, sha256_hex};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -106,46 +106,12 @@ impl Command {
 }
 
 pub fn ensure_remote_control_tables(db: &Connection) -> crate::Result<()> {
-    db.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS core_remote_state (
-            key TEXT PRIMARY KEY,
-            value_json TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS core_remote_commands (
-            command_key TEXT PRIMARY KEY,
-            operation_id TEXT NOT NULL,
-            command_type TEXT NOT NULL,
-            task_id TEXT,
-            request_hash TEXT NOT NULL,
-            status TEXT NOT NULL,
-            response_json TEXT,
-            error_message TEXT,
-            created_at_ms INTEGER NOT NULL,
-            updated_at_ms INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_core_remote_cmd_time
-            ON core_remote_commands(created_at_ms DESC);
-        CREATE TABLE IF NOT EXISTS core_remote_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_type TEXT NOT NULL,
-            payload_json TEXT NOT NULL,
-            created_at_ms INTEGER NOT NULL
-        );
-        ",
-    )?;
+    let _ = db;
     Ok(())
 }
 
 fn table_exists(db: &Connection, name: &str) -> crate::Result<bool> {
-    Ok(db
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
-            [name],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
+    crate::database::table_exists(db, name)
 }
 
 fn load_state(db: &Connection) -> crate::Result<RuntimeRemoteState> {
@@ -289,6 +255,8 @@ pub fn execute_read(db: &Connection, command: Command) -> crate::Result<Value> {
             after_seq,
             limit,
         } => {
+            let snapshot = db.unchecked_transaction()?;
+            let db: &Connection = &snapshot;
             let cap = limit.unwrap_or(100).clamp(1, 200);
             let since = after_created_at_ms.unwrap_or(0);
             let notifications: Vec<Value> = if table_exists(db, "notifications")? {
@@ -296,7 +264,7 @@ pub fn execute_read(db: &Connection, command: Command) -> crate::Result<Value> {
                     "SELECT id, type, level, title, body, source_type, source_id, task_id, project_id, workspace_id, dedupe_key, created_at, read_at, dismissed_at
                      FROM notifications
                      WHERE dismissed_at IS NULL AND (created_at >= ?1 OR read_at IS NULL)
-                     ORDER BY created_at DESC LIMIT ?2",
+                     ORDER BY created_at DESC, id DESC LIMIT ?2",
                 )?;
                 stmt.query_map(params![since, cap], |r| {
                     Ok(json!({
@@ -352,6 +320,7 @@ pub fn execute_read(db: &Connection, command: Command) -> crate::Result<Value> {
             } else {
                 vec![]
             };
+            snapshot.commit()?;
             Ok(json!({
                 "status": "ok",
                 "unreadCount": unread_count,
@@ -372,7 +341,7 @@ pub fn execute_write(
     ensure_protocol_tables(db, &core_gen)?;
     ensure_remote_control_tables(db)?;
 
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let mut events = Vec::new();
 
     let data = match command {
@@ -540,11 +509,15 @@ pub fn execute_write(
         } => {
             let now = at.unwrap_or_else(now_ms);
             let payload_str = serde_json::to_string(&payload)?;
-            tx.execute(
-                "INSERT INTO core_remote_events (event_type, payload_json, created_at_ms) VALUES (?1, ?2, ?3)",
-                params![event_type, payload_str, now],
+            let id: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM core_remote_events",
+                [],
+                |r| r.get(0),
             )?;
-            let id = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO core_remote_events (id, event_type, payload_json, created_at_ms) VALUES (?1, ?2, ?3, ?4)",
+                params![id, event_type, payload_str, now],
+            )?;
             tx.execute(
                 "DELETE FROM core_remote_events WHERE id <= (SELECT COALESCE(MAX(id), 0) - ?1 FROM core_remote_events)",
                 [MAX_REMOTE_EVENT_RETENTION],
@@ -582,69 +555,22 @@ pub fn execute_write(
                 let h = sha256_hex(&format!("notif:{notification_type}:{seed}:{now}"));
                 format!("notif-{}", &h[..16])
             });
-            let mut inserted = false;
-            if table_exists(&tx, "notifications")? {
-                if let Some(dk) = &dedupe_key {
-                    let exists: bool = tx.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM notifications WHERE dedupe_key = ?1)",
-                        [dk],
-                        |r| r.get(0),
-                    )?;
-                    if !exists {
-                        tx.execute(
-                            "INSERT INTO notifications (
-                                id, type, level, title, body, source_type, source_id, task_id,
-                                project_id, workspace_id, dedupe_key, created_at, read_at, dismissed_at
-                             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, NULL)",
-                            params![
-                                nid,
-                                notification_type,
-                                level,
-                                title,
-                                body,
-                                source_type,
-                                source_id,
-                                task_id,
-                                project_id,
-                                workspace_id,
-                                dedupe_key,
-                                now,
-                            ],
-                        )?;
-                        inserted = true;
-                    }
-                } else {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO notifications (
-                            id, type, level, title, body, source_type, source_id, task_id,
-                            project_id, workspace_id, dedupe_key, created_at, read_at, dismissed_at
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, NULL, NULL)",
-                        params![
-                            nid,
-                            notification_type,
-                            level,
-                            title,
-                            body,
-                            source_type,
-                            source_id,
-                            task_id,
-                            project_id,
-                            workspace_id,
-                            now,
-                        ],
-                    )?;
-                    inserted = tx.changes() > 0;
-                }
-            }
-            let unread_count: i64 = if table_exists(&tx, "notifications")? {
-                tx.query_row(
-                    "SELECT COUNT(*) FROM notifications WHERE dismissed_at IS NULL AND read_at IS NULL",
-                    [],
-                    |r| r.get(0),
-                )?
-            } else {
-                0
+            let notice = crate::notification_data::Notification {
+                id: nid,
+                notification_type,
+                level,
+                title,
+                body,
+                source_type,
+                source_id,
+                task_id,
+                project_id,
+                workspace_id,
+                dedupe_key,
+                created_at: now,
             };
+            let inserted = crate::notification_data::insert(&tx, &notice, None, true, false)?;
+            let unread_count = crate::notification_data::unread_count(&tx)?;
             if inserted {
                 events.push(append_event(
                     &tx,
@@ -652,26 +578,27 @@ pub fn execute_write(
                     &client.generation,
                     "notification",
                     "notification.created",
-                    &nid,
+                    &notice.id,
                     now,
                     None,
                     &json!({
-                        "id": nid,
-                        "type": notification_type,
-                        "level": level,
-                        "title": title,
-                        "body": body,
-                        "sourceType": source_type,
-                        "sourceId": source_id,
-                        "taskId": task_id,
-                        "projectId": project_id,
-                        "dedupeKey": dedupe_key,
+                        "id": notice.id,
+                        "type": notice.notification_type,
+                        "level": notice.level,
+                        "title": notice.title,
+                        "body": notice.body,
+                        "sourceType": notice.source_type,
+                        "sourceId": notice.source_id,
+                        "taskId": notice.task_id,
+                        "projectId": notice.project_id,
+                        "workspaceId": notice.workspace_id,
+                        "dedupeKey": notice.dedupe_key,
                         "createdAt": now,
                         "unreadCount": unread_count,
                     }),
                 )?);
             }
-            json!({ "status": "ok", "id": nid, "inserted": inserted, "unreadCount": unread_count })
+            json!({ "status": "ok", "id": notice.id, "inserted": inserted, "unreadCount": unread_count })
         }
         Command::Status
         | Command::QueryCommand { .. }
@@ -693,11 +620,11 @@ pub fn execute_write(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db_schema::CANONICAL_SCHEMA_SQL;
+    use crate::database::CANONICAL_DUCKDB_SCHEMA_SQL;
 
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().expect("open memory db");
-        conn.execute_batch(CANONICAL_SCHEMA_SQL).expect("schema");
+        conn.execute_batch(CANONICAL_DUCKDB_SCHEMA_SQL).expect("schema");
         let core_gen = current_core_generation();
         ensure_protocol_tables(&conn, &core_gen).expect("protocol tables");
         ensure_remote_control_tables(&conn).expect("remote tables");

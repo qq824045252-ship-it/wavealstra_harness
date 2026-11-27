@@ -21,6 +21,9 @@ export const BaseWindow = BrowserWindow;
 export const session = {
   fromPartition: () => { throw new Error("Browser sessions require Electron"); },
 };
+export const protocol = {
+  handle: () => { throw new Error("Protocol registration requires Electron"); },
+};
 export class WebContentsView {
   webContents = {
     loadURL: async (): Promise<void> => undefined,

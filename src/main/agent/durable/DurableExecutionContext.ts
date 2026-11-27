@@ -1,10 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Context } from "@earendil-works/chord/context";
 import type { HookApi, ToolExecutionApi } from "@earendil-works/pi-durable";
+import type { TaskDto } from "../../../shared/agent-ipc";
 import type { ConversationExecutionContext } from "../ConversationExecutionContext";
 
 const executionMemo = "mybuddy.execution-context";
 type IdentityApi = Pick<HookApi, "memo" | "taskId" | "conversationId">;
+export type DurableToolTaskScope = Pick<TaskDto, "id" | "projectId" | "spaceId" | "permissionMode">;
 interface Invocation {
   execution: ConversationExecutionContext;
   cwd: string;
@@ -12,6 +14,7 @@ interface Invocation {
   presentationConversationId?: import("@earendil-works/pi-durable").ConversationId;
   native: ToolExecutionApi;
   context: Context;
+  taskScope?: DurableToolTaskScope;
   /** Trusted original host input, resolved through this run's durable submission receipt. */
   sourceUserMessageId?: string;
   sourceDisplayText?: string;

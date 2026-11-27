@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { BrowserWindow } from "electron";
 import { z } from "zod";
 import {
@@ -13,13 +13,15 @@ import {
 } from "../../shared/agent-ipc";
 import { assertSingleExpertId, normalizeSingleExpertId } from "../../shared/expert-id";
 import { parseCronExecution } from "../../shared/cron-execution";
-import { DOTS_NO_CHANGE, DOTS_TASK_ID } from "../../shared/dots";
+import { DOTS_NO_CHANGE, DOTS_TASK_ID, isDotsAutomaticInput } from "../../shared/dots";
 import { resolveDotsPreferences, type DotsSettings } from "../../shared/dots-settings";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { CronGeneratedTask, CronRunWrite } from "../db/CronRunPersistence";
 import { encodeCronPlan, type CronPlanGuard, type CronPlanProvenance } from "../db/CronPlanPersistence";
 import { DotsIntentChanged } from "../dots/DotsNativeIntent";
 import { computeNextRunAt, validateSchedule, withinEffectiveRange, scheduleTimer, type SegmentedTimer } from "./CronSchedule";
+
+type CronJobState = NonNullable<Awaited<ReturnType<AppDatabase["readCronJobState"]>>>;
 
 const storedCronInput = z.object({
   taskId: z.string().min(1), text: z.string(), userMessageId: z.string().min(1), assistantMessageId: z.string().min(1),
@@ -49,7 +51,7 @@ export interface CronAgent {
   isTaskBusy(taskId: string): boolean;
   getAppSettings(): { defaultModelId?: string | null; dotsSettings?: Partial<DotsSettings> };
   resolveAvailableModelId(id: string): Promise<{ modelId: string; repairedFrom?: string } | undefined>;
-  listSkills(): Array<{ id: string; name: string }>;
+  listSkills(): Array<{ id: string; name: string }> | Promise<Array<{ id: string; name: string }>>;
   listConnectors(): Array<{ id: string; name: string; installedSkillNames?: string[] }>;
 }
 
@@ -102,6 +104,7 @@ export class CronService {
   private readonly runningJobs = new Set<string>();
   private readonly pendingRunWrites = new Set<Promise<boolean>>();
   private planWrites: Promise<void> = Promise.resolve();
+  private coreConfigWrites: Promise<void> = Promise.resolve();
   private readonly revisions = new Map<string, number>();
   private stopped = false;
   private started = false;
@@ -125,7 +128,8 @@ export class CronService {
     private readonly weeklyMaintenance?: {start(): void; stopSchedule(): void},
     private readonly dotsReminderSink?: (event: { jobId: string; jobName: string; occurrence: number }) => void,
   ) {
-    if (!db.connection.readonly) {
+    if (this.coreOwnsScheduling) return;
+    if (!db.readonly) {
       db.connection.exec(`CREATE TABLE IF NOT EXISTS cron_run_inputs (
         run_id TEXT PRIMARY KEY REFERENCES cron_runs(id) ON DELETE CASCADE, request_json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS dots_schedule_origins(job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
@@ -159,33 +163,37 @@ export class CronService {
     return Boolean(this.db.runtimeAuditReader?.supervised);
   }
 
-  private async syncCoreConfig(): Promise<void> {
+  private syncCoreConfig(): Promise<void> {
     const reader = this.db.runtimeAuditReader;
-    if (!reader?.cronScheduler) return;
-    const settings = this.agent.getAppSettings();
-    const prefs = resolveDotsPreferences(settings.dotsSettings);
-    const skillNames: Record<string, string> = {};
-    try {
-      for (const s of this.agent.listSkills()) {
-        if (s.id) skillNames[s.id] = s.name;
-        if (s.name) skillNames[s.name] = s.name;
-      }
-    } catch { /* ignore */ }
-    const connectors: Record<string, { name: string; skillNames: string[] }> = {};
-    try {
-      for (const c of this.agent.listConnectors()) {
-        connectors[c.id] = { name: c.name, skillNames: c.installedSkillNames ?? [] };
-      }
-    } catch { /* ignore */ }
-    await reader.cronScheduler({
-      action: "syncConfig",
-      dotsFollowupMode: prefs.followupMode,
-      dotsSpaceIds: prefs.spaceIds,
-      dotsSuspended: this.dotsSuspended,
-      defaultModelId: settings.defaultModelId ?? null,
-      skillNames,
-      connectors,
+    if (!reader?.cronScheduler) return Promise.resolve();
+    const write = this.coreConfigWrites.then(async () => {
+      const skillNames: Record<string, string> = {};
+      try {
+        for (const s of await this.agent.listSkills()) {
+          if (s.id) skillNames[s.id] = s.name;
+          if (s.name) skillNames[s.name] = s.name;
+        }
+      } catch { /* ignore */ }
+      const settings = this.agent.getAppSettings();
+      const prefs = resolveDotsPreferences(settings.dotsSettings);
+      const connectors: Record<string, { name: string; skillNames: string[] }> = {};
+      try {
+        for (const c of this.agent.listConnectors()) {
+          connectors[c.id] = { name: c.name, skillNames: c.installedSkillNames ?? [] };
+        }
+      } catch { /* ignore */ }
+      await reader.cronScheduler({
+        action: "syncConfig",
+        dotsFollowupMode: prefs.followupMode,
+        dotsSpaceIds: prefs.spaceIds,
+        dotsSuspended: this.dotsSuspended,
+        defaultModelId: settings.defaultModelId ?? null,
+        skillNames,
+        connectors,
+      });
     });
+    this.coreConfigWrites = write.catch(() => {});
+    return write;
   }
 
   handleCoreEvent(event: { domain: string; kind: string; entityId: string; payload: unknown }): void {
@@ -214,7 +222,11 @@ export class CronService {
       const notifyUser = payload.notifyUser === true;
       if (projectId) this.notifyProjectRun({ id: jobId, name: jobName, projectId }, runId, status, error);
       if (notifyUser && taskId) {
-        this.runNotificationSink?.({ runId, jobId, jobName, taskId, projectId, status, error, ...(message ? { message } : {}) });
+        const publish = () => this.runNotificationSink?.({ runId, jobId, jobName, taskId, projectId, status, error, ...(message ? { message } : {}) });
+        if (taskId !== DOTS_TASK_ID) publish();
+        else void this.readDotsRunAuthorization({ kind: "dotsRunAuthorization", source: `cron-${runId}-input`, purpose: "notification" })
+          .then(allowed => { if (allowed && !this.stopped) publish(); })
+          .catch(error => console.warn("[CronService] 无法复核 Dots 定时消息授权", error));
       }
     }
   }
@@ -381,8 +393,9 @@ export class CronService {
 
   dotsScheduleVisible(jobId: string): boolean {
     const scope = resolveDotsPreferences(this.agent.getAppSettings().dotsSettings).spaceIds;
+    if (scope === null) return true;
     const spaceId = this.scheduleOwner(jobId)?.spaceId;
-    return scope === null || Boolean(spaceId && scope.includes(spaceId));
+    return Boolean(spaceId && scope.includes(spaceId));
   }
 
   private dotsPolicy(job: CronJobDto): DotsSettings["followupMode"] {
@@ -478,8 +491,19 @@ export class CronService {
     })();
   }
 
-  assertDotsInputCurrent(source: string): void {
-    if (!source.startsWith("cron-") || !source.endsWith("-input")) return;
+  assertDotsInputCurrent(source: string, request?: AgentPromptRequest): void | Promise<void> {
+    if (!source.startsWith("cron-") || !isDotsAutomaticInput(source)) return;
+    if (!this.db.fixtureConnection) {
+      if (request && (request.taskId !== DOTS_TASK_ID || request.userMessageId !== source || request.attachments?.length || request.terminalContext)) {
+        throw new DotsIntentChanged("定时输入与已登记运行不一致");
+      }
+      return this.readDotsRunAuthorization(request ? {
+        kind: "dotsRunAuthorization", source, purpose: "admission", assistantMessageId: request.assistantMessageId,
+        textHash: createHash("sha256").update(request.text).digest("hex"),
+      } : { kind: "dotsRunAuthorization", source, purpose: "continuation" }).then(allowed => {
+        if (!allowed) throw new DotsIntentChanged("原定时跟进已暂停、取消或不可用");
+      });
+    }
     const run = this.db.connection.prepare("SELECT job_id FROM cron_runs WHERE id=? AND task_id=?")
       .get(source.slice("cron-".length, -"-input".length), DOTS_TASK_ID) as { job_id: string } | undefined;
     const job = run && this.db.getCronJob(run.job_id);
@@ -487,6 +511,15 @@ export class CronService {
       || this.dotsSuspended || this.dotsFollowupPaused(job.sourceTaskId, job.id)) {
       throw new DotsIntentChanged("原定时跟进已暂停、取消或不可用");
     }
+  }
+
+  private async readDotsRunAuthorization(query: Extract<import("../platform/runtime-audit").RuntimeCronDataQuery, { kind: "dotsRunAuthorization" }>): Promise<boolean> {
+    await this.coreConfigWrites;
+    const state = await this.db.runtimeAuditReader?.cronData<{ allowed: boolean; ownerSpaceId: string | null }>(query);
+    if (state?.allowed !== true) return false;
+    const current = resolveDotsPreferences(this.agent.getAppSettings().dotsSettings);
+    return !this.dotsSuspended && (query.purpose === "notification" || current.followupMode === "continue") &&
+      (current.spaceIds === null || state.ownerSpaceId !== null && current.spaceIds.includes(state.ownerSpaceId));
   }
 
   async runsForTask(taskId: string, limit = 50, allowed = (_jobId: string) => true): Promise<CronRunDto[]> {
@@ -503,9 +536,28 @@ export class CronService {
 
   getForTask(taskId: string, id: string) {
     const saved = this.requireTaskJob(taskId, id);
+    return this.taskPlanView(saved, this.unavailableReason(saved), this.db.listCronJobRuns(id, 1, undefined, "running")[0] ?? null,
+      this.db.listCronJobRuns(id, 1)[0] ?? null);
+  }
+
+  async readForTask(taskId: string, id: string, restrictDotsScope = false) {
+    const state = await this.db.readCronJobState(id);
+    if (!state || state.job.sourceTaskId !== taskId || state.job.reminder) throw new Error("Automation does not belong to the current task");
+    if (restrictDotsScope) this.assertDotsPlanVisible(state);
+    const unavailable = state.unavailableReason === undefined ? this.unavailableReason(state.job) : state.unavailableReason ?? undefined;
+    return this.taskPlanView(state.job, unavailable, state.activeRun, state.latestRun);
+  }
+
+  private assertDotsPlanVisible(state: CronJobState): void {
+    const spaces = resolveDotsPreferences(this.agent.getAppSettings().dotsSettings).spaceIds;
+    if (spaces === null) return;
+    const space = state.owner === undefined ? this.scheduleOwner(state.job.id)?.spaceId : state.owner?.spaceId;
+    if (!space || !spaces.includes(space)) throw new Error("计划不在 Dots 已授权的空间内");
+  }
+
+  private taskPlanView(saved: CronJobDto, unavailable: string | undefined, activeRun: CronRunDto | null, latestRun: CronRunDto | null) {
     const job = this.withNext(saved);
     const now = Date.now();
-    const unavailable = this.unavailableReason(saved);
     const reason = saved.cancelledAt !== undefined ? "cancelled"
       : unavailable ? "unavailable"
       : saved.maxRuns !== undefined && (saved.runCount ?? 0) >= saved.maxRuns ? "max_runs_reached"
@@ -518,8 +570,7 @@ export class CronService {
       job: reason ? { ...job, nextRunAt: undefined } : job,
       status: reason ?? "scheduled", ...(unavailable && reason === "unavailable" ? { detail: unavailable } : {}),
       hostMustBeRunning: true, missedRuns: saved.missedRuns ?? "skip",
-      activeRun: this.db.listCronJobRuns(id, 1, undefined, "running")[0] ?? null,
-      latestRun: this.db.listCronJobRuns(id, 1)[0] ?? null,
+      activeRun, latestRun,
     };
   }
 
@@ -562,15 +613,19 @@ export class CronService {
     if (this.dotsFollowupPaused(taskId, undefined, provenance?.owner?.spaceId)) throw new Error("Dots 主动跟进已暂停，恢复后可创建计划");
     if (!task || task.archived) throw new Error("来源任务不存在或已归档");
     if (this.listForTask(taskId).filter(job => job.enabled).length >= 20) throw new Error("每个任务最多启用 20 个计划");
-    const job: CronJobDto = {
-      ...input, id, sourceTaskId: taskId,
-      target: input.target === "current-task" ? { kind: "task", taskId } : { kind: "new-task" },
-      enabled: true, createdAt: Date.now(), updatedAt: Date.now(), cwd,
+    return { job: this.newTaskPlan(task, id, cwd, input), existing: false };
+  }
+
+  private newTaskPlan(task: NonNullable<ReturnType<AppDatabase["getTask"]>>, id: string, cwd: string, input: TaskPlanInput): CronJobDto {
+    const now = Date.now();
+    return {
+      ...input, id, sourceTaskId: task.id,
+      target: input.target === "current-task" ? { kind: "task", taskId: task.id } : { kind: "new-task" },
+      enabled: true, createdAt: now, updatedAt: now, cwd,
       permissionMode: task.permissionMode ?? "default", welcomeMode: task.welcomeMode,
       projectId: task.projectId ?? undefined, spaceId: task.spaceId ?? undefined,
       modelId: task.modelId, expertId: task.expertId,
     };
-    return { job, existing: false };
   }
 
   createForTask(taskId: string, cwd: string, input: TaskPlanInput, operation?: string, provenance?: CronPlanProvenance): CronJobDto {
@@ -605,20 +660,37 @@ export class CronService {
 
   createTaskPlan(taskId: string, cwd: string, input: TaskPlanInput, operation?: string, provenance?: CronPlanProvenance): Promise<CronJobDto> {
     return this.queuePlanWrite(async () => {
-      const { job, existing } = this.prepareTaskCreation(taskId, cwd, input, operation, provenance);
+      const { job, existing } = this.coreOwnsScheduling
+        ? await this.prepareCoreTaskCreation(taskId, cwd, input, operation, provenance)
+        : this.prepareTaskCreation(taskId, cwd, input, operation, provenance);
       if (existing) return this.withNext(job);
       const next = this.preparePlan(job);
       const origin = taskId === DOTS_TASK_ID ? provenance : undefined;
       await this.commitPlan(next, null, {
-        guard: this.planGuard(next, { enabledLimitForTask: taskId, owner: origin?.owner, checkDotsHold: next.enabled }),
+        guard: await this.planGuard(next, { enabledLimitForTask: taskId, owner: origin?.owner, checkDotsHold: next.enabled }),
         provenance: origin,
       });
-      return this.publishPlanSave(next, false, Boolean(origin));
+      return this.publishConfirmedPlan(next, false, Boolean(origin));
     });
   }
 
-  private prepareTaskUpdate(taskId: string, id: string, patch: TaskPlanPatch) {
-    const job = this.db.getCronJob(id);
+  private async prepareCoreTaskCreation(taskId: string, cwd: string, input: TaskPlanInput, operation?: string, provenance?: CronPlanProvenance) {
+    const id = operation ? "cron-request-" + operation : randomUUID();
+    const prior = operation ? await this.db.readCronJobState(id) : undefined;
+    const spaces = taskId === DOTS_TASK_ID ? resolveDotsPreferences(this.agent.getAppSettings().dotsSettings).spaceIds : null;
+    if (prior) {
+      if (prior.job.sourceTaskId !== taskId) throw new Error("计划不属于当前任务");
+      if (spaces && (!prior.owner?.spaceId || !spaces.includes(prior.owner.spaceId))) throw new Error("计划不在 Dots 已授权的空间内");
+      return { job: prior.job, existing: true };
+    }
+    const space = provenance?.owner?.spaceId;
+    if (spaces && (!space || !spaces.includes(space))) throw new Error("请为定时跟进指定 Dots 已授权的任务或空间");
+    const task = await this.db.readTask(taskId, { includeExpertBinding: false });
+    if (!task || task.archived) throw new Error("来源任务不存在或已归档");
+    return { job: this.newTaskPlan(task, id, cwd, input), existing: false };
+  }
+
+  private prepareTaskUpdate(taskId: string, job: CronJobDto | undefined, patch: TaskPlanPatch) {
     if (!job || job.sourceTaskId !== taskId || job.reminder) throw new Error("计划不属于当前任务");
     // Whitelist mutable configuration; never replace identity, execution history or authority.
     const next = { ...job };
@@ -634,15 +706,17 @@ export class CronService {
   }
 
   updateForTask(taskId: string, id: string, patch: TaskPlanPatch): CronJobDto {
-    const { next, changed, preserveTimer } = this.prepareTaskUpdate(taskId, id, patch);
+    const { next, changed, preserveTimer } = this.prepareTaskUpdate(taskId, this.db.getCronJob(id), patch);
     return changed ? this.saveJob(next, preserveTimer) : this.withNext(next);
   }
 
   updateTaskPlan(taskId: string, id: string, patch: TaskPlanPatch): Promise<CronJobDto> {
     return this.queuePlanWrite(async () => {
-      const { next, changed, preserveTimer, existing } = this.prepareTaskUpdate(taskId, id, patch);
+      const state = await this.db.readCronJobState(id);
+      const { next, changed, preserveTimer } = this.prepareTaskUpdate(taskId, state?.job, patch);
+      if (state && taskId === DOTS_TASK_ID) this.assertDotsPlanVisible(state);
       if (!changed) return this.withNext(next);
-      return this.savePlan(next, preserveTimer, existing);
+      return this.savePlan(next, preserveTimer, state);
     });
   }
 
@@ -663,14 +737,14 @@ export class CronService {
 
   changeTaskPlan(taskId: string, id: string, action: "pause" | "resume" | "cancel"): Promise<void> {
     return this.queuePlanWrite(async () => {
-      const state = this.db.getCronJobForExecution(id);
+      const state = await this.db.readCronJobState(id);
       if (!state || state.job.sourceTaskId !== taskId) throw new Error("计划不属于当前任务");
       if (action !== "cancel") return this.setPlanEnabled(state, action === "resume");
       if (state.job.cancelledAt !== undefined) return;
       const now = Date.now();
       const cancelled = { ...state.job, enabled: false, cancelledAt: now, updatedAt: now };
       await this.commitPlan(cancelled, state.expectedJob, {});
-      this.publishPlanSave(cancelled, false);
+      await this.publishConfirmedPlan(cancelled, false);
     });
   }
 
@@ -685,14 +759,14 @@ export class CronService {
   }
 
   saveUserPlan(job: CronJobDto): Promise<CronJobDto> {
-    return this.queuePlanWrite(() => this.savePlan(job, false, this.db.getCronJob(job.id)));
+    return this.queuePlanWrite(async () => this.savePlan(job, false, await this.db.readCronJobState(job.id)));
   }
 
-  private async savePlan(job: CronJobDto, preserveTimer: boolean, existing?: CronJobDto): Promise<CronJobDto> {
-    const next = this.preparePlan(job, existing);
-    const expected = this.db.getCronJobForExecution(next.id)?.expectedJob ?? null;
-    await this.commitPlan(next, expected, { guard: this.planGuard(next, { checkDotsHold: next.enabled }) });
-    return this.publishPlanSave(next, preserveTimer);
+  private async savePlan(job: CronJobDto, preserveTimer: boolean, state?: CronJobState): Promise<CronJobDto> {
+    const next = this.preparePlan(job, state?.job);
+    const guard = await this.planGuard(next, { checkDotsHold: next.enabled, owner: state?.owner });
+    await this.commitPlan(next, state?.expectedJob ?? null, { guard });
+    return this.publishConfirmedPlan(next, preserveTimer);
   }
 
   private preparePlan(job: CronJobDto, existing?: CronJobDto): CronJobDto {
@@ -702,7 +776,7 @@ export class CronService {
     if (job.missedRuns === "coalesce" && (job.sourceTaskId !== DOTS_TASK_ID || job.target?.kind !== "task" || job.target.taskId !== DOTS_TASK_ID))
       throw new Error("离线补办仅支持回到 Dots 的计划");
     const now = Date.now();
-    if (job.enabled && !existing?.enabled && this.dotsFollowupPaused(job.sourceTaskId, job.id)) throw new Error("Dots 主动跟进已暂停");
+    if (job.enabled && !existing?.enabled && !this.coreOwnsScheduling && this.dotsFollowupPaused(job.sourceTaskId, job.id)) throw new Error("Dots 主动跟进已暂停");
     if ((existing?.cancelledAt !== undefined || job.cancelledAt !== undefined) && job.enabled) throw new Error("Cancelled automation cannot be enabled");
     const next: CronJobDto = {
       ...job,
@@ -712,7 +786,7 @@ export class CronService {
       projectId: job.projectId ?? existing?.projectId,
       cancelledAt: existing?.cancelledAt ?? job.cancelledAt,
     };
-    const unavailable = this.unavailableReason(next);
+    const unavailable = this.coreOwnsScheduling ? (next.reminder ? "Bot 提醒功能已移除" : undefined) : this.unavailableReason(next);
     if (unavailable) throw new Error(unavailable);
     delete next.nextRunAt;
     delete next.runCount;
@@ -720,28 +794,38 @@ export class CronService {
   }
 
   private publishPlanSave(next: CronJobDto, preserveTimer: boolean, restoring = false): CronJobDto {
-    const saved = this.db.getCronJob(next.id);
+    return this.publishSavedPlan(this.db.getCronJob(next.id), next, preserveTimer, restoring);
+  }
+
+  private async publishConfirmedPlan(next: CronJobDto, preserveTimer: boolean, restoring = false): Promise<CronJobDto> {
+    const saved = await this.db.readCronJobState(next.id);
+    return this.publishSavedPlan(saved?.job, next, preserveTimer, restoring);
+  }
+
+  private publishSavedPlan(saved: CronJobDto | undefined, next: CronJobDto, preserveTimer: boolean, restoring: boolean): CronJobDto {
     if (!saved) return this.withNext({ ...next, enabled: false });
     if (!preserveTimer) {
       this.disarm(next.id);
       if (saved.enabled && !this.stopped) this.arm(saved, restoring && this.started);
     }
-    const enriched = this.withNext(this.db.getCronJob(next.id) ?? next);
+    const enriched = this.withNext(saved);
     broadcast(CronIpc.event, { type: "upsert", job: enriched });
     return enriched;
   }
 
-  private planGuard(job: CronJobDto, options: {
-    checkDotsHold?: boolean; ignoreManualHold?: boolean; enabledLimitForTask?: string; owner?: CronPlanProvenance["owner"];
-  }): CronPlanGuard {
-    const target = job.target?.kind === "task" ? this.db.getTask(job.target.taskId) : undefined;
+  private async planGuard(job: CronJobDto, options: {
+    checkDotsHold?: boolean; ignoreManualHold?: boolean; enabledLimitForTask?: string;
+    owner?: { taskId?: string | null; spaceId?: string | null } | null;
+  }): Promise<CronPlanGuard> {
+    const target = job.target?.kind === "task" ? await this.db.readTask(job.target.taskId, { includeExpertBinding: false }) : undefined;
     const guard: CronPlanGuard = {
       tasks: [job.sourceTaskId, job.target?.kind === "task" ? job.target.taskId : undefined].filter((id): id is string => Boolean(id)),
       projects: [job.projectId, target?.projectId].filter((id): id is string => Boolean(id)),
+      targetTaskId: job.target?.kind === "task" ? job.target.taskId : undefined,
       enabledLimitForTask: options.enabledLimitForTask,
     };
     if (options.checkDotsHold && job.sourceTaskId === DOTS_TASK_ID) {
-      const owner = options.owner ?? this.scheduleOwner(job.id);
+      const owner = options.owner ?? (this.coreOwnsScheduling ? undefined : this.scheduleOwner(job.id));
       guard.dots = { taskId: owner?.taskId ?? undefined, spaceId: owner?.spaceId ?? undefined, ignoreManualHold: options.ignoreManualHold ?? false };
     }
     return guard;
@@ -776,21 +860,28 @@ export class CronService {
 
   setUserPlanEnabled(id: string, enabled: boolean): Promise<void> {
     return this.queuePlanWrite(async () => {
-      const state = this.db.getCronJobForExecution(id);
+      const state = await this.db.readCronJobState(id);
       if (state) await this.setPlanEnabled(state, enabled);
     });
   }
 
-  private async setPlanEnabled({ job, expectedJob }: { job: CronJobDto; expectedJob: Record<string, unknown> }, enabled: boolean): Promise<void> {
+  private async setPlanEnabled({ job, expectedJob, owner, unavailableReason }: CronJobState, enabled: boolean): Promise<void> {
     const manualHold = job.sourceTaskId === DOTS_TASK_ID && job.cancelledAt === undefined ? (enabled ? "remove" : "add") : undefined;
-    if (enabled) this.validatePlanEnable(job, manualHold === "remove");
+    if (enabled) {
+      if (unavailableReason === undefined) this.validatePlanEnable(job, manualHold === "remove");
+      else {
+        if (job.cancelledAt !== undefined) throw new Error("Cancelled automation cannot be resumed");
+        if (unavailableReason) throw new Error(unavailableReason);
+        validateSchedule(job);
+      }
+    }
     const next: CronJobDto = { ...job, enabled, updatedAt: Date.now(),
       reminder: job.reminder && { ...job.reminder, state: enabled ? "scheduled" : "paused" } };
     await this.commitPlan(next, expectedJob, {
-      guard: enabled ? this.planGuard(next, { checkDotsHold: true, ignoreManualHold: manualHold === "remove" }) : undefined,
+      guard: enabled ? await this.planGuard(next, { checkDotsHold: true, ignoreManualHold: manualHold === "remove", owner }) : undefined,
       manualHold,
     });
-    this.publishPlanSave(next, false);
+    await this.publishConfirmedPlan(next, false);
   }
 
   setUserEnabled(id: string, enabled: boolean): void {
@@ -830,7 +921,7 @@ export class CronService {
 
   deleteUserPlan(id: string): Promise<void> {
     return this.queuePlanWrite(async () => {
-      const expected = this.db.getCronJobForExecution(id)?.expectedJob ?? null;
+      const expected = (await this.db.readCronJobState(id))?.expectedJob ?? null;
       if (!await this.db.writeCronPlan({ kind: "remove", id, expected })) {
         throw new Error("自动化计划已变化，请刷新后删除");
       }
@@ -880,16 +971,18 @@ export class CronService {
    * 不同 job 可并行；正式调度时间不受影响。
    */
   async runNow(id: string): Promise<void> {
+    const reader = this.db.runtimeAuditReader;
+    if (reader?.supervised) {
+      await this.syncCoreConfig();
+      const reply = await reader.cronScheduler<{ status: string; message?: string }>({ action: "runNow", jobId: id });
+      if (reply?.status !== "ok") throw new Error(reply?.message ?? "自动化运行未获 Rust 核心确认");
+      return;
+    }
     const job = this.db.getCronJob(id);
     if (!job) throw new Error(`cron job not found: ${id}`);
     if (job.cancelledAt !== undefined) throw new Error("Cancelled automation cannot be run");
     const unavailable = this.unavailableReason(job);
     if (unavailable) throw new Error(unavailable);
-    if (this.coreOwnsScheduling && this.db.runtimeAuditReader?.cronScheduler) {
-      await this.syncCoreConfig();
-      await this.db.runtimeAuditReader.cronScheduler({ action: "runNow", jobId: id });
-      return;
-    }
     void this.execute(job, { force: true }).catch((err) => {
       console.error("[CronService] runNow failed", id, err);
     });
@@ -1022,9 +1115,12 @@ export class CronService {
         expertId: latest.expertId, welcomeMode: latest.welcomeMode ?? "working",
       } : undefined;
       const task = target ?? generated!;
+      const text = await this.composePrompt(latest);
+      if (this.stopped || this.revisions.get(job.id) !== revision
+        || this.dotsFollowupPaused(latest.sourceTaskId, job.id)) return;
       const pendingRun: CronRunDto = { id: randomUUID(), jobId: job.id, taskId, startedAt: Date.now(), status: "running" };
       const request: AgentPromptRequest = {
-        taskId, text: this.composePrompt(latest),
+        taskId, text,
         ...(latest.sourceTaskId === DOTS_TASK_ID && { displayText: latest.prompt }),
         permissionMode: task.permissionMode ?? "default",
         welcomeMode: task.welcomeMode, spaceId: task.spaceId ?? undefined,
@@ -1057,7 +1153,7 @@ export class CronService {
         } });
         return;
       }
-      if (latest.sourceTaskId === DOTS_TASK_ID) this.assertDotsInputCurrent(request.userMessageId!);
+      if (latest.sourceTaskId === DOTS_TASK_ID) await this.assertDotsInputCurrent(request.userMessageId!, request);
       broadcast(CronIpc.event, { type: "run", run });
       await this.runInput(request);
       if (this.stopped) return;
@@ -1115,7 +1211,7 @@ export class CronService {
       const { request } = saved;
       if (request.taskId !== run.taskId || request.userMessageId !== `cron-${run.id}-input`) throw new Error("计划运行的操作身份不一致");
       if (saved.job.id !== run.jobId) throw new Error("计划运行的来源身份不一致");
-      if (job.sourceTaskId === DOTS_TASK_ID) this.assertDotsInputCurrent(request.userMessageId);
+      if (job.sourceTaskId === DOTS_TASK_ID) await this.assertDotsInputCurrent(request.userMessageId, request);
       await this.runInput(request);
       if (!this.stopped) await this.finishRun(saved.job, run, "success", saved.newTask);
     } catch (error) {
@@ -1217,19 +1313,15 @@ export class CronService {
     }
   }
 
-  private composePrompt(job: CronJobDto): string {
+  private async composePrompt(job: CronJobDto): Promise<string> {
     if (job.sourceTaskId === DOTS_TASK_ID) return job.prompt + "\n\n这是之前约定的主动跟进。到点提醒直接给提醒内容。检查有实质进展、成果或阻塞时直接给结果。检查没有变化时，只返回 " + DOTS_NO_CHANGE;
+    let skills: Awaited<ReturnType<CronAgent["listSkills"]>> = [];
+    if (job.skillIds?.length) {
+      try { skills = await this.agent.listSkills(); } catch { /* use the configured skill IDs */ }
+    }
     return buildExecutionPrompt(
       job,
-      (id) => {
-        try {
-          const skills = this.agent.listSkills();
-          const hit = skills.find((s) => s.id === id || s.name === id);
-          return hit?.name;
-        } catch {
-          return undefined;
-        }
-      },
+      (id) => skills.find(s => s.id === id || s.name === id)?.name,
       (id) => {
         try {
           const connectors = this.agent.listConnectors();

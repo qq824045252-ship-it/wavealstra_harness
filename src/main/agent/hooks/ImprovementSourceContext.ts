@@ -111,7 +111,7 @@ export async function improvementSourceContext(db: Database.Database, directory:
       const id = match ? Number(match[1]) : NaN;
       return Number.isSafeInteger(id) ? [id] : [];
     })];
-    const rules = hooks?.generationReceipts(source.taskId,source.conversationId,nativeTasks) ?? null;
+    const rules = await hooks?.generationReceipts(source.taskId, source.conversationId, nativeTasks) ?? null;
     let loadout: unknown = null;
     if (table(db,"agent_loadout_observations") && typeof audit.assistantMessageId === "string") {
       const row = db.prepare("SELECT actual_json,blocked_json,used_skill_ids_json,outcome FROM agent_loadout_observations WHERE task_id=? AND assistant_message_id=?").get(source.taskId,audit.assistantMessageId) as Row | undefined;

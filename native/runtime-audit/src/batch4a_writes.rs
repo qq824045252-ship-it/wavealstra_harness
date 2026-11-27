@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -272,9 +272,7 @@ pub enum Request {
         payload_json: Option<String>,
         payload_hash: Option<String>,
         receipt_mode: Option<String>,
-        status: Option<String>,
         reason: Option<String>,
-        next_attempt_at: Option<i64>,
         reply_text: Option<String>,
         reply_hash: Option<String>,
         operation_id: Option<String>,
@@ -398,6 +396,7 @@ pub enum Request {
         operation_id: String,
     },
     DotsDelegationObserveTool {
+        task_id: String,
         operation_id: String,
         conversation: String,
         tool_task: i64,
@@ -423,6 +422,7 @@ pub enum Request {
         supersedes: bool,
         request_json: Option<String>,
         goal_id: Option<String>,
+        deferred: Option<crate::dots_deferred_data::Reservation>,
     },
     DotsDelegationUpdateCwd {
         seq: Option<i64>,
@@ -449,6 +449,7 @@ pub enum Request {
         seq: i64,
         task_id: String,
         operation_id: String,
+        expected_updated_at: i64,
         status: String,
         text: String,
         interaction_id: Option<String>,
@@ -457,7 +458,6 @@ pub enum Request {
         dependency_wait: Option<DotsDependencyWaitInput>,
         verified_commit: Option<String>,
         clear_obs_next_at: bool,
-        supersede_before_created_at: Option<i64>,
         observation: Option<DotsReplyObserveInput>,
     },
     DotsActionContinuationTarget {
@@ -555,7 +555,7 @@ fn observe_reply_in_tx(tx: &Connection, obs: &DotsReplyObserveInput) -> Result<(
     Ok(())
 }
 
-fn ensure_gateway_space_in_tx(
+pub(crate) fn ensure_gateway_space_in_tx(
     tx: &Connection,
     id: &str,
     name: &str,
@@ -611,8 +611,8 @@ fn ensure_gateway_space_in_tx(
     Ok(())
 }
 
-pub fn run(db: &Connection, request: Request) -> Result<Value> {
-    let tx = db.unchecked_transaction()?;
+pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
+    let tx = db.transaction()?;
     let out = match request {
         // ---------- Notifications ----------
         Request::NotificationCleanup {
@@ -647,7 +647,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             created_at,
         } => {
             tx.execute(
-                "INSERT OR REPLACE INTO notification_activation_targets VALUES (?1, ?2, ?3)",
+                "INSERT INTO notification_activation_targets VALUES (?1, ?2, ?3) ON CONFLICT(notification_id) DO UPDATE SET target_json=excluded.target_json, created_at=excluded.created_at",
                 params![id, target_json, created_at],
             )?;
             json!({ "ok": true })
@@ -670,11 +670,12 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             target_json,
         } => {
             let changes = tx.execute(
-                "INSERT OR IGNORE INTO notifications (
+                "INSERT INTO notifications (
                    id, type, level, title, body, source_type, source_id,
                    task_id, project_id, workspace_id, dedupe_key,
                    created_at, read_at, dismissed_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 ON CONFLICT DO NOTHING",
                 params![
                     id,
                     r#type,
@@ -695,7 +696,8 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             if changes > 0 {
                 if let Some(tj) = target_json {
                     tx.execute(
-                        "INSERT OR REPLACE INTO notification_activation_targets VALUES (?1, ?2, ?3)",
+                        "INSERT INTO notification_activation_targets VALUES (?1, ?2, ?3)
+                         ON CONFLICT(notification_id) DO UPDATE SET target_json=excluded.target_json, created_at=excluded.created_at",
                         params![id, tj, created_at],
                     )?;
                 }
@@ -750,20 +752,54 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
 
         // ---------- Cron ----------
         Request::CronStartupMigrate => {
-            tx.execute(
-                "INSERT OR IGNORE INTO dots_schedule_holds
-                 SELECT j.id, 'proactive:' || p.scope FROM dots_proactive_pauses p
-                 JOIN json_each(p.timer_ids) x JOIN cron_jobs j ON j.id=x.value
-                 WHERE j.enabled=0 AND json_extract(j.execution_json,'$.cancelledAt') IS NULL
-                   AND NOT EXISTS (SELECT 1 FROM dots_schedule_holds h WHERE h.job_id=j.id)",
-                [],
-            )?;
-            let _ = tx.execute(
-                "UPDATE cron_run_inputs
-                 SET request_json = json_set(request_json, '$.request.welcomeMode', 'general')
-                 WHERE json_valid(request_json) AND json_extract(request_json, '$.request.welcomeMode') = 'bot'",
-                [],
-            );
+            let pauses: Vec<(String, String)> = {
+                let mut stmt = tx.prepare("SELECT scope, timer_ids FROM dots_proactive_pauses")?;
+                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<duckdb::Result<_>>()?
+            };
+            for (scope, timer_ids_raw) in pauses {
+                let Ok(ids) = serde_json::from_str::<Vec<String>>(&timer_ids_raw) else {
+                    continue;
+                };
+                if ids.is_empty() {
+                    continue;
+                }
+                let slots = crate::database::anon_placeholders(ids.len());
+                let holder = format!("proactive:{scope}");
+                let sql = format!(
+                    "INSERT INTO dots_schedule_holds(job_id, holder)
+                     SELECT j.id, ? FROM cron_jobs j
+                     WHERE j.id IN ({slots}) AND j.enabled=0
+                       AND json_extract_string(j.execution_json,'$.cancelledAt') IS NULL
+                       AND NOT EXISTS (SELECT 1 FROM dots_schedule_holds h WHERE h.job_id=j.id)
+                     ON CONFLICT DO NOTHING"
+                );
+                let mut p: Vec<&dyn duckdb::ToSql> = vec![&holder];
+                for id in &ids {
+                    p.push(id);
+                }
+                tx.execute(&sql, duckdb::params_from_iter(p))?;
+            }
+            let inputs: Vec<(String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT run_id, request_json FROM cron_run_inputs
+                     WHERE json_valid(request_json)
+                       AND json_extract_string(request_json, '$.request.welcomeMode') = 'bot'",
+                )?;
+                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<duckdb::Result<_>>()?
+            };
+            for (run_id, raw) in inputs {
+                if let Ok(mut doc) = serde_json::from_str::<Value>(&raw)
+                    && let Some(req) = doc.get_mut("request").and_then(Value::as_object_mut)
+                {
+                    req.insert("welcomeMode".into(), json!("general"));
+                    let _ = tx.execute(
+                        "UPDATE cron_run_inputs SET request_json = ?1 WHERE run_id = ?2",
+                        params![serde_json::to_string(&doc)?, run_id],
+                    );
+                }
+            }
             json!({ "ok": true })
         }
         Request::CronUpsertJob {
@@ -825,8 +861,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             json!({ "ok": true })
         }
         Request::CronRemoveJob { id } => {
-            tx.execute("DELETE FROM cron_runs WHERE job_id = ?1", [&id])?;
-            tx.execute("DELETE FROM cron_jobs WHERE id = ?1", [&id])?;
+            crate::cron_plan::remove_plan(&tx, &id)?;
             json!({ "ok": true })
         }
         Request::CronInsertRun {
@@ -861,7 +896,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
         } => {
             if pause {
                 tx.execute(
-                    "INSERT OR IGNORE INTO dots_schedule_holds VALUES(?1, ?2)",
+                    "INSERT INTO dots_schedule_holds VALUES(?1, ?2) ON CONFLICT DO NOTHING",
                     params![id, holder],
                 )?;
             } else {
@@ -931,7 +966,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             )?;
             if bind_sidebar {
                 tx.execute(
-                    "INSERT OR IGNORE INTO gateway_sidebar_conversations(task_id,channel_id) VALUES(?1,?2)",
+                    "INSERT INTO gateway_sidebar_conversations(task_id,channel_id) VALUES(?1,?2) ON CONFLICT DO NOTHING",
                     params![task_id, channel_id],
                 )?;
             }
@@ -959,6 +994,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
                    connected=excluded.connected, status_text=excluded.status_text",
                 params![id, r#type, name, config_json, connected, status_text],
             )?;
+            crate::gateway_channel_data::bump_revision(&tx, &id)?;
             json!({ "ok": true })
         }
         Request::GatewayInsertMessage {
@@ -985,7 +1021,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
         }
         Request::GatewayEnsureIsolation { installed_at } => {
             tx.execute(
-                "INSERT OR IGNORE INTO gateway_memory_isolation VALUES(1, ?1)",
+                "INSERT INTO gateway_memory_isolation VALUES(1, ?1) ON CONFLICT DO NOTHING",
                 [installed_at],
             )?;
             json!({ "ok": true })
@@ -1014,7 +1050,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             binding_id,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO gateway_dots_admissions VALUES(?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO gateway_dots_admissions VALUES(?1, ?2, ?3, ?4, ?5) ON CONFLICT DO NOTHING",
                 params![channel_id, connection_key, chat_id, message_id, binding_id],
             )?;
             json!({ "ok": true })
@@ -1024,7 +1060,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             binding_id,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO gateway_dots_tasks VALUES(?1, ?2)",
+                "INSERT INTO gateway_dots_tasks VALUES(?1, ?2) ON CONFLICT DO NOTHING",
                 params![task_id, binding_id],
             )?;
             json!({ "ok": true })
@@ -1036,11 +1072,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             route_kind,
             accepted_at,
         } => {
-            tx.execute(
-                "INSERT OR IGNORE INTO gateway_conversation_routes(scope_id, delivery_key, task_id, kind, accepted_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5)",
-                params![scope_id, delivery_key, task_id, route_kind, accepted_at],
-            )?;
+            crate::gateway_admission::write_route(&tx, &scope_id, &delivery_key, &task_id, &route_kind, accepted_at)?;
             json!({ "ok": true })
         }
         Request::GatewayRecordWorkTarget {
@@ -1057,9 +1089,9 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             created_at,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO gateway_work_targets
+                "INSERT INTO gateway_work_targets
                  (target_key,user_id,conversation_id,source_message_id,channel_id,channel_type,connection_key,chat_id,sender_id,target_json,created_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT DO NOTHING",
                 params![
                     target_key, user_id, conversation_id, source_message_id, channel_id,
                     channel_type, connection_key, chat_id, sender_id, target_json, created_at
@@ -1079,9 +1111,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             payload_json,
             payload_hash,
             receipt_mode,
-            status,
             reason,
-            next_attempt_at,
             reply_text,
             reply_hash,
             operation_id,
@@ -1131,11 +1161,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
                         ],
                     )?;
                     if let Some(r) = route {
-                        tx.execute(
-                            "INSERT OR IGNORE INTO gateway_conversation_routes(scope_id, delivery_key, task_id, kind, accepted_at)
-                             VALUES(?1, ?2, ?3, ?4, ?5)",
-                            params![r.scope_id, r.delivery_key, r.task_id, r.kind, r.accepted_at],
-                        )?;
+                        crate::gateway_admission::write_route(&tx, &r.scope_id, &r.delivery_key, &r.task_id, &r.kind, r.accepted_at)?;
                     }
                 }
                 "continueReply" => {
@@ -1170,116 +1196,21 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
                         params![now, did],
                     )?;
                     tx.execute(
-                        "INSERT OR IGNORE INTO bot_gateway_continuations VALUES(?1,?2)",
+                        "INSERT INTO bot_gateway_continuations VALUES(?1,?2) ON CONFLICT DO NOTHING",
                         params![did, oid],
                     )?;
                 }
                 "recoverInterrupted" => {
-                    tx.execute(
-                        "UPDATE gateway_outbox SET status='unknown',last_error='send_interrupted',updated_at=?1 WHERE status='sending'",
-                        [now],
-                    )?;
-                    tx.execute(
-                        "UPDATE gateway_inbox SET status='unknown',last_error='send_interrupted',updated_at=?1
-                         WHERE delivery_id IN (SELECT delivery_id FROM gateway_outbox WHERE status='unknown')",
-                        [now],
-                    )?;
-                    tx.execute(
-                        "UPDATE gateway_inbox SET status='pending',last_error='native_receipt_recovery',updated_at=?1
-                         WHERE status='running' AND receipt_mode='pi-durable' AND delivery_id NOT IN (SELECT delivery_id FROM gateway_outbox)",
-                        [now],
-                    )?;
-                    tx.execute(
-                        "UPDATE gateway_inbox SET status='unknown',last_error='native_recovery_unavailable',updated_at=?1 WHERE status='running'",
-                        [now],
-                    )?;
+                    crate::gateway_delivery_control::recover_interrupted(&tx, &crate::business_protocol::current_core_generation(), now)?;
                 }
-                "begin" => {
+                "blockUnclaimed" => {
                     let did = delivery_id.ok_or("missing delivery_id")?;
                     tx.execute(
-                        "UPDATE gateway_inbox SET status='running',retry_count=retry_count+1,last_error=NULL,updated_at=?1 WHERE delivery_id=?2",
-                        params![now, did],
-                    )?;
-                }
-                "complete" => {
-                    let did = delivery_id.ok_or("missing delivery_id")?;
-                    tx.execute(
-                        "UPDATE gateway_inbox SET status='completed',last_error=NULL,updated_at=?1 WHERE delivery_id=?2",
-                        params![now, did],
-                    )?;
-                }
-                "block" => {
-                    let did = delivery_id.ok_or("missing delivery_id")?;
-                    let st = status.unwrap_or_else(|| "blocked".to_string());
-                    let rs = reason.unwrap_or_default();
-                    tx.execute(
-                        "UPDATE gateway_inbox SET status=?1,last_error=?2,updated_at=?3 WHERE delivery_id=?4 AND status!='completed'",
-                        params![st, rs, now, did],
-                    )?;
-                }
-                "defer" => {
-                    let did = delivery_id.ok_or("missing delivery_id")?;
-                    tx.execute(
-                        "UPDATE gateway_inbox SET status=CASE WHEN receipt_mode='pi-durable' OR retry_count=0 THEN 'pending' ELSE 'unknown' END,
-                           last_error='connection_interrupted',updated_at=?1
-                         WHERE delivery_id=?2 AND status NOT IN ('completed','unknown')
-                           AND delivery_id NOT IN (SELECT delivery_id FROM gateway_outbox)",
-                        params![now, did],
-                    )?;
-                }
-                "queueReply" => {
-                    let did = delivery_id.ok_or("missing delivery_id")?;
-                    let rt = reply_text.ok_or("missing reply_text")?;
-                    let rh = reply_hash.ok_or("missing reply_hash")?;
-                    tx.execute(
-                        "INSERT INTO gateway_outbox (delivery_id,reply_text,reply_hash,status,created_at,updated_at)
-                         VALUES (?1,?2,?3,'pending',?4,?4)",
-                        params![did, rt, rh, now],
-                    )?;
-                    tx.execute(
-                        "UPDATE gateway_inbox SET status='reply_pending',last_error=NULL,updated_at=?1 WHERE delivery_id=?2",
-                        params![now, did],
-                    )?;
-                }
-                "beginSend" => {
-                    let did = delivery_id.ok_or("missing delivery_id")?;
-                    tx.execute(
-                        "UPDATE gateway_outbox SET status='sending',retry_count=retry_count+1,last_error=NULL,updated_at=?1 WHERE delivery_id=?2",
-                        params![now, did],
-                    )?;
-                }
-                "sent" => {
-                    let did = delivery_id.ok_or("missing delivery_id")?;
-                    tx.execute(
-                        "UPDATE gateway_outbox SET status='sent',last_error=NULL,sent_at=?1,updated_at=?1 WHERE delivery_id=?2 AND status='sending'",
-                        params![now, did],
-                    )?;
-                    let outbox_pending: bool = tx
-                        .query_row(
-                            "SELECT EXISTS(SELECT 1 FROM gateway_outbox WHERE delivery_id=?1 AND status!='sent')",
-                            [&did],
-                            |r| r.get(0),
-                        )?;
-                    if !outbox_pending {
-                        tx.execute(
-                            "UPDATE gateway_inbox SET status='completed',last_error=NULL,updated_at=?1 WHERE delivery_id=?2",
-                            params![now, did],
-                        )?;
-                    }
-                }
-                "sendFailed" => {
-                    let did = delivery_id.ok_or("missing delivery_id")?;
-                    let st = status.unwrap_or_else(|| "pending".to_string());
-                    let rs = reason.unwrap_or_default();
-                    let next_at = next_attempt_at.unwrap_or(0);
-                    let inbox_st = if st == "unknown" { "unknown" } else { "reply_pending" };
-                    tx.execute(
-                        "UPDATE gateway_outbox SET status=?1,last_error=?2,next_attempt_at=?3,updated_at=?4 WHERE delivery_id=?5 AND status!='sent'",
-                        params![st, rs, next_at, now, did],
-                    )?;
-                    tx.execute(
-                        "UPDATE gateway_inbox SET status=?1,last_error=?2,updated_at=?3 WHERE delivery_id=?4 AND status!='completed'",
-                        params![inbox_st, rs, now, did],
+                        "UPDATE gateway_inbox i SET status='blocked',last_error=?2,updated_at=?3
+                         WHERE i.delivery_id=?1 AND i.status IN ('pending','blocked','reply_pending')
+                           AND NOT EXISTS (SELECT 1 FROM gateway_outbox o
+                               WHERE o.delivery_id=i.delivery_id AND o.status NOT IN ('pending','blocked'))",
+                        params![did, reason.unwrap_or_default(), now],
                     )?;
                 }
                 other => return Err(format!("unknown gatewayDeliveryOp: {other}").into()),
@@ -1296,7 +1227,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             text,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO dots_deferred_requirements (id,conversationId,taskId,prerequisiteId,text) VALUES (?1,?2,?3,?4,?5)",
+                "INSERT INTO dots_deferred_requirements (id,conversationId,taskId,prerequisiteId,text) VALUES (?1,?2,?3,?4,?5) ON CONFLICT DO NOTHING",
                 params![id, conversation_id, task_id, prerequisite_id, text],
             )?;
             json!({ "ok": true })
@@ -1326,15 +1257,18 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             body,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO dots_report_text VALUES(?1, ?2, ?3)",
+                "INSERT INTO dots_report_text VALUES(?1, ?2, ?3) ON CONFLICT DO NOTHING",
                 params![delivery_key, operation_id, body],
             )?;
-            json!({ "ok": true })
+            let (owner, text): (String, String) = tx.query_row("SELECT operation_id,text FROM dots_report_text WHERE delivery_key=?",
+                [delivery_key], |row| Ok((row.get(0)?,row.get(1)?)))?;
+            if owner != operation_id { return Err("Dots 回报键已被另一委派占用".into()); }
+            json!({ "ok": true, "text": text })
         }
         Request::DotsProactiveEnqueueMany { items } => {
             for item in items {
                 tx.execute(
-                    "INSERT OR IGNORE INTO dots_proactive_delivery(delivery_key,source,text,queued_at) VALUES (?1,?2,?3,?4)",
+                    "INSERT INTO dots_proactive_delivery(delivery_key,source,text,queued_at) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",
                     params![item.delivery_key, item.source, item.text, item.queued_at],
                 )?;
             }
@@ -1381,8 +1315,8 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             input_version,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO dots_file_watches
-                 (id,task_id,space_id,root,file,instruction,source,baseline,input_version,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'watching')",
+                "INSERT INTO dots_file_watches
+                 (id,task_id,space_id,root,file,instruction,source,baseline,input_version,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'watching') ON CONFLICT DO NOTHING",
                 params![id, task_id, space_id, root, file, instruction, source, baseline, input_version],
             )?;
             json!({ "ok": true })
@@ -1414,7 +1348,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
         }
         Request::DotsFileWatchNotice { watch_id, revision } => {
             let changes = tx.execute(
-                "INSERT OR IGNORE INTO dots_file_watch_notices VALUES (?1, ?2)",
+                "INSERT INTO dots_file_watch_notices VALUES (?1, ?2) ON CONFLICT DO NOTHING",
                 params![watch_id, revision],
             )?;
             json!({ "changed": changes > 0 })
@@ -1431,7 +1365,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
                 )?;
             } else {
                 tx.execute(
-                    "INSERT OR IGNORE INTO dots_followup_plans VALUES(?1, ?2)",
+                    "INSERT INTO dots_followup_plans VALUES(?1, ?2) ON CONFLICT DO NOTHING",
                     params![operation_id, plan_json],
                 )?;
             }
@@ -1442,11 +1376,28 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             commit_base,
             commit_start_json,
         } => {
-            tx.execute(
-                "UPDATE dots_followup_plans SET plan=json_set(plan,'$.commitBase',?1,'$.commitStart',json(?2))
-                 WHERE operation_id=?3 AND json_type(plan,'$.commitBase') IS NULL",
-                params![commit_base, commit_start_json, operation_id],
-            )?;
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT plan FROM dots_followup_plans WHERE operation_id=?1",
+                    [&operation_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(raw) = existing {
+                let doc: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
+                if doc.get("commitBase").is_none_or(Value::is_null) {
+                    let start_val: Value =
+                        serde_json::from_str(&commit_start_json).unwrap_or(Value::Null);
+                    let patched = crate::database::patch_json_fields(
+                        &raw,
+                        &[("commitBase", json!(commit_base)), ("commitStart", start_val)],
+                    );
+                    tx.execute(
+                        "UPDATE dots_followup_plans SET plan=?1 WHERE operation_id=?2",
+                        params![patched, operation_id],
+                    )?;
+                }
+            }
             json!({ "ok": true })
         }
         Request::DotsFollowupGoalAccepted {
@@ -1459,19 +1410,13 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             goal_id,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO dots_followup_plans VALUES(?1, ?2)",
+                "INSERT INTO dots_followup_plans VALUES(?1, ?2) ON CONFLICT DO NOTHING",
                 params![operation_id, plan_json],
             )?;
-            tx.execute(
-                "INSERT OR IGNORE INTO dots_delegations(operation_id,task_id,source_message_id,title,created_at,updated_at,supersedes,request_json,space_id,space_path,cwd,goal_id)
-                 SELECT ?1,t.id,?2,t.title,?3,?3,0,?4,t.space_id,s.path,t.cwd,?5
-                 FROM tasks t LEFT JOIN spaces s ON s.id=t.space_id WHERE t.id=?6",
-                params![operation_id, source_message_id, now, request_json, goal_id, task_id],
-            )?;
-            tx.execute(
-                "INSERT OR IGNORE INTO dots_followup_requests VALUES(?1, ?2)",
-                params![operation_id, request_json],
-            )?;
+            crate::dots_delegation_data::link(&tx, crate::dots_delegation_data::Link {
+                operation_id: &operation_id, task_id: &task_id, source_message_id: &source_message_id,
+                now, supersedes: false, request_json: Some(&request_json), goal_id: goal_id.as_deref(),
+            })?;
             json!({ "ok": true })
         }
         Request::DotsReplyRememberOrigin {
@@ -1480,7 +1425,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             entry_id,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO dots_reply_origins VALUES(?1, ?2, ?3)",
+                "INSERT INTO dots_reply_origins VALUES(?1, ?2, ?3) ON CONFLICT DO NOTHING",
                 params![source, conversation_id, entry_id],
             )?;
             let matched: bool = tx.query_row(
@@ -1498,7 +1443,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             request_json,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO dots_followup_requests VALUES(?1, ?2)",
+                "INSERT INTO dots_followup_requests VALUES(?1, ?2) ON CONFLICT DO NOTHING",
                 params![operation_id, request_json],
             )?;
             json!({ "ok": true })
@@ -1522,8 +1467,8 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
                 0
             } else {
                 tx.execute(
-                    "INSERT OR IGNORE INTO dots_reply_events(event_key,operation_id,task_id,status,interaction_id,snapshot)
-                     VALUES(?1,?2,?3,'activity',NULL,?4)",
+                    "INSERT INTO dots_reply_events(event_key,operation_id,task_id,status,interaction_id,snapshot)
+                     VALUES(?1,?2,?3,'activity',NULL,?4) ON CONFLICT DO NOTHING",
                     params![event_key, operation_id, task_id, snapshot],
                 )?
             };
@@ -1554,7 +1499,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             reply_json,
         } => {
             tx.execute(
-                "UPDATE dots_reply_events SET reply=?1 WHERE event_key=?2",
+                "UPDATE dots_reply_events SET reply=?1 WHERE event_key=?2 AND settled=0 AND reply IS NULL",
                 params![reply_json, event_key],
             )?;
             json!({ "ok": true })
@@ -1589,6 +1534,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             json!({ "changed": changes > 0 })
         }
         Request::DotsDelegationObserveTool {
+            task_id,
             operation_id,
             conversation,
             tool_task,
@@ -1598,14 +1544,15 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             next_at,
         } => {
             let receipt_changes = tx.execute(
-                "INSERT OR IGNORE INTO dots_tool_observation_receipts VALUES(?1,?2,?3,?4)",
-                params![operation_id, conversation, tool_task, phase],
+                "INSERT INTO dots_tool_observation_receipts SELECT operation_id,?2,?3,?4 FROM dots_delegations
+                 WHERE operation_id=?1 AND task_id=?5 AND status IN ('pending','running') ON CONFLICT DO NOTHING",
+                params![operation_id, conversation, tool_task, phase, task_id],
             )?;
             if receipt_changes > 0 {
                 tx.execute(
-                    "INSERT INTO dots_tool_observations(operation_id,at,tool,phase,next_at) VALUES(?1,?2,?3,?4,?5)
-                     ON CONFLICT(operation_id) DO UPDATE SET at=excluded.at,tool=excluded.tool,phase=excluded.phase
-                     WHERE excluded.at>=dots_tool_observations.at",
+                    "INSERT INTO dots_tool_observations(operation_id,\"at\",tool,phase,next_at) VALUES(?1,?2,?3,?4,?5)
+                     ON CONFLICT(operation_id) DO UPDATE SET \"at\"=excluded.\"at\",tool=excluded.tool,phase=excluded.phase
+                     WHERE excluded.\"at\">=dots_tool_observations.\"at\"",
                     params![operation_id, at, tool, phase, next_at],
                 )?;
             }
@@ -1618,9 +1565,9 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             at,
         } => {
             let changes = tx.execute(
-                "INSERT OR IGNORE INTO dots_verified_progress(operation_id,identity,at)
+                "INSERT INTO dots_verified_progress(operation_id,identity,\"at\")
                  SELECT operation_id,?1,?2 FROM dots_delegations WHERE task_id=?3 AND operation_id=?4
-                 AND status IN ('pending','running','blocked','completed')",
+                 AND status IN ('pending','running','blocked','completed') ON CONFLICT DO NOTHING",
                 params![identity, at, task_id, operation_id],
             )?;
             json!({ "changed": changes > 0 })
@@ -1649,37 +1596,16 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             supersedes,
             request_json,
             goal_id,
+            deferred,
         } => {
-            let changes = tx.execute(
-                "INSERT OR IGNORE INTO dots_delegations(operation_id,task_id,source_message_id,title,created_at,updated_at,supersedes,request_json,space_id,space_path,cwd,goal_id)
-                 SELECT ?1,t.id,?2,t.title,?3,?3,?4,?5,t.space_id,s.path,t.cwd,?6 FROM tasks t LEFT JOIN spaces s ON s.id=t.space_id WHERE t.id=?7",
-                params![
-                    operation_id,
-                    source_message_id,
-                    now,
-                    i64::from(supersedes),
-                    request_json,
-                    goal_id,
-                    task_id
-                ],
-            )?;
-            if changes == 0 {
-                let exists: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM dots_delegations WHERE operation_id=?1 AND task_id=?2 AND source_message_id=?3)",
-                    params![operation_id, task_id, source_message_id],
-                    |r| r.get(0),
-                )?;
-                if !exists {
-                    return Err("原任务不存在或委派标识已被占用".into());
-                }
+            let inserted = crate::dots_delegation_data::link(&tx, crate::dots_delegation_data::Link {
+                operation_id: &operation_id, task_id: &task_id, source_message_id: &source_message_id,
+                now, supersedes, request_json: request_json.as_deref(), goal_id: goal_id.as_deref(),
+            })?;
+            if let Some(reservation) = deferred {
+                crate::dots_deferred_data::reserve_in_transaction(&tx, &reservation, &task_id, &operation_id, &source_message_id)?;
             }
-            if let Some(req) = request_json {
-                tx.execute(
-                    "INSERT OR IGNORE INTO dots_followup_requests VALUES(?1, ?2)",
-                    params![operation_id, req],
-                )?;
-            }
-            json!({ "inserted": changes > 0 })
+            json!({ "inserted": inserted })
         }
         Request::DotsDelegationUpdateCwd {
             seq,
@@ -1753,6 +1679,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             seq,
             task_id,
             operation_id,
+            expected_updated_at,
             status,
             text,
             interaction_id,
@@ -1761,29 +1688,36 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             dependency_wait,
             verified_commit,
             clear_obs_next_at,
-            supersede_before_created_at,
             observation,
         } => {
-            let changes = tx.execute(
+            let basis = crate::dots_delegation_data::reconcile_basis(&tx, seq, &task_id, &operation_id)?;
+            let stale_snapshot = basis.is_some_and(|(current, _, _)| current != expected_updated_at);
+            let updated_at = updated_at.max(expected_updated_at.saturating_add(1));
+            let changes = if basis.is_some() && !stale_snapshot { tx.execute(
                 "UPDATE dots_delegations SET status=?1,text=?2,interaction_id=?3,files=?4,request_json=NULL,updated_at=?5
-                 WHERE seq=?6 AND status IN ('pending','running','blocked')
-                   AND (status<>?1 OR interaction_id IS NOT ?3 OR text<>?2 OR files<>?4)",
-                params![status, text, interaction_id, files, updated_at, seq],
-            )?;
+                 WHERE seq=?6 AND task_id=?7 AND operation_id=?8 AND updated_at=?9 AND status IN ('pending','running','blocked')
+                   AND (status<>?1 OR interaction_id IS DISTINCT FROM ?3 OR text<>?2 OR files<>?4)",
+                params![status, text, interaction_id, files, updated_at, seq, task_id, operation_id, expected_updated_at],
+            )? } else { 0 };
             if changes > 0 {
                 if let Some(dw) = dependency_wait {
+                    if dw.operation_id != operation_id { return Err("Dots prerequisite has a different operation".into()); }
                     tx.execute(
-                        "INSERT OR IGNORE INTO dots_dependency_waits VALUES(?1,?2,?3,?4)",
+                        "INSERT INTO dots_dependency_waits VALUES(?1,?2,?3,?4) ON CONFLICT DO NOTHING",
                         params![dw.operation_id, dw.prerequisite_id, dw.title, dw.deadline_at],
                     )?;
                 }
                 if let Some(sha) = verified_commit {
                     tx.execute(
-                        "INSERT OR IGNORE INTO dots_verified_commits VALUES(?1,?2)",
+                        "INSERT INTO dots_verified_commits VALUES(?1,?2) ON CONFLICT DO NOTHING",
                         params![operation_id, sha],
                     )?;
                 }
                 if let Some(obs) = observation {
+                    if obs.operation_id != operation_id || obs.task_id != task_id || obs.status != status
+                        || obs.interaction_id != interaction_id {
+                        return Err("Dots observation does not match the reconciled result".into());
+                    }
                     observe_reply_in_tx(&tx, &obs)?;
                 }
                 if clear_obs_next_at {
@@ -1792,7 +1726,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
                         [&operation_id],
                     )?;
                 }
-                if let Some(created_at) = supersede_before_created_at {
+                if let Some((_, created_at, true)) = basis {
                     tx.execute(
                         "UPDATE dots_delegations SET status='superseded',interaction_id=NULL,request_json=NULL,updated_at=?1
                          WHERE task_id=?2 AND seq<?3 AND (status IN ('pending','running','blocked') OR (status='completed' AND updated_at>=?4))",
@@ -1800,7 +1734,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
                     )?;
                 }
             }
-            json!({ "changed": changes > 0 })
+            json!({ "changed": changes > 0, "staleSnapshot": stale_snapshot })
         }
         Request::DotsActionContinuationTarget {
             source,
@@ -1821,11 +1755,11 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             task_id,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO dots_control_receipts VALUES(?1, ?2, 'answered')",
+                "INSERT INTO dots_control_receipts VALUES(?1, ?2, 'answered') ON CONFLICT DO NOTHING",
                 params![key, task_id],
             )?;
             tx.execute(
-                "INSERT OR IGNORE INTO dots_control_receipts VALUES(?1, ?2, 'answered')",
+                "INSERT INTO dots_control_receipts VALUES(?1, ?2, 'answered') ON CONFLICT DO NOTHING",
                 params![input_key, task_id],
             )?;
             json!({ "ok": true })
@@ -1840,7 +1774,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
         } => {
             if pause {
                 tx.execute(
-                    "INSERT OR IGNORE INTO dots_proactive_pauses VALUES(?1, ?2)",
+                    "INSERT INTO dots_proactive_pauses VALUES(?1, ?2) ON CONFLICT DO NOTHING",
                     params![scope, timer_ids_json.unwrap_or_else(|| "[]".to_string())],
                 )?;
             } else {
@@ -1849,7 +1783,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             for h in holds {
                 if h.pause {
                     tx.execute(
-                        "INSERT OR IGNORE INTO dots_schedule_holds VALUES(?1, ?2)",
+                        "INSERT INTO dots_schedule_holds VALUES(?1, ?2) ON CONFLICT DO NOTHING",
                         params![h.job_id, h.holder],
                     )?;
                 } else {
@@ -1866,7 +1800,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
                 }
             }
             tx.execute(
-                "INSERT OR IGNORE INTO dots_control_receipts VALUES(?1, 'dots-assistant', ?2)",
+                "INSERT INTO dots_control_receipts VALUES(?1, 'dots-assistant', ?2) ON CONFLICT DO NOTHING",
                 params![receipt_key, receipt_json],
             )?;
             json!({ "ok": true })
@@ -1886,7 +1820,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             space_id,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO dots_control_receipts VALUES(?1, ?2, 'space_changed')",
+                "INSERT INTO dots_control_receipts VALUES(?1, ?2, 'space_changed') ON CONFLICT DO NOTHING",
                 params![operation, space_id],
             )?;
             json!({ "ok": true })
@@ -1899,7 +1833,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
         } => {
             if insert_ignore {
                 tx.execute(
-                    "INSERT OR IGNORE INTO dots_control_receipts VALUES(?1, ?2, ?3)",
+                    "INSERT INTO dots_control_receipts VALUES(?1, ?2, ?3) ON CONFLICT DO NOTHING",
                     params![operation_id, target_task_id, outcome],
                 )?;
             } else {
@@ -1922,7 +1856,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
         }
         Request::DotsActionControlBatchSave { id, selection_json } => {
             tx.execute(
-                "INSERT OR IGNORE INTO dots_control_batches VALUES(?1, ?2)",
+                "INSERT INTO dots_control_batches VALUES(?1, ?2) ON CONFLICT DO NOTHING",
                 params![id, selection_json],
             )?;
             json!({ "ok": true })
@@ -2054,7 +1988,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
                             "holdPause" => {
                                 if let Some(holder) = sop.holder {
                                     tx.execute(
-                                        "INSERT OR IGNORE INTO dots_schedule_holds VALUES(?1, ?2)",
+                                        "INSERT INTO dots_schedule_holds VALUES(?1, ?2) ON CONFLICT DO NOTHING",
                                         params![sop.job_id, holder],
                                     )?;
                                     tx.execute(
@@ -2090,15 +2024,15 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
         }
         Request::DotsReplyStartupSync => {
             tx.execute(
-                "INSERT OR IGNORE INTO dots_followup_requests SELECT operation_id,request_json FROM dots_delegations
-                 WHERE request_json IS NOT NULL AND status IN ('pending','running','blocked')",
+                "INSERT INTO dots_followup_requests SELECT operation_id,request_json FROM dots_delegations
+                 WHERE request_json IS NOT NULL AND status IN ('pending','running','blocked') ON CONFLICT DO NOTHING",
                 [],
             )?;
             json!({ "ok": true })
         }
         Request::DotsForegroundHandoff { input_id, data_json } => {
             tx.execute(
-                "INSERT OR IGNORE INTO dots_foreground_handoffs(input_id,data) VALUES(?1,?2)",
+                "INSERT INTO dots_foreground_handoffs(input_id,data) VALUES(?1,?2) ON CONFLICT DO NOTHING",
                 params![input_id, data_json],
             )?;
             json!({ "ok": true })
@@ -2115,7 +2049,7 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             policy_json,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO dots_foreground_policies(input_id,policy) VALUES(?1,?2)",
+                "INSERT INTO dots_foreground_policies(input_id,policy) VALUES(?1,?2) ON CONFLICT DO NOTHING",
                 params![input_id, policy_json],
             )?;
             json!({ "ok": true })
@@ -2131,13 +2065,13 @@ pub fn run(db: &Connection, request: Request) -> Result<Value> {
             mark_exhausted,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO dots_foreground_policies(input_id,policy) VALUES(?1,?2)",
+                "INSERT INTO dots_foreground_policies(input_id,policy) VALUES(?1,?2) ON CONFLICT DO NOTHING",
                 params![input_id, policy_json],
             )?;
             if characters >= 0 {
                 tx.execute(
-                    "INSERT OR IGNORE INTO dots_foreground_reads(input_id,call_id,source,description,characters,excerpt)
-                     VALUES(?1,?2,?3,?4,?5,?6)",
+                    "INSERT INTO dots_foreground_reads(input_id,call_id,source,description,characters,excerpt)
+                     VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING",
                     params![input_id, call_id, source, description, characters, excerpt],
                 )?;
             }

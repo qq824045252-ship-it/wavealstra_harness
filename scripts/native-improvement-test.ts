@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import Database from "better-sqlite3";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,7 +93,7 @@ try {
   for (const h of hookSet) {
     assert.equal(h.triggers,0);
     assert(h.sources[0].entry && h.sources[0].input && h.sources[0].trigger);
-    assert.equal(hooks.find(h.hookId!)?.draft.scope.kind,"task");
+    assert.equal((await hooks.find(h.hookId!))?.draft.scope.kind,"task");
   }
   const recorded: string[] = [];
   step = 0;
@@ -158,7 +157,7 @@ try {
   indexReads.length = 0;
   await prompt(lookupIndex);
   assert.deepEqual(indexReads, ["docs/index.txt"], "learned location is used before the first tool call");
-  assert.equal(ledger.report().items.find(i => i.pathHint)?.repaired,1);
+  assert.equal((await ledger.report()).items.find(i => i.pathHint)?.repaired,1);
   console.log("PASS · same named-file task and provider policy: 2 reads before learning, 1 after");
   step = 0;
   reply = input => {
@@ -169,11 +168,11 @@ try {
   };
   await prompt("再找一次索引。");
   assert(recorded.some(s => s.includes("真实索引")));
-  assert.equal(ledger.report().items.find(i => i.pathHint)?.repaired,2);
+  assert.equal((await ledger.report()).items.find(i => i.pathHint)?.repaired,2);
   unlinkSync(join(binding,"docs","index.txt"));
   step = 0;
   await prompt("再找一次索引。");
-  assert.equal(ledger.report().items.find(i => i.pathHint)?.state,"disabled");
+  assert.equal((await ledger.report()).items.find(i => i.pathHint)?.state,"disabled");
   recorded.length = 0;
   reply = input => { recorded.push(JSON.stringify(input.messages.at(-1))); return text("已完成"); };
   await prompt("范围收窄到桌面入口");
@@ -190,10 +189,10 @@ try {
   };
   await prompt("检查指定的源文件。");
   assert(recorded.at(-1)?.includes("两次相同的 read"));
-  const disabled = ledger.disable(readback.key,readback.generation!);
+  const disabled = await ledger.disable(readback.key,readback.generation!);
   assert.equal(disabled.items.find(i => i.key === readback.key)?.state,"disabled");
-  assert.throws(() => ledger.disable(readback.key,readback.generation!), /已变化/);
-  const nextWeek = new NativeImprovementService(db,hooks,join(root,".mybuddy/native-improvement.sqlite"), () => Date.now() + 7 * 86400000);
+  await assert.rejects(ledger.disable(readback.key,readback.generation!), /已变化/);
+  const nextWeek = new NativeImprovementService(db,hooks,join(root,".mybuddy"), () => Date.now() + 7 * 86400000);
   try {
     const next = await nextWeek.review();
     assert.equal(next.runs.length,2);
@@ -245,13 +244,6 @@ try {
   const d = (await ledger.child(childTask,reviewedChild.conversation)).diagnostics;
   assert.deepEqual([d.waits,d.answered,d.waitMs],[1,1,40]);
   assert.deepEqual((await ledger.review()).children,children.children);
-  // A ledger from before child indexing already has the end-of-transcript checkpoint.
-  const oldLedger = new Database(join(root,".mybuddy/native-improvement.sqlite"));
-  try { oldLedger.prepare("DELETE FROM child_evidence WHERE task=?").run(childTask); }
-  finally { oldLedger.close(); }
-  const backfill = await ledger.review();
-  assert.deepEqual(backfill.children,children.children);
-  assert.equal(backfill.runs[0]?.scanned,children.runs[0]?.scanned);
   await assert.rejects(ledger.child("unrelated",reviewedChild.conversation));
   const childRule=children.items.find(i=>i.sources.some(s=>s.taskId===childTask && s.actor==="subagent"));
   assert(childRule?.hookId,JSON.stringify(children));
@@ -267,7 +259,7 @@ try {
   await prompt("范围收窄到前台",sixth);
   await prompt("你漏了验收要求",sixth);
   assert.equal((await ledger.review()).items.find(i => i.sources.some(s=>s.taskId===sixth))?.state,"candidate");
-  const catchup = new NativeImprovementService(db,hooks,join(root,".mybuddy/native-improvement.sqlite"),()=>Date.now()+7*86400000);
+  const catchup = new NativeImprovementService(db,hooks,join(root,".mybuddy"),()=>Date.now()+7*86400000);
   try {
     assert.equal((await catchup.review()).items.find(i => i.sources.some(s=>s.taskId===sixth))?.state,"watching");
   } finally { await catchup.close(); }

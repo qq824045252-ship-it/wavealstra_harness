@@ -3,7 +3,7 @@ use crate::{
     blueprint_storage::{Directories, Storage},
     workbench_write::{Gadget, GadgetOrigin, create_gadget},
 };
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, path::PathBuf};
 
@@ -18,6 +18,39 @@ pub struct Instance {
     contexts: Vec<Context>,
     gadgets: Vec<Gadget>,
     storage: Option<Storage>,
+}
+
+impl Instance {
+    pub(crate) fn resources(
+        &self,
+        operation_id: &str,
+    ) -> Vec<crate::resource_gate::ResourceRequirement> {
+        use crate::resource_gate::{ResourceKey, ResourceRequirement};
+        let mut plan = vec![
+            ResourceRequirement::exclusive(ResourceKey::Entity(
+                "blueprint-operation".into(),
+                operation_id.into(),
+            )),
+            ResourceRequirement::shared(ResourceKey::Entity(
+                "blueprint".into(),
+                self.blueprint_id.clone(),
+            )),
+            ResourceRequirement::exclusive(ResourceKey::Namespace(
+                "domain".into(),
+                "workspaces".into(),
+            )),
+            ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "library".into())),
+            ResourceRequirement::shared(ResourceKey::Namespace(
+                "domain".into(),
+                "blueprint-storage".into(),
+            )),
+            ResourceRequirement::shared(crate::workbench_write::gadget_namespace()),
+        ];
+        plan.extend(self.gadgets.iter().map(|gadget| {
+            ResourceRequirement::exclusive(ResourceKey::Entity("gadget".into(), gadget.id().into()))
+        }));
+        plan
+    }
 }
 
 #[derive(Deserialize)]
@@ -84,7 +117,7 @@ pub fn write(db: &mut Connection, operation_id: &str, instance: Instance) -> Res
             Ok(status)
         }
         Err(error) => {
-            let recovery = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let recovery = db.transaction()?;
             if let Some(status) = receipt(&recovery, operation_id)? {
                 directories.finalize();
                 return Ok(status);
@@ -115,7 +148,7 @@ fn write_instance(
     instance: Instance,
     directories: &mut Directories,
 ) -> Result<Status> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     if let Some(status) = receipt(&tx, operation_id)? {
         return Ok(status);
     }
@@ -144,7 +177,7 @@ fn write_instance(
             return Ok(Status::ScopeChanged);
         }
         if tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM spaces WHERE parent_id IS ?1 AND name=?2 COLLATE NOCASE)",
+            "SELECT EXISTS(SELECT 1 FROM spaces WHERE parent_id IS NOT DISTINCT FROM ?1 AND lower(name)=lower(?2))",
             params![workspace.parent_id, workspace.name],
             |row| row.get::<_, bool>(0),
         )? {
@@ -154,7 +187,7 @@ fn write_instance(
         }
         tx.execute(
             "INSERT INTO spaces(id,parent_id,name,path,sort_order,created_at,updated_at)
-             VALUES (?1,?2,?3,?4,(SELECT coalesce(max(sort_order),0)+1000 FROM spaces WHERE parent_id IS ?2),?5,?5)",
+             VALUES (?1,?2,?3,?4,(SELECT coalesce(max(sort_order),0)+1000 FROM spaces WHERE parent_id IS NOT DISTINCT FROM ?2),?5,?5)",
             params![workspace.id, workspace.parent_id, workspace.name, workspace.path, instance.created_at],
         )?;
         workspace_ids.insert(workspace.id);
@@ -186,7 +219,7 @@ fn write_instance(
             skipped_libraries.push(binding.library_space_id);
             continue;
         }
-        tx.execute("INSERT OR IGNORE INTO workspace_library_links(workspace_id,library_space_id,created_at) VALUES (?1,?2,?3)",
+        tx.execute("INSERT INTO workspace_library_links(workspace_id,library_space_id,created_at) VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",
             params![binding.workspace_id, binding.library_space_id, instance.created_at])?;
     }
 
@@ -219,14 +252,14 @@ fn write_instance(
         params![operation_id, serde_json::to_string(&status)?],
     )?;
     tx.execute(
-        "DELETE FROM blueprint_instance_receipts WHERE rowid <= last_insert_rowid()-2048",
+        "DELETE FROM blueprint_instance_receipts WHERE rowid <= (SELECT COALESCE(MAX(rowid), 0) - 2048 FROM blueprint_instance_receipts)",
         [],
     )?;
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
     Ok(status)
 }
 
-fn insert_context(db: &Connection, context: Context) -> rusqlite::Result<()> {
+fn insert_context(db: &Connection, context: Context) -> duckdb::Result<()> {
     db.execute("INSERT INTO memory_records(id,kind,title,content,status,importance,confidence,explicit,source_type,
         content_hash,created_at,updated_at,metadata_json) VALUES (?1,'constraint',?2,?3,'active',1,1,1,'import',?4,?5,?5,?6)",
         params![context.id, context.title, context.content, context.content_hash, context.created_at, context.metadata_json])?;

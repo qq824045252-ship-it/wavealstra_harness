@@ -79,7 +79,7 @@ export class LibraryIndexMaintenance {
     private readonly repo: LibraryRepository,
     private readonly files: LibraryIndexFiles,
   ) {
-    this.refreshTextFtsFallbackState();
+    if (db.fixtureConnection) this.refreshTextFtsFallbackState();
   }
 
   get pendingTextFtsIds(): ReadonlySet<string> { return this.textFtsFallbackIds; }

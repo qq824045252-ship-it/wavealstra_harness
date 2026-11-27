@@ -1,25 +1,11 @@
 /**
- * TaskExecutionWorkspace 语义纠偏迁移回归测试（2026-08）
- *
- * 覆盖：
- *  - DB：task_project_state → task_execution_workspace_state 迁移（行保留 / 旧表删除 / 重启幂等）
- *  - DB：新旧表并存（上次迁移中断）→ 补齐复制校验后删除旧表，不丢数据
- *  - DB：全新库不触发迁移，新表正常可用
- *  - FS：~/.mybuddy/projects[/-trash] → ~/.mybuddy/task-workspaces[/-trash] 一次改名迁移（内容完整）
- *  - FS：新旧目录并存 → 使用新目录，旧目录原样保留（绝不删除）
- *  - 旧 tasks.cwd 兼容：目录整体改名后 ensureTaskExecutionWorkspace 幂等命中 + cwd 重绑
- *  - 回收区整体改名后：DB 中旧 trash_path 经 resolveTrashPath 定位，restore / purge 可用
- *  - 收口重绑（P1）：rename 成功后 tasks.cwd / trash_path 一次性重绑新根（不等首次 Agent 交互）
- *  - 冲突语义（P2-1）：空旧表直删；同 task_id 内容冲突拒绝 drop 并回滚；新表额外记录不受影响
- *
- * 全部使用 mkdtemp 临时目录与临时 sqlite；不触碰真实 ~/.mybuddy。
- * 运行：pnpm run test:task-workspace-migration
+ * TaskExecutionWorkspace 的目录改名和路径修复回归测试。
+ * 使用临时工作目录与 SQLite 行为夹具。
  */
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import Database from "better-sqlite3";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { mapLegacyRootPath, migrateLegacyTaskWorkspacesDirs } from "../src/main/paths";
 import {
@@ -29,20 +15,10 @@ import {
 } from "../src/main/task/TaskExecutionWorkspace";
 import { TaskExecutionWorkspaceLifecycle } from "../src/main/task/TaskExecutionWorkspaceLifecycle";
 
-const results: Array<{ name: string; ok: boolean; detail: string }> = [];
+const cases: Array<{ name: string; run: () => void | Promise<void> }> = [];
 
-function check(name: string, fn: () => void | Promise<void>): void {
-  Promise.resolve()
-    .then(() => fn())
-    .then(() => {
-      results.push({ name, ok: true, detail: "" });
-      console.log(`PASS  ${name}`);
-    })
-    .catch((err: unknown) => {
-      const detail = err instanceof Error ? `${err.constructor.name}: ${err.message}` : String(err);
-      results.push({ name, ok: false, detail });
-      console.error(`FAIL  ${name}\n      ${detail}`);
-    });
+function check(name: string, run: () => void | Promise<void>): void {
+  cases.push({ name, run });
 }
 
 function tableExists(db: AppDatabase, name: string): boolean {
@@ -55,155 +31,6 @@ function tableExists(db: AppDatabase, name: string): boolean {
 function rowCount(db: AppDatabase, name: string): number {
   return (db.connection.prepare(`SELECT COUNT(*) AS c FROM ${name}`).get() as { c: number }).c;
 }
-
-const LEGACY_STATE_DDL = `
-  CREATE TABLE task_project_state (
-    task_id TEXT PRIMARY KEY,
-    directory_name TEXT NOT NULL,
-    state TEXT NOT NULL DEFAULT 'active',
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    trashed_at INTEGER,
-    purge_after INTEGER,
-    trash_path TEXT
-  );
-`;
-
-/* ------------------------------------------------------------------ */
-/* 1. DB 迁移：旧表 + 数据 → 新表行保留、旧表删除、重启幂等               */
-/* ------------------------------------------------------------------ */
-
-check("DB：旧表 task_project_state 迁移到新表，行数据完整保留", () => {
-  const root = mkdtempSync(join(tmpdir(), "mig-db-"));
-  try {
-    const dbPath = join(root, "legacy.db");
-    const raw = new Database(dbPath);
-    raw.exec(LEGACY_STATE_DDL);
-    const now = Date.now();
-    raw
-      .prepare(
-        `INSERT INTO task_project_state
-           (task_id, directory_name, state, created_at, updated_at, trashed_at, purge_after, trash_path)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run("t-active", "t-active--hash1", "active", now - 1000, now - 1000, null, null, null);
-    raw
-      .prepare(
-        `INSERT INTO task_project_state
-           (task_id, directory_name, state, created_at, updated_at, trashed_at, purge_after, trash_path)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        "t-trashed",
-        "t-trashed--hash2",
-        "trashed",
-        now - 2000,
-        now - 500,
-        now - 500,
-        now + 30 * 24 * 3600 * 1000,
-        join(root, "legacy-trash", "t-trashed--hash2"),
-      );
-    raw.close();
-
-    const db = new AppDatabase(dbPath);
-    try {
-      assert.ok(tableExists(db, "task_execution_workspace_state"), "新表已创建");
-      assert.ok(!tableExists(db, "task_project_state"), "旧表已删除");
-      assert.equal(rowCount(db, "task_execution_workspace_state"), 2, "行数 2 完整迁移");
-
-      const active = db.getTaskExecutionWorkspaceState("t-active")!;
-      assert.equal(active.state, "active");
-      assert.equal(active.directoryName, "t-active--hash1");
-      const trashed = db.getTaskExecutionWorkspaceState("t-trashed")!;
-      assert.equal(trashed.state, "trashed");
-      assert.equal(trashed.purgeAfter, now + 30 * 24 * 3600 * 1000, "purgeAfter 保留");
-      assert.equal(trashed.trashPath, join(root, "legacy-trash", "t-trashed--hash2"), "trash_path 原样保留");
-    } finally {
-      db.close();
-    }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-check("DB：迁移后重复打开（重启）幂等，不报错、数据不变", () => {
-  const root = mkdtempSync(join(tmpdir(), "mig-db-idem-"));
-  try {
-    const dbPath = join(root, "legacy.db");
-    const raw = new Database(dbPath);
-    raw.exec(LEGACY_STATE_DDL);
-    raw
-      .prepare(
-        `INSERT INTO task_project_state
-           (task_id, directory_name, state, created_at, updated_at, trashed_at, purge_after, trash_path)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run("t1", "t1--hash", "active", 1, 2, null, null, null);
-    raw.close();
-
-    const db1 = new AppDatabase(dbPath);
-    assert.equal(rowCount(db1, "task_execution_workspace_state"), 1);
-    db1.close();
-
-    const db2 = new AppDatabase(dbPath);
-    try {
-      assert.equal(rowCount(db2, "task_execution_workspace_state"), 1, "重启后行数不变");
-      assert.equal(db2.getTaskExecutionWorkspaceState("t1")?.directoryName, "t1--hash");
-    } finally {
-      db2.close();
-    }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-check("DB：新旧表并存（上次迁移中断）→ 补齐复制后删除旧表，不丢数据", () => {
-  const root = mkdtempSync(join(tmpdir(), "mig-db-both-"));
-  try {
-    const dbPath = join(root, "legacy.db");
-    const raw = new Database(dbPath);
-    raw.exec(LEGACY_STATE_DDL);
-    raw
-      .prepare(
-        `INSERT INTO task_project_state
-           (task_id, directory_name, state, created_at, updated_at, trashed_at, purge_after, trash_path)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run("a", "a--h", "active", 1, 1, null, null, null);
-    raw
-      .prepare(
-        `INSERT INTO task_project_state
-           (task_id, directory_name, state, created_at, updated_at, trashed_at, purge_after, trash_path)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run("b", "b--h", "trashed", 1, 1, 1, 99, "/old/trash/b--h");
-    // 模拟中断现场：新表已建但旧表还在（空）
-    raw.exec(`
-      CREATE TABLE task_execution_workspace_state (
-        task_id TEXT PRIMARY KEY,
-        directory_name TEXT NOT NULL,
-        state TEXT NOT NULL DEFAULT 'active',
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        trashed_at INTEGER,
-        purge_after INTEGER,
-        trash_path TEXT
-      );
-    `);
-    raw.close();
-
-    const db = new AppDatabase(dbPath);
-    try {
-      assert.ok(!tableExists(db, "task_project_state"), "旧表最终被删除");
-      assert.equal(rowCount(db, "task_execution_workspace_state"), 2, "2 行全部补齐");
-      assert.equal(db.getTaskExecutionWorkspaceState("b")?.trashPath, "/old/trash/b--h");
-    } finally {
-      db.close();
-    }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
 
 check("DB：全新库无旧表 → 新表可用，无迁移残留", () => {
   const root = mkdtempSync(join(tmpdir(), "mig-db-new-"));
@@ -619,168 +446,19 @@ check("收口：rename 失败（legacy fallback）→ migrated=false 且路径�
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* 6. 冲突检测语义（P2-1）：空旧表直删 / 逐行内容校验 / 冲突拒绝 drop        */
-/* ------------------------------------------------------------------ */
-
-check("P2-1：新表已有 N 条 + 旧空表 → 升级成功、旧表删除、N 条保留", () => {
-  const root = mkdtempSync(join(tmpdir(), "mig-empty-legacy-"));
-  try {
-    const dbPath = join(root, "app.db");
-    const raw = new Database(dbPath);
-    raw.exec(LEGACY_STATE_DDL); // 空旧表（降级旧版重建场景）
-    raw.exec(`
-      CREATE TABLE task_execution_workspace_state (
-        task_id TEXT PRIMARY KEY,
-        directory_name TEXT NOT NULL,
-        state TEXT NOT NULL DEFAULT 'active',
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        trashed_at INTEGER,
-        purge_after INTEGER,
-        trash_path TEXT
-      );
-    `);
-    raw
-      .prepare(
-        `INSERT INTO task_execution_workspace_state
-           (task_id, directory_name, state, created_at, updated_at, trashed_at, purge_after, trash_path)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run("x", "x--h", "active", 1, 1, null, null, null);
-    raw
-      .prepare(
-        `INSERT INTO task_execution_workspace_state
-           (task_id, directory_name, state, created_at, updated_at, trashed_at, purge_after, trash_path)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run("y", "y--h", "trashed", 1, 1, 1, 99, "/old/trash/y--h");
-    raw.close();
-
-    const db = new AppDatabase(dbPath);
+async function main(): Promise<void> {
+  let passed = 0;
+  for (const { name, run } of cases) {
     try {
-      assert.ok(!tableExists(db, "task_project_state"), "空旧表被安全清理");
-      assert.equal(rowCount(db, "task_execution_workspace_state"), 2, "新表 N 条原样保留");
-      assert.equal(db.getTaskExecutionWorkspaceState("y")!.trashPath, "/old/trash/y--h");
-    } finally {
-      db.close();
+      await run();
+      passed += 1;
+      console.log(`PASS  ${name}`);
+    } catch (error) {
+      console.error(`FAIL  ${name}`, error);
+      process.exitCode = 1;
     }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
   }
-});
-
-check("P2-1：新旧并存、旧表部分重叠 → 新表补齐全部旧记录 + 保留额外记录", () => {
-  const root = mkdtempSync(join(tmpdir(), "mig-overlap-"));
-  try {
-    const dbPath = join(root, "app.db");
-    const raw = new Database(dbPath);
-    raw.exec(LEGACY_STATE_DDL);
-    const insertLegacy = raw.prepare(
-      `INSERT INTO task_project_state
-         (task_id, directory_name, state, created_at, updated_at, trashed_at, purge_after, trash_path)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    insertLegacy.run("A", "A--h", "active", 1, 1, null, null, null);
-    insertLegacy.run("B", "B--h", "trashed", 2, 2, 2, 100, "/old/trash/B--h");
-    raw.exec(`
-      CREATE TABLE task_execution_workspace_state (
-        task_id TEXT PRIMARY KEY,
-        directory_name TEXT NOT NULL,
-        state TEXT NOT NULL DEFAULT 'active',
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        trashed_at INTEGER,
-        purge_after INTEGER,
-        trash_path TEXT
-      );
-    `);
-    const insertNew = raw.prepare(
-      `INSERT INTO task_execution_workspace_state
-         (task_id, directory_name, state, created_at, updated_at, trashed_at, purge_after, trash_path)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    insertNew.run("B", "B--h", "trashed", 2, 2, 2, 100, "/old/trash/B--h"); // 与旧表一致
-    insertNew.run("C", "C--h", "active", 3, 3, null, null, null); // 新表额外合法记录
-    raw.close();
-
-    const db = new AppDatabase(dbPath);
-    try {
-      assert.ok(!tableExists(db, "task_project_state"), "旧表已删除");
-      assert.equal(rowCount(db, "task_execution_workspace_state"), 3, "A+B+C 全部保留");
-      assert.equal(db.getTaskExecutionWorkspaceState("A")!.state, "active", "补齐的 A 内容与旧表一致");
-      assert.equal(db.getTaskExecutionWorkspaceState("B")!.trashPath, "/old/trash/B--h", "B 保留旧表内容");
-      assert.equal(db.getTaskExecutionWorkspaceState("C")!.state, "active", "新表额外记录不受影响");
-    } finally {
-      db.close();
-    }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-check("P2-1：同 task_id 内容冲突 → 迁移回滚、旧表保留、不覆盖、重启稳定", () => {
-  const root = mkdtempSync(join(tmpdir(), "mig-conflict-"));
-  try {
-    const dbPath = join(root, "app.db");
-    const raw = new Database(dbPath);
-    raw.exec(LEGACY_STATE_DDL);
-    raw
-      .prepare(
-        `INSERT INTO task_project_state
-           (task_id, directory_name, state, created_at, updated_at, trashed_at, purge_after, trash_path)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run("A", "A--h", "trashed", 1, 1, 1, 99, "/old/trash/A--h"); // 旧表：A 已回收
-    raw.exec(`
-      CREATE TABLE task_execution_workspace_state (
-        task_id TEXT PRIMARY KEY,
-        directory_name TEXT NOT NULL,
-        state TEXT NOT NULL DEFAULT 'active',
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        trashed_at INTEGER,
-        purge_after INTEGER,
-        trash_path TEXT
-      );
-    `);
-    raw
-      .prepare(
-        `INSERT INTO task_execution_workspace_state
-           (task_id, directory_name, state, created_at, updated_at, trashed_at, purge_after, trash_path)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run("A", "A--h", "active", 1, 1, null, null, null); // 新表：A 为 active（内容冲突）
-    raw.close();
-
-    const db = new AppDatabase(dbPath);
-    try {
-      assert.ok(tableExists(db, "task_project_state"), "冲突 → 回滚，旧表保留");
-      assert.equal(db.getTaskExecutionWorkspaceState("A")!.state, "active", "新表内容不被覆盖");
-    } finally {
-      db.close();
-    }
-    // 重启稳定：同样结果，无数据丢失
-    const db2 = new AppDatabase(dbPath);
-    try {
-      assert.ok(tableExists(db2, "task_project_state"), "再次启动仍保留旧表");
-      assert.equal(db2.getTaskExecutionWorkspaceState("A")!.state, "active");
-    } finally {
-      db2.close();
-    }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-/* ------------------------------------------------------------------ *//* ------------------------------------------------------------------ */
-/* 汇总                                                               */
-/* ------------------------------------------------------------------ */
-
-const failed = results.filter((r) => !r.ok);
-console.log("\n" + "-".repeat(72));
-console.log(`task-workspace-migration: ${results.length - failed.length}/${results.length} PASS`);
-if (failed.length > 0) {
-  for (const f of failed) console.error(`FAILED: ${f.name} — ${f.detail}`);
-  process.exitCode = 1;
+  console.log(`\ntask-workspace-migration: ${passed}/${cases.length} PASS`);
 }
+
+void main();

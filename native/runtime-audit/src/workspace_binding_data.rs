@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, Row, TransactionBehavior, params};
+use duckdb::{Connection, Row, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
@@ -85,7 +85,7 @@ pub fn read(db: &mut Connection, id: &str) -> Result<Option<Snapshot>> {
     })?;
     let collections = all(
         &tx,
-        "SELECT id,space_id,parent_id,name FROM library_collections ORDER BY name COLLATE NOCASE,rowid",
+        "SELECT id,space_id,parent_id,name FROM library_collections ORDER BY lower(name),rowid",
         [],
         |row| {
             Ok(Collection {
@@ -129,13 +129,13 @@ pub fn read(db: &mut Connection, id: &str) -> Result<Option<Snapshot>> {
 fn all<T>(
     db: &Connection,
     sql: &str,
-    params: impl rusqlite::Params,
-    map: impl FnMut(&Row<'_>) -> rusqlite::Result<T>,
+    params: impl duckdb::Params,
+    map: impl FnMut(&Row<'_>) -> duckdb::Result<T>,
 ) -> Result<Vec<T>> {
     Ok(db
-        .prepare_cached(sql)?
+        .prepare(sql)?
         .query_map(params, map)?
-        .collect::<rusqlite::Result<_>>()?)
+        .collect::<duckdb::Result<_>>()?)
 }
 
 #[derive(Deserialize)]
@@ -172,14 +172,14 @@ pub fn write(db: &mut Connection, mutation: Mutation) -> Reply {
 }
 
 fn apply(db: &mut Connection, mutation: Mutation) -> Result<()> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let workspace = &mutation.workspace_id;
     let library = &mutation.library_space_id;
     let (exists, archived): (bool, bool) = tx.query_row(
         "WITH RECURSIVE ancestors(id,parent_id,archived) AS (
             SELECT id,parent_id,archived FROM spaces WHERE id=?1
             UNION SELECT s.id,s.parent_id,s.archived FROM spaces s JOIN ancestors a ON s.id=a.parent_id
-         ) SELECT count(*)>0,coalesce(max(archived!=0),0) FROM ancestors",
+         ) SELECT count(*)>0,coalesce(bool_or(archived!=0),FALSE) FROM ancestors",
         [workspace], |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     if !exists {
@@ -209,11 +209,11 @@ fn apply(db: &mut Connection, mutation: Mutation) -> Result<()> {
         }
     }
     match (mutation.kind, mutation.collection_id) {
-        (Kind::Bind, Some(collection)) => tx.execute("INSERT OR IGNORE INTO workspace_library_collection_links
-            (workspace_id,library_space_id,collection_id,created_at) VALUES(?1,?2,?3,?4)",
+        (Kind::Bind, Some(collection)) => tx.execute("INSERT INTO workspace_library_collection_links
+            (workspace_id,library_space_id,collection_id,created_at) VALUES(?1,?2,?3,?4) ON CONFLICT DO NOTHING",
             params![workspace, library, collection, mutation.at])?,
-        (Kind::Bind, None) => tx.execute("INSERT OR IGNORE INTO workspace_library_links(workspace_id,library_space_id,created_at)
-            VALUES(?1,?2,?3)", params![workspace, library, mutation.at])?,
+        (Kind::Bind, None) => tx.execute("INSERT INTO workspace_library_links(workspace_id,library_space_id,created_at)
+            VALUES(?1,?2,?3) ON CONFLICT DO NOTHING", params![workspace, library, mutation.at])?,
         (Kind::Unbind, Some(collection)) => tx.execute("DELETE FROM workspace_library_collection_links
             WHERE workspace_id=?1 AND collection_id=?2", params![workspace, collection])?,
         (Kind::Unbind, None) => tx.execute("DELETE FROM workspace_library_links WHERE workspace_id=?1 AND library_space_id=?2",

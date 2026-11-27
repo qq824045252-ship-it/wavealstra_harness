@@ -1,3 +1,4 @@
+import { fixtureTaskBoard } from "./fixtures/legacy-task-board-store";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -105,7 +106,7 @@ export async function verifyForegroundScheduling(root: string) {
     }, changed: () => delegations.refresh(),
     rememberOrigin: (source, origin) => delegations.rememberOrigin(source, origin),
     list: () => delegations.list(), failed: (...args) => delegations.failed(...args),
-  });
+  }, fixtureTaskBoard(db.connection));
   let releaseRecipe!: () => void;
   let recipeReading!: () => void;
   const recipeGate = new Promise<void>(done => { releaseRecipe = done; });

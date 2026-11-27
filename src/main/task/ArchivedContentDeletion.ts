@@ -50,13 +50,15 @@ export class ArchivedContentDeletion {
     const selectedSpaces = new Set<string>();
     const selectedSubtrees = new Map<string, Set<string>>();
     const spaces = await db.readSpaces();
+    const spacesById = new Map(spaces.map(space => [space.id, space]));
     const children = new Map<string, string[]>();
     for (const space of spaces) {
       if (space.parentId) children.set(space.parentId, [...(children.get(space.parentId) ?? []), space.id]);
     }
     for (const id of request.spaceIds) {
-      if (!db.getSpace(id)) { fail("space", id, "空间不存在，请刷新归档列表"); continue; }
-      if (!db.isSpaceEffectiveArchived(id)) { fail("space", id, "空间已恢复，拒绝彻底删除未归档空间"); continue; }
+      const space = spacesById.get(id);
+      if (!space) { fail("space", id, "空间不存在，请刷新归档列表"); continue; }
+      if (!space.effectiveArchived) { fail("space", id, "空间已恢复，拒绝彻底删除未归档空间"); continue; }
       selectedRoots.add(id);
       const pending = [id];
       const visited = new Set<string>();
@@ -88,8 +90,10 @@ export class ArchivedContentDeletion {
     for (const id of protectedSpaces) selectedSpaces.delete(id);
     const directTasks = new Set<string>();
     for (const id of request.taskIds) {
-      if (!db.getTask(id)) { fail("task", id, "任务不存在，请刷新归档列表"); continue; }
-      if (!db.isTaskEffectiveArchived(id)) { fail("task", id, "任务已恢复，拒绝彻底删除未归档任务"); continue; }
+      const task = await db.readTask(id, { includeExpertBinding: false });
+      if (!task) { fail("task", id, "任务不存在，请刷新归档列表"); continue; }
+      const workspaceArchived = task.spaceId && spacesById.get(task.spaceId)?.effectiveArchived;
+      if (!task.archived && !workspaceArchived) { fail("task", id, "任务已恢复，拒绝彻底删除未归档任务"); continue; }
       directTasks.add(id);
     }
     // Include trashed rows so a deleted space leaves no restorable tasks behind.
@@ -148,11 +152,10 @@ export class ArchivedContentDeletion {
         catch (error) { fail("task", task.id, `任务已删除，附属内容清理失败：${error instanceof Error ? error.message : String(error)}`); }
       }
     }
-    const byId = new Map(spaces.map((space) => [space.id, space]));
     const depth = (id: string): number => {
       let count = 0;
       const seen = new Set<string>();
-      for (let current: string | null | undefined = id; current && !seen.has(current); current = byId.get(current)?.parentId) {
+      for (let current: string | null | undefined = id; current && !seen.has(current); current = spacesById.get(current)?.parentId) {
         seen.add(current); count += 1;
       }
       return count;

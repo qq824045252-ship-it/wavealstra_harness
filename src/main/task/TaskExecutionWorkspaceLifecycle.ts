@@ -179,7 +179,9 @@ export class TaskExecutionWorkspaceLifecycle {
    */
   async listTrashedTasks(): Promise<TrashedTaskDto[]> {
     const tasks = await this.db.runtimeAuditReader?.listTrashedTasks(this.trashRoot);
-    return tasks ?? this.db.listTrashedTaskRows().map(({ trashPath, ...task }) => ({
+    if (tasks) return tasks;
+    if (this.db.coreIdentity) throw new TaskLifecycleError("Core 未确认回收站列表读取");
+    return this.db.listTrashedTaskRows().map(({ trashPath, ...task }) => ({
       ...task,
       directoryMissing: this.resolveTrashPath(trashPath) === undefined,
     }));
@@ -212,7 +214,7 @@ export class TaskExecutionWorkspaceLifecycle {
     this.assertTaskId(taskId);
     if (taskId === DOTS_TASK_ID && archived) throw new Error("Dots 对话不能作为普通任务归档");
     const worker = this.db.runtimeAuditReader;
-    const rustRequired = Boolean(this.db.connection.readonly || worker?.supervised);
+    const rustRequired = this.db.readonly || worker?.supervised === true;
     if (worker) {
       const result = await worker.setSidebarArchive({
         kind: "task", id: taskId, archived, directoryName: getTaskDirectoryName(taskId), at: Date.now(),

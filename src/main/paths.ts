@@ -181,6 +181,10 @@ export function getDbPath(): string {
   return join(getMyBuddyDir(), "app.db");
 }
 
+export function getCoreDbPath(): string {
+  return join(getMyBuddyDir(), "app.duckdb");
+}
+
 export function getModelsPath(): string {
   return join(getMyBuddyDir(), "models.json");
 }

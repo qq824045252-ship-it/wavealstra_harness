@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, Row, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -68,20 +68,9 @@ pub fn run(db: &mut Connection, request: Request) -> Reply {
 
 fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
     if let Request::List { project_id } = request {
-        let mut select = db.prepare_cached(
-            "SELECT p.id, p.project_id, p.item_id, i.title, i.kind,
-                    p.note, p.created_by, p.created_at
-             FROM project_context_pins p
-             LEFT JOIN library_items i ON i.id = p.item_id
-             WHERE p.project_id = ?1
-             ORDER BY p.created_at DESC",
-        )?;
-        let pins = select
-            .query_map([project_id], map_pin)?
-            .collect::<rusqlite::Result<_>>()?;
-        return Ok(Reply::Listed { pins });
+        return Ok(Reply::Listed { pins: list(db, &project_id)? });
     }
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let reply = match request {
         Request::List { .. } => unreachable!(),
         Request::Pin {
@@ -95,7 +84,7 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
                 return Ok(Reply::Archived);
             }
             let existing = tx
-                .prepare_cached(
+                .prepare(
                     "SELECT p.id, p.project_id, p.item_id, i.title, i.kind,
                             p.note, p.created_by, p.created_at
                      FROM project_context_pins p
@@ -108,7 +97,7 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
                 return Ok(Reply::Pinned { pin });
             }
             let (item_title, item_kind, item_project) = tx
-                .prepare_cached(
+                .prepare(
                     "SELECT i.title, i.kind, CASE WHEN s.kind = 'personal' THEN NULL ELSE s.project_id END
                      FROM library_items i
                      LEFT JOIN library_spaces s ON s.id = i.space_id
@@ -166,14 +155,29 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
     Ok(reply)
 }
 
+pub(crate) fn list(db: &Connection, project_id: &str) -> Result<Vec<Pin>> {
+    let mut select = db.prepare(
+        "SELECT p.id, p.project_id, p.item_id, i.title, i.kind,
+                p.note, p.created_by, p.created_at
+         FROM project_context_pins p
+         LEFT JOIN library_items i ON i.id = p.item_id
+         WHERE p.project_id = ?1
+         ORDER BY p.created_at DESC",
+    )?;
+    let pins = select
+        .query_map([project_id], map_pin)?
+        .collect::<duckdb::Result<_>>()?;
+    Ok(pins)
+}
+
 fn project_archived(db: &Connection, project_id: &str) -> Result<bool> {
-    db.prepare_cached("SELECT archived != 0 FROM projects WHERE id = ?1")?
+    db.prepare("SELECT archived != 0 FROM projects WHERE id = ?1")?
         .query_row([project_id], |row| row.get(0))
         .optional()?
         .ok_or_else(|| format!("项目不存在：{project_id}").into())
 }
 
-fn map_pin(row: &Row<'_>) -> rusqlite::Result<Pin> {
+fn map_pin(row: &Row<'_>) -> duckdb::Result<Pin> {
     Ok(Pin {
         id: row.get(0)?,
         project_id: row.get(1)?,

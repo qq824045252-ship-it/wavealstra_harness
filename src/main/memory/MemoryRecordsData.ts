@@ -6,6 +6,7 @@ import type {
   MemoryRecordDto,
   MemoryRevisionDto,
   MemoryScopeDto,
+  MemorySkillCandidateDto,
 } from "../../shared/memory-kernel";
 import type { MemoryWithdrawalSource } from "./MemoryForgetWatermarks";
 
@@ -29,6 +30,7 @@ export type RuntimeMemoryRecordsQuery =
   | { kind: "scopeMutationSupport" }
   | { kind: "candidateList"; status?: MemoryCandidateDto["status"]; limit: number }
   | { kind: "candidateReviewSupported" }
+  | { kind: "installedSkillGrounding"; installedSkillId: string; candidateId: string; sourceMemoryIds: string[] }
   | { kind: "stats" };
 
 type WireScope = Omit<MemoryScopeDto, "scopeId"> & { scopeId: string | null };
@@ -61,6 +63,9 @@ export type RuntimeMemoryRecordsData =
   | { kind: "scopeMutationSupport" }
   | { kind: "candidateList"; candidates: Record<string, unknown>[] }
   | { kind: "candidateReviewSupported" }
+  | { kind: "installedSkillGrounding"; grounded: {
+    candidateId: string; scopeType: MemorySkillCandidateDto["scopeType"]; scopeId: string | null; sourceSignature: string;
+  } | null }
   | { kind: "stats"; stats: MemoryKernelStats };
 
 export function memoryListQuery(input: MemoryListRequest): MemoryListQuery {

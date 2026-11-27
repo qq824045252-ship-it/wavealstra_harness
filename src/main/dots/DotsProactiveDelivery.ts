@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { discoveryUrl, type DiscoveryItem } from "../../shared/dots-discovery";
 import { DOTS_TASK_ID } from "../../shared/dots";
 import type { DotsProactiveOutcome } from "../agent/durable/DurableDotsProactive";
+import { RuntimeAuditUnknownOperationError, type RuntimeAuditReader } from "../platform/runtime-audit";
 import { saveDotsBrief, type DotsResidentSource } from "./DotsWorkspace";
 
 export interface DotsProactiveNotice {
@@ -36,6 +37,24 @@ interface TaskNoticeRow {
   created_at: number;
 }
 
+type CoreReader = Pick<RuntimeAuditReader, "batch4aWrite" | "supervised" | "readDotsProactiveData" | "writeDotsProactiveData">;
+type QueuedNotice = { deliveryKey: string; source: DotsResidentSource; text: string; queuedAt: number };
+type PendingDelivery = Pick<QueuedNotice, "deliveryKey" | "text">;
+type PendingArchive = QueuedNotice & { messageId: string; workspace: string };
+type CoreNotification = {
+  dedupeKey: string;
+  sourceId: TaskNoticeRow["source_id"];
+  title: string;
+  body: string | null;
+  createdAt: number;
+};
+
+function recoveredNotice(row: CoreNotification, findLinks: (key: string) => DiscoveryItem[] | undefined): QueuedNotice {
+  const source = row.sourceId === "dots-google" ? "Google" : row.dedupeKey.startsWith("dream:") ? "Dream" : "RSS";
+  const text = noticeText({ key: row.dedupeKey, source, title: row.title, body: row.body ?? "", items: findLinks(row.dedupeKey) });
+  return { deliveryKey: row.dedupeKey, source, text, queuedAt: row.createdAt };
+}
+
 export class DotsProactiveDelivery {
   private timer?: ReturnType<typeof setInterval>;
   private started = false;
@@ -44,15 +63,25 @@ export class DotsProactiveDelivery {
   private pendingWriteCount = 0;
   private readonly pendingRows = new Map<string, { delivery_key: string; source: DotsResidentSource; text: string; queued_at: number; message_id: string | null; workspace: string | null; archived_at: number | null; archive_retry_at: number | null }>();
 
-  constructor(private readonly db: Database.Database, private readonly paused: () => boolean,
+  constructor(private readonly fixture: Database.Database | undefined, private readonly paused: () => boolean,
     private readonly append: (key: string, text: string, isCurrent: () => boolean) => Promise<DotsProactiveOutcome>,
-    private readonly native?: Pick<import("../platform/runtime-audit").RuntimeAuditReader, "batch4aWrite" | "supervised">) {
-    if (!db.readonly) {
-      db.exec(`CREATE TABLE IF NOT EXISTS dots_proactive_delivery (
+    private readonly native?: CoreReader) {
+    if (!fixture && !native?.supervised) throw new Error("Dots 主动投递需要 Core");
+    if (fixture && !fixture.readonly) {
+      fixture.exec(`CREATE TABLE IF NOT EXISTS dots_proactive_delivery (
         delivery_key TEXT PRIMARY KEY, source TEXT NOT NULL, text TEXT NOT NULL, queued_at INTEGER NOT NULL,
         message_id TEXT, workspace TEXT, archived_at INTEGER, archive_retry_at INTEGER
       )`);
     }
+  }
+
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("Dots 主动投递的 SQLite 仓储仅用于夹具");
+    return this.fixture;
+  }
+
+  private get core(): CoreReader | undefined {
+    return this.fixture ? undefined : this.native;
   }
 
   private get requiresRustWrites(): boolean {
@@ -94,19 +123,48 @@ export class DotsProactiveDelivery {
       .run(notice.key, notice.source, text, timestamp);
   }
 
+  private async writeCore<T>(command: Record<string, unknown>): Promise<T> {
+    const write = () => this.core!.writeDotsProactiveData<T>(command);
+    const reply = await write().catch(error => {
+      if (error instanceof RuntimeAuditUnknownOperationError) return write();
+      throw error;
+    });
+    if (reply === undefined) throw new Error("Core 未确认 Dots 主动投递写入");
+    return reply;
+  }
+
+  private enqueueCore(items: QueuedNotice[]) {
+    if (!items.length) return Promise.resolve();
+    const next = this.writeTail.then(async () => {
+      const result = await this.writeCore<{ status: string }>({ kind: "enqueue", items });
+      if (result.status !== "saved") throw new Error("Core 未确认 Dots 主动消息入队");
+    });
+    this.writeTail = next.catch(error => console.warn("[Dots] 主动消息入队失败", error));
+    return next;
+  }
+
   post(notice: DotsProactiveNotice) {
+    if (this.core) return this.enqueueCore([{ deliveryKey: notice.key, source: notice.source, text: noticeText(notice), queuedAt: Date.now() }]);
     this.enqueue(notice, Date.now());
     void this.refresh();
   }
 
   /** Recover only notices already issued to the same Dots conversation. */
-  restoreNotifications(findLinks: (key: string) => DiscoveryItem[] | undefined, now = Date.now()) {
+  async restoreNotifications(findLinks: (key: string) => DiscoveryItem[] | undefined, now = Date.now()) {
+    const since = now - 24 * 60 * 60_000;
+    const core = this.core;
+    if (core) {
+      const rows = await core.readDotsProactiveData<CoreNotification[]>({ kind: "notifications", since });
+      if (!rows) throw new Error("Core 未确认需恢复的 Dots 通知");
+      await this.enqueueCore(rows.map(row => recoveredNotice(row, findLinks)));
+      return;
+    }
     const rows = this.db.prepare(`SELECT dedupe_key,source_id,title,body,created_at FROM (
       SELECT dedupe_key,source_id,title,body,created_at FROM notifications
       WHERE task_id=? AND source_id IN ('dots-discovery','dots-google') AND dedupe_key IS NOT NULL
         AND dismissed_at IS NULL AND read_at IS NULL AND created_at>=?
       ORDER BY created_at DESC LIMIT 30
-    ) ORDER BY created_at, dedupe_key`).all(DOTS_TASK_ID, now - 24 * 60 * 60_000) as TaskNoticeRow[];
+    ) ORDER BY created_at, dedupe_key`).all(DOTS_TASK_ID, since) as TaskNoticeRow[];
     if (this.requiresRustWrites) {
       const items = rows.map(row => {
         const source: DotsResidentSource = row.source_id === "dots-google" ? "Google" : row.dedupe_key.startsWith("dream:") ? "Dream" : "RSS";
@@ -135,6 +193,7 @@ export class DotsProactiveDelivery {
   start() {
     if (this.started) return;
     this.started = true;
+    if (this.core) return;
     if (!this.native?.supervised && !this.timer) {
       this.timer = setInterval(() => void this.refresh(), 5_000);
       this.timer.unref();
@@ -146,6 +205,11 @@ export class DotsProactiveDelivery {
     if (!this.started || this.paused()) return Promise.resolve();
     if (this.flight) return this.flight;
     const current = () => this.started && !this.paused();
+    const core = this.core;
+    if (core) {
+      this.flight = this.drainCore(core, current).finally(() => { this.flight = undefined; });
+      return this.flight;
+    }
     const drain = async () => {
       const dbRows = this.db.prepare("SELECT delivery_key,text FROM dots_proactive_delivery WHERE message_id IS NULL ORDER BY queued_at,rowid LIMIT 30")
         .all() as { delivery_key: string; text: string }[];
@@ -217,6 +281,40 @@ export class DotsProactiveDelivery {
     this.flight = drain().catch(error => console.warn("[Dots] 主动消息尚未写入对话，将稍后重试。", error))
       .finally(() => { this.flight = undefined; });
     return this.flight;
+  }
+
+  private async drainCore(core: CoreReader, current: () => boolean) {
+    await this.writeTail;
+    if (!current()) return;
+    const pending = await core.readDotsProactiveData<PendingDelivery[]>({ kind: "pending" });
+    if (!pending) throw new Error("Core 未确认 Dots 主动消息队列");
+    for (const row of pending) {
+      if (!current()) return;
+      const result = await this.append(row.deliveryKey, row.text, current);
+      if (result.status === "pending") break;
+      const confirmed = await this.writeCore<{ status: string }>({
+        kind: "confirm", deliveryKey: row.deliveryKey, messageId: result.messageId,
+      });
+      if (confirmed.status !== "delivered") throw new Error("Core 未确认 Dots 对话中的主动消息回执");
+    }
+    if (!current()) return;
+    const archives = await core.readDotsProactiveData<PendingArchive[]>({ kind: "archives", now: Date.now() });
+    if (!archives) throw new Error("Core 未确认 Dots 简报归档队列");
+    for (const row of archives) {
+      if (!current()) return;
+      let archivedAt: number | null = null;
+      let retryAt: number | null = null;
+      try {
+        saveDotsBrief(row.workspace, row.source, row.deliveryKey, row.text, row.queuedAt);
+        archivedAt = Date.now();
+      } catch {
+        retryAt = Date.now() + 60_000;
+      }
+      const saved = await this.writeCore<{ status: string }>({
+        kind: "archive", deliveryKey: row.deliveryKey, messageId: row.messageId, workspace: row.workspace, archivedAt, retryAt,
+      });
+      if (saved.status !== "saved") throw new Error("Core 未确认 Dots 简报归档结果");
+    }
   }
 
   async close() {

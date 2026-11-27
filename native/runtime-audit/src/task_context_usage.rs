@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, TransactionBehavior, params};
+use duckdb::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -28,9 +28,9 @@ pub fn write(db: &mut Connection, snapshots: &[Snapshot]) -> Reply {
 }
 
 fn apply(db: &mut Connection, snapshots: &[Snapshot]) -> Result<()> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     {
-        let mut statement = tx.prepare_cached(
+        let mut statement = tx.prepare(
             "UPDATE tasks SET context_used_tokens=?2, context_window_tokens=?3,
              context_cache_hit_rate=?4 WHERE id=?1",
         )?;

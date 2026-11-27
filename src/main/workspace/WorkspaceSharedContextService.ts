@@ -269,9 +269,11 @@ export class WorkspaceSharedContextService {
     );
   }
 
-  private readSnapshot(currentSpaceId: string | null, taskId: string | null, includeMemories: boolean) {
-    if (this.db.connection.inTransaction) return;
-    return this.db.runtimeAuditReader?.workspaceSharedData(currentSpaceId, taskId, includeMemories);
+  private async readSnapshot(currentSpaceId: string | null, taskId: string | null, includeMemories: boolean) {
+    const snapshot = this.db.inTransaction ? undefined
+      : await this.db.runtimeAuditReader?.workspaceSharedData(currentSpaceId, taskId, includeMemories);
+    if (!snapshot && this.db.coreIdentity) throw new Error("工作空间共享上下文读取未获 Core 确认");
+    return snapshot;
   }
 
   private buildView(

@@ -6,10 +6,13 @@
 
 use crate::business_protocol::{
     ClientContext, EmittedEvent, ExecutorTracker, WriteSideEffects, append_event,
-    current_core_generation, dispatch_waiting_executions, ensure_tables as ensure_protocol_tables,
+    current_core_generation, dispatch_waiting_executions,
 };
+use crate::database::{DuckDbEngine, PooledConnection};
+use crate::outbox_publisher::{OutboxEventDraft, OutboxGroupDraft, append_outbox_group_in_tx};
+use crate::resource_gate::ResourceLease;
 use crate::work_scheduler::now_ms;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -17,6 +20,7 @@ use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 static HOST_GEN_SEQ: AtomicU64 = AtomicU64::new(1);
 const DEFAULT_STARTUP_GRACE_MS: i64 = 20_000;
@@ -85,6 +89,15 @@ pub enum Command {
         #[serde(default)]
         auto_restart: Option<bool>,
     },
+    Bootstrap {
+        host_id: String,
+        pid: i64,
+        host_generation: String,
+        storage_root: String,
+        db_path: Option<String>,
+        pi_version: String,
+        expected_pi_version: String,
+    },
     Register {
         host_id: String,
         pid: i64,
@@ -95,6 +108,10 @@ pub enum Command {
         expected_pi_version: String,
         #[serde(default)]
         capabilities: Option<Vec<String>>,
+        #[serde(default)]
+        recovered_task_ids: Vec<String>,
+        #[serde(default)]
+        require_manifest: bool,
     },
     Heartbeat {
         host_id: String,
@@ -117,49 +134,7 @@ impl Command {
     }
 }
 
-pub fn ensure_pi_host_tables(db: &Connection) -> crate::Result<()> {
-    let core_gen = current_core_generation();
-    ensure_protocol_tables(db, &core_gen)?;
-    db.execute_batch(
-        "CREATE TABLE IF NOT EXISTS core_pi_hosts (
-            host_id TEXT PRIMARY KEY,
-            pid INTEGER NOT NULL,
-            core_generation TEXT NOT NULL,
-            host_generation TEXT NOT NULL,
-            storage_root TEXT NOT NULL,
-            db_path TEXT NOT NULL,
-            pi_version TEXT NOT NULL,
-            status TEXT NOT NULL,
-            started_at_ms INTEGER NOT NULL,
-            last_heartbeat_ms INTEGER NOT NULL,
-            stopped_at_ms INTEGER,
-            last_error TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_core_pi_hosts_status
-            ON core_pi_hosts(status, storage_root, last_heartbeat_ms DESC);
-        CREATE TABLE IF NOT EXISTS core_pi_host_fences (
-            host_generation TEXT PRIMARY KEY,
-            reason TEXT,
-            fenced_at_ms INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS core_pi_host_launch_specs (
-            storage_root TEXT PRIMARY KEY,
-            executable TEXT NOT NULL,
-            script_path TEXT NOT NULL,
-            args_json TEXT NOT NULL,
-            data_directory TEXT NOT NULL,
-            db_path TEXT NOT NULL,
-            pi_version TEXT NOT NULL,
-            expected_pi_version TEXT NOT NULL,
-            runtime_audit_executable TEXT,
-            extra_env_json TEXT NOT NULL,
-            auto_restart INTEGER NOT NULL DEFAULT 1,
-            consecutive_failures INTEGER NOT NULL DEFAULT 0,
-            next_restart_at_ms INTEGER NOT NULL DEFAULT 0,
-            last_error TEXT,
-            updated_at_ms INTEGER NOT NULL
-        );",
-    )?;
+pub fn ensure_pi_host_tables(_db: &Connection) -> crate::Result<()> {
     Ok(())
 }
 
@@ -349,7 +324,9 @@ fn read_all_hosts(db: &Connection) -> crate::Result<Vec<PiHostRecord>> {
         .query_map([], |row| {
             let pid: i64 = row.get(1)?;
             let status: String = row.get(7)?;
-            let alive = (status == "starting" || status == "running") && pid > 0 && is_pid_alive(pid);
+            let alive = (status == "starting" || status == "bootstrapping" || status == "running")
+                && pid > 0
+                && is_pid_alive(pid);
             Ok(PiHostRecord {
                 host_id: row.get(0)?,
                 pid,
@@ -371,22 +348,19 @@ fn read_all_hosts(db: &Connection) -> crate::Result<Vec<PiHostRecord>> {
 }
 
 pub fn execute_read(db: &Connection, command: Command) -> crate::Result<Value> {
-    let hosts_table_exists: Option<i64> = db
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'core_pi_hosts'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
+    let hosts_table_exists = crate::database::table_exists(db, "core_pi_hosts")?;
     match command {
         Command::Status => {
-            if hosts_table_exists.is_none() {
+            if !hosts_table_exists {
                 return Ok(json!({ "activeHost": null, "hosts": [], "fencedCount": 0 }));
             }
             let hosts = read_all_hosts(db)?;
             let active = hosts
                 .iter()
-                .find(|h| (h.status == "running" || h.status == "starting") && h.alive)
+                .find(|h| {
+                    (h.status == "running" || h.status == "bootstrapping" || h.status == "starting")
+                        && h.alive
+                })
                 .cloned();
             let fenced_count: i64 = db.query_row(
                 "SELECT COUNT(*) FROM core_pi_host_fences",
@@ -403,7 +377,7 @@ pub fn execute_read(db: &Connection, command: Command) -> crate::Result<Value> {
             host_generation,
             storage_root,
         } => {
-            if hosts_table_exists.is_none() {
+            if !hosts_table_exists {
                 return Ok(json!({ "valid": false, "reason": "not_initialized" }));
             }
             if is_generation_fenced(db, &host_generation) {
@@ -425,7 +399,8 @@ pub fn execute_read(db: &Connection, command: Command) -> crate::Result<Value> {
                 return Ok(json!({ "valid": false, "reason": "storage_root_mismatch" }));
             }
             let alive = is_pid_alive(pid);
-            let active = (status == "starting" || status == "running") && alive;
+            let active =
+                (status == "starting" || status == "bootstrapping" || status == "running") && alive;
             Ok(json!({
                 "valid": active,
                 "fenced": false,
@@ -454,7 +429,10 @@ pub fn execute_write(
     client: &ClientContext,
     command: Command,
 ) -> crate::Result<WriteSideEffects> {
-    execute_write_with_gate(db, tracker, client, command, |op| op())
+    execute_write_with_gate(db, tracker, client, command, |op| {
+        op();
+        Ok(())
+    })
 }
 
 struct LaunchPlan {
@@ -474,53 +452,234 @@ struct LaunchPlan {
     auto_restart_flag: i64,
 }
 
-fn cleanup_failed_launch(db: &mut Connection, host_id: &str, error_msg: &str) {
+fn cleanup_failed_launch(db: &mut Connection, host_id: &str, host_generation: &str, error_msg: &str) {
     let now = now_ms();
-    if let Ok(tx) = db.transaction_with_behavior(TransactionBehavior::Immediate) {
+    if let Ok(tx) = db.transaction() {
         let _ = tx.execute(
-            "UPDATE core_pi_hosts SET status = 'failed', stopped_at_ms = ?1, last_error = ?2 WHERE host_id = ?3",
-            params![now, error_msg, host_id],
+            "UPDATE core_pi_hosts SET status = 'failed', stopped_at_ms = ?1, last_error = ?2
+             WHERE host_id = ?3 AND host_generation = ?4 AND status = 'launching'",
+            params![now, error_msg, host_id, host_generation],
         );
-        let _ = crate::request_control::commit(tx);
+        let _ = crate::request_control::commit_finalization(tx, "failed Pi host launch");
     }
 }
 
 fn cleanup_cancelled_launch(db: &mut Connection, host_id: &str, host_generation: &str, pid: i64) {
     let now = now_ms();
-    if let Ok(tx) = db.transaction_with_behavior(TransactionBehavior::Immediate) {
+    if let Ok(tx) = db.transaction() {
         let _ = tx.execute(
-            "INSERT OR IGNORE INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
-             VALUES (?1, 'cancelled_during_launch', ?2)",
+            "INSERT INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
+             VALUES (?1, 'cancelled_during_launch', ?2) ON CONFLICT DO NOTHING",
             params![host_generation, now],
         );
         let _ = tx.execute(
             "UPDATE core_pi_hosts SET pid = ?1, status = 'stopped', stopped_at_ms = ?2, last_error = 'cancelled_during_launch'
-             WHERE host_id = ?3",
-            params![pid, now, host_id],
+             WHERE host_id = ?3 AND host_generation = ?4
+               AND ((status = 'launching' AND pid = 0)
+                    OR (pid = ?1 AND status IN ('starting', 'bootstrapping', 'running')))",
+            params![pid, now, host_id, host_generation],
         );
-        let _ = crate::request_control::commit(tx);
+        let _ = crate::request_control::commit_finalization(tx, "cancelled Pi host launch");
     }
 }
 
-/// Runs Pi Host lifecycle mutations with intent-outside-TX and external process ops
-/// executed outside both SQLite transactions and `write_gate` via `without_gate`.
+fn confirm_spawned_host(
+    tx: &duckdb::Transaction<'_>,
+    host_id: &str,
+    host_generation: &str,
+    pid: u32,
+    now: i64,
+) -> crate::Result<Option<String>> {
+    let fenced = tx.query_row(
+        "SELECT 1 FROM core_pi_host_fences WHERE host_generation = ?1",
+        [host_generation],
+        |row| row.get::<_, i32>(0),
+    ).optional()?.is_some();
+    if fenced {
+        return Ok(None);
+    }
+    let pid = i64::from(pid);
+    let updated = tx.execute(
+        "UPDATE core_pi_hosts SET pid = ?1, status = 'starting', last_heartbeat_ms = ?2
+         WHERE host_id = ?3 AND host_generation = ?4 AND status = 'launching' AND pid = 0",
+        params![pid, now, host_id, host_generation],
+    )?;
+    if updated == 1 {
+        return Ok(Some("starting".into()));
+    }
+    // The child can bootstrap or register before its parent finishes the spawn call.
+    tx.query_row(
+        "SELECT status FROM core_pi_hosts WHERE host_id = ?1 AND host_generation = ?2
+         AND pid = ?3 AND status IN ('starting', 'bootstrapping', 'running')",
+        params![host_id, host_generation, pid],
+        |row| row.get(0),
+    ).optional().map_err(Into::into)
+}
+
+fn defer_interrupted_goals(
+    tx: &duckdb::Transaction<'_>,
+    host_generation: &str,
+    now: i64,
+) -> crate::Result<usize> {
+    let mut stmt = tx.prepare(
+        "SELECT c.work_id, c.task_id, c.intent_revision, c.attempt_serial, w.user_id
+         FROM conversation_goal_continuations c LEFT JOIN works w USING (work_id)
+         WHERE c.state = 'igniting' ORDER BY c.work_id",
+    )?;
+    let interrupted = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?, row.get::<_, Option<String>>(4)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    let operation_id = format!("pi-host-bootstrap:{host_generation}");
+    for (batch_index, (work_id, task_id, intent_revision, attempt_serial, user_id)) in
+        interrupted.iter().enumerate()
+    {
+        tx.execute(
+            "UPDATE conversation_goal_continuations
+             SET state = 'deferred', defer_reason = 'restart', deferred_at = ?1, updated_at = GREATEST(updated_at, ?1)
+             WHERE work_id = ?2 AND state = 'igniting'",
+            params![now, work_id],
+        )?;
+        let group_id = format!("goal-continuation-restart:{}", json!([host_generation, work_id]));
+        append_outbox_group_in_tx(
+            tx,
+            &OutboxGroupDraft {
+                group_id: group_id.clone(),
+                operation_id: operation_id.clone(),
+                batch_index: batch_index as i64,
+                entity_key: format!("work:{work_id}"),
+                entity_revision: None,
+                previous_revision: None,
+                depends_on_group_id: None,
+                work_projection_user_id: user_id.clone(),
+            },
+            &[OutboxEventDraft {
+                event_id: group_id,
+                owner_generation: host_generation.into(),
+                domain: "work".into(),
+                kind: "work.goalContinuationDeferred".into(),
+                task_id: Some(task_id.clone()),
+                entity_id: work_id.clone(),
+                revision: *intent_revision,
+                command_id: Some(operation_id.clone()),
+                payload_json: json!({
+                    "taskId": task_id,
+                    "workId": work_id,
+                    "intentRevision": intent_revision,
+                    "attemptSerial": attempt_serial,
+                    "state": "deferred",
+                    "reason": "restart",
+                }).to_string(),
+            }],
+            now,
+        )?;
+    }
+    Ok(interrupted.len())
+}
+
+pub enum AfterProcessEffect {
+    Resume,
+    Finish,
+}
+
+pub trait PiHostPhase {
+    fn connection(&mut self) -> crate::Result<&mut Connection>;
+    fn process_effect(&mut self, next: AfterProcessEffect, effect: &mut dyn FnMut()) -> crate::Result<()>;
+}
+
+struct DirectPhase<'a, F> {
+    db: &'a mut Connection,
+    without_gate: F,
+}
+
+impl<F: FnMut(&mut dyn FnMut()) -> crate::Result<()>> PiHostPhase for DirectPhase<'_, F> {
+    fn connection(&mut self) -> crate::Result<&mut Connection> {
+        Ok(self.db)
+    }
+
+    fn process_effect(&mut self, _next: AfterProcessEffect, effect: &mut dyn FnMut()) -> crate::Result<()> {
+        (self.without_gate)(effect)
+    }
+}
+
+pub struct PiHostWritePhase<'a> {
+    engine: &'a DuckDbEngine,
+    request_id: Option<&'a str>,
+    timeout: Duration,
+    connection: Option<PooledConnection>,
+    lease: Option<ResourceLease>,
+}
+
+impl<'a> PiHostWritePhase<'a> {
+    pub fn new(engine: &'a DuckDbEngine, lease: ResourceLease, request_id: Option<&'a str>, timeout: Duration) -> Self {
+        Self { engine, request_id, timeout, connection: None, lease: Some(lease) }
+    }
+}
+
+impl PiHostPhase for PiHostWritePhase<'_> {
+    fn connection(&mut self) -> crate::Result<&mut Connection> {
+        if self.lease.is_none() {
+            return Err("PiHost phase has no write permit".into());
+        }
+        if self.connection.is_none() {
+            let mut connection = self.engine.checkout_writer(self.timeout)?;
+            if let (Some(id), Some(control)) = (self.request_id, crate::request_control::shared()) {
+                connection.bind_request(id, control.clone());
+            }
+            self.connection = Some(connection);
+        }
+        Ok(self.connection.as_mut().expect("writer checked out").conn_mut())
+    }
+
+    fn process_effect(&mut self, next: AfterProcessEffect, effect: &mut dyn FnMut()) -> crate::Result<()> {
+        drop(self.connection.take());
+        let lease = self.lease.take().ok_or("PiHost phase has no permit to release")?;
+        match next {
+            AfterProcessEffect::Resume => {
+                let suspended = lease.suspend();
+                effect();
+                self.lease = Some(suspended.resume(self.timeout)
+                    .map_err(|error| format!("PiHost phase could not resume: {error:?}"))?);
+            }
+            AfterProcessEffect::Finish => {
+                drop(lease);
+                effect();
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Direct adapter for callers that already own a connection, including in-memory tests.
 pub fn execute_write_with_gate<F>(
     db: &mut Connection,
     tracker: &ExecutorTracker,
     client: &ClientContext,
     command: Command,
-    mut without_gate: F,
+    without_gate: F,
 ) -> crate::Result<WriteSideEffects>
 where
-    F: FnMut(&mut dyn FnMut()) -> (),
+    F: FnMut(&mut dyn FnMut()) -> crate::Result<()>,
 {
-    ensure_pi_host_tables(db)?;
+    execute_write_in_phase(&mut DirectPhase { db, without_gate }, tracker, client, command)
+}
+
+pub fn execute_write_in_phase(
+    phase: &mut impl PiHostPhase,
+    tracker: &ExecutorTracker,
+    client: &ClientContext,
+    command: Command,
+) -> crate::Result<WriteSideEffects> {
+    ensure_pi_host_tables(phase.connection()?)?;
     let now = now_ms();
     let core_gen = current_core_generation();
     let mut events: Vec<EmittedEvent> = Vec::new();
     let mut dispatches: Vec<Value> = Vec::new();
     let data = match command {
-        Command::Status | Command::VerifyLease { .. } => execute_read(db, command)?,
+        Command::Status | Command::VerifyLease { .. } => execute_read(phase.connection()?, command)?,
         Command::Launch {
             executable,
             script_path,
@@ -551,12 +710,12 @@ where
 
             // Phase 1: short IMMEDIATE transaction records intent ('launching') & fences stale owners.
             let plan = {
-                let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let tx = phase.connection()?.transaction()?;
                 let existing: Option<(String, i64, String, String, i64, i64)> = tx
                     .query_row(
                         "SELECT host_id, pid, host_generation, status, started_at_ms, last_heartbeat_ms
                          FROM core_pi_hosts
-                         WHERE storage_root = ?1 AND status IN ('launching', 'starting', 'running')
+                         WHERE storage_root = ?1 AND status IN ('launching', 'starting', 'bootstrapping', 'running')
                          ORDER BY started_at_ms DESC LIMIT 1",
                         [&storage_root_str],
                         |row| {
@@ -576,9 +735,12 @@ where
                 if let Some((prev_id, prev_pid, prev_gen, prev_status, prev_started, prev_hb)) = existing {
                     let healthy_alive = prev_pid > 0
                         && is_pid_alive(prev_pid)
-                        && ((prev_status == "starting" && now.saturating_sub(prev_started) <= startup_grace)
+                        && (((prev_status == "starting" || prev_status == "bootstrapping")
+                            && now.saturating_sub(prev_started) <= startup_grace)
                             || (prev_status == "running" && now.saturating_sub(prev_hb) <= hb_timeout));
-                    if healthy_alive && force_restart != Some(true) {
+                    let launch_in_progress = prev_status == "launching"
+                        && now.saturating_sub(prev_started) <= startup_grace;
+                    if (healthy_alive || launch_in_progress) && force_restart != Some(true) {
                         crate::request_control::commit(tx)?;
                         return Ok(simple_fx(json!({
                             "launched": false,
@@ -599,8 +761,8 @@ where
                         "dead_reaped"
                     };
                     tx.execute(
-                        "INSERT OR IGNORE INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
-                         VALUES (?1, ?2, ?3)",
+                        "INSERT INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
+                         VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
                         params![&prev_gen, fence_reason, now],
                     )?;
                     tx.execute(
@@ -677,9 +839,13 @@ where
                 auto_restart_flag,
             } = plan;
 
+            if let Err(error) = crate::request_control::checkpoint() {
+                cleanup_cancelled_launch(phase.connection()?, &next_host_id, &next_gen, 0);
+                return Err(error);
+            }
             // Phase 2: terminate previous host (if forced) & spawn detached child OUTSIDE TX and write_gate.
             let mut spawn_result: Option<crate::Result<u32>> = None;
-            without_gate(&mut || {
+            let resumed = phase.process_effect(AfterProcessEffect::Resume, &mut || {
                 if let Some(prev_pid) = prev_pid_to_terminate {
                     terminate_pid(prev_pid);
                 }
@@ -697,11 +863,18 @@ where
                 ));
             });
 
+            if let Err(error) = resumed {
+                if let Some(Ok(pid)) = spawn_result {
+                    terminate_pid(i64::from(pid));
+                }
+                return Err(error);
+            }
+
             // Phase 3: finalize 'launching' -> 'starting' or clean up on failure/cancellation.
             let pid = match spawn_result.expect("spawn executed") {
                 Ok(pid) => pid,
                 Err(err) => {
-                    cleanup_failed_launch(db, &next_host_id, &err.to_string());
+                    cleanup_failed_launch(phase.connection()?, &next_host_id, &next_gen, &err.to_string());
                     if prev_pid_to_terminate.is_none() {
                         crate::request_control::known_failure();
                     }
@@ -710,21 +883,18 @@ where
             };
 
             if let Err(cancel_err) = crate::request_control::checkpoint() {
-                without_gate(&mut || {
+                phase.process_effect(AfterProcessEffect::Resume, &mut || {
                     terminate_pid(pid as i64);
-                });
-                cleanup_cancelled_launch(db, &next_host_id, &next_gen, pid as i64);
+                })?;
+                cleanup_cancelled_launch(phase.connection()?, &next_host_id, &next_gen, pid as i64);
                 return Err(cancel_err);
             }
 
-            let finalize_res = (|| -> crate::Result<EmittedEvent> {
+            let finalize_res = (|| -> crate::Result<(EmittedEvent, String)> {
                 let fin_now = now_ms();
-                let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                tx.execute(
-                    "UPDATE core_pi_hosts SET pid = ?1, status = 'starting', last_heartbeat_ms = ?2
-                     WHERE host_id = ?3 AND status = 'launching'",
-                    params![pid as i64, fin_now, &next_host_id],
-                )?;
+                let tx = phase.connection()?.transaction()?;
+                let status = confirm_spawned_host(&tx, &next_host_id, &next_gen, pid, fin_now)?
+                    .ok_or("PiHost launch intent was superseded before finalization")?;
                 let args_json = serde_json::to_string(&args).unwrap_or_else(|_| "[]".into());
                 let extra_env_json = serde_json::to_string(&extra_env).unwrap_or_else(|_| "{}".into());
                 let runtime_exec_str = runtime_audit_executable.as_ref().map(|p| p.to_string_lossy().into_owned());
@@ -782,11 +952,11 @@ where
                     }),
                 )?;
                 crate::request_control::commit(tx)?;
-                Ok(ev)
+                Ok((ev, status))
             })();
 
             match finalize_res {
-                Ok(ev) => {
+                Ok((ev, status)) => {
                     events.push(ev);
                     json!({
                         "launched": true,
@@ -794,17 +964,196 @@ where
                         "hostId": next_host_id,
                         "pid": pid,
                         "hostGeneration": next_gen,
-                        "status": "starting",
+                        "status": status,
                     })
                 }
                 Err(err) => {
-                    without_gate(&mut || {
+                    phase.process_effect(AfterProcessEffect::Resume, &mut || {
                         terminate_pid(pid as i64);
-                    });
-                    cleanup_cancelled_launch(db, &next_host_id, &next_gen, pid as i64);
+                    })?;
+                    cleanup_cancelled_launch(phase.connection()?, &next_host_id, &next_gen, pid as i64);
                     return Err(err);
                 }
             }
+        }
+        Command::Bootstrap {
+            host_id,
+            pid,
+            host_generation,
+            storage_root,
+            db_path,
+            pi_version,
+            expected_pi_version,
+        } => {
+            if pi_version != expected_pi_version {
+                return Ok(simple_fx(json!({
+                    "accepted": false,
+                    "fenced": true,
+                    "reason": format!("Pi version mismatch: expected {expected_pi_version}, got {pi_version}"),
+                })));
+            }
+            let tx = phase.connection()?.transaction()?;
+            if is_generation_fenced(&tx, &host_generation) {
+                crate::request_control::commit(tx)?;
+                return Ok(simple_fx(json!({
+                    "accepted": false,
+                    "fenced": true,
+                    "reason": "stale_host_generation",
+                })));
+            }
+            let identities = {
+                let mut stmt = tx.prepare(
+                    "SELECT host_id, pid, host_generation, storage_root, status FROM core_pi_hosts
+                     WHERE host_id = ?1 OR host_generation = ?2",
+                )?;
+                stmt.query_map(params![&host_id, &host_generation], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?, row.get::<_, String>(4)?))
+                })?.collect::<Result<Vec<_>, _>>()?
+            };
+            let existing = match identities.as_slice() {
+                [] => false,
+                [(stored_id, stored_pid, generation, root, status)]
+                    if stored_id == &host_id && generation == &host_generation && root == &storage_root
+                        && (*stored_pid == pid || (*stored_pid == 0 && status == "launching")) =>
+                {
+                    if status == "bootstrapping" || status == "running" {
+                        crate::request_control::commit(tx)?;
+                        return Ok(simple_fx(json!({
+                            "accepted": true,
+                            "fenced": false,
+                            "status": status,
+                            "hostId": host_id,
+                            "pid": pid,
+                            "hostGeneration": host_generation,
+                            "deferredGoals": 0,
+                        })));
+                    }
+                    if matches!(status.as_str(), "launching" | "starting") {
+                        true
+                    } else {
+                        crate::request_control::commit(tx)?;
+                        return Ok(simple_fx(json!({
+                            "accepted": false,
+                            "fenced": true,
+                            "reason": "inactive_host_generation",
+                        })));
+                    }
+                }
+                _ => {
+                    crate::request_control::commit(tx)?;
+                    return Ok(simple_fx(json!({
+                        "accepted": false,
+                        "fenced": true,
+                        "reason": "host_identity_mismatch",
+                    })));
+                }
+            };
+
+            let competing_owners = {
+                let mut stmt = tx.prepare(
+                    "SELECT host_id, pid, host_generation, storage_root FROM core_pi_hosts h
+                     WHERE status IN ('starting', 'bootstrapping', 'running') AND host_generation <> ?1
+                       AND NOT EXISTS (SELECT 1 FROM core_pi_host_fences f WHERE f.host_generation = h.host_generation)
+                     ORDER BY started_at_ms DESC, host_id",
+                )?;
+                stmt.query_map([&host_generation], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+                })?.collect::<Result<Vec<_>, _>>()?
+            };
+            let mut another_live_owner = false;
+            for (active_id, active_pid, active_gen, active_root) in competing_owners {
+                let live = is_pid_alive(active_pid);
+                if active_root != storage_root {
+                    another_live_owner |= live;
+                    continue;
+                }
+                if live {
+                    tx.execute(
+                        "INSERT INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
+                         VALUES (?1, 'superseded_by_live_host', ?2) ON CONFLICT DO NOTHING",
+                        params![&host_generation, now],
+                    )?;
+                    crate::request_control::commit(tx)?;
+                    return Ok(simple_fx(json!({
+                        "accepted": false,
+                        "fenced": true,
+                        "reason": "active_owner_exists",
+                        "activeHostId": active_id,
+                        "activeHostGeneration": active_gen,
+                    })));
+                }
+                tx.execute(
+                    "INSERT INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
+                     VALUES (?1, 'dead_owner_superseded', ?2) ON CONFLICT DO NOTHING",
+                    params![&active_gen, now],
+                )?;
+                tx.execute(
+                    "UPDATE core_pi_hosts SET status = 'crashed', stopped_at_ms = ?1 WHERE host_id = ?2",
+                    params![now, &active_id],
+                )?;
+            }
+
+            if existing {
+                tx.execute(
+                    "UPDATE core_pi_hosts
+                     SET pid = ?1, core_generation = ?2, host_generation = ?3, status = 'bootstrapping',
+                         last_heartbeat_ms = ?4, stopped_at_ms = NULL
+                     WHERE host_id = ?5",
+                    params![pid, &core_gen, &host_generation, now, &host_id],
+                )?;
+            } else {
+                tx.execute(
+                    "INSERT INTO core_pi_hosts (
+                        host_id, pid, core_generation, host_generation, storage_root, db_path, pi_version,
+                        status, started_at_ms, last_heartbeat_ms, stopped_at_ms, last_error
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'bootstrapping', ?8, ?8, NULL, NULL)",
+                    params![
+                        &host_id,
+                        pid,
+                        &core_gen,
+                        &host_generation,
+                        &storage_root,
+                        db_path.unwrap_or_default(),
+                        &pi_version,
+                        now
+                    ],
+                )?;
+            }
+            // The continuation ledger is database-wide. A different live root can still own an attempt.
+            let deferred_goals = if another_live_owner {
+                0
+            } else {
+                defer_interrupted_goals(&tx, &host_generation, now)?
+            };
+            let ev = append_event(
+                &tx,
+                &core_gen,
+                &host_generation,
+                "pi-host",
+                "piHostBootstrapping",
+                &host_id,
+                1,
+                None,
+                &json!({
+                    "hostId": host_id,
+                    "pid": pid,
+                    "hostGeneration": host_generation,
+                    "storageRoot": storage_root,
+                }),
+            )?;
+            events.push(ev);
+            crate::request_control::commit(tx)?;
+            tracker.set_bootstrapping();
+            json!({
+                "accepted": true,
+                "fenced": false,
+                "status": "bootstrapping",
+                "hostId": host_id,
+                "pid": pid,
+                "hostGeneration": host_generation,
+                "deferredGoals": deferred_goals,
+            })
         }
         Command::Register {
             host_id,
@@ -815,6 +1164,8 @@ where
             pi_version,
             expected_pi_version,
             capabilities,
+            recovered_task_ids,
+            require_manifest,
         } => {
             if pi_version != expected_pi_version {
                 return Ok(simple_fx(json!({
@@ -823,7 +1174,14 @@ where
                     "reason": format!("Pi version mismatch: expected {expected_pi_version}, got {pi_version}"),
                 })));
             }
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if require_manifest && capabilities.as_ref().is_none_or(|c| c.is_empty()) {
+                return Ok(simple_fx(json!({
+                    "accepted": false,
+                    "fenced": false,
+                    "reason": "capability_manifest_required",
+                })));
+            }
+            let tx = phase.connection()?.transaction()?;
             if is_generation_fenced(&tx, &host_generation) {
                 crate::request_control::commit(tx)?;
                 return Ok(simple_fx(json!({
@@ -835,7 +1193,7 @@ where
             let conflicting: Option<(String, i64, String)> = tx
                 .query_row(
                     "SELECT host_id, pid, host_generation FROM core_pi_hosts
-                     WHERE storage_root = ?1 AND status = 'running' AND host_generation != ?2
+                     WHERE storage_root = ?1 AND status IN ('bootstrapping', 'running') AND host_generation != ?2
                      ORDER BY started_at_ms DESC LIMIT 1",
                     params![&storage_root, &host_generation],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -844,8 +1202,8 @@ where
             if let Some((active_id, active_pid, active_gen)) = conflicting {
                 if active_pid != pid && is_pid_alive(active_pid) {
                     tx.execute(
-                        "INSERT OR IGNORE INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
-                         VALUES (?1, 'superseded_by_live_host', ?2)",
+                        "INSERT INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
+                         VALUES (?1, 'superseded_by_live_host', ?2) ON CONFLICT DO NOTHING",
                         params![&host_generation, now],
                     )?;
                     crate::request_control::commit(tx)?;
@@ -859,8 +1217,8 @@ where
                 }
                 // Prior owner is dead; fence its generation before admitting recovery generation.
                 tx.execute(
-                    "INSERT OR IGNORE INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
-                     VALUES (?1, 'dead_owner_superseded', ?2)",
+                    "INSERT INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
+                     VALUES (?1, 'dead_owner_superseded', ?2) ON CONFLICT DO NOTHING",
                     params![&active_gen, now],
                 )?;
                 tx.execute(
@@ -926,9 +1284,21 @@ where
                 }),
             )?;
             events.push(ev);
-            tracker.set_capabilities(capabilities.clone().map(|v| v.into_iter().collect()));
+            for task_id in &recovered_task_ids {
+                tx.execute(
+                    "UPDATE core_execution_runs
+                     SET status = 'running', owner_generation = ?1, wait_reason = 'recovered_in_host', revision = revision + 1
+                     WHERE task_id = ?2 AND status IN ('queued', 'waiting_executor')",
+                    params![&host_generation, task_id],
+                )?;
+            }
+            tracker.set_ready_capabilities(
+                capabilities.clone().map(|v| v.into_iter().collect()),
+                require_manifest,
+            );
             dispatch_waiting_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
             crate::request_control::commit(tx)?;
+            crate::work_scheduler::apply_committed_promotion_dispatches(tracker, &dispatches);
             let _ = client;
             json!({
                 "accepted": true,
@@ -944,7 +1314,7 @@ where
             pid,
             host_generation,
         } => {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = phase.connection()?.transaction()?;
             if is_generation_fenced(&tx, &host_generation) {
                 crate::request_control::commit(tx)?;
                 return Ok(simple_fx(json!({ "accepted": false, "fenced": true, "reason": "generation_fenced" })));
@@ -952,7 +1322,7 @@ where
             let updated = tx.execute(
                 "UPDATE core_pi_hosts
                  SET last_heartbeat_ms = ?1
-                 WHERE host_id = ?2 AND host_generation = ?3 AND pid = ?4 AND status IN ('starting', 'running')",
+                 WHERE host_id = ?2 AND host_generation = ?3 AND pid = ?4 AND status IN ('starting', 'bootstrapping', 'running')",
                 params![now, &host_id, &host_generation, pid],
             )?;
             crate::request_control::commit(tx)?;
@@ -963,16 +1333,16 @@ where
             }
         }
         Command::Stop { host_id, reason } => {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = phase.connection()?.transaction()?;
             let targets: Vec<(String, i64, String, String)> = if let Some(ref hid) = host_id {
                 let mut stmt = tx.prepare(
-                    "SELECT host_id, pid, host_generation, storage_root FROM core_pi_hosts WHERE host_id = ?1 AND status IN ('launching', 'starting', 'running')",
+                    "SELECT host_id, pid, host_generation, storage_root FROM core_pi_hosts WHERE host_id = ?1 AND status IN ('launching', 'starting', 'bootstrapping', 'running')",
                 )?;
                 stmt.query_map([hid], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
                     .collect::<Result<Vec<_>, _>>()?
             } else {
                 let mut stmt = tx.prepare(
-                    "SELECT host_id, pid, host_generation, storage_root FROM core_pi_hosts WHERE status IN ('launching', 'starting', 'running')",
+                    "SELECT host_id, pid, host_generation, storage_root FROM core_pi_hosts WHERE status IN ('launching', 'starting', 'bootstrapping', 'running')",
                 )?;
                 stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
                     .collect::<Result<Vec<_>, _>>()?
@@ -984,8 +1354,8 @@ where
                     params![now, sroot],
                 )?;
                 tx.execute(
-                    "INSERT OR IGNORE INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
-                     VALUES (?1, ?2, ?3)",
+                    "INSERT INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
+                     VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
                     params![hgen, &reason_str, now],
                 )?;
                 tx.execute(
@@ -1012,29 +1382,29 @@ where
                 )?;
             }
             crate::request_control::commit(tx)?;
-            without_gate(&mut || {
+            phase.process_effect(AfterProcessEffect::Finish, &mut || {
                 for (_hid, pid, _hgen, _sroot) in &targets {
                     if *pid > 0 {
                         terminate_pid(*pid);
                     }
                 }
-            });
+            })?;
             json!({ "stopped": targets.len(), "reason": reason_str })
         }
         Command::FenceGeneration {
             host_generation,
             reason,
         } => {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = phase.connection()?.transaction()?;
             let reason_str = reason.unwrap_or_else(|| "manual_fence".into());
             tx.execute(
-                "INSERT OR IGNORE INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
-                 VALUES (?1, ?2, ?3)",
+                "INSERT INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
+                 VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
                 params![&host_generation, &reason_str, now],
             )?;
             tx.execute(
                 "UPDATE core_pi_hosts SET status = 'fenced', stopped_at_ms = ?1, last_error = ?2
-                 WHERE host_generation = ?3 AND status IN ('launching', 'starting', 'running')",
+                 WHERE host_generation = ?3 AND status IN ('launching', 'starting', 'bootstrapping', 'running')",
                 params![now, &reason_str, &host_generation],
             )?;
             crate::request_control::commit(tx)?;
@@ -1052,15 +1422,23 @@ where
 /// Core-owned unattended Pi Node Host recovery tick: detects dead or heartbeat-stale
 /// hosts whose launch spec has `auto_restart = 1`, fences the dead generation, and
 /// respawns a new host generation with bounded crash backoff.
+#[cfg(test)]
 pub fn supervise_tick<F>(
     db: &mut Connection,
     _tracker: &ExecutorTracker,
-    mut without_gate: F,
+    without_gate: F,
 ) -> crate::Result<Option<WriteSideEffects>>
 where
-    F: FnMut(&mut dyn FnMut()),
+    F: FnMut(&mut dyn FnMut()) -> crate::Result<()>,
 {
-    if !crate::business_protocol::table_exists(db, "core_pi_host_launch_specs")? {
+    supervise_tick_in_phase(&mut DirectPhase { db, without_gate }, _tracker)
+}
+
+pub fn supervise_tick_in_phase(
+    phase: &mut impl PiHostPhase,
+    _tracker: &ExecutorTracker,
+) -> crate::Result<Option<WriteSideEffects>> {
+    if !crate::business_protocol::table_exists(phase.connection()?, "core_pi_host_launch_specs")? {
         return Ok(None);
     }
     let now = now_ms();
@@ -1085,7 +1463,7 @@ where
     }
 
     let specs: Vec<LaunchSpecRow> = {
-        let mut stmt = db.prepare(
+        let mut stmt = phase.connection()?.prepare(
             "SELECT storage_root, executable, script_path, args_json, data_directory, db_path,
                     pi_version, expected_pi_version, runtime_audit_executable, extra_env_json,
                     consecutive_failures, next_restart_at_ms
@@ -1118,7 +1496,7 @@ where
     let mut recovered_count = 0usize;
 
     for spec in specs {
-        let latest: Option<(String, i64, String, String, i64, i64)> = db
+        let latest: Option<(String, i64, String, String, i64, i64)> = phase.connection()?
             .query_row(
                 "SELECT host_id, pid, host_generation, status, started_at_ms, last_heartbeat_ms
                  FROM core_pi_hosts
@@ -1152,10 +1530,14 @@ where
                     None
                 }
             }
-            Some((_, pid, _, ref st, started, last_hb)) if st == "starting" || st == "running" => {
+            Some((_, pid, _, ref st, started, last_hb))
+                if st == "starting" || st == "bootstrapping" || st == "running" =>
+            {
                 if pid <= 0 || !is_pid_alive(pid) {
                     Some("process_died")
-                } else if st == "starting" && now.saturating_sub(started) > startup_grace {
+                } else if (st == "starting" || st == "bootstrapping")
+                    && now.saturating_sub(started) > startup_grace
+                {
                     pid_to_terminate = Some(pid);
                     Some("startup_timeout")
                 } else if st == "running" && now.saturating_sub(last_hb) > hb_timeout {
@@ -1177,7 +1559,7 @@ where
         }
 
         if spec.consecutive_failures >= MAX_CONSECUTIVE_CRASH_RESTARTS {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = phase.connection()?.transaction()?;
             tx.execute(
                 "UPDATE core_pi_host_launch_specs
                  SET auto_restart = 0, last_error = 'crash_restart_budget_exhausted', updated_at_ms = ?1
@@ -1210,12 +1592,12 @@ where
 
         // Phase 1: fence stale host generation and insert launching intent inside a short TX.
         let (next_host_id, next_gen) = {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = phase.connection()?.transaction()?;
             let active_rows: Vec<(String, i64, String, String)> = {
                 let mut stmt = tx.prepare(
                     "SELECT host_id, pid, host_generation, status
                      FROM core_pi_hosts
-                     WHERE storage_root = ?1 AND status IN ('launching', 'starting', 'running')",
+                     WHERE storage_root = ?1 AND status IN ('launching', 'starting', 'bootstrapping', 'running')",
                 )?;
                 stmt.query_map([&spec.storage_root], |row| {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
@@ -1224,8 +1606,8 @@ where
             };
             for (prev_id, prev_pid, prev_gen, prev_status) in active_rows {
                 tx.execute(
-                    "INSERT OR IGNORE INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
-                     VALUES (?1, ?2, ?3)",
+                    "INSERT INTO core_pi_host_fences (host_generation, reason, fenced_at_ms)
+                     VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
                     params![&prev_gen, reason, now],
                 )?;
                 tx.execute(
@@ -1282,7 +1664,7 @@ where
         let root_pb = PathBuf::from(&spec.storage_root);
         let rt_exec_pb = spec.runtime_audit_executable.as_ref().map(PathBuf::from);
         let mut spawn_res: Option<crate::Result<u32>> = None;
-        without_gate(&mut || {
+        let resumed = phase.process_effect(AfterProcessEffect::Resume, &mut || {
             if let Some(pid) = pid_to_terminate {
                 terminate_pid(pid);
             }
@@ -1299,41 +1681,58 @@ where
                 &extra_env,
             ));
         });
+        if let Err(error) = resumed {
+            if let Some(Ok(pid)) = spawn_res {
+                terminate_pid(i64::from(pid));
+            }
+            return Err(error);
+        }
 
         // Phase 3: finalize 'starting' or mark failed.
         match spawn_res.expect("spawn executed") {
             Ok(new_pid) => {
-                let fin_now = now_ms();
-                let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                tx.execute(
-                    "UPDATE core_pi_hosts SET pid = ?1, status = 'starting', last_heartbeat_ms = ?2
-                     WHERE host_id = ?3 AND status = 'launching'",
-                    params![new_pid as i64, fin_now, &next_host_id],
-                )?;
-                let ev = append_event(
-                    &tx,
-                    &core_gen,
-                    &next_gen,
-                    "pi-host",
-                    "piHostRecovered",
-                    &next_host_id,
-                    1,
-                    None,
-                    &json!({
-                        "hostId": next_host_id,
-                        "pid": new_pid,
-                        "hostGeneration": next_gen,
-                        "storageRoot": spec.storage_root,
-                        "reason": reason,
-                        "attempt": spec.consecutive_failures + 1,
-                    }),
-                )?;
-                crate::request_control::commit(tx)?;
-                events.push(ev);
-                recovered_count += 1;
+                let finalized = (|| -> crate::Result<Option<EmittedEvent>> {
+                    let tx = phase.connection()?.transaction()?;
+                    if confirm_spawned_host(&tx, &next_host_id, &next_gen, new_pid, now_ms())?.is_none() {
+                        return Ok(None);
+                    }
+                    let event = append_event(
+                        &tx,
+                        &core_gen,
+                        &next_gen,
+                        "pi-host",
+                        "piHostRecovered",
+                        &next_host_id,
+                        1,
+                        None,
+                        &json!({
+                            "hostId": next_host_id,
+                            "pid": new_pid,
+                            "hostGeneration": next_gen,
+                            "storageRoot": spec.storage_root,
+                            "reason": reason,
+                            "attempt": spec.consecutive_failures + 1,
+                        }),
+                    )?;
+                    crate::request_control::commit(tx)?;
+                    Ok(Some(event))
+                })();
+                match finalized {
+                    Ok(Some(event)) => {
+                        events.push(event);
+                        recovered_count += 1;
+                    }
+                    other => {
+                        phase.process_effect(AfterProcessEffect::Resume, &mut || terminate_pid(i64::from(new_pid)))?;
+                        if let Err(error) = other {
+                            cleanup_cancelled_launch(phase.connection()?, &next_host_id, &next_gen, i64::from(new_pid));
+                            return Err(error);
+                        }
+                    }
+                }
             }
             Err(err) => {
-                cleanup_failed_launch(db, &next_host_id, &err.to_string());
+                cleanup_failed_launch(phase.connection()?, &next_host_id, &next_gen, &err.to_string());
             }
         }
     }
@@ -1352,12 +1751,53 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
+    use duckdb::Connection;
+
+    fn setup_test_db() -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(crate::database::CANONICAL_DUCKDB_SCHEMA_SQL)
+            .unwrap();
+        let _ = crate::business_protocol::ensure_tables(&db, &current_core_generation());
+        db
+    }
+
+    #[test]
+    fn process_effect_makes_the_only_writer_connection_available() -> crate::Result<()> {
+        use crate::database::DuckDbPoolConfig;
+        use crate::resource_gate::{ResourceGate, ResourceKey, ResourceRequirement};
+
+        let dir = std::env::temp_dir().join(format!("mybuddy-pi-effect-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir)?;
+        let config = DuckDbPoolConfig { write_pool_size: 1, ..Default::default() };
+        let (engine, _) = DuckDbEngine::open_or_initialize(dir.join("app.duckdb"), config)?;
+        let gate = ResourceGate::new(8);
+        let lease = gate.acquire(
+            vec![ResourceRequirement::exclusive(ResourceKey::PublisherOrder)],
+            Duration::from_secs(1),
+            || false,
+        ).expect("initial Pi host permit");
+        let mut phase = PiHostWritePhase::new(&engine, lease, None, Duration::from_secs(1));
+        phase.connection()?;
+        let mut other_writer_count = 0_i64;
+        phase.process_effect(AfterProcessEffect::Resume, &mut || {
+            if let Ok(other) = engine.checkout_writer(Duration::from_millis(100)) {
+                other_writer_count = other.conn().query_row("SELECT 1", [], |row| row.get(0)).unwrap();
+            }
+        })?;
+        assert_eq!(other_writer_count, 1);
+        let finalized: i64 = phase.connection()?.query_row("SELECT 2", [], |row| row.get(0))?;
+        assert_eq!(finalized, 2);
+        phase.process_effect(AfterProcessEffect::Finish, &mut || {})?;
+        assert!(phase.connection().is_err());
+        drop(phase);
+        drop(engine);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
 
     #[test]
     fn pi_host_registration_fences_stale_generation_and_preserves_version_pin() {
-        let mut db = Connection::open_in_memory().unwrap();
-        ensure_pi_host_tables(&db).unwrap();
+        let mut db = setup_test_db();
         let tracker = ExecutorTracker::new();
         let ctx = ClientContext::synthetic(&current_core_generation());
         let my_pid = std::process::id() as i64;
@@ -1375,6 +1815,8 @@ mod tests {
                 pi_version: "0.99.2".into(),
                 expected_pi_version: "1.5.0".into(),
                 capabilities: None,
+                recovered_task_ids: vec![],
+                require_manifest: false,
             },
         )
         .unwrap();
@@ -1394,6 +1836,8 @@ mod tests {
                 pi_version: "1.5.0".into(),
                 expected_pi_version: "1.5.0".into(),
                 capabilities: Some(vec!["pi_turn".into(), "pi_control".into()]),
+                recovered_task_ids: vec![],
+                require_manifest: false,
             },
         )
         .unwrap();
@@ -1463,6 +1907,8 @@ mod tests {
                 pi_version: "1.5.0".into(),
                 expected_pi_version: "1.5.0".into(),
                 capabilities: Some(vec!["pi_turn".into(), "dots_control".into()]),
+                recovered_task_ids: vec![],
+                require_manifest: false,
             },
         )
         .unwrap();
@@ -1471,9 +1917,189 @@ mod tests {
     }
 
     #[test]
+    fn three_phase_bootstrap_fences_dispatch_until_manifest_and_skips_recovered() {
+        let mut db = setup_test_db();
+        let tracker = ExecutorTracker::new();
+        tracker.set_presence(true, 1, "pi-client".into());
+        let ctx = ClientContext::synthetic(&current_core_generation());
+        let my_pid = std::process::id() as i64;
+        let now = now_ms();
+
+        // Seed two waiting executions: one recovered during phase 2, one fresh waiting dispatch.
+        for (eid, tid, key) in [
+            ("exec-recovered", "task-recovered", "k-rec"),
+            ("exec-fresh", "task-fresh", "k-fresh"),
+        ] {
+            db.execute(
+                "INSERT INTO core_execution_runs (
+                    execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
+                    task_id, kind, payload_json, status, revision, attempt, created_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, 'core-1', 'gateway', 'cli', 1, ?3, 'pi_turn', '{}', 'waiting_executor', 1, 0, ?4, ?4)",
+                params![eid, key, tid, now],
+            )
+            .unwrap();
+        }
+
+        // Phase 1: Bootstrap keeps tracker unready & blocks dispatch
+        let boot = execute_write(
+            &mut db,
+            &tracker,
+            &ctx,
+            Command::Bootstrap {
+                host_id: "h-3p".into(),
+                pid: my_pid,
+                host_generation: "gen-3p".into(),
+                storage_root: "/tmp/store-3p".into(),
+                db_path: None,
+                pi_version: "1.5.0".into(),
+                expected_pi_version: "1.5.0".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(boot.data["accepted"], true);
+        assert_eq!(boot.data["status"], "bootstrapping");
+        assert!(boot.dispatches.is_empty());
+        assert!(!tracker.is_ready());
+        assert!(!tracker.supports_kind("pi_turn"));
+
+        // Register with require_manifest=true and empty manifest must be refused & keep waiting
+        let empty_reg = execute_write(
+            &mut db,
+            &tracker,
+            &ctx,
+            Command::Register {
+                host_id: "h-3p".into(),
+                pid: my_pid,
+                host_generation: "gen-3p".into(),
+                storage_root: "/tmp/store-3p".into(),
+                db_path: None,
+                pi_version: "1.5.0".into(),
+                expected_pi_version: "1.5.0".into(),
+                capabilities: Some(vec![]),
+                recovered_task_ids: vec![],
+                require_manifest: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(empty_reg.data["accepted"], false);
+        assert_eq!(empty_reg.data["reason"], "capability_manifest_required");
+        assert!(!tracker.is_ready());
+
+        // Phase 3: Register with non-empty manifest & recovered task IDs skips recovered task
+        let reg = execute_write(
+            &mut db,
+            &tracker,
+            &ctx,
+            Command::Register {
+                host_id: "h-3p".into(),
+                pid: my_pid,
+                host_generation: "gen-3p".into(),
+                storage_root: "/tmp/store-3p".into(),
+                db_path: None,
+                pi_version: "1.5.0".into(),
+                expected_pi_version: "1.5.0".into(),
+                capabilities: Some(vec!["pi_turn".into()]),
+                recovered_task_ids: vec!["task-recovered".into()],
+                require_manifest: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(reg.data["accepted"], true);
+        assert!(tracker.is_ready());
+        assert!(tracker.supports_kind("pi_turn"));
+        assert!(!tracker.supports_kind("other_kind"));
+        assert_eq!(reg.dispatches.len(), 1);
+        assert_eq!(reg.dispatches[0]["coreExecutionDispatch"]["execution"]["executionId"], "exec-fresh");
+        let rec_status: String = db
+            .query_row(
+                "SELECT status FROM core_execution_runs WHERE execution_id = 'exec-recovered'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rec_status, "running");
+    }
+
+    #[test]
+    fn pi_host_bootstrap_defers_interrupted_goals_once_and_preserves_live_attempts() {
+        let mut db = setup_test_db();
+        let tracker = ExecutorTracker::new();
+        tracker.set_presence(true, 1, "pi-client".into());
+        let ctx = ClientContext::synthetic(&current_core_generation());
+        let pid = i64::from(std::process::id());
+        let root = "/tmp/goal-restart-store";
+        let version = "current-test-version";
+        let boot = |db: &mut Connection, host_id: &str, generation: &str, reported_pid: i64| {
+            execute_write(db, &tracker, &ctx, Command::Bootstrap {
+                host_id: host_id.into(), pid: reported_pid, host_generation: generation.into(),
+                storage_root: root.into(), db_path: None, pi_version: version.into(),
+                expected_pi_version: version.into(),
+            }).unwrap()
+        };
+        db.execute_batch(
+            "INSERT INTO core_pi_hosts
+                (host_id,pid,core_generation,host_generation,storage_root,db_path,pi_version,status,started_at_ms,last_heartbeat_ms)
+             VALUES ('old-host',0,'old-core','old-gen','/tmp/goal-restart-store','db','version','running',1,1);
+             INSERT INTO works (work_id,user_id,owner_bot_id,title,authorization_json,active_intent_snapshot_id,
+                input_snapshot_id,created_by,created_at,updated_at)
+             VALUES ('old-goal','goal-user','bot','Goal','{}','goal-intent','goal-input','user',1,1);
+             INSERT INTO conversation_goal_continuations
+               (work_id,task_id,intent_revision,attempts,attempt_serial,tokens_used,tokens_budget,time_used_seconds,
+                usage_cursor,progress_fingerprint,progress_stalls,run_cursor,last_token_at,last_continuation_at,state,updated_at)
+             VALUES ('old-goal','old-task',2,3,4,500,600,7,8,'seen-progress',9,10,11,12,'igniting',13),
+                    ('new-goal','new-task',1,0,0,0,NULL,0,0,NULL,0,0,NULL,NULL,'idle',13);",
+        ).unwrap();
+
+        let first = boot(&mut db, "host", "current", pid);
+        assert_eq!(first.data["deferredGoals"], 1);
+        assert!(first.dispatches.is_empty());
+        assert!(is_generation_fenced(&db, "old-gen"));
+        let interrupted: (String, String, i64, i64, i64, i64, i64, i64, String, i64, i64, i64, i64) = db.query_row(
+            "SELECT state,defer_reason,attempts,attempt_serial,tokens_used,tokens_budget,time_used_seconds,usage_cursor,
+                progress_fingerprint,progress_stalls,run_cursor,last_token_at,last_continuation_at
+             FROM conversation_goal_continuations WHERE work_id = 'old-goal' AND deferred_at IS NOT NULL",
+            [],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,
+                    r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?)),
+        ).unwrap();
+        let (state, reason, attempts, serial, used, budget, seconds, usage, fingerprint, stalls, run, token_at, wake_at) = interrupted;
+        assert_eq!((state.as_str(), reason.as_str(), fingerprint.as_str()), ("deferred", "restart", "seen-progress"));
+        assert_eq!([attempts, serial, used, budget, seconds, usage, stalls, run, token_at, wake_at], [3, 4, 500, 600, 7, 8, 9, 10, 11, 12]);
+        let checkpoint = |db: &Connection| db.query_row(
+            "SELECT state FROM conversation_goal_continuations WHERE work_id = 'new-goal'",
+            [], |row| row.get::<_, String>(0),
+        ).unwrap();
+        assert_eq!(checkpoint(&db), "idle");
+
+        let duplicate = boot(&mut db, "host", "current", pid);
+        assert_eq!(duplicate.data["deferredGoals"], 0);
+        assert!(duplicate.events.is_empty());
+        assert_eq!(boot(&mut db, "other-id", "current", pid).data["reason"], "host_identity_mismatch");
+        assert_eq!(boot(&mut db, "old-host", "old-gen", pid).data["reason"], "stale_host_generation");
+        let registered = execute_write(&mut db, &tracker, &ctx, Command::Register {
+            host_id: "host".into(), pid, host_generation: "current".into(), storage_root: root.into(),
+            db_path: None, pi_version: version.into(), expected_pi_version: version.into(),
+            capabilities: Some(vec!["pi_turn".into()]), recovered_task_ids: vec![], require_manifest: true,
+        }).unwrap();
+        assert_eq!(registered.data["accepted"], true);
+        db.execute("UPDATE conversation_goal_continuations SET state = 'igniting' WHERE work_id = 'new-goal'", []).unwrap();
+        assert_eq!(boot(&mut db, "host", "current", pid).data["status"], "running");
+        assert_eq!(boot(&mut db, "another-host", "another-gen", pid).data["reason"], "active_owner_exists");
+        assert!(tracker.is_ready());
+        assert_eq!(checkpoint(&db), "igniting");
+
+        let mut stmt = db.prepare(
+            "SELECT task_id, entity_id, work_projection_user_id FROM domain_outbox_events JOIN domain_outbox_groups USING (group_id)
+             WHERE kind = 'work.goalContinuationDeferred'",
+        ).unwrap();
+        let pending = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap().collect::<Result<Vec<(String, String, String)>, _>>().unwrap();
+        assert_eq!(pending, vec![("old-task".into(), "old-goal".into(), "goal-user".into())]);
+    }
+
+    #[test]
     fn failed_launch_cleans_up_launching_intent_and_releases_gate() {
-        let mut db = Connection::open_in_memory().unwrap();
-        ensure_pi_host_tables(&db).unwrap();
+        let mut db = setup_test_db();
         let tracker = ExecutorTracker::new();
         let ctx = ClientContext::synthetic(&current_core_generation());
         let mut gate_toggled = false;
@@ -1499,6 +2125,7 @@ mod tests {
             |op| {
                 gate_toggled = true;
                 op();
+                Ok(())
             },
         )
         .unwrap_err();
@@ -1517,9 +2144,27 @@ mod tests {
     }
 
     #[test]
+    fn spawn_finalization_accepts_early_bootstrap_of_the_same_process_only() {
+        let mut db = setup_test_db();
+        db.execute(
+            "INSERT INTO core_pi_hosts
+                (host_id, pid, core_generation, host_generation, storage_root, db_path, pi_version,
+                 status, started_at_ms, last_heartbeat_ms)
+             VALUES ('host', 123, 'core', 'current', 'store', 'app.duckdb', 'test', 'bootstrapping', 1, 1)",
+            [],
+        ).unwrap();
+        let tx = db.transaction().unwrap();
+        assert_eq!(confirm_spawned_host(&tx, "host", "current", 123, 2).unwrap().as_deref(), Some("bootstrapping"));
+        assert_eq!(confirm_spawned_host(&tx, "host", "old", 123, 2).unwrap(), None);
+        assert_eq!(confirm_spawned_host(&tx, "host", "current", 456, 2).unwrap(), None);
+        tx.execute("UPDATE core_pi_hosts SET status = 'stopped' WHERE host_id = 'host'", []).unwrap();
+        assert_eq!(confirm_spawned_host(&tx, "host", "current", 123, 2).unwrap(), None);
+        tx.commit().unwrap();
+    }
+
+    #[test]
     fn supervise_tick_caps_crash_restart_loop_when_launch_repeatedly_fails() {
-        let mut db = Connection::open_in_memory().unwrap();
-        ensure_pi_host_tables(&db).unwrap();
+        let mut db = setup_test_db();
         let tracker = ExecutorTracker::new();
         let now = now_ms();
         db.execute(
@@ -1532,7 +2177,10 @@ mod tests {
             params![now],
         )
         .unwrap();
-        let fx = supervise_tick(&mut db, &tracker, |op| op())
+        let fx = supervise_tick(&mut db, &tracker, |op| {
+            op();
+            Ok(())
+        })
             .unwrap()
             .expect("exhausted budget should emit event");
         assert_eq!(fx.events[0].kind, "piHostRestartExhausted");

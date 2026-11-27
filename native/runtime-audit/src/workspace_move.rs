@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Deserialize)]
@@ -77,19 +77,19 @@ fn apply_archive(db: &mut Connection, request: Archive) -> Result<ArchiveReply> 
     match target {
         ArchiveTarget::Space => {
             db.execute(
-                "UPDATE spaces SET archived=?2, updated_at=max(updated_at,?3) WHERE id=?1",
+                "UPDATE spaces SET archived=?2, updated_at=GREATEST(updated_at, ?3) WHERE id=?1",
                 params![id, archived, at],
             )?;
         }
         ArchiveTarget::Task { directory_name } => {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let changed = tx.execute(
                 "INSERT INTO task_execution_workspace_state
                     (task_id,directory_name,state,created_at,updated_at)
                  VALUES (?1,?2,?3,?4,?4)
                  ON CONFLICT(task_id) DO UPDATE SET
                     directory_name=excluded.directory_name, state=excluded.state,
-                    updated_at=max(task_execution_workspace_state.updated_at,excluded.updated_at),
+                    updated_at=GREATEST(task_execution_workspace_state.updated_at, excluded.updated_at),
                     trashed_at=NULL, purge_after=NULL, trash_path=NULL
                  WHERE task_execution_workspace_state.state!='trashed'",
                 params![
@@ -103,7 +103,7 @@ fn apply_archive(db: &mut Connection, request: Archive) -> Result<ArchiveReply> 
                 return Ok(ArchiveReply::Trashed);
             }
             tx.execute(
-                "UPDATE tasks SET archived=?2, updated_at=max(updated_at,?3) WHERE id=?1",
+                "UPDATE tasks SET archived=?2, updated_at=GREATEST(updated_at, ?3) WHERE id=?1",
                 params![id, archived, at],
             )?;
             tx.commit()?;
@@ -153,7 +153,7 @@ pub fn write(db: &mut Connection, movement: Move) -> Reply {
 }
 
 fn apply(db: &mut Connection, movement: Move) -> Result<()> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let tree = movement.kind.tree();
     let previous = validate(&tx, &movement)?;
     let target = movement.target_parent_id.as_deref();
@@ -172,7 +172,7 @@ fn apply(db: &mut Connection, movement: Move) -> Result<()> {
         } else {
             tx.query_row(
                 &format!(
-                    "SELECT coalesce(max({}),0)+1000 FROM {} WHERE {} IS ?1",
+                    "SELECT coalesce(max({}),0)+1000 FROM {} WHERE {} IS NOT DISTINCT FROM ?1",
                     tree.sort, tree.table, tree.parent
                 ),
                 [target],
@@ -271,7 +271,7 @@ fn space_chain(db: &Connection, first: Option<&str>, source: &str) -> Result<(bo
 
 fn move_row(db: &Connection, tree: &Tree, movement: &Move, sort: i64) -> Result<()> {
     let timestamp = if matches!(movement.kind, Kind::Space) {
-        ", updated_at=max(updated_at,?4)"
+        ", updated_at=GREATEST(updated_at, ?4)"
     } else {
         ""
     };
@@ -299,7 +299,7 @@ fn has_collision(
 ) -> Result<bool> {
     Ok(db.query_row(
         &format!(
-            "SELECT EXISTS(SELECT 1 FROM {} WHERE {} IS ?1 AND id != ?2 AND {}=?3)",
+            "SELECT EXISTS(SELECT 1 FROM {} WHERE {} IS NOT DISTINCT FROM ?1 AND id != ?2 AND {}=?3)",
             tree.table, tree.parent, tree.sort
         ),
         params![parent, id, sort],
@@ -311,7 +311,7 @@ fn renumber(db: &Connection, tree: &Tree, parent: Option<&str>) -> Result<()> {
     db.execute(
         &format!(
             "WITH siblings AS MATERIALIZED (
-            SELECT id, row_number() OVER (ORDER BY {}) * 1000 AS sort FROM {} WHERE {} IS ?1
+            SELECT id, row_number() OVER (ORDER BY {}) * 1000 AS sort FROM {} WHERE {} IS NOT DISTINCT FROM ?1
          )
          UPDATE {} AS item SET {}=siblings.sort FROM siblings WHERE item.id=siblings.id",
             tree.stable_order, tree.table, tree.parent, tree.table, tree.sort,
@@ -323,15 +323,15 @@ fn renumber(db: &Connection, tree: &Tree, parent: Option<&str>) -> Result<()> {
 
 fn insert_at(db: &Connection, tree: &Tree, movement: &Move, index: i64) -> Result<()> {
     let timestamp = if matches!(movement.kind, Kind::Space) {
-        ", updated_at=max(item.updated_at,?4)"
+        ", updated_at=GREATEST(item.updated_at, ?4)"
     } else {
         ""
     };
     let sql = format!(
         "WITH siblings AS MATERIALIZED (
             SELECT id, row_number() OVER (ORDER BY {}) - 1 AS slot
-            FROM {} WHERE {} IS ?2 AND id != ?1
-         ), insertion AS (SELECT min(max(?3,0),count(*)) AS slot FROM siblings),
+            FROM {} WHERE {} IS NOT DISTINCT FROM ?2 AND id != ?1
+         ), insertion AS (SELECT min(GREATEST(?3, 0),count(*)) AS slot FROM siblings),
          ordered AS (
             SELECT id, (siblings.slot + (siblings.slot>=insertion.slot) + 1)*1000 AS sort
                 FROM siblings CROSS JOIN insertion

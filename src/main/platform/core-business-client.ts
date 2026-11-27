@@ -523,6 +523,8 @@ export class CoreBusinessClient {
     let snapshot = await this.eventsSnapshot(options.domain);
     let currentGen = snapshot.coreGeneration;
     let lastSeq = snapshot.headSeq;
+    let catchingUp = true;
+    let liveHead = lastSeq;
     options.onSnapshot?.(snapshot);
 
     const deliver = (event: CoreDomainEvent, fromReplay = false, replayAfterSeq = 0) => {
@@ -544,8 +546,52 @@ export class CoreBusinessClient {
       options.onEvent?.(event);
     };
 
-    const offLive = this.onCoreEvent(ev => deliver(ev, false));
-    await this.subscribeCursor(currentGen, lastSeq);
+    const offLive = this.onCoreEvent(event => {
+      if (catchingUp) {
+        if (!event.ephemeral && event.coreGeneration === currentGen) {
+          liveHead = Math.max(liveHead, event.seq);
+        }
+        return;
+      }
+      deliver(event);
+    });
+
+    const resnapshot = async (reason: string) => {
+      snapshot = await this.eventsSnapshot(options.domain);
+      currentGen = snapshot.coreGeneration;
+      lastSeq = snapshot.headSeq;
+      liveHead = lastSeq;
+      options.onResync?.(snapshot, reason);
+    };
+
+    const attach = async () => {
+      catchingUp = true;
+      for (;;) {
+        await this.subscribeCursor(currentGen, lastSeq);
+        for (;;) {
+          // Read the committed events between the snapshot and subscription. While
+          // replay runs, live events only advance the target so delivery stays in order.
+          const page = await this.eventsReplay(lastSeq, currentGen);
+          if (page.gap) {
+            await resnapshot(page.reason ?? "gap");
+            break;
+          }
+          for (const event of page.events) deliver(event);
+          if (!page.hasMore && lastSeq >= liveHead) {
+            catchingUp = false;
+            return;
+          }
+        }
+      }
+    };
+
+    try {
+      await attach();
+    } catch (error) {
+      offLive();
+      if (!this.closed) await this.request({ operation: "coreSubscribe", action: "unsubscribe" }).catch(() => undefined);
+      throw error;
+    }
 
     const replayFrom = async (afterSeq: number, gen = currentGen): Promise<{ resynced: boolean; events: CoreDomainEvent[] }> => {
       const collected: CoreDomainEvent[] = [];
@@ -553,11 +599,13 @@ export class CoreBusinessClient {
       for (;;) {
         const page = await this.eventsReplay(cursor, gen);
         if (page.gap) {
-          snapshot = await this.eventsSnapshot(options.domain);
-          currentGen = snapshot.coreGeneration;
-          lastSeq = snapshot.headSeq;
-          await this.subscribeCursor(currentGen, lastSeq);
-          options.onResync?.(snapshot, page.reason ?? "gap");
+          catchingUp = true;
+          try {
+            await resnapshot(page.reason ?? "gap");
+            await attach();
+          } finally {
+            catchingUp = false;
+          }
           return { resynced: true, events: collected };
         }
         for (const ev of page.events) {
@@ -591,6 +639,7 @@ export class CoreBusinessClient {
     kind: string;
     payload?: Record<string, unknown>;
     ownerGeneration?: string;
+    dotsRecovery?: import("./runtime-audit").RuntimeDotsRecoveryGuard;
   }): Promise<{ status: string; deduplicated?: boolean; coreGeneration?: string; execution?: CoreExecutionRecord; code?: string }> {
     return await this.request({
       operation: "coreExecution",
@@ -643,7 +692,7 @@ export class CoreBusinessClient {
     progress: unknown,
     ownerGeneration?: string,
     hostGeneration?: string,
-    options?: { ephemeral?: boolean },
+    options?: { ephemeral?: boolean; progressId?: string },
   ): Promise<Record<string, unknown>> {
     return await this.request({
       operation: "coreExecution",
@@ -654,6 +703,7 @@ export class CoreBusinessClient {
       ownerGeneration,
       ...(hostGeneration ? { hostGeneration } : {}),
       ...(options?.ephemeral ? { ephemeral: true } : {}),
+      ...(options?.progressId ? { progressId: options.progressId } : {}),
     });
   }
 

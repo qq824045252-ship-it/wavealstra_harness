@@ -44,9 +44,18 @@ import type {
 } from "../../shared/artifact-types";
 import { ArtifactStorage } from "./ArtifactStorage";
 import { ArtifactRepository, artifactFromRow, artifactToRow, type ArtifactRow, type StoredArtifactSnapshot } from "./ArtifactRepository";
-import type { RuntimeArtifactContent, RuntimeArtifactMutation, RuntimeAuditReader, RuntimeGadgetArtifactSource } from "../platform/runtime-audit";
+import {
+  RuntimeAuditNotStartedOperationError,
+  RuntimeAuditUnknownOperationError,
+  type RuntimeArtifactContent,
+  type RuntimeArtifactMutation,
+  type RuntimeAuditReader,
+  type RuntimeGadgetArtifactSource,
+  type RuntimeManagedArtifactWrite,
+} from "../platform/runtime-audit";
 import { ArtifactRegistry } from "./ArtifactRegistry";
 import { inspectArtifactFolderRelocation, type ArtifactFolderChange } from "./ArtifactFolderRelocation";
+import { TaskWriteQueue } from "../db/TaskWriteQueue";
 
 /** 位图走协议 URL（SVG 是文本，仍走原 content 契约） */
 const INLINE_IMAGE_EXTENSIONS = new Set([
@@ -83,28 +92,31 @@ interface GadgetHtmlSource {
 }
 
 export class ArtifactService {
-  private writeTail: Promise<void> = Promise.resolve();
+  private readonly writes = new TaskWriteQueue();
 
   constructor(
     private readonly storage: ArtifactStorage,
-    private readonly repository: ArtifactRepository,
+    private readonly fixture: ArtifactRepository | undefined,
     private readonly registry: ArtifactRegistry,
     private readonly eventSink?: ArtifactEventSink,
     private readonly runtimeAuditReader?: RuntimeAuditReader,
   ) {}
 
+  private get repository(): ArtifactRepository {
+    if (!this.fixture) throw new Error("此操作需要 SQLite 成果夹具");
+    return this.fixture;
+  }
+
   runWithArtifactWrites<T>(write: () => T | Promise<T>): Promise<T> {
-    const result = this.writeTail.then(write);
-    this.writeTail = result.then(() => undefined, () => undefined);
-    return result;
+    return this.writes.runExclusive(write);
   }
 
   async flushWrites(): Promise<void> {
-    await this.writeTail;
+    await this.writes.flush();
   }
 
   private get requiresRustWrites(): boolean {
-    return Boolean(this.repository.readonly || this.runtimeAuditReader?.supervised);
+    return !this.fixture || Boolean(this.fixture.readonly || this.runtimeAuditReader?.supervised);
   }
 
   private requireBatch3Reader(context: string): RuntimeAuditReader {
@@ -114,16 +126,37 @@ export class ArtifactService {
 
   private async writeArtifact<T>(taskId: string, mutation: RuntimeArtifactMutation, writeOnHost: () => T): Promise<T> {
     const reader = this.runtimeAuditReader;
-    if (!reader || this.repository.inTransaction) {
+    if (!reader || this.fixture?.inTransaction) {
       if (this.requiresRustWrites) throw new Error("产物数据库当前仅允许通过 Rust 核心写入");
       return writeOnHost();
     }
     const operationId = randomUUID();
-    const result = await reader.writeArtifact<T>(taskId, operationId, mutation);
-    const saved = result ?? this.repository.getWriteReceipt<T>(taskId, operationId);
-    if (saved !== undefined) return saved;
-    if (this.requiresRustWrites) throw new Error("产物写入未收到 Rust 核心确认");
-    return writeOnHost();
+    return this.confirmArtifactWrite<T, T>(reader, taskId, operationId, () => reader.writeArtifact<T>(taskId, operationId, mutation), receipt => receipt);
+  }
+
+  private async confirmArtifactWrite<Receipt, Result>(
+    reader: RuntimeAuditReader,
+    taskId: string,
+    operationId: string,
+    write: () => Promise<Result | undefined>,
+    fromReceipt: (receipt: Receipt) => Result,
+  ): Promise<Result> {
+    const attempt = async (recovering = false): Promise<Result | undefined> => {
+      try { return await write(); }
+      catch (error) {
+        if (recovering && error instanceof RuntimeAuditNotStartedOperationError) return undefined;
+        if (!(error instanceof RuntimeAuditUnknownOperationError)) throw error;
+      }
+    };
+    const initial = await attempt();
+    if (initial !== undefined) return initial;
+    const receipt = await reader.artifactWriteReceipt<Receipt>(taskId, operationId);
+    if (receipt != null) return fromReceipt(receipt);
+    const replay = await attempt(true);
+    if (replay !== undefined && replay !== "needsHost") return replay;
+    const confirmed = await reader.artifactWriteReceipt<Receipt>(taskId, operationId);
+    if (confirmed != null) return fromReceipt(confirmed);
+    throw new Error("成果写入未获 Rust Core 确认，请刷新列表");
   }
 
   inspectFolderRelocation(oldRoot: string, newRoot: string, taskIds: ReadonlySet<string>): ArtifactFolderChange[] {
@@ -201,45 +234,34 @@ export class ArtifactService {
    *   registry/event fail → DB 保留，不回滚（§12/§13）
    */
   register(registration: ArtifactRegistration): Promise<ArtifactDescriptor> {
-    return this.runWithArtifactWrites(() => this.registerArtifact(registration));
+    return this.writes.run([registration.taskId], () => this.registerArtifact(registration));
   }
 
   registerGadgetHtml(taskId: string, title: string, gadget: GadgetHtmlSource): Promise<ArtifactDescriptor> {
-    return this.runWithArtifactWrites(() => this.registerArtifact({ taskId, kind: "html", title }, gadget));
+    return this.writes.run([taskId], () => this.registerArtifact({ taskId, kind: "html", title }, gadget));
   }
 
   registerWorkspaceOutput(registration: ArtifactRegistration & Required<Pick<ArtifactRegistration, "workspaceFile">>): Promise<ArtifactDescriptor> {
-    return this.runWithArtifactWrites(async () => {
+    return this.writes.run([registration.taskId], async () => {
+      if (this.requiresRustWrites) return this.registerArtifact(registration, undefined, true);
       const existing = this.findByEntryFile(registration.taskId, registration.workspaceFile.entryFile);
       if (!existing) return this.registerArtifact(registration);
       if (registration.producerMessageId) {
-        if (this.requiresRustWrites) {
-          await this.runtimeAuditReader!.batch3Write({
-            kind: "artifactAddMessageRef",
-            taskId: existing.taskId,
-            messageId: registration.producerMessageId,
-            artifactId: existing.id,
-            relation: "updated",
-            toolCallId: registration.producerToolCallId ?? null,
-            createdAt: Date.now(),
-          }).catch((error) => console.warn("[ArtifactService] workspace output reference failed", error));
-        } else {
-          try { this.addMessageRef({ taskId: existing.taskId, messageId: registration.producerMessageId,
-            artifactId: existing.id, relation: "updated", toolCallId: registration.producerToolCallId }); }
-          catch (error) { console.warn("[ArtifactService] workspace output reference failed", error); }
-        }
+        try { this.addMessageRef({ taskId: existing.taskId, messageId: registration.producerMessageId,
+          artifactId: existing.id, relation: "updated", toolCallId: registration.producerToolCallId }); }
+        catch (error) { console.warn("[ArtifactService] workspace output reference failed", error); }
       }
       return existing;
     });
   }
 
-  private async registerArtifact(registration: ArtifactRegistration, gadget?: GadgetHtmlSource): Promise<ArtifactDescriptor> {
+  private async registerArtifact(registration: ArtifactRegistration, gadget?: GadgetHtmlSource, workspaceOutput = false): Promise<ArtifactDescriptor> {
     if (!registration.taskId || !registration.kind) {
       throw new Error("ArtifactRegistration 必须包含 taskId 与 kind");
     }
     // 重复 ID 冲突（§W2.2②）：register 不是 upsert；在 materialize 之前拦截 → 不产生 orphan 文件
-    if (registration.id) {
-      if (this.repository.get(registration.id)) {
+    if (registration.id && !workspaceOutput) {
+      if (await this.readDescriptor(registration.id)) {
         throw new Error(`Artifact ID 已存在（register 不做 upsert，请用 update）: ${registration.id}`);
       }
     }
@@ -301,9 +323,19 @@ export class ArtifactService {
       updatedAt: now,
     };
 
-    const revision = source.type === "managed-content"
-      ? await this.registerManagedContent(descriptor, registration.content, gadget)
-      : await this.registerMetadata(descriptor);
+    let revision: number;
+    if (workspaceOutput) {
+      const result = await this.writeArtifact<{ status: "created"; revision: number } | { status: "reused"; row: ArtifactRow }>(
+        descriptor.taskId, { kind: "registerWorkspaceOutput", row: artifactToRow(descriptor) },
+        () => { throw new Error("工作区成果登记需要 Rust Core"); },
+      );
+      if (result.status === "reused") return artifactFromRow(result.row);
+      revision = result.revision;
+    } else if (source.type === "managed-content") {
+      revision = await this.registerManagedContent(descriptor, registration.content, gadget);
+    } else {
+      revision = await this.registerMetadata(descriptor);
+    }
 
     // Step D：Registry（失败不回滚 metadata，§12）
     try {
@@ -357,27 +389,23 @@ export class ArtifactService {
 
   private async writeManagedArtifact(descriptor: ArtifactDescriptor, content: RuntimeArtifactContent): Promise<number | undefined> {
     const reader = this.runtimeAuditReader;
-    if (!reader || this.repository.inTransaction || !isAbsolute(this.storage.root)) return undefined;
+    if (!reader || this.fixture?.inTransaction || !isAbsolute(this.storage.root)) {
+      if (this.requiresRustWrites) throw new Error("受管成果写入需要可用的 Rust Core 和绝对存储路径");
+      return undefined;
+    }
     const taskId = descriptor.taskId;
     const operationId = randomUUID();
     const row = artifactToRow(descriptor);
-    const operation = () => reader.writeManagedArtifact(taskId, operationId, row, content);
-    const result = await operation();
+    const result = await this.confirmArtifactWrite<{ revision: number }, RuntimeManagedArtifactWrite | "needsHost">(
+      reader, taskId, operationId, () => reader.writeManagedArtifact(taskId, operationId, row, content),
+      receipt => ({ status: "saved", revision: receipt.revision }),
+    );
     if (result === "needsHost") {
       if (this.requiresRustWrites) throw new Error("受管产物写入无法回退到宿主 SQLite");
       return undefined;
     }
     if (result?.status === "saved") return result.revision;
     if (result?.status === "failed") throw new Error(result.message);
-    const receipt = this.repository.getWriteReceipt<{ revision: number }>(taskId, operationId);
-    if (receipt) return receipt.revision;
-    const retry = await operation();
-    if (retry && retry !== "needsHost") {
-      if (retry.status === "failed") throw new Error(retry.message);
-      return retry.revision;
-    }
-    const saved = this.repository.getWriteReceipt<{ revision: number }>(taskId, operationId);
-    if (saved) return saved.revision;
     throw new Error("成果登记结果未确认，请刷新列表");
   }
 
@@ -410,6 +438,7 @@ export class ArtifactService {
     if (result?.status === "raster") return { raster: true };
     if (result?.status === "missing") return null;
     if (result?.status === "failed") throw new Error(result.message);
+    if (this.requiresRustWrites) throw new Error("受管成果读取未获 Rust Core 确认");
     const content = reader ? await this.storage.readAsync(storagePath) : this.storage.read(storagePath);
     return content === null ? null : { content };
   }
@@ -417,10 +446,11 @@ export class ArtifactService {
   private async removeManagedContents(paths: string[]): Promise<string[]> {
     if (!paths.length) return [];
     const reader = this.runtimeAuditReader;
-    if (reader && !this.repository.inTransaction && isAbsolute(this.storage.root)) {
+    if (reader && !this.fixture?.inTransaction && isAbsolute(this.storage.root)) {
       const cleaned = await reader.cleanupArtifactFiles(this.storage.root, { kind: "selected", paths });
       if (cleaned !== "needsHost") return cleaned?.failed ?? paths;
     }
+    if (this.requiresRustWrites) return paths;
     const failed: string[] = [];
     for (const storagePath of paths) {
       const removed = reader ? await this.storage.removeAsync(storagePath) : this.storage.remove(storagePath);
@@ -436,6 +466,25 @@ export class ArtifactService {
     return artifact && isOutputArtifact(artifact) ? artifact : null;
   }
 
+  async readDescriptor(id: string): Promise<ArtifactDescriptor | null> {
+    const artifact = await this.runtimeAuditReader?.artifactById(id);
+    if (artifact !== undefined) return artifact && isOutputArtifact(artifact) ? artifact : null;
+    if (this.requiresRustWrites) throw new Error("成果读取未获 Rust Core 确认");
+    return this.get(id);
+  }
+
+  private async isCurrentDescriptor(descriptor: ArtifactDescriptor, body?: ReadableStream<Uint8Array> | null): Promise<boolean> {
+    let current = false;
+    try {
+      const latest = await this.readDescriptor(descriptor.id);
+      current = latest?.taskId === descriptor.taskId && latest.createdAt === descriptor.createdAt
+        && latest.version === descriptor.version;
+      return current;
+    } finally {
+      if (!current) await body?.cancel().catch(() => {});
+    }
+  }
+
   listByTask(taskId: string): ArtifactDescriptor[] {
     if (this.registry.hasTask(taskId)) return this.registry.listByTask(taskId);
     const artifacts = this.repository.listByTask(taskId).filter(isOutputArtifact);
@@ -449,7 +498,10 @@ export class ArtifactService {
    */
   entryPathOf(artifactId: string): string | null {
     const descriptor = this.get(artifactId);
-    if (!descriptor) return null;
+    return descriptor ? this.entryPathOfDescriptor(descriptor) : null;
+  }
+
+  entryPathOfDescriptor(descriptor: ArtifactDescriptor): string | null {
     if (descriptor.source.type === "managed-content") {
       if (!this.storage.exists(descriptor.source.storagePath)) return null;
       return this.storage.resolve(descriptor.source.storagePath);
@@ -515,7 +567,7 @@ export class ArtifactService {
     let revision = 0;
     if (this.requiresRustWrites) {
       const reader = this.requireBatch3Reader("更新产物元数据");
-      void this.runWithArtifactWrites(async () => {
+      void this.writes.run([next.taskId], async () => {
         const res = await reader.batch3Write<{ revision: number }>({
           kind: "artifactUpdateMetadata",
           id: next.id,
@@ -526,7 +578,7 @@ export class ArtifactService {
           hasTitle: "title" in patch,
           mimeType: next.mimeType ?? null,
           hasMimeType: "mimeType" in patch,
-          capabilitiesJson: JSON.stringify(next.capabilities ?? {}),
+          capabilitiesJson: "capabilities" in patch ? JSON.stringify(patch.capabilities ?? {}) : null,
           updatedAt,
         });
         if (res) {
@@ -560,7 +612,7 @@ export class ArtifactService {
    *  → managed storage cleanup。storage 删除失败不阻塞已提交的删除；文件残留 → orphan（后续 GC）。 */
   remove(id: string): Promise<boolean> {
     return this.runWithArtifactWrites(async () => {
-      const descriptor = this.repository.get(id);
+      const descriptor = await this.readDescriptor(id);
       if (!descriptor) {
         this.registry.remove(id);
         return false;
@@ -575,9 +627,16 @@ export class ArtifactService {
     if (taskIds.length === 0) return [];
     const ids = [...new Set(taskIds)];
     const native = await this.runtimeAuditReader?.artifactSnapshots(ids);
+    if (native === undefined && this.requiresRustWrites) throw new Error("成果列表未获 Rust Core 确认");
     return (native ?? this.repository.readSnapshots(ids)).map(snapshot => ({
       ...snapshot, artifacts: snapshot.artifacts.filter(isOutputArtifact),
     }));
+  }
+
+  async readTaskArtifacts(taskId: string): Promise<ArtifactDescriptor[]> {
+    const [snapshot] = await this.readTaskSnapshots([taskId]);
+    if (snapshot?.state === "error") throw new Error(snapshot.error);
+    return snapshot?.artifacts ?? [];
   }
 
   /**
@@ -628,7 +687,7 @@ export class ArtifactService {
   }): boolean {
     if (this.requiresRustWrites) {
       const reader = this.requireBatch3Reader("添加产物消息引用");
-      void this.runWithArtifactWrites(() => reader.batch3Write({
+      void this.writes.run([input.taskId], () => reader.batch3Write({
         kind: "artifactAddMessageRef",
         taskId: input.taskId,
         messageId: input.messageId,
@@ -648,6 +707,13 @@ export class ArtifactService {
     filter?: { messageId?: string; artifactId?: string },
   ): ArtifactMessageRef[] {
     return this.repository.listMessageRefs(taskId, filter);
+  }
+
+  async readMessageRefs(taskId: string, filter?: { messageId?: string; artifactId?: string }): Promise<ArtifactMessageRef[]> {
+    const refs = await this.runtimeAuditReader?.artifactMessageRefs(taskId, filter);
+    if (refs !== undefined) return refs;
+    if (this.requiresRustWrites) throw new Error("成果来源未获 Rust Core 确认");
+    return this.listMessageRefs(taskId, filter);
   }
 
   /**
@@ -677,7 +743,7 @@ export class ArtifactService {
     if (this.requiresRustWrites) {
       const reader = this.requireBatch3Reader("更新产物依赖");
       const now = Date.now();
-      void this.runWithArtifactWrites(() => reader.batch3Write({
+      void this.writes.run([descriptor.taskId], () => reader.batch3Write({
         kind: "artifactSetFileDependencies",
         artifactId,
         taskId: descriptor.taskId,
@@ -702,6 +768,13 @@ export class ArtifactService {
     return this.repository.listFileDependencies(artifactId);
   }
 
+  async readFileDependencies(artifactId: string): Promise<ArtifactFileDependency[]> {
+    const deps = await this.runtimeAuditReader?.artifactFileDependencies(artifactId);
+    if (deps !== undefined) return deps;
+    if (this.requiresRustWrites) throw new Error("成果依赖未获 Rust Core 确认");
+    return this.listFileDependencies(artifactId);
+  }
+
   // ---------- Refresh（§68-69 / P1 §15 精确刷新） ----------
 
   /**
@@ -714,7 +787,7 @@ export class ArtifactService {
    * 同回合多个依赖仍只 +1（每个 artifact 最多一次 markChanged）。
    */
   markFilesChanged(event: WorkspaceChangedEvent): Promise<ArtifactUpdatedEvent[]> {
-    return this.runWithArtifactWrites(() => this.markAffectedArtifacts(event));
+    return this.writes.run([event.taskId], () => this.markAffectedArtifacts(event));
   }
 
   private async markAffectedArtifacts(event: WorkspaceChangedEvent): Promise<ArtifactUpdatedEvent[]> {
@@ -731,7 +804,7 @@ export class ArtifactService {
     const messageId = event.messageId?.trim() || undefined;
     const toolCallId = event.toolCallId?.trim() || undefined;
     const affected: string[] = [];
-    for (const descriptor of this.listByTask(event.taskId)) {
+    for (const descriptor of await this.readTaskArtifacts(event.taskId)) {
       if (descriptor.source.type !== "workspace-file") continue;
       if (normalizePathForComparison(descriptor.source.rootDir) !== eventRoot) continue;
       if (messageId && descriptor.createdByMessageId === messageId) continue;
@@ -740,7 +813,7 @@ export class ArtifactService {
       const entryHit = changedNorm.has(normalizePathForComparison(entryFile));
       let depHit = false;
       if (!entryHit) {
-        const deps = this.repository.listFileDependencies(descriptor.id);
+        const deps = await this.readFileDependencies(descriptor.id);
         depHit = deps.some((d) => changedNorm.has(normalizePathForComparison(d.filePath)));
       }
       const pptdProjectHit = !entryHit && !depHit && changed.some((filePath) =>
@@ -794,7 +867,7 @@ export class ArtifactService {
    * removed 事件共享同一次 bump 的 revision（reducer 对 removed 允许 >= guard，批量幂等）。
    */
   removeByTask(taskId: string, options?: { requireTrashed?: boolean }): Promise<{ removed: number; orphaned: number }> {
-    return this.runWithArtifactWrites(() => this.removeArtifacts(taskId, undefined, options?.requireTrashed ?? false));
+    return this.writes.run([taskId], () => this.removeArtifacts(taskId, undefined, options?.requireTrashed ?? false));
   }
 
   private async removeArtifacts(taskId: string, id: string | undefined, requireTrashed: boolean): Promise<{ removed: number; orphaned: number }> {
@@ -825,13 +898,6 @@ export class ArtifactService {
     }
     const failed = await this.removeManagedContents(result.items.flatMap(item => item.storagePath === null ? [] : [item.storagePath]));
     if (id && failed.length) console.error("[ArtifactService] 内容删除失败（orphan 待 GC）:", failed[0]);
-    if (requireTrashed) {
-      if (this.requiresRustWrites && this.runtimeAuditReader) {
-        await this.runtimeAuditReader.batch3Write({ kind: "artifactClearWriteReceipt", taskId });
-      } else {
-        this.repository.clearWriteReceipt(taskId);
-      }
-    }
     return { removed: result.items.length, orphaned: failed.length };
   }
 
@@ -885,11 +951,12 @@ export class ArtifactService {
       }
     }
     if (this.requiresRustWrites) {
-      await this.requireBatch3Reader("标记产物旧版迁移").batch3Write({
+      const receipt = await this.requireBatch3Reader("标记产物旧版迁移").batch3Write<{ ok: boolean }>({
         kind: "artifactMarkLegacyMigrated",
         taskId,
         at: Date.now(),
       });
+      if (receipt?.ok !== true) throw new Error("Core 未确认成果迁移状态");
     } else {
       this.repository.markLegacyMigrated(taskId);
     }
@@ -902,9 +969,8 @@ export class ArtifactService {
    * workspace-file 的 root 边界校验：readContent 与图片协议共用同一道门。
    * 3C：协议层永远不能借 artifactId 读 root 外的任意磁盘文件。
    */
-  private workspaceTarget(id: string): string | null {
-    const descriptor = this.get(id);
-    if (!descriptor || descriptor.source.type !== "workspace-file") return null;
+  private workspaceTarget(descriptor: ArtifactDescriptor): string | null {
+    if (descriptor.source.type !== "workspace-file") return null;
     const root = descriptor.source.rootDir;
     const target = descriptor.source.entryFile;
     const rel = relative(resolve(root), resolve(target));
@@ -937,7 +1003,7 @@ export class ArtifactService {
     variant: "thumb" | "full",
     { head = false, signal }: { head?: boolean; signal?: AbortSignal } = {},
   ): Promise<{ data: Buffer | ReadableStream<Uint8Array> | null; mimeType: string; version: number; bytes?: number } | null> {
-    const descriptor = this.get(id);
+    const descriptor = await this.readDescriptor(id);
     if (!descriptor) return null;
     const version = descriptor.version;
     if (descriptor.source.type === "managed-content") {
@@ -946,15 +1012,12 @@ export class ArtifactService {
       );
       if (image?.status === "missing" || image?.status === "failed") return null;
       if (image?.status === "imageOpened") {
-        if (this.get(id)?.version !== version) {
-          await image.body?.cancel().catch(() => {});
-          return null;
-        }
+        if (!await this.isCurrentDescriptor(descriptor, image.body)) return null;
         return { data: image.body, mimeType: image.mimeType, version };
       }
-      // Older readers and non-base64 data URIs use the existing decoding path.
+      // Non-base64 data URIs use the text decoder.
       const managed = await this.readManagedContent(descriptor.source.storagePath);
-      if (!managed || !("content" in managed) || this.get(id)?.version !== version) return null;
+      if (!managed || !("content" in managed) || !await this.isCurrentDescriptor(descriptor)) return null;
       try {
         const match = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/i.exec(managed.content.trim());
         if (!match) return null;
@@ -975,14 +1038,12 @@ export class ArtifactService {
       head: head && variant === "full", signal,
     });
     if (source && source.status !== "opened") return null;
-    const target = source ? entryFile : this.workspaceTarget(id);
+    if (!source && this.requiresRustWrites) return null;
+    const target = source ? entryFile : this.workspaceTarget(descriptor);
     if (!target) return null;
     const image = await workspaceImageVariant(target, variant, rootDir, source);
-    if (this.get(id)?.version !== version) {
-      if (image?.data instanceof ReadableStream) await image.data.cancel().catch(() => {});
-      return null;
-    }
     if (!image) return null;
+    if (!await this.isCurrentDescriptor(descriptor, image.data instanceof ReadableStream ? image.data : null)) return null;
     return { ...image, version, ...(source && image.data === source.body ? { bytes: source.bytes } : {}) };
   }
 
@@ -1005,18 +1066,18 @@ export class ArtifactService {
     thumbnail?: import("../../shared/agent-ipc").WorkspaceFileThumbnailDto;
     bytes?: number;
   } | null> {
-    const descriptor = this.get(id);
+    const descriptor = await this.readDescriptor(id);
     if (!descriptor) return null;
     if (descriptor.source.type === "managed-content") {
       const inlineRaster = options?.inline === true && descriptor.kind === "image";
       const managed = await this.readManagedContent(descriptor.source.storagePath, inlineRaster);
-      if (!managed || this.get(id)?.version !== descriptor.version) return null;
+      if (!managed || !await this.isCurrentDescriptor(descriptor)) return null;
       if ("raster" in managed || (inlineRaster && /^data:image\/(?:png|jpeg|gif|webp|bmp|avif|x-icon);base64,/i.test(managed.content))) {
         return { content: artifactImageUrl(id, "full", { version: descriptor.version }), kind: "image", artifactVersion: descriptor.version };
       }
       return { content: managed.content, kind: (descriptor.capabilities?.originalKind as string | undefined) ?? descriptor.kind, artifactVersion: descriptor.version };
     }
-    const target = this.workspaceTarget(id);
+    const target = this.workspaceTarget(descriptor);
     if (!target) return null;
     // 只有 renderer IPC（inline）走协议 URL；main 内部的 PromptContext / Gadget /
     // 预览宿主仍按旧契约拿 data URI，避免改变喂给模型或其它服务的内容语义。
@@ -1028,7 +1089,7 @@ export class ArtifactService {
       inlineImage,
       workspace: this.runtimeAuditReader ? { root: descriptor.source.rootDir, reader: this.runtimeAuditReader } : undefined,
     });
-    if (this.get(id)?.version !== descriptor.version) return null;
+    if (!await this.isCurrentDescriptor(descriptor)) return null;
     const kind = (descriptor.capabilities?.originalKind as string | undefined) ?? preview.kind;
     if (!inlineImage) {
       return {
@@ -1218,7 +1279,7 @@ export class ArtifactService {
   /** 扫描 storage root vs repository rows；孤儿默认删除，删除失败 log，下次启动重试。不阻塞。 */
   orphanGC(): Promise<{ removed: string[]; failed: string[] }> {
     return this.runWithArtifactWrites(async () => {
-      if (this.runtimeAuditReader && !this.repository.inTransaction && isAbsolute(this.storage.root)) {
+      if (this.runtimeAuditReader && !this.fixture?.inTransaction && isAbsolute(this.storage.root)) {
         const report = await this.runtimeAuditReader.cleanupArtifactFiles(this.storage.root, { kind: "orphans" });
         if (report === undefined) throw new Error("Rust 成果清理未返回结果");
         if (report !== "needsHost") return report;

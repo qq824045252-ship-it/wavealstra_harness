@@ -69,18 +69,22 @@ export function setMaterialRetrievalSettings(
 }
 
 export async function readMaterialRetrievalSettings(db: AppDatabase): Promise<MaterialRetrievalSettings> {
-  const runtime = db.connection.inTransaction ? undefined : db.runtimeAuditReader;
+  const runtime = db.inTransaction ? undefined : db.runtimeAuditReader;
   const reply = await runtime?.materialRetrievalData({ kind: "getSettings" });
-  return reply?.status === "settings" ? reply.settings : getMaterialRetrievalSettings(db);
+  if (reply?.status === "settings") return reply.settings;
+  if (db.coreIdentity) {
+    throw new Error(reply?.status === "rejected" ? reply.message : "资料检索设置读取未获 Core 确认");
+  }
+  return getMaterialRetrievalSettings(db);
 }
 
 export async function writeMaterialRetrievalSettings(
   db: AppDatabase, patch: Partial<MaterialRetrievalSettings>,
 ): Promise<MaterialRetrievalSettings> {
-  const runtime = db.connection.inTransaction ? undefined : db.runtimeAuditReader;
-  const rustRequired = db.connection.readonly || runtime?.supervised === true;
+  const runtime = db.inTransaction ? undefined : db.runtimeAuditReader;
+  const rustRequired = db.readonly || db.runtimeAuditReader?.supervised === true;
   if (!runtime) {
-    if (db.connection.readonly) throw new Error("只读数据库模式下无法修改资料检索设置");
+    if (rustRequired) throw new Error("资料检索设置保存需要 Core 写入通道");
     return setMaterialRetrievalSettings(db, patch);
   }
   const mode = Object.hasOwn(patch, "mode") ? patch.mode : undefined;
@@ -186,20 +190,25 @@ function nativeScope(scope: MaterialRetrievalScope): boolean {
 export async function readMaterialRetrievalScope(
   db: AppDatabase, scope?: MaterialRetrievalScope,
 ): Promise<MaterialRetrievalScopeSettings> {
-  const runtime = db.connection.inTransaction ? undefined : db.runtimeAuditReader;
-  if (!runtime || (scope && !nativeScope(scope))) return resolveMaterialRetrievalScope(db, scope);
+  const runtime = db.inTransaction ? undefined : db.runtimeAuditReader;
+  const validScope = !scope || nativeScope(scope);
   const queryScope = scope?.kind === "space" || scope?.kind === "project" ? scope : undefined;
-  const reply = await runtime.materialRetrievalData({ kind: "getScope", scope: queryScope });
-  return reply?.status === "scope" ? reply.settings : resolveMaterialRetrievalScope(db, scope);
+  const reply = validScope ? await runtime?.materialRetrievalData({ kind: "getScope", scope: queryScope }) : undefined;
+  if (reply?.status === "scope") return reply.settings;
+  if (db.coreIdentity) {
+    if (!validScope) throw new Error("资料检索范围参数无效");
+    throw new Error(reply?.status === "rejected" ? reply.message : "资料检索范围读取未获 Core 确认");
+  }
+  return resolveMaterialRetrievalScope(db, scope);
 }
 
 export async function writeMaterialRetrievalScope(
   db: AppDatabase, scope: MaterialRetrievalScope, mode: MaterialRetrievalMode | null,
 ): Promise<MaterialRetrievalScopeSettings> {
-  const runtime = db.connection.inTransaction ? undefined : db.runtimeAuditReader;
-  const rustRequired = db.connection.readonly || runtime?.supervised === true;
+  const runtime = db.inTransaction ? undefined : db.runtimeAuditReader;
+  const rustRequired = db.readonly || db.runtimeAuditReader?.supervised === true;
   if (!runtime) {
-    if (db.connection.readonly) throw new Error("只读数据库模式下无法修改资料检索范围");
+    if (rustRequired) throw new Error("资料检索范围保存需要 Core 写入通道");
     return setMaterialRetrievalScope(db, scope, mode);
   }
   if ((scope?.kind !== "space" && scope?.kind !== "project") || !nativeScope(scope) ||

@@ -86,7 +86,10 @@ export class QQChannelAdapter implements ChannelAdapter {
   gatewayConnectionGeneration(): unknown { return this.socket; }
   statusText(): string { return this.lastError || (this.connected ? "已连接（QQ 官方机器人 WebSocket）" : "未连接"); }
   workConnectionKey(): string | undefined {
-    return this.connected && this.activated && this.config ? gatewayConnectionKey(this.type, [this.config.appId]) : undefined;
+    return this.activated ? this.gatewayPreparedConnectionKey() : undefined;
+  }
+  gatewayPreparedConnectionKey(): string | undefined {
+    return this.connected && this.config ? gatewayConnectionKey(this.type, [this.config.appId]) : undefined;
   }
   async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {
     const check = () => {

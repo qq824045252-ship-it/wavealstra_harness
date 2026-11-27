@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -27,7 +27,7 @@ pub fn write(db: &mut Connection, mutation: Mutation) -> Reply {
 }
 
 fn apply(db: &mut Connection, mutation: Mutation) -> Result<()> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let id = &mutation.id;
     if let Some(roots) = &mutation.archive_roots {
         if !in_archived_selection(&tx, id, roots)? {
@@ -81,18 +81,25 @@ fn apply(db: &mut Connection, mutation: Mutation) -> Result<()> {
 }
 
 fn in_archived_selection(db: &Connection, id: &str, roots: &[String]) -> Result<bool> {
-    let roots = serde_json::to_string(roots)?;
-    Ok(db.query_row(
+    if roots.is_empty() {
+        return Ok(false);
+    }
+    let slots = crate::database::anon_placeholders(roots.len());
+    let sql = format!(
         "WITH RECURSIVE ancestors(id,parent_id,archived) AS (
-            SELECT id,parent_id,archived FROM spaces WHERE id=?1
+            SELECT id,parent_id,archived FROM spaces WHERE id=?
             UNION
             SELECT s.id,s.parent_id,s.archived FROM spaces s JOIN ancestors a ON s.id=a.parent_id
          ), selected_ancestors(id,parent_id,archived) AS (
-            SELECT a.id,a.parent_id,a.archived FROM ancestors a JOIN json_each(?2) roots ON roots.value=a.id
+            SELECT a.id,a.parent_id,a.archived FROM ancestors a WHERE a.id IN ({slots})
             UNION
             SELECT s.id,s.parent_id,s.archived FROM spaces s JOIN selected_ancestors a ON s.id=a.parent_id
          )
-         SELECT EXISTS(SELECT 1 FROM selected_ancestors WHERE archived!=0)",
-        params![id, roots], |row| row.get(0),
-    )?)
+         SELECT EXISTS(SELECT 1 FROM selected_ancestors WHERE archived!=0)"
+    );
+    let mut params_vec: Vec<&dyn duckdb::ToSql> = vec![&id];
+    for r in roots {
+        params_vec.push(r);
+    }
+    Ok(db.query_row(&sql, duckdb::params_from_iter(params_vec), |row| row.get(0))?)
 }

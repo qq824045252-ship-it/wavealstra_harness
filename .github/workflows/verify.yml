@@ -62,7 +62,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 26
           cache: pnpm
 
       # MSBuild 仍走 260 字符的旧路径 API。runner 上的
@@ -183,7 +183,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 26
           cache: pnpm
 
       - name: Install Linux runtime deps for Electron
@@ -245,7 +245,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 26
           cache: pnpm
 
       # std::fs 的持有锁接口需要 Rust 1.89+；两个平台都验证同一当前稳定工具链。
@@ -299,7 +299,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 26
           cache: pnpm
 
       - name: Use a short path for native builds

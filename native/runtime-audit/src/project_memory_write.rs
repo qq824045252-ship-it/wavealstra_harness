@@ -2,7 +2,7 @@ use crate::{
     project_memory_forget::{self, Withdrawal, invalidate_projections},
     project_write::{Status, touch, writable_project_scope},
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -63,7 +63,7 @@ pub struct Edit {
 }
 
 impl Evidence {
-    fn belongs_to_project(&self, db: &Connection, project: &str) -> rusqlite::Result<bool> {
+    fn belongs_to_project(&self, db: &Connection, project: &str) -> duckdb::Result<bool> {
         let sql = match self.evidence_kind.as_str() {
             "library_item" => "SELECT EXISTS(SELECT 1 FROM library_items i LEFT JOIN library_spaces s ON s.id=i.space_id
                 WHERE i.id=?1 AND (s.kind='personal' OR s.project_id IS NULL OR s.project_id=?2))",
@@ -83,7 +83,7 @@ pub fn create(
     memory: Memory,
     actor_task_id: Option<&str>,
     promotion: Option<Promotion>,
-) -> rusqlite::Result<Status> {
+) -> duckdb::Result<Status> {
     let status = writable_project_scope(db, project, actor_task_id)?;
     if status != Status::Changed {
         return Ok(status);
@@ -122,7 +122,7 @@ pub fn create(
             params![link.id, project, link.event_id, title, memory.id, memory.title, link.promoted_by, link.created_at],
         )?;
         if inserted != 1 {
-            return Err(rusqlite::Error::StatementChangedRows(inserted));
+            return Err(duckdb::Error::StatementChangedRows(inserted));
         }
     }
     invalidate_projections(db, project, memory.created_at)?;
@@ -135,7 +135,7 @@ pub fn edit(
     project: &str,
     edit: Edit,
     actor_task_id: Option<&str>,
-) -> rusqlite::Result<Status> {
+) -> duckdb::Result<Status> {
     let status = writable_project_scope(db, project, actor_task_id)?;
     if status != Status::Changed {
         return Ok(status);
@@ -143,7 +143,7 @@ pub fn edit(
     let current = db.query_row(
         "SELECT m.kind,m.status,m.content_hash,
            (SELECT coalesce(max(revision),0) FROM memory_revisions WHERE memory_id=m.id),
-           EXISTS (SELECT 1 FROM memory_scopes WHERE memory_id=m.id AND (scope_type<>'project' OR scope_id IS NOT ?2))
+           EXISTS (SELECT 1 FROM memory_scopes WHERE memory_id=m.id AND (scope_type<>'project' OR scope_id IS DISTINCT FROM ?2))
          FROM memory_records m WHERE m.id=?1 AND EXISTS
            (SELECT 1 FROM memory_scopes WHERE memory_id=m.id AND scope_type='project' AND scope_id=?2)",
         params![edit.id, project],
@@ -175,7 +175,7 @@ pub fn edit(
         ],
     )?;
     if changed != 1 {
-        return Err(rusqlite::Error::StatementChangedRows(changed));
+        return Err(duckdb::Error::StatementChangedRows(changed));
     }
     let versioned = db.execute(
         "INSERT INTO memory_revisions(id,memory_id,revision,kind,title,content,status,importance,confidence,
@@ -185,19 +185,38 @@ pub fn edit(
         params![edit.revision_id, revision + 1, edit.id],
     )?;
     if versioned != 1 {
-        return Err(rusqlite::Error::StatementChangedRows(versioned));
+        return Err(duckdb::Error::StatementChangedRows(versioned));
     }
     if (previous_kind == "procedure" || edit.kind == "procedure")
         && (previous_kind != edit.kind
             || previous_status != edit.status
             || previous_hash != edit.content_hash)
     {
-        db.execute(
-            "UPDATE memory_skill_candidates SET status='stale',updated_at=?2
-             WHERE status IN ('draft','ready','materialized')
-               AND EXISTS (SELECT 1 FROM json_each(source_memory_ids_json) WHERE value=?1)",
-            params![edit.id, edit.updated_at],
-        )?;
+        let candidate_ids: Vec<String> = {
+            let mut stmt = db.prepare(
+                "SELECT id, source_memory_ids_json FROM memory_skill_candidates
+                 WHERE status IN ('draft','ready','materialized')",
+            )?;
+            let mut rows = stmt.query([])?;
+            let mut ids = Vec::new();
+            while let Some(row) = rows.next()? {
+                let cid: String = row.get(0)?;
+                let raw_json: String = row.get(1)?;
+                if serde_json::from_str::<Vec<String>>(&raw_json)
+                    .map(|v| v.iter().any(|x| x == &edit.id))
+                    .unwrap_or(false)
+                {
+                    ids.push(cid);
+                }
+            }
+            ids
+        };
+        for cid in candidate_ids {
+            db.execute(
+                "UPDATE memory_skill_candidates SET status='stale',updated_at=?2 WHERE id=?1",
+                params![cid, edit.updated_at],
+            )?;
+        }
     }
     invalidate_projections(db, project, edit.updated_at)?;
     touch(db, project, edit.updated_at)?;
@@ -209,7 +228,7 @@ pub fn detach(
     project: &str,
     id: &str,
     withdrawal: Withdrawal,
-) -> rusqlite::Result<Status> {
+) -> duckdb::Result<Status> {
     let status = writable_project_scope(db, project, None)?;
     if status != Status::Changed {
         return Ok(status);
@@ -230,7 +249,7 @@ pub fn detach(
     Ok(Status::Changed)
 }
 
-fn insert_memory(db: &Connection, project: &str, memory: &Memory) -> rusqlite::Result<()> {
+fn insert_memory(db: &Connection, project: &str, memory: &Memory) -> duckdb::Result<()> {
     db.execute(
         "INSERT INTO memory_records(id,kind,title,content,status,importance,confidence,explicit,source_type,
                 source_task_id,content_hash,created_at,updated_at,metadata_json)

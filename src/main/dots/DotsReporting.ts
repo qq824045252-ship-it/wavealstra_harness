@@ -7,7 +7,7 @@ import type { AppendDotsReply } from "./DotsReplyOutbox";
 type Generate = (prompt: string, signal: AbortSignal, onText: (text: string) => void) => Promise<string>;
 const pending = { status: "pending" } as const;
 const discarded = { status: "discarded" } as const;
-type ReportingNative = Pick<RuntimeAuditReader, "batch4aWrite" | "supervised">;
+type ReportingNative = Pick<RuntimeAuditReader, "batch4aWrite" | "supervised"> & Partial<Pick<RuntimeAuditReader, "readDotsReportContext">>;
 
 /** One lower-priority reporting stream. Worker runs and the native Dots conversation stay independent. */
 export class DotsReporting {
@@ -19,19 +19,24 @@ export class DotsReporting {
   private pendingWriteCount = 0;
   private readonly pendingTexts = new Map<string, string>();
 
-  constructor(private readonly db: Database.Database, private readonly busy: () => boolean,
+  constructor(private readonly fixture: Database.Database | undefined, private readonly busy: () => boolean,
     private readonly generate: Generate, private readonly write: AppendDotsReply,
     private readonly notify: (report: DotsLiveReport | null) => void,
     private readonly native?: ReportingNative) {
-    if (!db.readonly) {
-      db.exec(`CREATE TABLE IF NOT EXISTS dots_report_text (
+    if (fixture && !fixture.readonly) {
+      fixture.exec(`CREATE TABLE IF NOT EXISTS dots_report_text (
         delivery_key TEXT PRIMARY KEY, operation_id TEXT NOT NULL, text TEXT NOT NULL
       ); CREATE INDEX IF NOT EXISTS dots_report_operation ON dots_report_text(operation_id)`);
     }
   }
 
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("Core 回报读取服务未就绪");
+    return this.fixture;
+  }
+
   private get requiresRustWrites(): boolean {
-    return this.db.readonly || Boolean(this.native?.supervised);
+    return this.fixture?.readonly === true || Boolean(this.native?.supervised);
   }
 
   flushWrites(): Promise<void> {
@@ -53,23 +58,23 @@ export class DotsReporting {
     this.notify(draft);
   }
 
-  async append(reply: DotsAssistantReply, current: () => boolean): Promise<DotsAppendOutcome> {
-    const plan = this.db.prepare(`SELECT json_extract(plan,'$.goal') AS goal,
+  async append(reply: DotsAssistantReply, current: () => boolean, outboxEventKey?: string): Promise<DotsAppendOutcome> {
+    const core = this.native?.supervised ? await this.native.readDotsReportContext?.(reply.operationId, reply.deliveryKey) : undefined;
+    if (this.native?.supervised && !core) throw new Error("Core 未确认 Dots 回报计划");
+    const plan = core ?? this.db.prepare(`SELECT json_extract(plan,'$.goal') AS goal,
       json_extract(plan,'$.deliveryInstruction') AS format FROM dots_followup_plans WHERE operation_id=?`)
       .get(reply.operationId) as { goal?: string; format?: string } | undefined;
     const prose = reply.kind === "conclusion" && reply.text.trim() && !reply.completion && !reply.citations?.length
       && !plan?.format && !/^\s*(?:[\[{\x60"<]|(?:true|false|null|[+-]?[\d.]+%?)\s*$)/u.test(reply.text);
-    if (reply.presentation !== "report" && !prose) return this.active ? pending : this.write(reply, current);
+    if (reply.presentation !== "report" && !prose) return this.active ? pending : this.write(reply, current, outboxEventKey);
 
     for (const [key, valid] of this.waiting) if (!valid()) this.waiting.delete(key);
     if (!current()) return discarded;
-    const saved = this.pendingTexts.has(reply.deliveryKey)
-      ? { text: this.pendingTexts.get(reply.deliveryKey)! }
-      : this.db.prepare("SELECT text FROM dots_report_text WHERE delivery_key=?").get(reply.deliveryKey) as
-        { text: string } | undefined;
-    if (!saved && reply.kind === "progress" && this.db.prepare(`SELECT 1 FROM dots_reply_events old
+    const saved = core ? core.saved ?? undefined : this.pendingTexts.get(reply.deliveryKey)
+      ?? (this.db.prepare("SELECT text FROM dots_report_text WHERE delivery_key=?").pluck().get(reply.deliveryKey) as string | undefined);
+    if (saved === undefined && reply.kind === "progress" && (core ? core.newerSample : this.db.prepare(`SELECT 1 FROM dots_reply_events old
       JOIN dots_reply_events newer ON newer.operation_id=old.operation_id AND newer.rowid>old.rowid
-      WHERE old.event_key=? AND newer.status='sample' AND newer.settled=0 LIMIT 1`).get(reply.deliveryKey)) {
+      WHERE old.event_key=? AND newer.status='sample' AND newer.settled=0 LIMIT 1`).get(reply.deliveryKey))) {
       this.waiting.delete(reply.deliveryKey);
       return discarded;
     }
@@ -85,13 +90,14 @@ export class DotsReporting {
         taskId: reply.taskId, sourceMessageId: reply.sourceMessageId, kind: reply.kind, origin: reply.origin, text: body });
     };
     try {
-      let body = saved?.text;
+      let body = saved;
       if (body === undefined) {
         let previous: string | undefined;
         for (const text of this.pendingTexts.values()) {
           if (text) previous = text;
         }
-        if (previous === undefined) {
+        if (core) previous = core.previous ?? undefined;
+        else if (previous === undefined) {
           previous = this.db.prepare(`SELECT text FROM dots_report_text
             WHERE operation_id=? AND text<>'' ORDER BY rowid DESC LIMIT 1`).pluck().get(reply.operationId) as string | undefined;
         }
@@ -106,7 +112,12 @@ export class DotsReporting {
         }
         if (!available()) return pending;
         if (!body || body === DOTS_NO_CHANGE) body = reply.text;
-        if (this.requiresRustWrites) {
+        if (core) {
+          const stored = await this.native!.batch4aWrite<{ ok: boolean; text: string }>({ kind: "dotsReportSaveText",
+            deliveryKey: reply.deliveryKey, operationId: reply.operationId, body });
+          if (stored?.ok !== true || typeof stored.text !== "string") throw new Error("Core 未确认 Dots 回报正文");
+          body = stored.text;
+        } else if (this.requiresRustWrites) {
           const batch4a = this.native?.batch4aWrite;
           if (!batch4a) throw new Error("只读模式下缺少 Dots 回报文本 Rust 写入通道");
           this.pendingTexts.set(reply.deliveryKey, body);
@@ -129,7 +140,7 @@ export class DotsReporting {
       if (!body) return discarded;
       show(body);
       if (!available()) return pending;
-      const result = await this.write({ ...reply, presentation: "report", text: body }, available);
+      const result = await this.write({ ...reply, presentation: "report", text: body }, available, outboxEventKey);
       return result.status === "discarded" && current() && !available() ? pending : result;
     } finally {
       this.active = undefined;

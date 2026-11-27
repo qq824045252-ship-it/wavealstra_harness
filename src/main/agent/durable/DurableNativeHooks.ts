@@ -2,7 +2,7 @@ import { withoutAbortSignal, type Context } from "@earendil-works/chord/context"
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import { LiveDoc, type EntryRecord, type HookApi, type Storage, type ToolExecutionResult, type ToolHookCall, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { HookActor, NativeHookEvent, NativeHookReceipt } from "../../../shared/native-hooks";
-import type { HookScope, NativeHookStore, SelectedHook } from "../hooks/NativeHookStore";
+import type { HookReadback, HookScope, NativeHookStore, SelectedHook } from "../hooks/NativeHookStore";
 import { lookupFileName } from "../hooks/ReadRecoveryHints";
 import { nestedReadbackTools, readbackState, repeatedReadFailure, reportsBlocker, requestFeatures, type ReadbackTool } from "../hooks/ImprovementDecisions";
 import { DurableConsultIdentity } from "./DurableConsultSession";
@@ -91,36 +91,37 @@ export class DurableNativeHooks {
         result = "检查运行失败：" + String(error instanceof Error ? error.message : error).slice(0, 1500);
         outcome = "error";
       }
-      this.binding.store.record({ ...identity, id, revision, outcome, at: Date.now(), message: result === true ? "" : result }, runKey, parentTaskId);
+      let readback: HookReadback | undefined;
       if (id.startsWith("improvement-") && event === "beforeFinish" && typeof fields.inputEntry === "number" &&
-        (outcome === "pass" && fields.readback === "verified" || outcome === "feedback" && fields.readback === "written"))
-        this.binding.store.recordReadback(id, revision, selection.taskId, identity.conversationId, runKey, fields.inputEntry, fields.readback);
+        (outcome === "pass" && fields.readback === "verified" || outcome === "feedback" && fields.readback === "written")) {
+        readback = { inputEntry: fields.inputEntry, observed: fields.readback };
+      }
+      await this.binding.store.record({ ...identity, id, revision, outcome, at: Date.now(), message: result === true ? "" : result },
+        runKey, parentTaskId, readback);
       if (result !== true) messages.push(`[Hook · ${draft.title} v${revision}] ${result}`);
     }
     return messages.join("\n");
   }
-  private restore(plan: PinnedPlan): Selection {
-    return { ...plan, hooks: plan.versions.map(v => this.binding.store.version(v.id, v.revision)) };
+  private async restore(plan: PinnedPlan, ctx: Context): Promise<Selection> {
+    return { ...plan, hooks: await this.binding.store.versions(plan.versions, ctx.abortSignal) };
   }
 
   wrap(tool: ToolRegistration): ToolRegistration {
     return { ...tool, execute: async (args, api, ctx) => {
       const target = toolIdentity(tool.name, args);
       try {
-        if (this.binding.store.hasToolVersions()) {
-          let plan = await api.memo<PinnedPlan>(toolPlan, ctx);
-          if (!plan) {
-            const candidates = [...this.binding.store.candidates("beforeTool", target.name), ...this.binding.store.candidates("afterTool", target.name)];
-            const selected = await this.select(candidates, api, ctx);
-            if (selected) plan = await api.memo(toolPlan, { actor: selected.actor, role: selected.role, taskId: selected.taskId,
-              versions: selected.hooks.map(({ id, revision }) => ({ id, revision })) }, ctx);
-          }
-          if (plan) {
-            const blocked = await this.evaluate(this.restore(plan), "beforeTool", api, ctx, { args: target.args }, target.name, api.callId);
-            if (blocked) throw new Error(blocked);
-          }
-          ctx.abortSignal?.throwIfAborted();
+        let plan = await api.memo<PinnedPlan>(toolPlan, ctx);
+        if (!plan) {
+          const candidates = await this.binding.store.toolCandidates(target.name, ctx.abortSignal);
+          const selected = await this.select(candidates, api, ctx);
+          if (selected) plan = await api.memo(toolPlan, { actor: selected.actor, role: selected.role, taskId: selected.taskId,
+            versions: selected.hooks.map(({ id, revision }) => ({ id, revision })) }, ctx);
         }
+        if (plan) {
+          const blocked = await this.evaluate(await this.restore(plan, ctx), "beforeTool", api, ctx, { args: target.args }, target.name, api.callId);
+          if (blocked) throw new Error(blocked);
+        }
+        ctx.abortSignal?.throwIfAborted();
       } catch (error) {
         const proofContext = withoutAbortSignal(ctx);
         const task = await this.storage.task(api.taskId, proofContext);
@@ -137,7 +138,7 @@ export class DurableNativeHooks {
     if (!readHints || !cwd || call.name !== "read" || typeof call.arguments.path !== "string") return;
     try {
       const task = this.binding.scope().taskId;
-      if (!readHints.has(task, cwd) || (await api.snapshot(DurableSubagentIdentity, api.conversationId, ctx))?.value
+      if (!await readHints.has(task, cwd) || (await api.snapshot(DurableSubagentIdentity, api.conversationId, ctx))?.value
         || (await api.snapshot(DurableConsultIdentity, api.conversationId, ctx))?.key) return;
       const live = (await api.snapshot(LiveDoc, api.conversationId, ctx))?.run;
       if (live?.first === undefined) return;
@@ -149,25 +150,26 @@ export class DurableNativeHooks {
   async afterTool(call: ToolHookCall, result: ToolExecutionResult, api: HookApi, ctx: Context): Promise<ToolExecutionResult | undefined> {
     const advice = await this.readAdvice(call, result, api, ctx);
     const advised: ToolExecutionResult | undefined = advice ? { ...result, diagnostics: [...result.diagnostics ?? [], { severity: "info", code: "verified_read_path", message: advice }] } : undefined;
-    if (!this.binding.store.hasToolVersions()) return advised;
     const plan = await api.memo<PinnedPlan>(toolPlan, ctx);
+    if (!plan && call.name !== "codemode") return advised;
     if (await api.memo(TOOL_NOT_STARTED_MEMO, ctx)) return advised;
     const target = toolIdentity(call.name, call.arguments);
-    const own = plan && await this.evaluate(this.restore(plan), "afterTool", api, ctx, {
+    const own = plan && await this.evaluate(await this.restore(plan, ctx), "afterTool", api, ctx, {
       args: target.args, result: { isError: Boolean(result.isError), text: durableContentText(result.output).slice(0, 16000), diagnostics: result.diagnostics ?? [] },
     }, target.name, call.id, "", call.parent?.taskId);
     // Nested output is a program's return value. Attach feedback to the containing Code Mode call, including after replay.
-    const nested = call.name === "codemode" && this.binding.store.nestedFeedback(this.binding.scope().taskId, String(api.conversationId), api.taskId);
+    const nested = call.name === "codemode" && await this.binding.store.nestedFeedback(this.binding.scope().taskId,
+      String(api.conversationId), api.taskId, ctx.abortSignal);
     const note = [own, nested].filter(Boolean).join("\n");
     if (note) return { ...result, diagnostics: [...(advised ?? result).diagnostics ?? [], { severity: "warn", code: "native_hook_feedback", message: note }] };
     return advised;
   }
   async beforeRequest(messages: readonly Message[], api: HookApi, ctx: Context): Promise<string> {
     const improvement = await this.improvement?.beforeRequest(api, ctx);
-    const selected = await this.select(this.binding.store.candidates("beforeRequest"), api, ctx);
+    const selected = await this.select(await this.binding.store.candidates("beforeRequest", ctx.abortSignal), api, ctx);
     const { readHints, cwd } = this.binding;
     const scope = readHints && cwd && messages.at(-1)?.role === "user" ? this.binding.scope() : undefined;
-    const lookup = Boolean(scope && cwd && readHints?.has(scope.taskId, cwd));
+    const lookup = Boolean(scope && cwd && await readHints?.has(scope.taskId, cwd));
     if (!selected && !lookup) return improvement ?? "";
     const user = [...messages].reverse().find(m => m.role === "user");
     const userText = durableContentText(user?.content).slice(0, 16000);
@@ -195,7 +197,7 @@ export class DurableNativeHooks {
   async beforeFinish(answer: AssistantMessage, api: HookApi, ctx: Context): Promise<void> {
     if (!["stop", "length", "toolUse"].includes(answer.stopReason) || answer.content.some(item => item.type === "toolCall")) return;
     try {
-      const selected = await this.select(this.binding.store.candidates("beforeFinish"), api, ctx);
+      const selected = await this.select(await this.binding.store.candidates("beforeFinish", ctx.abortSignal), api, ctx);
       const improvement = await this.improvement?.beforeFinish(api, ctx);
       if (!selected && !improvement) return;
       const live = (await api.snapshot(LiveDoc, api.conversationId, ctx))?.run;
@@ -235,7 +237,8 @@ export class DurableNativeHooks {
       const attemptKey = `${api.conversationId}:${runKey}`;
       const attempts = (this.improvementAttempts.get(attemptKey) ?? 0) + 1;
       this.improvementAttempts.set(attemptKey, attempts);
-      if (attempts <= 2 && (!selected || this.binding.store.finishAttempts(selected.taskId, String(api.conversationId), runKey) <= 2)) {
+      if (attempts <= 2 && (!selected ||
+        await this.binding.store.finishAttempts(selected.taskId, String(api.conversationId), runKey, ctx.abortSignal) <= 2)) {
         this.continuations.set(answer, note);
         return;
       }

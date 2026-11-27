@@ -3,7 +3,7 @@ import type { CronService } from "../cron/CronService";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { LibraryService } from "../library/LibraryService";
 import { memoryWithdrawalTargets } from "../memory/MemoryForgetWatermarks";
-import type { RuntimeAuditReader } from "../platform/runtime-audit";
+import { RuntimeAuditUnknownOperationError, type RuntimeAuditReader } from "../platform/runtime-audit";
 import type { ProjectDeletion } from "./ProjectMutation";
 import type { ProjectService } from "./ProjectService";
 
@@ -15,8 +15,10 @@ async function deleteInRust(db: AppDatabase, runtime: RuntimeAuditReader, id: st
     const withdrawal = {
       signature: snapshot.signature, cutoffAt: Date.now(), targets: memoryWithdrawalTargets(snapshot.records),
     };
-    const result = await runtime.deleteProject(operationId, id, root, withdrawal).catch(error => {
-      const receipt = db.connection.prepare("SELECT result_json FROM project_delete_receipts WHERE operation_id=?")
+    const remove = () => runtime.deleteProject(operationId, id, root, withdrawal);
+    const result = await remove().catch(error => {
+      if (runtime.supervised && error instanceof RuntimeAuditUnknownOperationError) return remove();
+      const receipt = db.fixtureConnection?.prepare("SELECT result_json FROM project_delete_receipts WHERE operation_id=?")
         .pluck().get(operationId) as string | undefined;
       if (!receipt) throw error;
       return JSON.parse(receipt) as ProjectDeletion;
@@ -41,6 +43,7 @@ export function deleteProjectWithLifecycle(
     const { jobIds } = await library.withProjectLibraryDeletion(async root => {
       const runtime = db.runtimeAuditReader;
       if (runtime && await runtime.supportsProjectWrites("deletion")) return deleteInRust(db, runtime, id, root);
+      if (!db.fixtureConnection) throw new Error("Core 项目删除服务尚未初始化");
       const jobIds = library.withHostProjectDeletion(id, () => {
         const removed = cron.removeProjectData(id);
         projects.delete(id);

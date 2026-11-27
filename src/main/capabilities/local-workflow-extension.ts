@@ -64,15 +64,15 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
       if ((input.owner_task_id || input.owner_space_id) && (!context.currentTaskOnly || input.action !== "create"))
         throw new Error("只有 Dots 新建跟进计划时可以指定归属");
       if (!allowed(input.action)) throw new Error("Dots 设置已关闭「定时计划和文件订阅」");
-      const visible = (id: string) => !context.currentTaskOnly || services.cron.dotsScheduleVisible(id);
-      const visibleJobs = async () => (await services.cron.readJobs()).filter(job => job.sourceTaskId === taskId && visible(job.id));
-      if (input.id && !visible(input.id) && input.action !== "pause" && input.action !== "cancel")
-        throw new Error("计划不在 Dots 已授权的空间内");
-      if (input.action === "list") return { jobs: await visibleJobs(), localOnly: true, missedRuns: context.currentTaskOnly ? "per-job" : "skip" };
       if (input.action === "get") {
         if (!input.id) throw new Error("get requires id");
-        return services.cron.getForTask(taskId, input.id);
+        return services.cron.readForTask(taskId, input.id, context.currentTaskOnly);
       }
+      const visible = (id: string) => !context.currentTaskOnly || services.cron.dotsScheduleVisible(id);
+      const visibleJobs = async () => (await services.cron.readJobs()).filter(job => job.sourceTaskId === taskId && visible(job.id));
+      if (input.id && input.action !== "pause" && input.action !== "cancel" && input.action !== "update" && !visible(input.id))
+        throw new Error("计划不在 Dots 已授权的空间内");
+      if (input.action === "list") return { jobs: await visibleJobs(), localOnly: true, missedRuns: context.currentTaskOnly ? "per-job" : "skip" };
       if (input.action === "runs") {
         if (input.id) return services.cron.runPageForTask(taskId, input.id, input.limit, input.cursor, visible);
         if (input.cursor !== undefined) throw new Error("runs pagination requires id");

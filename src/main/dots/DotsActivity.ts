@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { DOTS_TASK_ID, type DotsActivityItem, type DotsDelegation, type DotsTaskOutput } from "../../shared/dots";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 import { dotsDeliveryText, readDotsWorkerOutcome } from "./DotsWorkerOutcome";
 
 type ActivityRow = {
@@ -15,13 +16,39 @@ type ActivityRow = {
   dependency_id: string | null; dependency_title: string | null; dependency_deadline: number | null;
 };
 
+export type DotsActivityCursor = string;
+export type DotsActivityRow = ActivityRow & { sequence: number };
+export type DotsActivityPage = { rows: DotsActivityRow[]; next: DotsActivityCursor | null };
+
 export class DotsActivity {
-  constructor(private readonly db: Database.Database, private readonly visible: (taskId: string) => boolean,
-    private readonly liveOutput: (operationId: string) => DotsTaskOutput | undefined = () => undefined) {
-    if (!db.readonly) db.exec("CREATE INDEX IF NOT EXISTS dots_delegations_task_seq ON dots_delegations(task_id,seq DESC)");
+  constructor(private readonly db: Database.Database | undefined, private readonly visible: (taskId: string) => boolean,
+    private readonly liveOutput: (operationId: string) => DotsTaskOutput | undefined = () => undefined,
+    private readonly native?: Pick<RuntimeAuditReader, "supervised" | "readDotsActivityPage">) {
+    if (db && !db.readonly) db.exec("CREATE INDEX IF NOT EXISTS dots_delegations_task_seq ON dots_delegations(task_id,seq DESC)");
+  }
+
+  async readList(spaceIds: readonly string[] | null): Promise<DotsActivityItem[]> {
+    if (this.db) return this.list();
+    if (!this.native?.supervised) throw new Error("Dots 活动需要 Rust Core");
+    const rows: DotsActivityRow[] = [];
+    let after: DotsActivityCursor | undefined;
+    for (;;) {
+      const page = await this.native.readDotsActivityPage(spaceIds, after);
+      if (!page) throw new Error("Core 未确认 Dots 活动");
+      const next: DotsActivityCursor | null = page.next;
+      if (next !== null && (next === after || page.rows.at(-1)?.task_id !== next)) {
+        throw new Error("Core 的 Dots 活动分页位置无效");
+      }
+      rows.push(...page.rows);
+      if (next === null) break;
+      after = next;
+    }
+    rows.sort((a, b) => (b.delivered_at ?? b.updated_at) - (a.delivered_at ?? a.updated_at) || b.sequence - a.sequence);
+    return this.project(rows);
   }
 
   list(): DotsActivityItem[] {
+    if (!this.db) throw new Error("Dots 活动需要异步读取 Core");
     if (!this.db.open) return [];
     const rows = this.db.prepare(`SELECT d.operation_id,d.task_id,t.title,s.name AS space,d.status,d.text,d.updated_at,
       json_array_length(d.files) AS file_count,d.interaction_id,i.assistant_message_id AS question_message_id,
@@ -57,8 +84,11 @@ export class DotsActivity {
       WHERE t.archived=0
       ORDER BY COALESCE(delivered_at, d.updated_at) DESC,d.seq DESC`).all() as ActivityRow[];
 
-    return rows.flatMap<DotsActivityItem>(row => {
-      if (!this.visible(row.task_id)) return [];
+    return this.project(rows.filter(row => this.visible(row.task_id)));
+  }
+
+  private project(rows: ActivityRow[]): DotsActivityItem[] {
+    return rows.map<DotsActivityItem>(row => {
       const outcome = readDotsWorkerOutcome(row.text);
       const summary = row.summary ?? (row.status === "completed" && outcome?.dotsState !== "progress"
         ? row.following ? "正在核对交付结果。" : "本次交办尚未确认完成。"
@@ -67,35 +97,35 @@ export class DotsActivity {
         summary, updatedAt: row.delivered_at ?? row.updated_at };
       if (row.delivered === "conclusion" && row.delivery_key) {
         const text = row.source_conclusion ?? (outcome?.dotsState === "complete" ? dotsDeliveryText(outcome) : row.summary ?? row.text);
-        return [{ ...task, state: "delivered", deliveryKey: row.delivery_key, fileCount: row.delivered_file_count ?? row.file_count,
-          presentation: { phase: "summary", text } }];
+        return { ...task, state: "delivered", deliveryKey: row.delivery_key, fileCount: row.delivered_file_count ?? row.file_count,
+          presentation: { phase: "summary", text } };
       }
-      if (row.control === "stopped" || row.goal_conclusion === "cancelled") return [{ ...task, state: "stopped" }];
-      if (row.control === "paused" || row.goal_lifecycle === "paused") return [{ ...task, state: "paused" }];
-      if (row.goal_conclusion === "ended_unsuccessfully") return [{ ...task, state: "failed" }];
+      if (row.control === "stopped" || row.goal_conclusion === "cancelled") return { ...task, state: "stopped" };
+      if (row.control === "paused" || row.goal_lifecycle === "paused") return { ...task, state: "paused" };
+      if (row.goal_conclusion === "ended_unsuccessfully") return { ...task, state: "failed" };
       if (row.interaction_id && row.question_message_id) {
         const question = [row.question_title, row.question_description].filter(Boolean).join("\n");
-        return [{ ...task, state: "waiting", summary: activitySummary(question),
-          target: { taskId: row.task_id, messageId: row.question_message_id, interactionId: row.interaction_id } }];
+        return { ...task, state: "waiting", summary: activitySummary(question),
+          target: { taskId: row.task_id, messageId: row.question_message_id, interactionId: row.interaction_id } };
       }
       if (!row.interaction_id && row.delivered === "question" && row.delivery_key) {
-        return [{ ...task, state: "waiting", target: { taskId: DOTS_TASK_ID, messageId: row.delivery_key } }];
+        return { ...task, state: "waiting", target: { taskId: DOTS_TASK_ID, messageId: row.delivery_key } };
       }
       if (row.following && row.dependency_id && row.dependency_title && row.dependency_deadline !== null) {
-        return [{ ...task, state: "dependency", dependencyWait: { operationId: row.dependency_id, title: row.dependency_title,
-          deadlineAt: row.dependency_deadline }, summary: activitySummary([`等待「${row.dependency_title}」交付`, task.summary].filter(Boolean).join("。")) }];
+        return { ...task, state: "dependency", dependencyWait: { operationId: row.dependency_id, title: row.dependency_title,
+          deadlineAt: row.dependency_deadline }, summary: activitySummary([`等待「${row.dependency_title}」交付`, task.summary].filter(Boolean).join("。")) };
       }
-      if (row.status === "failed" || row.status === "superseded") return [{ ...task, state: row.status }];
-      if (row.status === "blocked" && !row.interaction_id) return [{ ...task, state: "blocked" }];
-      if (row.status === "completed" && !row.following) return [{ ...task, state: "undelivered" }];
+      if (row.status === "failed" || row.status === "superseded") return { ...task, state: row.status };
+      if (row.status === "blocked" && !row.interaction_id) return { ...task, state: "blocked" };
+      if (row.status === "completed" && !row.following) return { ...task, state: "undelivered" };
       if (row.status === "completed" && row.ready_text !== null)
-        return [{ ...task, state: "running", phase: "following", presentation: { phase: "summary", text: activitySummary(row.ready_text) } }];
+        return { ...task, state: "running", phase: "following", presentation: { phase: "summary", text: activitySummary(row.ready_text) } };
       const live = row.status === "running" ? this.liveOutput(row.operation_id) : undefined;
-      return [{ ...task, state: "running", phase: row.status === "pending" ? "queued" : row.status === "running" ? "working" : "following",
+      return { ...task, state: "running", phase: row.status === "pending" ? "queued" : row.status === "running" ? "working" : "following",
         ...(row.status !== "completed" && { presentation: live
           ? { phase: "streaming" as const, text: live.text, active: live.active }
           : { phase: "details" as const, text: row.assignment ?? row.title } }),
-        lastActivityAt: row.last_activity_at ?? undefined }];
+        lastActivityAt: row.last_activity_at ?? undefined };
     });
   }
 

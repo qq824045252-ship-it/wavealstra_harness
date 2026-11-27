@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, Row, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -39,7 +39,7 @@ pub struct Edge {
 const EDGE_COLUMNS: &str =
     "id,from_type,from_id,relation,to_type,to_id,metadata_json,created_at,updated_at";
 
-fn edge_from_row(row: &Row) -> rusqlite::Result<Edge> {
+fn edge_from_row(row: &Row) -> duckdb::Result<Edge> {
     let metadata = serde_json::from_str::<Value>(&row.get::<_, String>(6)?)
         .ok()
         .filter(|value| value.is_object() || value.is_array())
@@ -63,7 +63,7 @@ pub fn read(db: &Connection, query: Query) -> Result<Vec<Edge>> {
         Direction::Incoming => "to_type=?1 AND to_id=?2",
         Direction::Related => "(from_type=?1 AND from_id=?2) OR (to_type=?1 AND to_id=?2)",
     };
-    let mut statement = db.prepare_cached(&format!(
+    let mut statement = db.prepare(&format!(
         "SELECT {EDGE_COLUMNS} FROM work_graph_edges
          WHERE ({condition}) AND (?3 IS NULL OR relation=?3) ORDER BY created_at,id"
     ))?;
@@ -71,7 +71,7 @@ pub fn read(db: &Connection, query: Query) -> Result<Vec<Edge>> {
         params![query.node_type, query.id, query.relation],
         edge_from_row,
     )?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    Ok(rows.collect::<duckdb::Result<_>>()?)
 }
 
 #[derive(Deserialize)]
@@ -118,7 +118,7 @@ pub fn write(db: &mut Connection, mutation: Mutation) -> Reply {
 }
 
 fn add(db: &mut Connection, edge: NewEdge) -> Result<Reply> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     assert_exists(&tx, &edge.from_type, &edge.from_id)?;
     assert_exists(&tx, &edge.to_type, &edge.to_id)?;
     let existing = tx
@@ -172,11 +172,7 @@ fn assert_exists(db: &Connection, kind: &str, id: &str) -> Result<()> {
         _ => return Err(format!("非法 node type：{kind}").into()),
     };
     if matches!(kind, "artifact" | "library_item") {
-        let has_table: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-            [table],
-            |row| row.get(0),
-        )?;
+        let has_table = crate::database::table_exists(db, table)?;
         if !has_table {
             return Ok(());
         }

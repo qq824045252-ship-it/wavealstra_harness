@@ -63,7 +63,7 @@ async function waitFor<T>(probe: () => T | undefined | null | false | Promise<T 
  * 正在执行」（未捕获的 RemoteApiError，整条用例红）。本地快机器上几乎撞不到。
  */
 async function waitIdle(): Promise<void> {
-  await waitFor(() => (service.runtime(TASK)?.busy ? undefined : true), "previous ACP run idle");
+  await waitFor(async () => ((await service.runtime(TASK))?.busy ? undefined : true), "previous ACP run idle");
 }
 
 function httpJson(port: number, method: string, path: string, headers: Record<string, string>, body?: string): Promise<number> {
@@ -118,7 +118,8 @@ const agentStub = {
   loadTaskHistory: async () => ({ messages: [] }),
   isTaskBusy: () => false,
   listPendingActions: () => [],
-  getConversationRuntimeSnapshot: () => ({ taskId: TASK, interactions: [], activeGoal: null }),
+  readConversationRuntimeSnapshot: async (taskId: string) =>
+    db.getTask(taskId) ? { taskId, interactions: [], activeGoal: null } : undefined,
   listModels: async () => [],
   getModeProfile: (id: string) => ({ labelZh: id, policy: { presets: [] } }),
   // 续聊判定要求「工作目录仍是本任务权威 root」：测试里任务 cwd 就是 workspace
@@ -196,8 +197,8 @@ try {
     // 同任务并发：必须 409（两个 Agent 不能同时改同一个 cwd）
     await expectApiError(client.acpPrompt(TASK, { agentId: "devin", text: "并发" }), 409, "同任务并发委托 → 409");
 
-    const snapshot = await waitFor(() => {
-      const current = service.runtime(TASK);
+    const snapshot = await waitFor(async () => {
+      const current = await service.runtime(TASK);
       return current && current.acpRun ? current : undefined;
     }, "runtime acpRun");
     assert.equal(snapshot.acpRun?.agentId, "devin");
@@ -205,8 +206,8 @@ try {
     ok("runtime() 暴露 acpRun 且 busy=true");
 
     // 权限请求：pendingActions 里必须有 acp 审批 + Agent 声明的选项
-    const withPermission = await waitFor(() => {
-      const current = service.runtime(TASK);
+    const withPermission = await waitFor(async () => {
+      const current = await service.runtime(TASK);
       const action = current?.pendingActions.find((item) => item.approvalKind === "acp");
       return action ? { current: current!, action } : undefined;
     }, "ACP permission request");
@@ -255,7 +256,7 @@ try {
     assert.equal(assistant.acp?.resumeSupported, true, "mock Agent 声明了 resume 能力");
     ok("history() 合入 ACP 轮次并携带 acp 运行投影");
 
-    const doneRuntime = service.runtime(TASK)!;
+    const doneRuntime = (await service.runtime(TASK))!;
     assert.equal(doneRuntime.busy, false);
     assert.equal(doneRuntime.acpRun, null, "结束后不再显示活着的 ACP run");
     assert.equal(doneRuntime.pendingActions.filter((item) => item.approvalKind === "acp").length, 0);
@@ -275,8 +276,8 @@ try {
       return value.messages.find((item) => item.id === resumed.assistantMessageId)?.acp?.continuationMode;
     }, "resume continuation mode");
     assert.equal(resumeMode, "resume", "同 Agent 续聊走 resume");
-    const resumePermission = await waitFor(() => {
-      const current = service.runtime(TASK);
+    const resumePermission = await waitFor(async () => {
+      const current = await service.runtime(TASK);
       return current?.pendingActions.find((item) => item.approvalKind === "acp");
     }, "resume permission");
     await client.approve(TASK, resumePermission.toolCallId, { decision: "deny", optionId: "reject" });
@@ -300,8 +301,8 @@ try {
       return value.messages.find((item) => item.id === auto.assistantMessageId)?.acp?.continuationMode;
     }, "auto continuation mode");
     assert.equal(autoMode, "resume", "缺省必须自动续接上一轮 session，而不是每次清空上下文");
-    const autoPermission = await waitFor(() => {
-      const current = service.runtime(TASK);
+    const autoPermission = await waitFor(async () => {
+      const current = await service.runtime(TASK);
       return current?.pendingActions.find((item) => item.approvalKind === "acp");
     }, "auto permission");
     await client.approve(TASK, autoPermission.toolCallId, { decision: "deny", optionId: "reject" });
@@ -319,8 +320,8 @@ try {
       return value.messages.find((item) => item.id === fresh.assistantMessageId)?.acp?.continuationMode;
     }, "newSession continuation mode");
     assert.equal(freshMode, "new", "newSession=true 必须新建 session");
-    const freshPermission = await waitFor(() => {
-      const current = service.runtime(TASK);
+    const freshPermission = await waitFor(async () => {
+      const current = await service.runtime(TASK);
       return current?.pendingActions.find((item) => item.approvalKind === "acp");
     }, "fresh permission");
     await client.approve(TASK, freshPermission.toolCallId, { decision: "deny", optionId: "reject" });
@@ -343,8 +344,8 @@ try {
     ok("无效 runId 的续聊降级为新 session");
 
     // ---------- 5. 停止 ----------
-    const stopped = await waitFor(() => {
-      const current = service.runtime(TASK)!;
+    const stopped = await waitFor(async () => {
+      const current = (await service.runtime(TASK))!;
       return current.busy === false && !current.acpRun ? current : undefined;
     }, "abort clears acp run");
     assert.equal(stopped.busy, false);
@@ -365,13 +366,13 @@ try {
     assert.equal(created.task.title, "新任务第一轮交给 ACP");
     assert.equal(created.run.agentId, "devin");
     assert.equal(created.task.busy, true, "新任务首轮就标记执行中");
-    const createdSnapshot = await waitFor(() => {
-      const current = service.runtime(created.task.id);
+    const createdSnapshot = await waitFor(async () => {
+      const current = await service.runtime(created.task.id);
       return current?.acpRun ? current : undefined;
     }, "created task acp run");
     assert.equal(createdSnapshot.acpRun?.agentId, "devin");
-    const createdPermission = await waitFor(() => {
-      const current = service.runtime(created.task.id);
+    const createdPermission = await waitFor(async () => {
+      const current = await service.runtime(created.task.id);
       return current?.pendingActions.find((item) => item.approvalKind === "acp");
     }, "created task permission");
     await client.approve(created.task.id, createdPermission.toolCallId, { decision: "deny", optionId: "reject" });

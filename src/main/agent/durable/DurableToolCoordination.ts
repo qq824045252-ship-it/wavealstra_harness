@@ -127,7 +127,7 @@ function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
 
 /** Wrap execution, not beforeTool: Pi's safe recovery re-enters execute without running beforeTool. */
 export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd: string,
-  beforeExecute?: (name: string, args: unknown, cwd: string) => void, admitting?: () => readonly string[],
+  beforeExecute?: (name: string, args: unknown, cwd: string) => void | Promise<void>, admitting?: () => readonly string[],
   codeReview?: DurableCodeReview, artifactDirectory?: string,
   registerRecoveryWrite?: (api: Parameters<ToolRegistration["execute"]>[1], context: Parameters<ToolRegistration["execute"]>[2]) => Promise<boolean>): ToolRegistration {
   if (containers.has(tool.name) || isDurableContextToolName(tool.name))
@@ -141,7 +141,8 @@ export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd:
       const check = needsFreshUserInput(tool.name, args) ? () => checkDurableInputFreshness(api, context, admitting) : undefined;
       if (check) await check();
       context.abortSignal?.throwIfAborted();
-      beforeExecute?.(tool.name, args, cwd);
+      await beforeExecute?.(tool.name, args, cwd);
+      context.abortSignal?.throwIfAborted();
       // Snapshot and read back the same mutation while its path lease still excludes other writers.
       const fileArgs = isNativeFileMutation(tool.name) ? fileArgsSchema.parse(args) : undefined;
       const intent = fileArgs ? await prepareFileEffect({ type: "toolCall", id: api.callId, name: tool.name, arguments: fileArgs }, cwd) : undefined;

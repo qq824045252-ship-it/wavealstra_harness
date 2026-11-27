@@ -262,8 +262,32 @@ function mapProject(row: ProjectRow): ProjectDto {
   };
 }
 
+type ProjectDetailsRows = { project: ProjectRow & ProjectPolicyColumns; resources: ProjectResourceRow[] };
+type ProjectContextRows = ProjectDetailsRows & { todos: Array<Parameters<typeof mapTodoRow>[0]>; pins: ProjectContextPinDto[] };
+type ProjectContextSnapshot = { project: ProjectDetailsDto; todos: ProjectTodoDto[]; pins: ProjectContextPinDto[] };
+
+export type ProjectContextWitness = { enabledResourceIds: string[]; pinnedItemIds: string[] };
+
+function mapProjectDetails(data: ProjectDetailsRows): ProjectDetailsDto {
+  const row = data.project;
+  return {
+    ...mapProject(row), resources: data.resources.map(mapResourceRow),
+    policies: {
+      expert: { allow: parseList(row.expert_allow), deny: parseList(row.expert_deny), recommended: parseList(row.expert_recommended) },
+      skill: { allow: parseList(row.skill_allow), prefer: parseList(row.skill_prefer), demote: parseList(row.skill_demote), hide: parseList(row.skill_hide) },
+      connector: { allow: parseList(row.connector_allow), deny: parseList(row.connector_deny), recommended: parseList(row.connector_recommended) },
+      mcp: { mode: row.mcp_mode === "soft" ? "soft" : "hard", allow: parseList(row.mcp_allow), deny: parseList(row.mcp_deny) },
+    },
+  };
+}
+
 export class ProjectRepository {
-  constructor(private readonly db: Database.Database, private readonly runtimeAuditReader?: RuntimeAuditReader) {}
+  constructor(private readonly fixture: Database.Database | undefined, private readonly runtimeAuditReader?: RuntimeAuditReader) {}
+
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("此项目操作需要通过 Rust Core 执行");
+    return this.fixture;
+  }
 
   validatedDefaultSpacePath(id: string): string {
     if (typeof id !== "string" || !id.trim()) throw new Error("请选择有效的项目文件夹");
@@ -278,12 +302,12 @@ export class ProjectRepository {
   }
 
   get requiresRustWrites(): boolean {
-    return Boolean(this.db.readonly || this.runtimeAuditReader?.supervised);
+    return !this.fixture || Boolean(this.fixture.readonly || this.runtimeAuditReader?.supervised);
   }
 
   supportsNativeWrites(kind: ProjectWriteDomain = "project"): Promise<boolean> {
     if (!this.runtimeAuditReader) return Promise.resolve(false);
-    if (this.db.inTransaction) {
+    if (this.fixture?.inTransaction) {
       if (this.requiresRustWrites) return Promise.reject(new Error(`Project write (${kind}) cannot run inside a host SQLite transaction when Rust owns writes`));
       return Promise.resolve(false);
     }
@@ -306,10 +330,13 @@ export class ProjectRepository {
 
   async writeProject(mutation: ProjectMutation): Promise<ProjectWriteStatus> {
     const operationId = randomUUID();
+    const reader = this.runtimeAuditReader;
+    if (!reader) throw new Error("项目写入需要 Rust Core");
     try {
-      return await this.runtimeAuditReader!.writeProject(operationId, mutation);
+      return await reader.writeProject(operationId, mutation);
     } catch (error) {
-      if (this.db.prepare("SELECT 1 FROM project_write_receipts WHERE operation_id=?").get(operationId)) return "changed";
+      const committed = await reader.projectMetadata<boolean>({ kind: "writeReceipt", operationId });
+      if (committed) return "changed";
       throw error;
     }
   }
@@ -328,7 +355,9 @@ export class ProjectRepository {
 
   async readList(includeArchived = false): Promise<ProjectDto[]> {
     const rows = await this.runtimeAuditReader?.projectMetadata<ProjectRow[]>({ kind: "list", includeArchived });
-    return rows?.map(mapProject) ?? this.list(includeArchived);
+    if (rows) return rows.map(mapProject);
+    if (!this.fixture) throw new Error("项目列表读取未获 Rust Core 确认");
+    return this.list(includeArchived);
   }
 
   readStatus(projectId: string, now: number): Promise<ProjectStatusData | null | undefined> | undefined {
@@ -342,21 +371,34 @@ export class ProjectRepository {
   }
 
   async readDetails(id: string): Promise<ProjectDetailsDto | undefined> {
-    const data = await this.runtimeAuditReader?.projectMetadata<{
-      project: ProjectRow & ProjectPolicyColumns; resources: ProjectResourceRow[];
-    } | null>({ kind: "details", projectId: id });
-    if (data === undefined) return this.get(id);
-    if (!data) return;
-    const row = data.project;
-    return {
-      ...mapProject(row), resources: data.resources.map(mapResourceRow),
-      policies: {
-        expert: { allow: parseList(row.expert_allow), deny: parseList(row.expert_deny), recommended: parseList(row.expert_recommended) },
-        skill: { allow: parseList(row.skill_allow), prefer: parseList(row.skill_prefer), demote: parseList(row.skill_demote), hide: parseList(row.skill_hide) },
-        connector: { allow: parseList(row.connector_allow), deny: parseList(row.connector_deny), recommended: parseList(row.connector_recommended) },
-        mcp: { mode: row.mcp_mode === "soft" ? "soft" : "hard", allow: parseList(row.mcp_allow), deny: parseList(row.mcp_deny) },
-      },
-    };
+    const data = await this.runtimeAuditReader?.projectMetadata<ProjectDetailsRows | null>({ kind: "details", projectId: id });
+    if (data === undefined) {
+      if (!this.fixture || this.runtimeAuditReader?.supervised) throw new Error("项目详情读取未获 Rust Core 确认");
+      return this.get(id);
+    }
+    return data ? mapProjectDetails(data) : undefined;
+  }
+
+  async readContextSnapshot(projectId: string): Promise<ProjectContextSnapshot | null> {
+    const data = await this.runtimeAuditReader?.projectMetadata<ProjectContextRows | null>({ kind: "contextSnapshot", projectId });
+    if (data !== undefined) {
+      return data ? { project: mapProjectDetails(data), todos: data.todos.map(mapTodoRow), pins: data.pins } : null;
+    }
+    if (!this.fixture || this.runtimeAuditReader?.supervised) throw new Error("项目上下文读取未获 Rust Core 确认");
+    return this.readWriteSnapshot(() => {
+      const project = this.get(projectId);
+      return project ? { project, todos: this.listTodos(projectId), pins: this.listPins(projectId) } : null;
+    });
+  }
+
+  async readContextWitness(projectId: string): Promise<ProjectContextWitness | null> {
+    const data = await this.runtimeAuditReader?.projectMetadata<ProjectContextWitness | null>({ kind: "contextWitness", projectId });
+    if (data !== undefined) return data;
+    if (!this.fixture || this.runtimeAuditReader?.supervised) throw new Error("项目引用状态读取未获 Rust Core 确认");
+    return this.readWriteSnapshot(() => this.getSummary(projectId) ? {
+      enabledResourceIds: this.listResources(projectId).filter((resource) => resource.enabled).map((resource) => resource.id),
+      pinnedItemIds: this.listPins(projectId).map((pin) => pin.itemId),
+    } : null);
   }
 
   getSummary(id: string): ProjectDto | undefined {
@@ -596,7 +638,7 @@ export class ProjectRepository {
     const fields = request.kind === "create" ? [request.post.projectId, request.post.body]
       : [request.kind === "list" ? request.projectId : request.id];
     const invalidWire = fields.some(value => typeof value !== "string" || /[\uD800-\uDFFF]/u.test(value));
-    if (!this.runtimeAuditReader || this.db.inTransaction || invalidWire) {
+    if (!this.runtimeAuditReader || this.fixture?.inTransaction || invalidWire) {
       if (request.kind !== "list" && this.requiresRustWrites) {
         return { status: "rejected", message: invalidWire ? "留言内容包含不支持的代理字符，无法保存" : "项目数据库当前仅允许 Rust 写入" };
       }
@@ -723,7 +765,7 @@ export class ProjectRepository {
 
   private async requestProjectEvent(request: RuntimeProjectEventRequest): Promise<RuntimeProjectEventReply | undefined> {
     const ids = request.kind === "triage" ? [request.projectId, request.eventId] : [request.eventId];
-    if (!this.runtimeAuditReader || this.db.inTransaction ||
+    if (!this.runtimeAuditReader || this.fixture?.inTransaction ||
         ids.some(id => typeof id !== "string" || /[\uD800-\uDFFF]/u.test(id))) {
       if (request.kind === "triage" && this.requiresRustWrites) {
         throw new Error("事件处理状态写入仅允许通过 Rust 核心完成");
@@ -903,7 +945,9 @@ export class ProjectRepository {
       kind: "todos", projectId,
     });
     if (rows === null) return undefined;
-    return rows?.map(mapTodoRow) ?? (this.getSummary(projectId) ? this.listTodos(projectId) : undefined);
+    if (rows !== undefined) return rows.map(mapTodoRow);
+    if (!this.fixture || this.runtimeAuditReader?.supervised) throw new Error("项目待办读取未获 Rust Core 确认");
+    return this.getSummary(projectId) ? this.listTodos(projectId) : undefined;
   }
 
   getTodo(id: string): ProjectTodoDto | undefined {
@@ -1210,7 +1254,7 @@ export class ProjectRepository {
     if (request.kind !== "list") fields.push(request.itemId);
     if (request.kind === "pin" && request.note !== undefined) fields.push(request.note);
     const invalidWire = fields.some(value => typeof value !== "string" || /[\uD800-\uDFFF]/u.test(value));
-    if (!this.runtimeAuditReader || this.db.inTransaction || invalidWire) {
+    if (!this.runtimeAuditReader || this.fixture?.inTransaction || invalidWire) {
       if (request.kind !== "list" && this.requiresRustWrites) {
         return { status: "rejected", message: invalidWire ? "固定资料内容包含不支持的代理字符，无法保存" : "项目数据库当前仅允许 Rust 写入" };
       }

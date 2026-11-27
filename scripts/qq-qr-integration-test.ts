@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -9,6 +9,8 @@ import { QQBotQrLogin, type QQBotQrLoginOptions, type QQBoundCredentials, type Q
 import { openGatewayProviderConfig } from "../src/main/gateway/GatewayProviderConfig";
 import { setEncryptionAvailable, setStorageBackend } from "./gateway-electron-stub";
 import type { GatewayInboundHandler } from "../src/main/gateway/channels";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
+import { shutdownCoreWorker } from "../src/main/platform/core-client";
 
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(yes => { resolve = yes; }); return { promise, resolve }; };
 const credentials: QQBoundCredentials = { appId: "123", appSecret: "fixture-secret-not-for-renderer", userOpenid: "scan-owner" };
@@ -20,6 +22,7 @@ class FakeAdapter extends QQChannelAdapter {
   override async disconnect(): Promise<void> { this.live = false; this.active = false; }
   override isConnected(): boolean { return this.live; }
   override workConnectionKey(): string | undefined { return this.live && this.active ? "b".repeat(64) : undefined; }
+  override gatewayPreparedConnectionKey(): string | undefined { return this.live ? "b".repeat(64) : undefined; }
 }
 class FakeLogin extends QQBotQrLogin {
   view: QQQrLoginState = { state: "idle", message: "idle" }; starts = 0;
@@ -42,7 +45,17 @@ class FakeLogin extends QQBotQrLogin {
   }
 }
 const root = mkdtempSync(join(tmpdir(), "qq-qr-integration-"));
-const db = new AppDatabase(join(root, "test.db"));
+const coreMode = process.argv.includes("--core");
+const native = coreMode ? locateRuntimeAudit(process.cwd()) : undefined;
+if (coreMode) assert(native && existsSync(native), "Core QR integration requires the verified worker");
+const dbPath = join(root, coreMode ? "app.duckdb" : "test.db");
+const db = await AppDatabase.open(dbPath, { runtimeAuditExecutable: native, runtimeAuditSupervised: coreMode });
+const readSaved = async () => (await db.readGatewayChannels("qq-default"))[0]!;
+if (coreMode) assert.equal(db.fixtureConnection, undefined);
+const inheritedHome = process.env.HOME;
+const inheritedProfile = process.env.USERPROFILE;
+process.env.HOME = root;
+process.env.USERPROFILE = root;
 const adapter = new FakeAdapter("qq-default", "QQ");
 let login!: FakeLogin;
 const authorities: Array<string | undefined> = [];
@@ -72,12 +85,12 @@ try {
   assert.equal(state.state, "waiting");
   await login.authorize();
   assert.equal(adapter.active, true);
-  const row = db.listGatewayChannels().find(value => value.id === "qq-default")!;
+  const row = await readSaved();
   const saved = JSON.parse(row.configJson);
   assert.equal(saved.appSecret, undefined);
   assert.deepEqual(saved.allowUsers, [credentials.userOpenid]);
   assert.equal(openGatewayProviderConfig("qq", saved).appSecret, credentials.appSecret);
-  assert.equal(service.getChannelConfig("qq-default").config.appSecret, "••••••");
+  assert.equal((await service.getChannelConfig("qq-default")).config.appSecret, "••••••");
   Object.assign(login.view, { appSecret: credentials.appSecret, token: "private-token" });
   assert(!JSON.stringify(service.getQQQrLoginState()).includes(credentials.appSecret));
   assert.equal((service.getQQQrLoginState() as unknown as Record<string, unknown>).token, undefined);
@@ -93,7 +106,7 @@ try {
   await sendPrivate("restored");
   assert.equal(authorities.at(-1), firstBinding);
 
-  const original = db.listGatewayChannels().find(value => value.id === "qq-default")!.configJson;
+  const original = (await readSaved()).configJson;
   await service.startQQQrLogin(true);
   adapter.wait = deferred();
   const binding = login.authorize({ ...credentials, appId: "456" });
@@ -101,15 +114,41 @@ try {
   adapter.wait.resolve();
   await assert.rejects(binding); await cancelled; adapter.wait = undefined;
   assert.equal(adapter.active, false);
-  assert.equal(db.listGatewayChannels().find(value => value.id === "qq-default")!.configJson, original);
+  assert.equal((await readSaved()).configJson, original);
 
   await service.startQQQrLogin(true);
-  const save = db.upsertGatewayChannel.bind(db);
-  db.upsertGatewayChannel = () => { throw new Error("fixture storage failure"); };
+  const save = db.writeGatewayChannel.bind(db);
+  db.writeGatewayChannel = async () => { throw new Error("fixture storage failure"); };
   await assert.rejects(login.authorize({ ...credentials, appId: "789" }));
-  db.upsertGatewayChannel = save;
+  db.writeGatewayChannel = save;
   assert.equal(adapter.active, false);
-  assert.equal(db.listGatewayChannels().find(value => value.id === "qq-default")!.configJson, original);
+  assert.equal((await readSaved()).configJson, original);
+
+  if (coreMode) {
+    const written = deferred();
+    const received = deferred();
+    db.writeGatewayChannel = async (...args) => {
+      const result = await save(...args);
+      if (args[0].connected) { written.resolve(); await received.promise; }
+      return result;
+    };
+    await service.startQQQrLogin(true, true);
+    const late = login.authorize({ ...credentials, appId: "901" });
+    await Promise.race([written.promise, late.then(() => assert.fail("QR activated before its held receipt"))]);
+    assert.equal(adapter.active, false);
+    const cancelling = service.cancelQQQrLogin(login.getState().sessionId);
+    received.resolve();
+    await assert.rejects(late);
+    await cancelling;
+    db.writeGatewayChannel = save;
+    assert.equal(adapter.active, false);
+    assert.equal((await readSaved()).connected, false);
+    assert.equal((await readSaved()).configJson, original);
+    assert.deepEqual(await db.runtimeAuditReader!.readGatewayAssignment({ channelId: "qq-default", connectionKey: "b".repeat(64),
+      chatId: `c2c:${credentials.userOpenid}`, senderId: credentials.userOpenid, messageId: "approved" }),
+    { status: "rejected", code: "AUTHORIZATION_CHANGED" });
+    console.log("PASS Core QR cancellation after durable save revokes only the committed enrollment and never activates transport");
+  }
 
   const newer = await service.startQQQrLogin(true);
   await service.cancelQQQrLogin("old-session");
@@ -117,12 +156,21 @@ try {
   assert.equal(service.getQQQrLoginState().state, "waiting");
   await service.disconnect("qq-default");
   assert.equal(service.getQQQrLoginState().state, "cancelled");
-  assert.equal(db.listGatewayChannels().find(value => value.id === "qq-default")!.connected, false);
-  assert.equal(service.getChannelConfig("qq-default").config.appSecret, "••••••");
+  assert.equal((await readSaved()).connected, false);
+  assert.equal((await service.getChannelConfig("qq-default")).config.appSecret, "••••••");
   await service.startQQQrLogin(true);
   await login.authorize();
   await sendPrivate("ordinary-only");
   assert.equal(authorities.at(-1), undefined, "QR transport authorization alone does not approve personal memory");
   console.log("Dots QR binding PASS: explicit personal-memory opt-in, native route admission, cold grant restore and ordinary reauthorization");
   console.log("QQ QR integration PASS: explicit consent, encrypted persistence, owner allowlist, activation, cancellation, restore and no HTTP listener");
-} finally { await service.stop(); db.close(); rmSync(root, { recursive: true, force: true }); setEncryptionAvailable(true); }
+} finally {
+  await service.stop();
+  await db.runtimeAuditReader?.close();
+  db.close();
+  if (coreMode) await shutdownCoreWorker(root, dbPath);
+  if (inheritedHome === undefined) delete process.env.HOME; else process.env.HOME = inheritedHome;
+  if (inheritedProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = inheritedProfile;
+  rmSync(root, { recursive: true, force: true });
+  setEncryptionAvailable(true);
+}

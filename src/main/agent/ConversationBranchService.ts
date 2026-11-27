@@ -339,12 +339,19 @@ export class ConversationBranchService {
     };
   }
 
-  getInfo(taskId: string): ConversationBranchInfoDto | undefined {
-    return this.deps.db.getConversationBranchInfo(taskId);
+  async getInfo(taskId: string): Promise<ConversationBranchInfoDto | undefined> {
+    const [info] = await this.readCoreLineage("info", taskId);
+    return info;
   }
 
-  listChildren(taskId: string): ConversationBranchInfoDto[] {
-    return this.deps.db.listConversationBranchChildren(taskId);
+  listChildren(taskId: string): Promise<ConversationBranchInfoDto[]> {
+    return this.readCoreLineage("children", taskId);
+  }
+
+  private async readCoreLineage(kind: "info" | "children", taskId: string): Promise<ConversationBranchInfoDto[]> {
+    const result = await this.deps.db.runtimeAuditReader?.readConversationBranchData(kind, taskId);
+    if (!result) throw new Error("对话分支读取未获 Rust Core 确认");
+    return result.rows;
   }
 
   /** Space 绑定 → shared_space（强制）；否则请求策略或默认 current_snapshot（§8.2/§8.3） */

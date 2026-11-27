@@ -8,7 +8,7 @@ use crate::{
     remote_image, workspace_preview,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use rusqlite::Connection;
+use duckdb::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -22,7 +22,7 @@ const OWNER: &str = ".mybuddy-artifact-write";
 const MAX_READ_BYTES: usize = 20 * 1024 * 1024;
 const CHUNK_BYTES: usize = 1024 * 1024;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -50,25 +50,7 @@ impl Content {
                 entry,
                 token,
             } => {
-                let visible: bool = db.query_row(
-                    "WITH RECURSIVE task_scopes(id) AS (
-                        SELECT space_id FROM tasks WHERE id=?1
-                        UNION SELECT s.parent_id FROM spaces s JOIN task_scopes p ON p.id=s.id
-                    ), owner_scopes(id,archived) AS (
-                        SELECT s.id,s.archived FROM spaces s JOIN gadgets g ON g.scope_id=s.id
-                          WHERE g.id=?2 AND g.scope_type='workspace'
-                        UNION SELECT s.id,s.archived FROM spaces s JOIN spaces c ON c.parent_id=s.id
-                          JOIN owner_scopes p ON p.id=c.id
-                    )
-                    SELECT EXISTS(SELECT 1 FROM gadgets g JOIN tasks t ON t.id=?1 WHERE g.id=?2 AND
-                        (g.scope_type='global' OR (g.scope_type='task' AND g.scope_id=t.id) OR
-                         (g.scope_type='workspace' AND (g.scope_id=t.space_id OR
-                           (g.scope_id IN (SELECT id FROM task_scopes) AND
-                            NOT EXISTS (SELECT 1 FROM owner_scopes WHERE archived<>0))))))",
-                    [task_id, &id],
-                    |row| row.get(0),
-                )?;
-                if !visible {
+                if !crate::workbench_data::task_can_access_gadget(db, &id, task_id)? {
                     return Err("Gadget 作用域已变化，无法导出".into());
                 }
                 recover_if_pending(db, &root, &id)?;

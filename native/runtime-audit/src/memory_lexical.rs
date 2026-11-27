@@ -6,7 +6,7 @@ use icu_properties::{
     CodePointMapData,
     props::{GeneralCategory, GeneralCategoryGroup},
 };
-use rusqlite::{Connection, params_from_iter, types::Value as Param};
+use duckdb::{Connection, params_from_iter, types::Value as Param};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -158,17 +158,27 @@ pub fn score(db: &Connection, request: Scoring) -> Result<Vec<TextScore>> {
     if request.targets.len() > MAX_SCORE_TARGETS {
         return Err("lexical score targets exceed their budget".into());
     }
+    if request.targets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let values_clause =
+        vec!["(CAST(? AS VARCHAR), CAST(? AS VARCHAR))"; request.targets.len()].join(", ");
     let sql = format!(
-        "SELECT m.id,m.title,m.content FROM json_each(?) t
-         JOIN memory_records m ON m.id=json_extract(t.value,'$.id')
-           AND m.content_hash=json_extract(t.value,'$.contentHash')
+        "WITH targets(id, content_hash) AS (VALUES {values_clause})
+         SELECT m.id, m.title, m.content
+         FROM targets t
+         JOIN memory_records m ON m.id = t.id AND m.content_hash = t.content_hash
          WHERE {}",
         request.scope.sql,
     );
-    let targets = Param::Text(serde_json::to_string(&request.targets)?);
-    let parameters = request.scope.parameters();
+    let mut bound: Vec<Param> = Vec::with_capacity(request.targets.len() * 2);
+    for target in request.targets {
+        bound.push(Param::Text(target.id));
+        bound.push(Param::Text(target.content_hash));
+    }
+    bound.extend(request.scope.parameters());
     let mut statement = db.prepare(&sql)?;
-    let mut rows = statement.query(params_from_iter(std::iter::once(targets).chain(parameters)))?;
+    let mut rows = statement.query(params_from_iter(bound))?;
     let comparison = Comparison::new(request.compact);
     let mut normalized = NormalizedText::default();
     let mut scores = Vec::new();
@@ -217,22 +227,47 @@ pub fn search(db: &Connection, request: Search) -> Result<Candidates> {
     let parameters: Vec<Param> = request.scope.parameters().collect();
     let fts = match request.fts_query {
         Some(query) if !query.is_empty() => {
-            let mut statement = db.prepare(&format!(
-                "SELECT m.id,bm25(memory_fts,0.0,3.0,1.0) score FROM memory_fts
-                 JOIN memory_records m ON m.id=memory_fts.memory_id WHERE memory_fts MATCH ? AND {where_sql}
-                 ORDER BY score,m.id",
-            ))?;
-            let query = Param::Text(String::from_utf16_lossy(&query));
-            let mut rows =
-                statement.query(params_from_iter(std::iter::once(&query).chain(&parameters)))?;
-            let mut ids = Vec::new();
-            while let Some(row) = rows.next()? {
-                if ids.len() >= MAX_MATCHES {
-                    return Err("FTS candidate reply exceeds its budget".into());
+            let raw_query = String::from_utf16_lossy(&query);
+            let q_norm = crate::search_postings::normalize_nfkc_lower(&raw_query);
+            let q_tokens = crate::search_postings::tokenize_text_with_positions(&q_norm);
+            let multi: Vec<String> = q_tokens
+                .keys()
+                .filter(|k| !k.starts_with("c1:"))
+                .cloned()
+                .collect();
+            let search_tokens: Vec<String> = if multi.is_empty() {
+                q_tokens.keys().cloned().collect()
+            } else {
+                multi
+            };
+            if search_tokens.is_empty() {
+                Vec::new()
+            } else {
+                let tok_placeholders = vec!["?"; search_tokens.len()].join(",");
+                let mut statement = db.prepare(&format!(
+                    "SELECT d.entity_id,
+                            SUM(p.tf * CASE WHEN p.field = 'title' THEN 3.0 ELSE 1.0 END) AS score
+                     FROM search_documents d
+                     JOIN search_postings p ON p.doc_key = d.doc_key
+                     JOIN memory_records m ON m.id = d.entity_id
+                     WHERE d.domain = 'memory'
+                       AND p.token_key IN ({tok_placeholders})
+                       AND {where_sql}
+                     GROUP BY d.entity_id
+                     ORDER BY score DESC, d.entity_id ASC",
+                ))?;
+                let tok_params = search_tokens.into_iter().map(Param::Text);
+                let mut rows =
+                    statement.query(params_from_iter(tok_params.chain(parameters.clone())))?;
+                let mut ids = Vec::new();
+                while let Some(row) = rows.next()? {
+                    if ids.len() >= MAX_MATCHES {
+                        return Err("FTS candidate reply exceeds its budget".into());
+                    }
+                    ids.push(row.get(0)?);
                 }
-                ids.push(row.get(0)?);
+                ids
             }
-            ids
         }
         _ => Vec::new(),
     };
@@ -251,10 +286,9 @@ pub fn search(db: &Connection, request: Search) -> Result<Candidates> {
     let needs_code_units = std::iter::once(&compact)
         .chain(&terms)
         .any(|term| matches!(term, Needle::CodeUnits(_)));
-    // Walk the id index directly so SQLite does not sort or spill full memory bodies.
     let mut statement = db.prepare(&format!(
         "SELECT m.id,m.title,m.content,m.content_hash,m.importance,m.updated_at
-         FROM memory_records m INDEXED BY sqlite_autoindex_memory_records_1
+         FROM memory_records m
          WHERE m.id>'' AND {where_sql} ORDER BY m.id",
     ))?;
     let mut rows = statement.query(params_from_iter(&parameters))?;

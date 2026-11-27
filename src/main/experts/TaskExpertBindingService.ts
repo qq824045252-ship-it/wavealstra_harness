@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, rmSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { cpSync, existsSync, lstatSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { TaskExpertBindingDto, TaskExpertBindingSaveRequest, TaskExpertSnapshot } from "../../shared/expert-binding";
 import { normalizeWelcomeMode, type WelcomeMode } from "../../shared/mode-profile";
 import type { AppDatabase } from "../db/AppDatabase";
@@ -9,6 +9,7 @@ import type { ExpertService } from "./ExpertService";
 import { copyExpertPackages } from "./ExpertSnapshotFiles";
 
 interface SkillCopy { id: string; relativePath: string; origin: "private" | "global" }
+export interface TaskExpertSkillPackage { id: string; directory: string; origin: SkillCopy["origin"] }
 /** Stay well below SQLite's bound-variable limit for one list query. */
 const TASK_BINDING_BATCH = 400;
 interface BindingRow {
@@ -69,19 +70,22 @@ export class TaskExpertBindingService {
   private writeTail: Promise<void> = Promise.resolve();
   constructor(private readonly db: AppDatabase, private readonly experts: ExpertService, private readonly options: TaskExpertBindingOptions = {}) {
     this.root = resolve(options.rootDir ?? join(getMyBuddyDir(), "task-expert-bindings"));
-    if (!db.connection.readonly) {
-      db.connection.exec(`CREATE TABLE IF NOT EXISTS task_expert_bindings (
+    const fixture = db.fixtureConnection;
+    if (fixture && !fixture.readonly) {
+      fixture.exec(`CREATE TABLE IF NOT EXISTS task_expert_bindings (
         task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
         desired_json TEXT, active_json TEXT,
         desired_skills_json TEXT NOT NULL DEFAULT '[]', active_skills_json TEXT NOT NULL DEFAULT '[]',
         warnings_json TEXT NOT NULL DEFAULT '[]', updated_at INTEGER NOT NULL)`);
     }
-    db.setTaskExpertBindingReader(taskId => this.get(taskId));
-    db.setTaskExpertBindingBatchReader(taskIds => this.list(taskIds));
+    if (fixture) {
+      db.setTaskExpertBindingReader(taskId => this.get(taskId));
+      db.setTaskExpertBindingBatchReader(taskIds => this.list(taskIds));
+    }
   }
 
   private get requiresRustWrites(): boolean {
-    return Boolean(this.db.connection.readonly || this.db.runtimeAuditReader?.supervised);
+    return this.db.readonly;
   }
 
   async flush(): Promise<void> {
@@ -182,15 +186,53 @@ export class TaskExpertBindingService {
     return path;
   }
   activeSkillDirectories(taskId: string): string[] {
-    return this.activeSkillPackages(taskId)
-      .filter(copy => copy.origin !== "global" || this.options.isSkillEnabled?.(copy.id, taskId) !== false)
-      .map(copy => copy.directory).filter(path => existsSync(path));
+    return this.skillDirectoriesFromPackages(taskId, this.activeSkillPackages(taskId));
+  }
+  skillDirectoriesFromPackages(taskId: string, packages: readonly TaskExpertSkillPackage[],
+    isSkillEnabled = this.options.isSkillEnabled): string[] {
+    const taskRoot = this.taskRoot(taskId);
+    return packages.filter(copy => copy.origin !== "global" || isSkillEnabled?.(copy.id, taskId) !== false)
+      .map(copy => copy.directory).filter(directory => {
+        if (!directory.startsWith(taskRoot + sep) || resolve(directory) !== directory) return false;
+        try {
+          const expected = resolve(realpathSync(this.root), relative(this.root, directory));
+          return lstatSync(directory).isDirectory() && relative(expected, realpathSync(directory)) === "";
+        } catch {
+          return false;
+        }
+      });
   }
   /** Host-owned package identities remain available for revocation checks after disable. */
-  activeSkillPackages(taskId: string): Array<{ id: string; directory: string; origin: "private" | "global" }> {
-    const row = this.row(taskId);
-    const copies: SkillCopy[] = row ? JSON.parse(row.active_skills_json) : [];
-    return copies.map(copy => ({ id: copy.id, directory: this.ownedPath(taskId, copy.relativePath), origin: copy.origin }));
+  activeSkillPackages(taskId: string): TaskExpertSkillPackage[] {
+    return this.skillPackages(taskId, this.row(taskId));
+  }
+  async readActiveSkillPackages(taskId: string): Promise<TaskExpertSkillPackage[]> {
+    if (this.db.fixtureConnection) return this.activeSkillPackages(taskId);
+    const state = await this.db.runtimeAuditReader?.readTaskExpertBinding(taskId);
+    if (state === undefined) throw new Error("Rust Core 未确认任务专家技能包");
+    return this.activeSkillPackagesFromState(taskId, state);
+  }
+  activeSkillPackagesFromState(taskId: string, state: RuntimeTaskExpertBindingState | null): TaskExpertSkillPackage[] {
+    return this.skillPackages(taskId, state?.binding);
+  }
+  bindingFromState(taskId: string, state: RuntimeTaskExpertBindingState | null): TaskExpertBindingDto | null {
+    const row = state?.binding;
+    if (!row) return null;
+    if (row.task_id !== taskId) throw new Error("任务专家绑定归属无效");
+    return this.decode(row);
+  }
+  private skillPackages(taskId: string, row: BindingRow | null | undefined): TaskExpertSkillPackage[] {
+    if (!row) return [];
+    if (row.task_id !== taskId) throw new Error("任务专家技能包归属无效");
+    if (typeof row.active_skills_json !== "string") throw new Error("任务专家技能包投影无效");
+    const copies: SkillCopy[] = JSON.parse(row.active_skills_json);
+    if (!Array.isArray(copies)) throw new Error("任务专家技能包清单无效");
+    return copies.map(copy => {
+      if (!copy || typeof copy.id !== "string" || !copy.id || typeof copy.relativePath !== "string"
+        || isAbsolute(copy.relativePath) || copy.relativePath.includes("\0")
+        || (copy.origin !== "private" && copy.origin !== "global")) throw new Error("任务专家技能包清单无效");
+      return { id: copy.id, directory: this.ownedPath(taskId, copy.relativePath), origin: copy.origin };
+    });
   }
   activePrivateSkillsDir(taskId: string): string | undefined {
     const directories = this.activeSkillDirectories(taskId);
@@ -296,12 +338,12 @@ export class TaskExpertBindingService {
   }
 
   private async settingsState(taskId: string): Promise<RuntimeTaskExpertBindingState> {
-    const native = this.db.connection.inTransaction ? undefined : await this.db.runtimeAuditReader?.readTaskExpertBinding(taskId);
+    const native = this.db.inTransaction ? undefined : await this.db.runtimeAuditReader?.readTaskExpertBinding(taskId);
     if (native === null) throw new Error("任务不存在");
     const state = native ?? this.hostState(taskId);
     if (state.binding || !state.expertId) return state;
     await this.ensureLegacyAsync(taskId);
-    const refreshed = this.db.connection.inTransaction ? undefined : await this.db.runtimeAuditReader?.readTaskExpertBinding(taskId);
+    const refreshed = this.db.inTransaction ? undefined : await this.db.runtimeAuditReader?.readTaskExpertBinding(taskId);
     return refreshed ?? this.hostState(taskId);
   }
 
@@ -352,7 +394,7 @@ export class TaskExpertBindingService {
   }
 
   async saveSettings(request: TaskExpertBindingSaveRequest): Promise<BindingSettings> {
-    const native = this.db.connection.inTransaction ? undefined : this.db.runtimeAuditReader;
+    const native = this.db.inTransaction ? undefined : this.db.runtimeAuditReader;
     if (this.requiresRustWrites && !native) {
       throw new Error("保存任务专家设置：Rust 写入核心未就绪");
     }

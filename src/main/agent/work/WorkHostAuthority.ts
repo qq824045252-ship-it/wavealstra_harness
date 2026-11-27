@@ -65,7 +65,7 @@ export class WorkHostAuthority {
   private readonly acquiredListeners = new Set<() => void>();
 
   constructor(
-    private readonly db: Database.Database,
+    private readonly fixture: Database.Database | undefined,
     private readonly authorityId: string,
     private readonly leaseTtlMs = 60_000,
     private readonly now: () => number = () => Date.now(),
@@ -73,8 +73,18 @@ export class WorkHostAuthority {
     private readonly delegatedToCore = false,
   ) {}
 
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("Work 调度租约需要使用 Core");
+    return this.fixture;
+  }
+
   /** Read the previous holder's watermark before `start()` overwrites the heartbeat. */
   snapshot(): { authorityId?: string; heartbeatAt?: number; releasedAt?: number; acquiredAt?: number } {
+    if (!this.fixture && this.writer) {
+      const current = this.nativeState;
+      return { authorityId: current?.holderAuthorityId ?? undefined, heartbeatAt: current?.heartbeatAt ?? undefined,
+        releasedAt: current?.releasedAt ?? undefined, acquiredAt: current?.acquiredAt ?? undefined };
+    }
     const row = this.row();
     return row ? { authorityId: row.authority_id, heartbeatAt: row.heartbeat_at,
       releasedAt: row.released_at ?? undefined, acquiredAt: row.acquired_at } : {};

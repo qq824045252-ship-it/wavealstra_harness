@@ -1,10 +1,11 @@
-//! Step 3 business protocol: named domain commands, monotonic revisions, atomic SQLite
+//! Step 3 business protocol: named domain commands, monotonic revisions, atomic
 //! event log with bounded retention and cursor replay/resync, and Core-owned execution slots.
 
 use crate::core_lease::{self, CoreLifecycleState};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
@@ -56,9 +57,10 @@ impl ClientContext {
     }
 }
 
-#[derive(Default)]
 pub struct ExecutorTracker {
     online: std::sync::atomic::AtomicBool,
+    ready: std::sync::atomic::AtomicBool,
+    require_manifest: std::sync::atomic::AtomicBool,
     epoch: AtomicU64,
     client_id: std::sync::Mutex<String>,
     slots_limit: AtomicI64,
@@ -66,10 +68,18 @@ pub struct ExecutorTracker {
     active_executions: std::sync::Mutex<HashMap<String, (i64, u64, String)>>,
 }
 
+impl Default for ExecutorTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ExecutorTracker {
     pub fn new() -> Self {
         Self {
             online: std::sync::atomic::AtomicBool::new(false),
+            ready: std::sync::atomic::AtomicBool::new(true),
+            require_manifest: std::sync::atomic::AtomicBool::new(false),
             epoch: AtomicU64::new(0),
             client_id: std::sync::Mutex::new(String::new()),
             slots_limit: AtomicI64::new(MAX_EXECUTION_SLOTS),
@@ -139,19 +149,55 @@ impl ExecutorTracker {
         }
     }
 
-    pub fn set_capabilities(&self, capabilities: Option<HashSet<String>>) {
+    pub fn set_bootstrapping(&self) {
+        self.ready.store(false, Ordering::Release);
+        self.require_manifest.store(true, Ordering::Release);
         if let Ok(mut guard) = self.capabilities.lock() {
-            *guard = capabilities;
+            *guard = None;
         }
     }
 
+    pub fn set_capabilities(&self, capabilities: Option<HashSet<String>>) {
+        let has_manifest = capabilities.is_some();
+        if let Ok(mut guard) = self.capabilities.lock() {
+            *guard = capabilities;
+        }
+        if has_manifest {
+            self.ready.store(true, Ordering::Release);
+        }
+    }
+
+    pub fn set_ready_capabilities(&self, capabilities: Option<HashSet<String>>, require_manifest: bool) {
+        if let Ok(mut guard) = self.capabilities.lock() {
+            *guard = capabilities;
+        }
+        self.require_manifest.store(require_manifest, Ordering::Release);
+        self.ready.store(true, Ordering::Release);
+    }
+
+    pub fn is_ready(&self) -> bool {
+        if !self.ready.load(Ordering::Acquire) {
+            return false;
+        }
+        if self.require_manifest.load(Ordering::Acquire) {
+            let Ok(guard) = self.capabilities.lock() else {
+                return false;
+            };
+            return guard.as_ref().is_some_and(|c| !c.is_empty());
+        }
+        true
+    }
+
     pub fn supports_kind(&self, kind: &str) -> bool {
+        if !self.ready.load(Ordering::Acquire) {
+            return false;
+        }
         let Ok(guard) = self.capabilities.lock() else {
-            return true;
+            return false;
         };
         match guard.as_ref() {
-            Some(caps) => caps.contains(kind),
-            None => true,
+            Some(caps) => !caps.is_empty() && caps.contains(kind),
+            None => !self.require_manifest.load(Ordering::Acquire),
         }
     }
 
@@ -182,77 +228,8 @@ pub fn current_core_generation() -> String {
 }
 
 pub(crate) fn ensure_tables(conn: &Connection, core_generation: &str) -> crate::Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS core_event_meta (
-           id INTEGER PRIMARY KEY CHECK (id = 1),
-           core_generation TEXT NOT NULL,
-           min_available_seq INTEGER NOT NULL,
-           retention_limit INTEGER NOT NULL DEFAULT 4096
-         );
-         CREATE TABLE IF NOT EXISTS core_domain_events (
-           seq INTEGER PRIMARY KEY AUTOINCREMENT,
-           event_id TEXT UNIQUE NOT NULL,
-           core_generation TEXT NOT NULL,
-           owner_generation TEXT NOT NULL,
-           domain TEXT NOT NULL,
-           kind TEXT NOT NULL,
-           entity_id TEXT NOT NULL,
-           revision INTEGER NOT NULL,
-           command_id TEXT,
-           payload_json TEXT NOT NULL,
-           created_at_ms INTEGER NOT NULL
-         );
-         CREATE INDEX IF NOT EXISTS idx_core_domain_events_domain ON core_domain_events(domain, seq);
-         CREATE TABLE IF NOT EXISTS core_domain_notes (
-           entity_id TEXT PRIMARY KEY,
-           owner_generation TEXT NOT NULL,
-           revision INTEGER NOT NULL,
-           title TEXT NOT NULL,
-           body_json TEXT NOT NULL,
-           deleted INTEGER NOT NULL DEFAULT 0,
-           updated_at_ms INTEGER NOT NULL
-         );
-         CREATE TABLE IF NOT EXISTS core_command_receipts (
-           command_id TEXT PRIMARY KEY,
-           command_name TEXT NOT NULL,
-           result_json TEXT NOT NULL,
-           created_at_ms INTEGER NOT NULL
-         );
-         CREATE TABLE IF NOT EXISTS core_execution_runs (
-           execution_id TEXT PRIMARY KEY,
-           idempotency_key TEXT UNIQUE NOT NULL,
-           owner_generation TEXT NOT NULL,
-           source_role TEXT NOT NULL,
-           source_client_id TEXT NOT NULL,
-           source_epoch INTEGER NOT NULL,
-           task_id TEXT NOT NULL,
-           kind TEXT NOT NULL,
-           payload_json TEXT NOT NULL,
-           status TEXT NOT NULL,
-           revision INTEGER NOT NULL DEFAULT 1,
-           executor_client_id TEXT,
-           executor_epoch INTEGER,
-           attempt INTEGER NOT NULL DEFAULT 0,
-           result_json TEXT,
-           error_message TEXT,
-           wait_reason TEXT,
-           created_at_ms INTEGER NOT NULL,
-           updated_at_ms INTEGER NOT NULL
-         );
-         CREATE INDEX IF NOT EXISTS idx_core_execution_status ON core_execution_runs(status, created_at_ms);",
-    )?;
-    let has_wait_reason: bool = {
-        let mut stmt = conn.prepare("PRAGMA table_info(core_execution_runs)")?;
-        let cols: Vec<String> = stmt
-            .query_map([], |r| r.get(1))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        cols.iter().any(|c| c == "wait_reason")
-    };
-    if !has_wait_reason {
-        conn.execute(
-            "ALTER TABLE core_execution_runs ADD COLUMN wait_reason TEXT",
-            [],
-        )?;
+    if !table_exists(conn, "core_event_meta")? {
+        return Err("core_event_meta table missing; initialize database schema first".into());
     }
     let existing: Option<(String, i64, i64)> = conn
         .query_row(
@@ -280,14 +257,7 @@ pub(crate) fn ensure_tables(conn: &Connection, core_generation: &str) -> crate::
 }
 
 pub(crate) fn table_exists(conn: &Connection, table: &str) -> crate::Result<bool> {
-    let found: Option<i64> = conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-            params![table],
-            |row| row.get(0),
-        )
-        .optional()?;
-    Ok(found.is_some())
+    crate::database::table_exists(conn, table)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -320,11 +290,17 @@ pub(crate) fn append_event(
     let event_id = next_event_id(core_generation);
     let created_at_ms = now_ms();
     let payload_json = serde_json::to_string(payload)?;
+    let seq: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM core_domain_events",
+        [],
+        |row| row.get(0),
+    )?;
     tx.execute(
         "INSERT INTO core_domain_events (
-           event_id, core_generation, owner_generation, domain, kind, entity_id, revision, command_id, payload_json, created_at_ms
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+           seq, event_id, core_generation, owner_generation, domain, kind, entity_id, revision, command_id, payload_json, created_at_ms
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
+            seq,
             event_id,
             core_generation,
             owner_generation,
@@ -337,7 +313,6 @@ pub(crate) fn append_event(
             created_at_ms
         ],
     )?;
-    let seq = tx.last_insert_rowid();
     prune_retention_window(tx)?;
     Ok(EmittedEvent {
         seq,
@@ -412,6 +387,16 @@ pub struct WriteSideEffects {
     pub shutdown_after_reply: bool,
 }
 
+
+fn execution_reply(data: Value) -> WriteSideEffects {
+    WriteSideEffects {
+        data,
+        events: Vec::new(),
+        dispatches: Vec::new(),
+        shutdown_after_reply: false,
+    }
+}
+
 pub fn execute_command(
     db: &mut Connection,
     tracker: &ExecutorTracker,
@@ -423,7 +408,7 @@ pub fn execute_command(
     match command {
         CommandInput::SetEventRetention { limit } => {
             let clamped = limit.clamp(2, 100_000);
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             tx.execute(
                 "UPDATE core_event_meta SET retention_limit = ? WHERE id = 1",
                 params![clamped],
@@ -467,7 +452,7 @@ pub fn execute_command(
                     shutdown_after_reply: false,
                 });
             }
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             if let Some(prev) = tx
                 .query_row(
                     "SELECT result_json FROM core_command_receipts WHERE command_id = ?",
@@ -575,7 +560,7 @@ pub fn execute_command(
             expected_revision,
             owner_generation,
         } => {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             if let Some(prev) = tx
                 .query_row(
                     "SELECT result_json FROM core_command_receipts WHERE command_id = ?",
@@ -680,6 +665,7 @@ pub enum ExecutionRequest {
         kind: String,
         payload: Option<Value>,
         owner_generation: Option<String>,
+        dots_recovery: Option<crate::dots_delegation_data::RecoveryGuard>,
     },
     Pause {
         execution_id: String,
@@ -720,6 +706,8 @@ pub enum ExecutionRequest {
         host_generation: Option<String>,
         #[serde(default)]
         ephemeral: bool,
+        #[serde(default)]
+        progress_id: Option<String>,
     },
     ExecutorSettled {
         execution_id: String,
@@ -765,7 +753,7 @@ pub(crate) fn fetch_execution_tx(conn: &Connection, execution_id: &str) -> crate
     fetch_execution(conn, execution_id)
 }
 
-pub(crate) fn row_to_execution_pub(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionRow> {
+pub(crate) fn row_to_execution_pub(row: &duckdb::Row<'_>) -> duckdb::Result<ExecutionRow> {
     row_to_execution(row)
 }
 
@@ -795,7 +783,7 @@ fn fetch_execution_by_key(conn: &Connection, idempotency_key: &str) -> crate::Re
     .map_err(Into::into)
 }
 
-fn row_to_execution(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionRow> {
+fn row_to_execution(row: &duckdb::Row<'_>) -> duckdb::Result<ExecutionRow> {
     let payload_str: String = row.get(8)?;
     let result_str: Option<String> = row.get(14)?;
     Ok(ExecutionRow {
@@ -906,8 +894,10 @@ pub fn execute_execution(
             kind,
             payload,
             owner_generation,
+            dots_recovery,
         } => {
-            if execution_id.trim().is_empty() || idempotency_key.trim().is_empty() || task_id.trim().is_empty() {
+            if execution_id.trim().is_empty() || idempotency_key.trim().is_empty() || task_id.trim().is_empty()
+                || dots_recovery.is_some() && (kind != "pi_turn" || payload.is_some() || execution_id != format!("pi:{task_id}:{idempotency_key}")) {
                 return Ok(WriteSideEffects {
                     data: json!({ "status": "rejected", "code": "INVALID_REQUEST" }),
                     events: vec![],
@@ -915,8 +905,16 @@ pub fn execute_execution(
                     shutdown_after_reply: false,
                 });
             }
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            if let Some(existing) = fetch_execution_by_key(&tx, &idempotency_key)? {
+            let tx = db.transaction()?;
+            let previous = fetch_execution_by_key(&tx, &idempotency_key)?;
+            let retry = previous.as_ref().filter(|row| dots_recovery.is_some() && row.execution_id == execution_id
+                && row.task_id == task_id && row.kind == kind
+                && row.status == "paused" && row.payload.get("dotsRecovery").is_some()
+                && row.result.as_ref().is_some_and(|value| value["dotsRecoveryDeferred"] == true));
+            if let Some(existing) = previous.as_ref().filter(|_| retry.is_none()) {
+                if dots_recovery.is_some() && (existing.task_id != task_id || existing.kind != kind) {
+                    return Ok(execution_reply(json!({"status":"rejected","code":"DOTS_RECOVERY_IDENTITY_CHANGED"})));
+                }
                 return Ok(WriteSideEffects {
                     data: json!({
                         "status": "ok",
@@ -943,14 +941,34 @@ pub fn execute_execution(
                 });
             }
             let now = now_ms();
-            let owner_gen = owner_generation.unwrap_or_else(|| client.generation.clone());
-            let payload_val = payload.unwrap_or_else(|| json!({}));
+            let owner_gen = retry.map(|row| row.owner_generation.clone())
+                .or(owner_generation).unwrap_or_else(|| client.generation.clone());
+            let payload_val = if let Some(guard) = dots_recovery {
+                let Some(mut request) = crate::dots_delegation_data::recovery_request(&tx, &task_id, &idempotency_key, &guard)? else {
+                    return Ok(execution_reply(json!({"status":"rejected","code":"DOTS_RECOVERY_NOT_CURRENT"})));
+                };
+                request["dotsRecovery"] = json!(guard);
+                request["durableAdmissionOnly"] = json!(true);
+                request["waitForSettled"] = json!(false);
+                request
+            } else {
+                let mut request = payload.unwrap_or_else(|| json!({}));
+                if let Some(object) = request.as_object_mut() { object.remove("dotsRecovery"); }
+                request
+            };
             let initial_status = if tracker.is_online().is_some() && tracker.supports_kind(&kind) {
                 "queued"
             } else {
                 "waiting_executor"
             };
-            tx.execute(
+            let revision = if let Some(row) = retry {
+                let revision = row.revision + 1;
+                tx.execute("UPDATE core_execution_runs SET status=?,revision=?,payload_json=?,result_json=NULL,error_message=NULL,
+                    executor_client_id=NULL,executor_epoch=NULL,wait_reason=NULL,updated_at_ms=? WHERE execution_id=?",
+                    params![initial_status,revision,serde_json::to_string(&payload_val)?,now,execution_id])?;
+                revision
+            } else {
+                tx.execute(
                 "INSERT INTO core_execution_runs (
                    execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
                    task_id, kind, payload_json, status, revision, created_at_ms, updated_at_ms
@@ -969,19 +987,23 @@ pub fn execute_execution(
                     now,
                     now,
                 ],
-            )?;
+                )?;
+                1
+            };
             let mut events = vec![append_event(
                 &tx,
                 &core_gen,
                 &owner_gen,
                 "execution",
-                if initial_status == "waiting_executor" {
+                if retry.is_some() {
+                    "execution.resumed"
+                } else if initial_status == "waiting_executor" {
                     "execution.waiting_executor"
                 } else {
                     "execution.submitted"
                 },
                 &execution_id,
-                1,
+                revision,
                 Some(&idempotency_key),
                 &json!({
                     "executionId": execution_id,
@@ -996,6 +1018,7 @@ pub fn execute_execution(
             dispatch_waiting_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
             let final_row = fetch_execution(&tx, &execution_id)?.unwrap();
             crate::request_control::commit(tx)?;
+            crate::work_scheduler::apply_committed_promotion_dispatches(tracker, &dispatches);
             Ok(WriteSideEffects {
                 data: json!({
                     "status": "ok",
@@ -1034,7 +1057,7 @@ pub fn execute_execution(
             execution_id,
             expected_revision,
         } => {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let Some(row) = fetch_execution(&tx, &execution_id)? else {
                 return Ok(WriteSideEffects {
                     data: json!({ "status": "rejected", "code": "NOT_FOUND" }),
@@ -1095,6 +1118,7 @@ pub fn execute_execution(
             dispatch_waiting_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
             let updated = fetch_execution(&tx, &execution_id)?.unwrap();
             crate::request_control::commit(tx)?;
+            crate::work_scheduler::apply_committed_promotion_dispatches(tracker, &dispatches);
             Ok(WriteSideEffects {
                 data: json!({ "status": "ok", "coreGeneration": core_gen, "execution": updated }),
                 events,
@@ -1114,7 +1138,7 @@ pub fn execute_execution(
             if let Some(rejection) = verify_host_generation(db, host_generation.as_deref()) {
                 return Ok(rejection);
             }
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let Some(row) = fetch_execution(&tx, &execution_id)? else {
                 return Ok(WriteSideEffects {
                     data: json!({ "status": "rejected", "code": "NOT_FOUND" }),
@@ -1176,6 +1200,7 @@ pub fn execute_execution(
             )?;
             let updated = fetch_execution(&tx, &execution_id)?.unwrap();
             crate::request_control::commit(tx)?;
+            tracker.register_active_execution(&execution_id, attempt, client.epoch, &row.owner_generation);
             Ok(WriteSideEffects {
                 data: json!({ "status": "ok", "coreGeneration": core_gen, "execution": updated }),
                 events,
@@ -1190,6 +1215,7 @@ pub fn execute_execution(
             owner_generation,
             host_generation,
             ephemeral,
+            progress_id,
         } => {
             if let Some(rejection) = verify_host_generation(db, host_generation.as_deref()) {
                 return Ok(rejection);
@@ -1213,7 +1239,7 @@ pub fn execute_execution(
             if let Some(rejection) = verify_executor_identity(client, &core_gen, owner_generation.as_deref()) {
                 return Ok(rejection);
             }
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let Some(row) = fetch_execution(&tx, &execution_id)? else {
                 return Ok(WriteSideEffects {
                     data: json!({ "status": "rejected", "code": "NOT_FOUND" }),
@@ -1229,6 +1255,32 @@ pub fn execute_execution(
                     dispatches: vec![],
                     shutdown_after_reply: false,
                 });
+            }
+            let receipt = if let Some(id) = progress_id {
+                if id.is_empty() || id.len() > 128 {
+                    return Ok(execution_reply(json!({ "status": "rejected", "code": "INVALID_PROGRESS_ID" })));
+                }
+                let scope = format!("execution-progress:{core_gen}:{}:{attempt}:{execution_id}", client.epoch);
+                let hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&progress)?));
+                let previous: Option<(String, String)> = tx.query_row(
+                    "SELECT request_hash, result_json FROM operation_receipts
+                     WHERE caller_scope = ? AND operation_id = ? AND batch_index = 0",
+                    params![scope, id],
+                    |receipt| Ok((receipt.get(0)?, receipt.get(1)?)),
+                ).optional()?;
+                if let Some((saved_hash, reply)) = previous {
+                    return Ok(execution_reply(if saved_hash == hash {
+                        serde_json::from_str(&reply)?
+                    } else {
+                        json!({ "status": "rejected", "code": "PROGRESS_ID_CONFLICT" })
+                    }));
+                }
+                Some((scope, id, hash))
+            } else {
+                None
+            };
+            if !matches!(row.status.as_str(), "running" | "pause_requested" | "cancel_requested") {
+                return Ok(execution_reply(json!({ "status": "rejected", "code": "INVALID_STATE", "actualStatus": row.status })));
             }
             let next_rev = row.revision + 1;
             let now = now_ms();
@@ -1247,10 +1299,22 @@ pub fn execute_execution(
                 None,
                 &json!({ "executionId": execution_id, "attempt": attempt, "progress": progress }),
             )?;
-            let updated = fetch_execution(&tx, &execution_id)?.unwrap();
+            let data = if let Some((scope, id, hash)) = receipt {
+                let ack = json!({ "status": "ok", "coreGeneration": core_gen, "revision": next_rev });
+                tx.execute(
+                    "INSERT INTO operation_receipts
+                        (caller_scope, operation_id, batch_index, request_hash, status, result_json, created_at_ms)
+                     VALUES (?, ?, 0, ?, 'committed', ?, ?)",
+                    params![scope, id, hash, serde_json::to_string(&ack)?, now],
+                )?;
+                ack
+            } else {
+                let updated = fetch_execution(&tx, &execution_id)?.unwrap();
+                json!({ "status": "ok", "coreGeneration": core_gen, "execution": updated })
+            };
             crate::request_control::commit(tx)?;
             Ok(WriteSideEffects {
-                data: json!({ "status": "ok", "coreGeneration": core_gen, "execution": updated }),
+                data,
                 events: vec![ev],
                 dispatches: vec![],
                 shutdown_after_reply: false,
@@ -1279,7 +1343,7 @@ pub fn execute_execution(
                     shutdown_after_reply: false,
                 });
             }
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let Some(row) = fetch_execution(&tx, &execution_id)? else {
                 return Ok(WriteSideEffects {
                     data: json!({ "status": "rejected", "code": "NOT_FOUND" }),
@@ -1296,8 +1360,20 @@ pub fn execute_execution(
                     shutdown_after_reply: false,
                 });
             }
+            if !matches!(
+                (row.status.as_str(), status.as_str()),
+                ("running", _)
+                    | ("pause_requested", "paused" | "unknown")
+                    | ("cancel_requested", "cancelled" | "unknown")
+            ) {
+                return Ok(execution_reply(json!({ "status": "rejected", "code": "INVALID_STATE", "actualStatus": row.status })));
+            }
             let next_rev = row.revision + 1;
             let now = now_ms();
+            let mut result = result;
+            if row.status == "pause_requested" && let Some(value) = result.as_mut().and_then(Value::as_object_mut) {
+                value.remove("dotsRecoveryDeferred");
+            }
             let result_json = result.as_ref().map(serde_json::to_string).transpose()?;
             tx.execute(
                 "UPDATE core_execution_runs
@@ -1305,7 +1381,6 @@ pub fn execute_execution(
                  WHERE execution_id = ?",
                 params![status, next_rev, result_json, error_message, now, execution_id],
             )?;
-            tracker.clear_active_execution(&execution_id);
             let mut events = vec![append_event(
                 &tx,
                 &core_gen,
@@ -1376,6 +1451,8 @@ pub fn execute_execution(
             dispatch_waiting_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
             let updated = fetch_execution(&tx, &execution_id)?.unwrap();
             crate::request_control::commit(tx)?;
+            tracker.clear_active_execution(&execution_id);
+            crate::work_scheduler::apply_committed_promotion_dispatches(tracker, &dispatches);
             Ok(WriteSideEffects {
                 data: json!({ "status": "ok", "coreGeneration": core_gen, "execution": updated }),
                 events,
@@ -1399,7 +1476,7 @@ pub fn execute_execution(
                     shutdown_after_reply: false,
                 });
             }
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let Some(row) = fetch_execution(&tx, &execution_id)? else {
                 return Ok(WriteSideEffects {
                     data: json!({ "status": "rejected", "code": "NOT_FOUND" }),
@@ -1454,6 +1531,7 @@ pub fn execute_execution(
             }
             let updated = fetch_execution(&tx, &execution_id)?.unwrap();
             crate::request_control::commit(tx)?;
+            crate::work_scheduler::apply_committed_promotion_dispatches(tracker, &dispatches);
             Ok(WriteSideEffects {
                 data: json!({ "status": "ok", "coreGeneration": core_gen, "execution": updated }),
                 events,
@@ -1518,7 +1596,7 @@ fn transition_control_execution(
     expected_revision: Option<i64>,
     action: &str,
 ) -> crate::Result<WriteSideEffects> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let Some(row) = fetch_execution(&tx, execution_id)? else {
         return Ok(WriteSideEffects {
             data: json!({ "status": "rejected", "code": "NOT_FOUND" }),
@@ -1588,6 +1666,7 @@ fn transition_control_execution(
     }
     let updated = fetch_execution(&tx, execution_id)?.unwrap();
     crate::request_control::commit(tx)?;
+    crate::work_scheduler::apply_committed_promotion_dispatches(tracker, &dispatches);
     Ok(WriteSideEffects {
         data: json!({ "status": "ok", "coreGeneration": core_gen, "execution": updated }),
         events,
@@ -1607,7 +1686,7 @@ pub fn handle_executor_presence(
     let core_gen = current_core_generation();
     ensure_tables(db, &core_gen)?;
     tracker.set_presence(online, epoch, client_id.clone());
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let mut events = vec![];
     let mut dispatches = vec![];
     let now = now_ms();
@@ -1701,6 +1780,7 @@ pub fn handle_executor_presence(
         dispatch_waiting_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
     }
     crate::request_control::commit(tx)?;
+    crate::work_scheduler::apply_committed_promotion_dispatches(tracker, &dispatches);
     Ok(WriteSideEffects {
         data: json!({ "status": "ok", "online": online }),
         events,
@@ -1962,7 +2042,7 @@ pub fn handle_lifecycle(
             });
         }
     }
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let ev = append_event(
         &tx,
         &core_gen,
@@ -1998,6 +2078,8 @@ mod tests {
 
     fn setup_db() -> Connection {
         let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(crate::database::CANONICAL_DUCKDB_SCHEMA_SQL)
+            .unwrap();
         ensure_tables(&db, "gen-1").unwrap();
         db
     }
@@ -2023,6 +2105,7 @@ mod tests {
                 kind: "pi_turn".into(),
                 payload: Some(json!({ "text": "hello" })),
                 owner_generation: None,
+                dots_recovery: None,
             },
         )
         .unwrap();
@@ -2046,6 +2129,7 @@ mod tests {
                 kind: "pi_turn".into(),
                 payload: None,
                 owner_generation: None,
+                dots_recovery: None,
             },
         )
         .unwrap();
@@ -2091,6 +2175,7 @@ mod tests {
                 kind: "pi_turn".into(),
                 payload: None,
                 owner_generation: None,
+                dots_recovery: None,
             },
         )
         .unwrap();
@@ -2205,6 +2290,7 @@ mod tests {
                 kind: "pi_turn".into(),
                 payload: None,
                 owner_generation: None,
+                dots_recovery: None,
             },
         )
         .unwrap();

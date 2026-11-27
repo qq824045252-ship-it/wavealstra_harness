@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, TransactionBehavior, params};
+use duckdb::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -42,12 +42,12 @@ fn apply(db: &mut Connection, request: Mutation) -> Result<()> {
     match request {
         Mutation::Rename { id, name, at } => {
             db.execute(
-                "UPDATE spaces SET name=?2, updated_at=max(updated_at,?3) WHERE id=?1",
+                "UPDATE spaces SET name=?2, updated_at=GREATEST(updated_at, ?3) WHERE id=?1",
                 params![id, name, at],
             )?;
         }
         Mutation::Icon { id, icon } => {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let space_exists: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM spaces WHERE id=?1)",
                 [&id],

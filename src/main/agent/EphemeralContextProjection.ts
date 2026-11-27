@@ -1,12 +1,15 @@
 import { restoreDotsPreferenceQuote } from "./DotsMemoryEvidence";
 import { createHash } from "node:crypto";
 import { DOTS_TASK_ID } from "../../shared/dots";
+import { isGatewayConversation } from "../../shared/gateway-task";
+import { canonicalJson } from "../../shared/bot-work-phase5";
 import { defaultDotsMemoryLimits, type DotsMemoryLimits } from "../../shared/dots-limits";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentSession, ExtensionFactory, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { MemoryService } from "../memory/MemoryService";
 import { MEMORY_CONTENT_MAX_CHARS, type AutomaticRecallMode, type MemorySearchHit, type MemorySearchRequest } from "../../shared/memory-kernel";
-import { memoryProjectionQuery, projectMemoryContext, readMemoryContextBaselines, renderDerivedMemoryEvidence, renderMemoryEvidence, DOTS_EVIDENCE_RENDERER, MEMORY_EVIDENCE_RENDERER, MEMORY_EVIDENCE_CONTENT_LENGTH, type MemoryEvidenceBlock, type WorkPreferenceState, renderWorkPreferenceState, WORK_PREFERENCE_POLICY_BUDGET, WORK_PREFERENCE_SOURCE_LIMIT } from "./MemoryContextProjection";
+import { memoryProjectionQuery, projectMemoryContext, readMemoryContextBaselines, renderDerivedMemoryEvidence, renderMemoryEvidence, DOTS_EVIDENCE_RENDERER, MEMORY_EVIDENCE_RENDERER, MEMORY_EVIDENCE_CONTENT_LENGTH, type MemoryEvidenceBlock, type ProjectedMemoryContext, type WorkPreferenceState, renderWorkPreferenceState, WORK_PREFERENCE_POLICY_BUDGET, WORK_PREFERENCE_SOURCE_LIMIT } from "./MemoryContextProjection";
+import { readCoreMemoryContext } from "./CoreMemoryContextProjection";
 import { startAnswerRoutingTiming } from "./AnswerRoutingTimings";
 import { EvidenceBudget, clipEvidence, type SupplementalEvidence, type EvidenceAccess } from "./EvidenceBudget";
 
@@ -16,6 +19,8 @@ export const CONTEXT_RESET_TYPE = "mybuddy.context-reset";
 export const CONTEXT_LEDGER_VERSION = 1;
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const scopeKey = (scope: ProjectionScope) => JSON.stringify([scope.taskId ?? null, scope.projectId ?? null, scope.workspaceId ?? null]);
+const memorySourceKey = (source: { id: string; revision: number }) => JSON.stringify([source.id, source.revision]);
+type CoreMemorySnapshotRevision = NonNullable<Awaited<ReturnType<MemoryService["readCoreContextSnapshot"]>>>;
 
 interface EvidenceRef {
   id: string;
@@ -29,7 +34,8 @@ interface EvidenceRef {
   reference?: MemoryEvidenceBlock["reference"];
   supplemental?: { id: string; kind: SupplementalEvidence["kind"]; access?: EvidenceAccess };
 }
-interface SelectedEvidence { ref: EvidenceRef; text: string; fullInstruction?: string; validate?: () => void; validateAccess?: () => void }
+type EvidenceCheck = () => void | Promise<void>;
+interface SelectedEvidence { ref: EvidenceRef; text: string; fullInstruction?: string; validate?: EvidenceCheck; validateAccess?: EvidenceCheck }
 interface TurnRecall {
   mode: AutomaticRecallMode;
   semanticSources: Array<{ id: string; revision: number }>;
@@ -79,13 +85,14 @@ export interface EvidenceProjectionHost {
 export class EphemeralContextProjection {
   private session?: EvidenceProjectionHost;
   private turn?: Turn;
+  private projectionRun?: object;
   private ticket?: object;
   private failure?: Error;
   private disposed = false;
   private turnEpoch = 0;
   private readonly bodies = new Map<string, SelectedEvidence>();
   // Permission closures outlive compaction: summaries/tool results may contain derivatives.
-  private readonly accessChecks = new Map<string, () => void>();
+  private readonly accessChecks = new Map<string, EvidenceCheck>();
 
   constructor(private readonly options: {
     memory?: MemoryService;
@@ -93,34 +100,41 @@ export class EphemeralContextProjection {
     delegatedSources?: (userId: string) => Array<{ id: string; revision: number }>;
     automaticSemanticRecall?: () => boolean;
     dotsMemoryLimits?: () => DotsMemoryLimits;
-    scope: () => ProjectionScope;
+    scope: () => ProjectionScope | Promise<ProjectionScope>;
     execution?: () => { executionId?: string; userTurnId?: string; query?: string };
-    supplementalEvidence: () => SupplementalEvidence[];
-    validateEvidenceAccess?: (access: EvidenceAccess) => void;
-    registerRequestGuard: (session: AgentSession, capture: () => () => void) => void;
+    supplementalEvidence: () => SupplementalEvidence[] | Promise<SupplementalEvidence[]>;
+    validateEvidenceAccess?: (access: EvidenceAccess) => void | Promise<void>;
+    registerRequestGuard: (session: AgentSession, capture: () => EvidenceCheck) => void;
     log?: (metadata: string) => void;
   }) {}
 
   readonly extension: ExtensionFactory = (pi) => {
     pi.on("context", async event => {
-      try { return await this.project(event.messages); }
+      const projection = this.project(event.messages);
+      const run = this.projectionRun;
+      try { return await projection; }
       catch (error) {
         // Pi swallows hook exceptions. The final transport guard must reject too.
-        this.failure = error instanceof Error ? error : new Error(String(error));
+        if (this.projectionRun === run) this.failure = error instanceof Error ? error : new Error(String(error));
       }
     });
     pi.on("message_start", event => { if (event.message.role === "user") this.clearTurn(); });
     pi.on("agent_settled", () => this.clearTurn());
-    pi.on("session_tree", event => {
+    pi.on("session_tree", async event => {
       this.clearTurn();
       if (event.summaryEntry && event.oldLeafId) {
         // A summary imports facts from the abandoned branch. Carry its permission
         // dependencies onto the new path (also survives a standalone branch copy).
         const additions = [...new Map(this.records(event.oldLeafId).flatMap(({ record }) => record.additions)
           .map(ref => [this.blockKey(ref), ref])).values()];
-        if (additions.length) this.session!.sessionManager.appendCustomEntry(CONTEXT_LEDGER_TYPE, {
+        if (!additions.length) return;
+        const session = this.session;
+        const epoch = this.turnEpoch;
+        const scope = await this.options.scope();
+        if (this.disposed || this.session !== session || this.turnEpoch !== epoch) return;
+        session!.sessionManager.appendCustomEntry(CONTEXT_LEDGER_TYPE, {
           version: CONTEXT_LEDGER_VERSION, anchor: event.summaryEntry.id, boundary: "summary-lineage",
-          scope: this.options.scope(), timestamp: Date.now(), additions, manifest: [],
+          scope, timestamp: Date.now(), additions, manifest: [],
         } satisfies LedgerRecord);
       }
     });
@@ -144,29 +158,41 @@ export class EphemeralContextProjection {
 
   get currentRecall(): TurnRecall | undefined { return this.turn?.recall; }
 
-  captureRequestGuard(): () => void {
+  captureRequestGuard(): EvidenceCheck {
+    const session = this.session;
+    const modelKey = `${session?.model?.provider}/${session?.model?.id}`;
+    const epoch = this.turnEpoch;
+    const run = this.projectionRun;
     const ticket = this.ticket;
     const failure = this.failure;
-    return () => {
-      if (this.disposed || ticket !== this.ticket) throw new Error("请求所属的上下文投影已结束");
+    const assertCurrent = () => {
+      if (this.disposed || this.session !== session || this.turnEpoch !== epoch || this.projectionRun !== run || ticket !== this.ticket
+        || `${session?.model?.provider}/${session?.model?.id}` !== modelKey) throw new Error("请求所属的上下文投影已结束");
       if (failure) throw failure;
       if (this.failure) throw this.failure;
-      if (this.turn) {
-        if (`${this.session?.model?.provider}/${this.session?.model?.id}` !== this.turn.modelKey
-          || scopeKey(this.options.scope()) !== this.turn.scopeStamp) throw new Error("本轮模型或上下文作用域已变化，请重新发起执行");
-        for (const ref of this.options.delegatedSources?.(this.turn.userId) ?? []) {
-          if (!this.turn.selected.some(item => item.ref.reference?.id === ref.id)) continue;
+    };
+    return async () => {
+      assertCurrent();
+      const scope = await this.options.scope();
+      assertCurrent();
+      const turn = this.turn;
+      const checks = new Set<EvidenceCheck>();
+      if (turn) {
+        if (modelKey !== turn.modelKey || scopeKey(scope) !== turn.scopeStamp) throw new Error("本轮模型或上下文作用域已变化，请重新发起执行");
+        for (const ref of this.options.delegatedSources?.(turn.userId) ?? []) {
+          if (!turn.selected.some(item => item.ref.reference?.id === ref.id)) continue;
           const memory = this.options.memory;
-          if (!this.options.enabled() || !this.turn.scope.taskId || !memory?.currentDelegationSource(this.turn.scope.taskId, ref.id, ref.revision))
+          if (!this.options.enabled() || !turn.scope.taskId || !memory?.currentDelegationSource(turn.scope.taskId, ref.id, ref.revision))
             throw new Error("本轮委派引用的记忆已变化，请使用当前版本重新交办");
         }
-        for (const item of this.turn.selected) item.validate?.();
+        for (const item of turn.selected) if (item.validate) checks.add(item.validate);
       }
-      this.validateHistory(this.records());
+      await this.validateHistory(this.records(), scope, checks);
+      assertCurrent();
     };
   }
 
-  private clearTurn(): void { this.turnEpoch++; this.ticket = undefined; this.turn = undefined; this.failure = undefined; }
+  private clearTurn(): void { this.turnEpoch++; this.projectionRun = this.ticket = undefined; this.turn = undefined; this.failure = undefined; }
   dispose(): void { this.disposed = true; this.clearTurn(); this.bodies.clear(); this.accessChecks.clear(); }
   private blockKey(ref: EvidenceRef): string { return digest(ref); }
 
@@ -199,9 +225,10 @@ export class EphemeralContextProjection {
   }
 
   /** A permanent Dots conversation can cut its provider history at a fresh user input. */
-  requiresFreshDotsHistory(): boolean {
+  requiresFreshDotsHistory(scope: ProjectionScope): boolean {
     const rows = this.records();
-    const scope = this.options.scope();
+    if (this.options.memory?.usesCoreRecall) return rows.some(({ record }) => record.additions.some(ref =>
+      ref.sources.length || ref.profileIds.length || ref.scenarioIds.length));
     const checked = new Set<string>();
     for (const { record } of rows) for (const ref of record.additions) {
       if (ref.reference && ref.reference.renderer !== MEMORY_EVIDENCE_RENDERER && ref.reference.renderer !== DOTS_EVIDENCE_RENDERER) return true;
@@ -222,18 +249,25 @@ export class EphemeralContextProjection {
 
   resetSelection(): void { this.clearTurn(); this.bodies.clear(); this.accessChecks.clear(); }
 
-  private validateHistory(rows: ReturnType<EphemeralContextProjection["records"]>): void {
-    const scope = this.options.scope();
+  private async validateHistory(rows: ReturnType<EphemeralContextProjection["records"]>, scope: ProjectionScope,
+    checks = new Set<EvidenceCheck>()): Promise<Map<string, CoreMemorySnapshotRevision>> {
+    const memory = this.options.memory;
     const checked = new Set<string>();
+    const nativeSources = new Map<string, { id: string; revision: number }>();
+    const verified = new Map<string, CoreMemorySnapshotRevision>();
     for (const { record } of rows) for (const ref of record.additions) {
       const key = this.blockKey(ref);
       if (checked.has(key)) continue;
       checked.add(key);
       if (ref.sources.length && !this.options.enabled()) throw new Error("历史 Memory 已停用，请新建任务以重建上下文");
       for (const source of ref.sources) {
-        if (!this.options.memory || this.options.memory.contextSnapshotRevocationReason(source, scope)) {
+        if (memory?.usesCoreRecall) nativeSources.set(memorySourceKey(source), source);
+        else if (!memory || memory.contextSnapshotRevocationReason(source, scope)) {
           throw new Error(`历史 Memory ${source.id} 已撤销或不可见，请新建任务以移除可能受影响的回复和摘要`);
         }
+      }
+      if (memory?.usesCoreRecall && ref.reference && (ref.reference.renderer !== MEMORY_EVIDENCE_RENDERER || ref.reference.userQuote)) {
+        throw new Error("Core 未确认历史记忆引文的引用范围");
       }
       if (ref.scenarioIds.some(id => this.options.memory?.cognition.projections.isRevoked(id, "scenario"))
         || ref.profileIds.some(id => this.options.memory?.cognition.projections.isRevoked(id, "profile"))) {
@@ -242,19 +276,34 @@ export class EphemeralContextProjection {
       if (ref.supplemental) {
         // Prefer the original access witness, never today's replacement attachment/pin.
         const validate = this.accessChecks.get(key);
-        if (validate) validate();
-        else if (ref.supplemental.access && this.options.validateEvidenceAccess) this.options.validateEvidenceAccess(ref.supplemental.access);
+        const access = ref.supplemental.access;
+        if (validate) checks.add(validate);
+        else if (access && this.options.validateEvidenceAccess) checks.add(() => this.options.validateEvidenceAccess!(access));
         else throw new Error("无法验证历史资料的访问范围，请新建任务上下文");
       }
     }
+    if (memory && nativeSources.size) checks.add(async () => {
+      const request = { ...scope, includeInherited: true };
+      const authority = await memory.readCoreRecallAuthority(request);
+      const sources = [...nativeSources];
+      for (let offset = 0; offset < sources.length; offset += 8) {
+        await Promise.all(sources.slice(offset, offset + 8).map(async ([key, source]) => {
+          const snapshot = await memory.readCoreContextSnapshot(source, request, authority);
+          if (!snapshot) throw new Error(`历史 Memory ${source.id} 已撤销或不可见，请新建任务以移除可能受影响的回复和摘要`);
+          verified.set(key, snapshot);
+        }));
+      }
+      if ((await memory.readCoreRecallAuthority(request)).witness !== authority.witness) throw new Error("验证历史记忆期间任务的可见范围已变化");
+    });
+    await Promise.all([...checks].map(async validate => validate()));
+    return verified;
   }
 
-  private async select(userId: string, query: string): Promise<Turn> {
+  private async select(userId: string, query: string, scope: ProjectionScope, assertCurrent: () => Promise<void>): Promise<Turn> {
     const finishSelection = startAnswerRoutingTiming("memorySelection");
     const session = this.session!;
     const model = session.model;
     if (!model) throw new Error("上下文投影缺少最终模型");
-    const scope = this.options.scope();
     const isDots = scope.taskId === DOTS_TASK_ID;
     const dotsLimits = isDots ? this.options.dotsMemoryLimits?.() ?? defaultDotsMemoryLimits : undefined;
     const budget = new EvidenceBudget(model, session.getContextUsage()?.tokens ?? 0, isDots);
@@ -266,12 +315,23 @@ export class EphemeralContextProjection {
       ...(dotsLimits && { limit: dotsLimits.entries, dotsLimits }),
     };
     const memory = this.options.memory;
-    const epoch = this.turnEpoch;
     let mode: AutomaticRecallMode = "off";
     let hits: MemorySearchHit[] | undefined;
     let baselines: Awaited<ReturnType<typeof readMemoryContextBaselines>>;
+    let resolved: ProjectedMemoryContext | undefined;
     if (!memory || !this.options.enabled()) mode = "disabled";
     else if (input.budgetChars <= 0) mode = "no-budget";
+    else if (memory.usesCoreRecall) {
+      // Core's ordinary scope does not authorize Dots or Gateway personal recall.
+      const hybrid = this.options.automaticSemanticRecall?.() === true;
+      mode = hybrid ? (query.trim().length < 4 ? "short-query" : "unavailable") : "off";
+      if (isDots || (scope.taskId && isGatewayConversation(scope.taskId))) mode = "unavailable";
+      else {
+        resolved = await readCoreMemoryContext(memory, input);
+        await assertCurrent();
+        if (!this.options.enabled()) { mode = "disabled"; resolved = undefined; }
+      }
+    }
     else {
       const read = async (hybrid: boolean) => {
         mode = hybrid ? "hybrid" : "off";
@@ -288,25 +348,19 @@ export class EphemeralContextProjection {
             resultCount: recalled?.length, returnedMemoryIds: recalled?.map(hit => hit.memory.id) }));
         }
       };
-      const assertCurrent = () => {
-        if (this.disposed || this.session !== session || epoch !== this.turnEpoch
-          || session.model?.provider !== model.provider || session.model?.id !== model.id
-          || scopeKey(scope) !== scopeKey(this.options.scope())) throw new Error("记忆读取期间请求上下文已变化");
-      };
       const hybrid = this.options.automaticSemanticRecall?.() === true;
       [hits, baselines] = await Promise.all([read(hybrid), readMemoryContextBaselines(memory, input)]);
-      assertCurrent();
+      await assertCurrent();
       if (!this.options.enabled()) mode = "disabled";
       else if (hybrid && !this.options.automaticSemanticRecall?.()) {
         [hits, baselines] = await Promise.all([read(false), readMemoryContextBaselines(memory, input)]);
-        assertCurrent();
+        await assertCurrent();
         if (!this.options.enabled()) mode = "disabled";
       }
+      if (mode !== "disabled") resolved = projectMemoryContext(memory, input, hits, this.options.delegatedSources?.(userId), baselines);
     }
-    const resolved = memory && mode !== "disabled" && input.budgetChars > 0
-      ? projectMemoryContext(memory, input, hits, this.options.delegatedSources?.(userId), baselines) : undefined;
     const currentPreferences = resolved?.currentPreferences
-      ?? (this.options.memory?.resolveScopeChain(scope).some(item => item.scopeType === "work")
+      ?? (memory && !memory.usesCoreRecall && memory.resolveScopeChain(scope).some(item => item.scopeType === "work")
         ? { status: "unavailable" as const, sources: [] } : undefined);
     // Charge the fixed control envelope against evidence capacity when possible.
     // Like the capsule wrapper, it still applies at zero optional-evidence budget:
@@ -333,7 +387,9 @@ export class EphemeralContextProjection {
       semanticSelectedMemoryIds: selected.flatMap(({ ref }) => ref.reference && resolved?.items.some(item =>
         item.id === ref.reference?.id && item.reasons.includes("semantic")) ? [ref.reference.id] : []),
     }));
-    for (const source of this.options.supplementalEvidence()) {
+    const supplemental = await this.options.supplementalEvidence();
+    await assertCurrent();
+    for (const source of supplemental) {
       const contentHash = digest(source.text);
       const previous = [...this.bodies.values()].find(item => item.ref.id === source.id && item.ref.revision === source.revision
         && item.ref.contentHash === contentHash && JSON.stringify(item.ref.supplemental?.access) === JSON.stringify(source.access));
@@ -358,11 +414,11 @@ export class EphemeralContextProjection {
     return { userId, recall: { mode, semanticSources }, modelKey: `${model.provider}/${model.id}`, scope, scopeStamp: scopeKey(scope), selected, currentPreferences };
   }
 
-  private restore(ref: EvidenceRef): string | undefined {
+  private restore(ref: EvidenceRef, scope: ProjectionScope, verified: ReadonlyMap<string, CoreMemorySnapshotRevision>): string | undefined {
     const cached = this.bodies.get(this.blockKey(ref));
     if (cached) return cached.text;
     if (!ref.reference) {
-      if (this.options.scope().taskId !== DOTS_TASK_ID) return;
+      if (scope.taskId !== DOTS_TASK_ID) return;
       const kind = ref.profileIds.length ? "profile" : "scenario";
       const id = (kind === "profile" ? ref.profileIds : ref.scenarioIds)[0];
       if (!id || ref.id !== `${kind}:${id}`) return;
@@ -378,7 +434,9 @@ export class EphemeralContextProjection {
       || ref.sources[0]!.id !== reference.id || ref.sources[0]!.revision !== reference.revision) {
       throw new Error("历史证据渲染版本或来源不匹配，请新建任务上下文");
     }
-    const revision = this.options.memory?.history(reference.id).find(row => row.revision === reference.revision);
+    const memory = this.options.memory;
+    const revision = memory?.usesCoreRecall ? verified.get(memorySourceKey(reference))
+      : memory?.history(reference.id).find(row => row.revision === reference.revision);
     if (!revision) throw new Error("历史 Memory 版本不存在，无法恢复原上下文，请新建任务");
     const range=reference.renderer===DOTS_EVIDENCE_RENDERER ? reference.range : undefined;
     if(reference.renderer===DOTS_EVIDENCE_RENDERER && (!range || !Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end)
@@ -395,6 +453,15 @@ export class EphemeralContextProjection {
   private async project(messages: AgentMessage[]): Promise<{ messages: AgentMessage[] } | undefined> {
     const session = this.session;
     if (!session || this.disposed) throw new Error("上下文投影会话已结束");
+    const run = {};
+    this.projectionRun = run;
+    this.ticket = this.failure = undefined;
+    const epoch = this.turnEpoch;
+    const modelKey = `${session.model?.provider}/${session.model?.id}`;
+    const assertCurrent = () => {
+      if (this.disposed || this.session !== session || this.projectionRun !== run || this.turnEpoch !== epoch
+        || `${session.model?.provider}/${session.model?.id}` !== modelKey) throw new Error("本轮上下文投影已变化");
+    };
     const manager = session.sessionManager;
     const branch = manager.getBranch();
     const user = [...branch].reverse().find(e => e.type === "message" && e.message.role === "user");
@@ -403,6 +470,13 @@ export class EphemeralContextProjection {
     const query = typeof content === "string" ? content : content.filter(p => p.type === "text").map(p => p.text).join("\n");
     const execution = this.options.execution?.();
     if (this.options.execution && !execution?.executionId) return;
+    const scope = await this.options.scope();
+    assertCurrent();
+    const assertSameScope = async () => {
+      const current = await this.options.scope();
+      assertCurrent();
+      if (scopeKey(current) !== scopeKey(scope)) throw new Error("读取证据期间请求的作用域已变化");
+    };
 
     // Pi exposes provenance after context edits and compaction. Matching only timestamps
     // or only the last user would mis-anchor identical/steering messages and kept tails.
@@ -410,27 +484,30 @@ export class EphemeralContextProjection {
     const anchors = new Map<string, number>();
     const candidates = projection.entries.filter(e => e.sourceEntry.type === "compaction"
       || (e.sourceEntry.type === "message" && e.sourceEntry.message.role === "user"));
+    // A live Pi message and the same Core JSON record can have different object key order.
+    const anchorRoles = new Set(candidates.map(entry => entry.messages.at(-1)?.role));
+    const messageKeys = messages.map(message => anchorRoles.has(message.role) ? canonicalJson(message) : undefined);
     let cursor = 0;
     for (const entry of candidates) {
       const message = entry.messages.at(-1);
       if (!message) continue;
-      const key = JSON.stringify(message);
-      const index = messages.findIndex((m, i) => i >= cursor && JSON.stringify(m) === key);
+      const index = messageKeys.indexOf(canonicalJson(message), cursor);
       if (index >= 0) { anchors.set(entry.sourceEntry.id, index); cursor = index + 1; }
     }
     const boundary = [...branch].reverse().find(e => e.type === "compaction")?.id ?? "root";
     const anchor = anchors.has(user.id) ? user.id : anchors.has(boundary) ? boundary : undefined;
     if (!anchor) throw new Error("无法定位本轮证据的原始消息，请重新建立上下文");
-    let rows = this.records();
+    const rows = this.records();
     // Validate even summarized evidence before restoring; derivative revocation survives compression.
-    this.validateHistory(rows);
+    const beforeRestore = await this.validateHistory(rows, scope);
+    assertCurrent();
     const resetEntry = [...branch].reverse().find(e => e.type === "custom" && e.customType === CONTEXT_RESET_TYPE);
     const lastReset = resetEntry ? branch.findIndex(e => e.id === resetEntry.id) : -1;
     const afterReset = new Set(branch.slice(lastReset + 1).map(e => e.id));
     let active = rows.filter(row => afterReset.has(row.id) && anchors.has(row.record.anchor));
     let unavailable = false;
     for (const { record } of active) for (const ref of record.additions) {
-      if (this.restore(ref) === undefined) unavailable = true;
+      if (this.restore(ref, scope, beforeRestore) === undefined) unavailable = true;
     }
     if (unavailable) {
       // Missing non-versioned bodies break the whole historical prefix, even if L1 can restore.
@@ -450,39 +527,42 @@ export class EphemeralContextProjection {
           if (!ref) throw new Error("当前版本清单的证据已离开上下文，请新建任务");
           return this.bodies.get(this.blockKey(ref))!;
         });
-        const scope = this.options.scope();
-        this.turn = { userId: user.id, modelKey: `${session.model?.provider}/${session.model?.id}`, scope, scopeStamp: scopeKey(scope), selected, recall: existing.record.recall, currentPreferences: existing.record.currentPreferences };
+        this.turn = { userId: user.id, modelKey, scope, scopeStamp: scopeKey(scope), selected, recall: existing.record.recall, currentPreferences: existing.record.currentPreferences };
       } else {
-        const epoch = this.turnEpoch;
         // The persisted display text is the user's wording. Transport-only
         // instructions and attached material still reach the model separately.
-        const userQuery = this.options.scope().taskId === DOTS_TASK_ID ? user.recallText : undefined;
-        const selected = await this.select(user.id, execution?.query ?? userQuery ?? query);
-        if (this.disposed || this.session !== session || epoch !== this.turnEpoch) throw new Error("本轮记忆选择已结束");
+        const userQuery = scope.taskId === DOTS_TASK_ID ? user.recallText : undefined;
+        const selected = await this.select(user.id, execution?.query ?? userQuery ?? query, scope, assertSameScope);
+        assertCurrent();
         this.turn = selected;
       }
     }
+    const turn = this.turn;
+    let record: LedgerRecord | undefined;
     if (!existing) {
       const seen = new Set(active.flatMap(row => row.record.additions.map(ref => this.blockKey(ref))));
-      const additions = this.turn.selected.filter(item => !seen.has(this.blockKey(item.ref))).map(item => item.ref);
-      const manifest = this.turn.selected.map(({ ref: { id, revision, hash } }) => ({ id, revision, hash }));
-      if (manifest.length || active.length || this.turn.currentPreferences) {
-        const record: LedgerRecord = { version: CONTEXT_LEDGER_VERSION, anchor, boundary, scope: this.turn.scope,
-          timestamp: user.message.timestamp, additions, manifest, recall: this.turn.recall, currentPreferences: this.turn.currentPreferences };
-        const id = manager.appendCustomEntry(CONTEXT_LEDGER_TYPE, structuredClone(record));
-        active.push({ id, record });
-        rows = [...rows, { id, record }];
-        this.options.log?.(`[context] delta additions=${additions.length} selected=${manifest.length} retained=${active.length} boundary=${boundary}`);
+      const additions = turn.selected.filter(item => !seen.has(this.blockKey(item.ref))).map(item => item.ref);
+      const manifest = turn.selected.map(({ ref: { id, revision, hash } }) => ({ id, revision, hash }));
+      if (manifest.length || active.length || turn.currentPreferences) {
+        record = { version: CONTEXT_LEDGER_VERSION, anchor, boundary, scope: turn.scope,
+          timestamp: user.message.timestamp, additions, manifest, recall: turn.recall, currentPreferences: turn.currentPreferences };
       }
     }
-    this.validateHistory(rows);
+    await assertSameScope();
+    const finalHistory = await this.validateHistory(record ? [...rows, { id: "", record }] : rows, scope);
+    assertCurrent();
+    if (record) {
+      const id = manager.appendCustomEntry(CONTEXT_LEDGER_TYPE, structuredClone(record));
+      active.push({ id, record });
+      this.options.log?.(`[context] delta additions=${record.additions.length} selected=${record.manifest.length} retained=${active.length} boundary=${boundary}`);
+    }
     const inserts = new Map<number, AgentMessage[]>();
-    const selectedBodies = new Map(this.turn.selected.map(item => [item.ref.id, item]));
+    const selectedBodies = new Map(turn.selected.map(item => [item.ref.id, item]));
     const liveKeys = new Set<string>();
     for (const { record } of active) {
       const parts = record.additions.map(ref => {
         liveKeys.add(this.blockKey(ref));
-        const text = this.restore(ref);
+        const text = this.restore(ref, scope, finalHistory);
         if (text === undefined) throw new Error("证据正文已丢失，请重新建立上下文");
         return text;
       });
@@ -505,7 +585,7 @@ export class EphemeralContextProjection {
       inserts.set(at, items);
     }
     // Prune only bodies whose anchors left the effective context, never ordinary-turn history.
-    for (const key of this.bodies.keys()) if (!liveKeys.has(key) && !this.turn.selected.some(item => this.blockKey(item.ref) === key)) this.bodies.delete(key);
+    for (const key of this.bodies.keys()) if (!liveKeys.has(key) && !turn.selected.some(item => this.blockKey(item.ref) === key)) this.bodies.delete(key);
     this.ticket = {};
     return { messages: messages.flatMap((message, i) => [message, ...(inserts.get(i) ?? [])]) };
   }

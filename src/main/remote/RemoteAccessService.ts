@@ -228,9 +228,9 @@ export class RemoteAccessService {
     });
   }
 
-  runtime(taskId: string): RemoteRuntimeSnapshot | null {
-    if (!this.db.getTask(taskId)) return null;
-    const snapshot = this.agent.getConversationRuntimeSnapshot(taskId);
+  async runtime(taskId: string): Promise<RemoteRuntimeSnapshot | null> {
+    const snapshot = await this.agent.readConversationRuntimeSnapshot(taskId);
+    if (!snapshot) return null;
     const live = this.liveAcpRun(taskId);
     return {
       taskId,

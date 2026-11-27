@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, TransactionBehavior, params};
+use duckdb::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -33,7 +33,7 @@ pub fn restore(db: &mut Connection, request: Restore) -> Reply {
 fn apply(db: &mut Connection, request: Restore) -> Result<()> {
     let id = &request.task_id;
     if id.trim().is_empty()
-        || id == "mybuddy-dots"
+        || id == crate::DOTS_TASK_ID
         || id.strip_prefix("gateway-chat-").is_some_and(|suffix| {
             suffix.len() == 64
                 && suffix
@@ -44,11 +44,11 @@ fn apply(db: &mut Connection, request: Restore) -> Result<()> {
         return Err("任务不支持普通回收恢复".into());
     }
 
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let restored = tx.execute(
         "UPDATE task_execution_workspace_state SET directory_name=?2,state='active',updated_at=?6,
              trashed_at=NULL,purge_after=NULL,trash_path=NULL
-         WHERE task_id=?1 AND state='trashed' AND updated_at IS ?3 AND trashed_at IS ?4 AND trash_path IS ?5",
+         WHERE task_id=?1 AND state='trashed' AND updated_at IS NOT DISTINCT FROM ?3 AND trashed_at IS NOT DISTINCT FROM ?4 AND trash_path IS NOT DISTINCT FROM ?5",
         params![id, request.directory_name, request.expected_updated_at, request.expected_trashed_at, request.expected_trash_path, request.at],
     )?;
     if restored != 1 {
@@ -65,12 +65,12 @@ fn apply(db: &mut Connection, request: Restore) -> Result<()> {
         };
         tx.execute(
             "INSERT INTO tasks (id,title,updated_at,cwd) VALUES (?1,?2,?3,?4)
-             ON CONFLICT(id) DO UPDATE SET archived=0,updated_at=max(tasks.updated_at,excluded.updated_at),cwd=excluded.cwd",
+             ON CONFLICT(id) DO UPDATE SET archived=0,updated_at=GREATEST(tasks.updated_at, excluded.updated_at),cwd=excluded.cwd",
             params![id, title, request.at, cwd],
         )?;
     } else {
         tx.execute(
-            "UPDATE tasks SET archived=0,updated_at=max(updated_at,?2) WHERE id=?1",
+            "UPDATE tasks SET archived=0,updated_at=GREATEST(updated_at, ?2) WHERE id=?1",
             params![id, request.at],
         )?;
     }

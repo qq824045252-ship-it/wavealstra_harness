@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::Connection;
+use duckdb::Connection;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -53,6 +53,23 @@ pub fn read(
     dots_task_id: &str,
     include_expert_bindings: bool,
 ) -> Result<Vec<TaskRow>> {
+    read_rows(db, dots_task_id, include_expert_bindings, false)
+}
+
+pub fn read_task(
+    db: &Connection,
+    task_id: &str,
+    include_expert_bindings: bool,
+) -> Result<Option<TaskRow>> {
+    Ok(read_rows(db, task_id, include_expert_bindings, true)?.pop())
+}
+
+fn read_rows(
+    db: &Connection,
+    id: &str,
+    include_expert_bindings: bool,
+    exact: bool,
+) -> Result<Vec<TaskRow>> {
     let (binding_columns, binding_join) = if include_expert_bindings {
         (
             ", e.task_id AS binding_task_id, e.desired_json, e.active_json, e.warnings_json",
@@ -61,7 +78,14 @@ pub fn read(
     } else {
         ("", "")
     };
-    let mut statement = db.prepare_cached(&format!(
+    let filter = if exact {
+        "t.id=?1"
+    } else {
+        "t.id != ?1 AND NOT EXISTS (
+            SELECT 1 FROM task_execution_workspace_state w WHERE w.task_id=t.id AND w.state='trashed'
+        )"
+    };
+    let mut statement = db.prepare(&format!(
         "SELECT t.id, t.title, t.space_id, t.project_id, t.status, t.updated_at, t.session_file,
                 t.cwd, t.welcome_mode, t.model_id, t.permission_mode, t.archived, t.expert_id,
                 t.mode_preset_id, t.start_at, t.due_at, t.space_sort_order, t.is_favorited,
@@ -70,12 +94,10 @@ pub fn read(
          FROM tasks t
          LEFT JOIN gateway_sidebar_conversations g ON g.task_id = t.id
          {binding_join}
-         WHERE t.id != ?1 AND NOT EXISTS (
-             SELECT 1 FROM task_execution_workspace_state w WHERE w.task_id = t.id AND w.state = 'trashed'
-         )
+         WHERE {filter}
          ORDER BY t.updated_at DESC, t.rowid"
     ))?;
-    let mut rows = statement.query([dots_task_id])?;
+    let mut rows = statement.query([id])?;
     let mut tasks = Vec::new();
     while let Some(row) = rows.next()? {
         let expert_binding = if include_expert_bindings

@@ -213,7 +213,7 @@ import type {
 import { AgentService } from "./agent/AgentService";
 import { locateRuntimeAudit } from "./platform/runtime-audit";
 import { armStartupReport, onStartupReport, startupMark, startupMarkEnabled } from "./perf/startupMarks";
-import { createTaskInteractionNotificationListener, publishTaskLifecycleNotification } from "./notification/TaskLifecycleNotifications";
+import { createCoreTaskNotificationListeners } from "./notification/TaskLifecycleNotifications";
 import { ExternalAgentRuntime } from "./external-agent/ExternalAgentRuntime";
 import { ExternalAgentIpc, type ExternalAgentId, type ExternalAgentPromptRequest, type ExternalAgentResolvePermissionRequest, type ExternalAgentSetConfigOptionRequest } from "../shared/external-agent";
 import { ConversationBranchService } from "./agent/ConversationBranchService";
@@ -790,8 +790,9 @@ function createWindow(): void {
 
 function registerIpc(memoryKernel: MemoryService): void {
   registerFileDialogIpc();
-  const taskBoard = new TaskBoardRepository(db.connection, db.runtimeAuditReader);
-  const dots = new DotsDelegations(db.connection, (id, operation) => agentService.dotsSubmission(id, operation),
+  if (!db.runtimeAuditReader) throw new Error("任务看板需要 Rust Core");
+  const taskBoard = new TaskBoardRepository({ core: db.runtimeAuditReader });
+  const dots = new DotsDelegations(db.fixtureConnection, (id, operation) => agentService.dotsSubmission(id, operation),
     () => broadcastToWindows(DotsIpc.changed, null),
     () => resolveDotsPreferences(agentService.getAppSettings().dotsSettings).summaryIntervalSeconds * 1_000,
     db.runtimeAuditReader);
@@ -804,7 +805,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     changed: () => { dots.refresh(); broadcastToWindows(DotsIpc.changed, null); },
     failed: (...args) => dots.failed(...args),
     preferences: () => resolveDotsPreferences(agentService.getAppSettings().dotsSettings),
-    fileNotice: event => notificationService.post({
+    fileNotice: event => notificationService.publishPersisted({
       type:"reminder.due", level:"info", title:"Dots 文件订阅",
       body:`${event.file} 已变化。你可以让 Dots 继续处理。`,
       sourceType:"task", sourceId:event.taskId, taskId:DOTS_TASK_ID,
@@ -824,25 +825,34 @@ function registerIpc(memoryKernel: MemoryService): void {
     }),
   }, taskBoard);
   const actions = dotsActions;
-  const activity = new DotsActivity(db.connection, id => actions.allowsResult(id) && !db.isTaskEffectiveArchived(id)
-    && db.getTaskExecutionWorkspaceState(id)?.state !== "trashed", id => dots.taskLiveOutput(id));
-  const reporting = new DotsReporting(db.connection, () => agentService.isTaskBusy(DOTS_TASK_ID),
+  const activity = new DotsActivity(db.fixtureConnection, id => actions.allowsResult(id) && !db.isTaskEffectiveArchived(id)
+    && db.getTaskExecutionWorkspaceState(id)?.state !== "trashed", id => dots.taskLiveOutput(id), db.runtimeAuditReader);
+  const reporting = new DotsReporting(db.fixtureConnection, () => agentService.isTaskBusy(DOTS_TASK_ID),
     (prompt, signal, onText) => agentService.generateDotsReport(prompt, signal, onText),
-    (reply, current) => agentService.appendDotsReply(reply, current),
+    (reply, current, eventKey) => agentService.appendDotsReply(reply, current, eventKey),
     draft => broadcastToWindows(DotsIpc.reportChanged, draft),
     db.runtimeAuditReader);
   dotsReporting = reporting;
   agentService.setDotsForeground(() => reporting.beginForeground());
-  dots.connect((job, request) => actions.followup(job, request), (reply, current) => reporting.append(reply, current),
+  if (db.fixtureConnection) dots.connect((job, request) => actions.followup(job, request), (reply, current) => reporting.append(reply, current),
     taskId => actions.allowsResult(taskId), kind => actions.allowsReply(kind));
   agentService.setDotsActions(dotsActions);
   agentService.setDotsDesktopPreview(dotsDesktopPreview);
   ipcMain.handle(DotsIpc.open, () => agentService.openDots());
   ipcMain.handle(DotsIpc.newConversation, () => agentService.newDotsConversation());
-  ipcMain.handle(DotsIpc.list, (_event, sourceIds?: string[]) => dots.list(sourceIds).filter(row => actions.allowsResult(row.taskId)));
-  ipcMain.handle(DotsIpc.activity, () => activity.list());
+  ipcMain.handle(DotsIpc.list, (_event, sourceIds?: string[]) => {
+    const core = db.runtimeAuditReader;
+    return core?.supervised
+      ? core.readDotsDelegations(sourceIds, resolveDotsPreferences(agentService.getAppSettings().dotsSettings).spaceIds)
+      : dots.list(sourceIds).filter(row => actions.allowsResult(row.taskId));
+  });
+  ipcMain.handle(DotsIpc.activity, () => activity.readList(resolveDotsPreferences(agentService.getAppSettings().dotsSettings).spaceIds));
   ipcMain.handle(DotsIpc.report, () => reporting.snapshot());
   ipcMain.handle(DotsIpc.taskDelivery, async (_event, taskId: string) => {
+    const core = db.runtimeAuditReader;
+    if (core?.supervised) {
+      return await core.readLatestDotsReply(taskId, resolveDotsPreferences(agentService.getAppSettings().dotsSettings).spaceIds);
+    }
     const visible = () => taskId !== DOTS_TASK_ID && actions.allowsResult(taskId) && !db.isTaskEffectiveArchived(taskId)
       && db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed";
     if (!visible()) return;
@@ -868,11 +878,12 @@ function registerIpc(memoryKernel: MemoryService): void {
     if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href) || typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id)) return;
     activateDesktopNotification(id);
   });
-  ipcMain.handle(NotificationIpc.consumeActivation, (event) => {
+  ipcMain.handle(NotificationIpc.consumeActivation, async (event) => {
     if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) return null;
     const notificationId = pendingNotificationActivations[0];
     if (!notificationId) return null;
-    return { notificationId, target: notificationService.resolveActivation(notificationId) };
+    const target = await notificationService.readActivation(notificationId);
+    return pendingNotificationActivations[0] === notificationId ? { notificationId, target } : null;
   });
   ipcMain.handle(NotificationIpc.acknowledgeActivation, (event, id: string) => {
     if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) return;
@@ -1297,8 +1308,8 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(AgentIpc.deleteUserMessage, async (_e, req: AgentDeleteUserMessageRequest) => {
     await agentService.deleteUserMessage(req);
   });
-  ipcMain.handle(ConversationRuntimeIpc.snapshot, (_e, taskId: string) =>
-    agentService.getConversationRuntimeSnapshot(taskId));
+  ipcMain.handle(ConversationRuntimeIpc.snapshot, async (_e, taskId: string) =>
+    await agentService.readConversationRuntimeSnapshot(taskId) ?? { taskId, interactions: [], goals: [] });
   ipcMain.handle(ConversationRuntimeIpc.goalEvidence, (_e, taskId: string, goalId: string) =>
     agentService.getConversationGoalEvidence(taskId, goalId));
   ipcMain.handle(ConversationRuntimeIpc.readGoalArtifactText, (event, taskId: string, goalId: string, artifactId: string) => {
@@ -1317,7 +1328,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(ConversationRuntimeIpc.cancelInteraction, (_e, req: { interactionId: string }) =>
     agentService.cancelConversationInteraction(req.interactionId));
   ipcMain.handle(ConversationRuntimeIpc.createGoal, (_e, req: ConversationGoalCreateRequest) =>
-    agentService.createConversationGoal(req));
+    agentService.createSavedConversationGoal(req));
   ipcMain.handle(ConversationRuntimeIpc.updateGoal, (_e, req: ConversationGoalUpdateRequest) =>
     agentService.updateConversationGoal(req));
   ipcMain.handle(ConversationRuntimeIpc.cancelGoal, (_e, goalId: string, taskId?: string) =>
@@ -1520,7 +1531,7 @@ function registerIpc(memoryKernel: MemoryService): void {
       join(homedir(), "Library", "Application Support", "gws")],
   );
   const googleSettings = new AppSettingsStore();
-  dotsProactiveDelivery = new DotsProactiveDelivery(db.connection,
+  dotsProactiveDelivery = new DotsProactiveDelivery(db.fixtureConnection,
     () => googleSettings.read().dotsSettings?.followupMode === "paused",
     (key, text, current) => agentService.appendDotsProactive(key, text, current),
     db.runtimeAuditReader);
@@ -1697,7 +1708,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     }
     const next = await agentService.updateAppSettings(ordinary);
     if (ordinary.residentHostEnabled !== undefined || ordinary.autostartEnabled !== undefined) {
-      if (runtimeAuditExecutablePath && db?.connection.name && db.connection.name !== ":memory:") {
+      if (runtimeAuditExecutablePath && db?.databasePath && db.databasePath !== ":memory:") {
         void coreUiClient?.assistantLifecycle("configure", {
           residentEnabled: next.residentHostEnabled === true,
           autostartEnabled: next.autostartEnabled === true,
@@ -1706,7 +1717,7 @@ function registerIpc(memoryKernel: MemoryService): void {
         void syncCoreAutostart({
           executable: runtimeAuditExecutablePath,
           dataDirectory: getMyBuddyDir(),
-          dbPath: db.connection.name,
+          dbPath: db.databasePath,
           autostartEnabled: next.autostartEnabled === true,
         }).catch(error => console.warn("[CoreAutostart] 同步系统自启配置失败", error));
       }
@@ -1828,7 +1839,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(AgentIpc.loadTaskHistory, async (_e, taskId: string, beforeEntryId?: import("../shared/agent-ipc").TaskHistoryTarget) => {
     const [nativeHistory, externalHistory] = await Promise.all([
       agentService.loadTaskHistory(taskId, beforeEntryId, "current"),
-      Promise.resolve(externalAgentRuntime?.history(taskId) ?? { messages: [], runs: [] }),
+      externalAgentRuntime.readHistory(taskId),
     ]);
     if (!externalHistory.messages.length) return nativeHistory;
     return {
@@ -2264,7 +2275,7 @@ function registerIpc(memoryKernel: MemoryService): void {
       };
     }
   });
-  const executionFailureRepository = new ExecutionFailureRepository(db.connection, db.runtimeAuditReader);
+  const executionFailureRepository = new ExecutionFailureRepository(db.fixtureConnection, db.runtimeAuditReader);
   ipcMain.handle(DbIpc.listExecutionFailures, (_e, taskId: string) => executionFailureRepository.listForDisplay(taskId));
   ipcMain.handle(DbIpc.dismissExecutionFailure, (_e, taskId: string, id: string) => executionFailureRepository.dismissForDisplay(taskId, id));
   ipcMain.handle(DbIpc.previewProjectFolder, (_e, projectId: string, path: string) => projectFolderRelocation.preview(projectId, path));
@@ -2294,7 +2305,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   };
   ipcMain.handle(DbIpc.upsertTask, async (_e, task, expectedTitle?: string | null) => {
     // Cockpit 即时刷新：任务绑定变化（含解绑/改绑）广播新旧项目（不 bump project.updated_at，避免会话重建扰动）
-    const prevProjectId = await db.writeTaskRecord(isTaskWorktreeId(task?.id) && !db.getTask(task.id)
+    const prevProjectId = await db.writeTaskRecord(isTaskWorktreeId(task?.id) && !await db.readTask(task.id, { includeExpertBinding: false })
       ? { ...task, cwd: resolveTaskWorktreeCwd(task.id) }
       : task, {
         preserveTitle: expectedTitle !== undefined, expectedTitle: expectedTitle ?? undefined,
@@ -2309,7 +2320,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   // P1.5：delete = 安全回收（不 rm -rf、不立即删 Artifact）；archive 只改状态不移动目录
   ipcMain.handle(DbIpc.deleteTask, async (_e, id: string) => {
     if (!taskLifecycle) throw new Error("TaskExecutionWorkspaceLifecycle 尚未初始化");
-    const prevProjectId = db.getTask(id)?.projectId;
+    const prevProjectId = (await db.readTask(id, { includeExpertBinding: false }))?.projectId;
     await closeOfficeNativeTask(id);
     await taskLifecycle.trash(id);
     dots.refresh();
@@ -2346,7 +2357,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(TrashIpc.restore, async (_e, id: string) => {
     if (!taskLifecycle) throw new Error("TaskExecutionWorkspaceLifecycle 尚未初始化");
     await taskLifecycle.restoreFromTrash(id);
-    const restored = db.getTask(id) ?? null;
+    const restored = await db.readTask(id) ?? null;
     if (restored?.projectId) {
       broadcastToWindows(DbIpc.projectTaskChanged, { projectId: restored.projectId });
       notifyProjectAttention(restored.projectId);
@@ -2397,7 +2408,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     }
   });
   ipcMain.handle(DbIpc.listTaskWriteGrants, (_e, taskId: string) => {
-    return db.listTaskWriteGrants(taskId);
+    return db.readTaskWriteGrants(taskId);
   });
   ipcMain.handle(DbIpc.deleteTaskWriteGrant, (_e, taskId: string, path: string) => {
     // 必须经 AgentService：DB 删除 + 存活会话 policy 立即内存失效（撤销后同会话不得继续放行）
@@ -2672,8 +2683,8 @@ function registerIpc(memoryKernel: MemoryService): void {
   );
 
   // Artifact Domain（V3.5 Wave 2 双系统施工态：通道已通，renderer 暂未消费）
-  ipcMain.handle(ArtifactDomainIpc.get, (_e, req: ArtifactDomainGetRequest) => {
-    const artifact = artifactDomainService.get(req.artifactId);
+  ipcMain.handle(ArtifactDomainIpc.get, async (_e, req: ArtifactDomainGetRequest) => {
+    const artifact = await artifactDomainService.readDescriptor(req.artifactId);
     return { artifact };
   });
   ipcMain.handle(ArtifactDomainIpc.list, async (_e, req: ArtifactDomainTaskRequest) => {
@@ -2732,11 +2743,11 @@ function registerIpc(memoryKernel: MemoryService): void {
     if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) {
       return { ok: false, error: "仅应用主界面的按钮可在系统浏览器打开" };
     }
-    const descriptor = artifactDomainService.get(req.id);
+    const descriptor = await artifactDomainService.readDescriptor(req.id);
     if (!descriptor || descriptor.kind !== "html") {
       return { ok: false, error: "仅 HTML 产物支持在系统浏览器打开" };
     }
-    const target = artifactDomainService.entryPathOf(req.id);
+    const target = artifactDomainService.entryPathOfDescriptor(descriptor);
     if (!target) return { ok: false, error: "产物入口文件不可用" };
     const error = await shell.openPath(target);
     return error ? { ok: false, error } : { ok: true };
@@ -3001,7 +3012,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   });
   ipcMain.handle(ExternalAgentIpc.active, (_e, taskId?: string) => externalAgentRuntime?.active(taskId) ?? []);
   ipcMain.handle(ExternalAgentIpc.history, (_e, taskId: string) =>
-    externalAgentRuntime?.history(taskId) ?? { messages: [], runs: [] },
+    externalAgentRuntime.readHistory(taskId),
   );
   ipcMain.handle(ExternalAgentIpc.prompt, async (_e, req: ExternalAgentPromptRequest) => {
     if (!externalAgentRuntime) throw new Error("External Agent Runtime 未初始化");
@@ -3086,7 +3097,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     const result = await showSaveFileDialog(win, options);
     if (result.canceled || !result.filePath) return { ok: false, cancelled: true, detail: "已取消" };
     try {
-      writeFileSync(result.filePath, JSON.stringify(pythonRuntime.exportDiagnostics(), null, 2), "utf8");
+      writeFileSync(result.filePath, JSON.stringify(await pythonRuntime.exportDiagnostics(), null, 2), "utf8");
       return { ok: true, cancelled: false, detail: `已导出：${result.filePath}` };
     } catch (error) {
       return {
@@ -3097,7 +3108,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     }
   });
   ipcMain.handle(PythonRuntimeIpc.inspectProject, (_e, projectDir: string) => pythonRuntime.inspectProject(projectDir));
-  ipcMain.handle(PythonRuntimeIpc.listProjectBindings, (): PythonProjectBindingView[] => pythonRuntime.listProjectBindings());
+  ipcMain.handle(PythonRuntimeIpc.listProjectBindings, (): Promise<PythonProjectBindingView[]> => pythonRuntime.listProjectBindings());
   ipcMain.handle(
     PythonRuntimeIpc.bindProject,
     (_e, req: PythonProjectBindingRequest): Promise<PythonProjectBindingMutationResult> => pythonRuntime.bindProject(req),
@@ -3193,20 +3204,20 @@ app.whenReady().then(async () => {
   const runtimeAuditExecutable = locateRuntimeAudit(app.getAppPath(), app.isPackaged ? process.resourcesPath : undefined);
   runtimeAuditExecutablePath = runtimeAuditExecutable;
   db = await AppDatabase.open(undefined, { runtimeAuditExecutable, runtimeAuditSupervised: true, readonly: true });
-  const supervised = Boolean(db.runtimeAuditReader?.supervised && runtimeAuditExecutablePath && db.connection.name !== ":memory:");
+  if (!db.runtimeAuditReader) throw new Error("通知服务需要 Rust Core");
+  const supervised = Boolean(db.runtimeAuditReader?.supervised && runtimeAuditExecutablePath && db.databasePath !== ":memory:");
   const mainRolePolicy = resolveMainRolePolicy(supervised);
   const connectorStorageReady = initializeConnectorStorage(db.runtimeAuditReader);
-  notificationService = new NotificationService(db);
+  notificationService = new NotificationService({ core: db.runtimeAuditReader });
   notificationService.setChangedListener((event) => {
     broadcastToWindows(NotificationIpc.changed, event);
     remoteAccessController?.publishNotificationChanged(event);
   });
+  void notificationService.cleanupStored().catch(error => console.warn("[NotificationService] cleanup failed", error));
   libraryService = new LibraryService(db);
   workspaceLibraryBindingService = new WorkspaceLibraryBindingService(db);
   workGraphService = new WorkGraphService(db);
-  // Python 项目模式绑定：运行时服务是模块级单例、早于 DB 创建，故在此后注入。
-  // 注入前 resolveForExecution 一律走受管环境，绑定读写返回「尚未就绪」。
-  getPythonRuntimeService().setProjectBindingStore(new PythonProjectBindingStore(db.connection, undefined, db.runtimeAuditReader));
+  if (db.runtimeAuditReader) getPythonRuntimeService().setProjectBindingStore(new PythonProjectBindingStore(db.runtimeAuditReader));
   mainTimerRegistry.mark("library-background", "background-maintenance", mainRolePolicy.ownsLibraryBackgroundRecovery);
   if (mainRolePolicy.ownsLibraryBackgroundRecovery) {
     void libraryService.recoverFileDeletes().catch(error => console.warn("[Library] 启动文件清理恢复失败", error));
@@ -3231,7 +3242,7 @@ app.whenReady().then(async () => {
     libraryService.startSemanticIndexing();
   }
   libraryProtocol = new LibraryProtocol(libraryService);
-  const projectRepository = new ProjectRepository(db.connection, db.runtimeAuditReader);
+  const projectRepository = new ProjectRepository(db.fixtureConnection, db.runtimeAuditReader);
   const memoryKernel = new MemoryService(db);
   memoryGatewayController = new MemoryGatewayController(db, memoryKernel);
   externalCliMemoryBridge = new ExternalCliMemoryBridge(memoryGatewayController);
@@ -3283,7 +3294,7 @@ app.whenReady().then(async () => {
   // 收口：rename 成功后一次性重绑 DB 中旧根下的 tasks.cwd / trash_path（升级后 UI 直接可用，
   // 无需等待首次 Agent 交互的懒重绑）；legacy 回退 / 新旧并存时 migrated=false，绝不重写。
   if (workspacesMigration.workspacesMigrated || workspacesMigration.trashMigrated) {
-    const rebind = db.rebindLegacyTaskWorkspacePaths(
+    const rebind = await db.writeLegacyTaskWorkspacePaths(
       workspacesMigration.legacyWorkspacesDir,
       workspacesMigration.workspacesDir,
       workspacesMigration.legacyTrashDir,
@@ -3296,12 +3307,12 @@ app.whenReady().then(async () => {
   uiAutomationService.setBrowserHost(browserHost);
   bindBrowserBridge(browserHost);
   await connectorStorageReady;
-  agentService = new AgentService(db, undefined, {
+  agentService = await AgentService.open(db, undefined, {
     executionMode: supervised ? "isolated-client" : "in-process",
     coreClient: () => uiReconnect?.getClient() ?? coreUiClient,
   });
   if (supervised && runtimeAuditExecutablePath) {
-    const dbFile = db.connection.name;
+    const dbFile = db.databasePath;
     const dataDir = getMyBuddyDir();
     void (async () => {
       platformProxy.registerDomainHandler("ui", async (action, payload, signal) => {
@@ -3463,23 +3474,24 @@ app.whenReady().then(async () => {
       } },
     { cleanupByNode: (kind, id) => workGraphService.cleanupByNode(kind, id) },
   );
-  const notificationSink = {
+  const taskNotifications = createCoreTaskNotificationListeners(db, {
     publish: notificationService.post.bind(notificationService),
     markReadByDedupeKey: notificationService.postMarkReadByDedupeKey.bind(notificationService),
-  };
-  agentService.setTaskLifecycleListener((event) => {
-    publishTaskLifecycleNotification({ event, task: db.getTask(event.taskId),
-      goalId: agentService.goalForNotificationMessage(event.taskId, event.assistantMessageId),
-      workRepo: agentService.getWorkService().repo, notifications: notificationSink });
   });
-  agentService.onPatch(createTaskInteractionNotificationListener(id => db.getTask(id), notificationSink,
-    (id, messageId) => agentService.goalForNotificationMessage(id, messageId)));
+  agentService.setTaskLifecycleListener((event) => {
+    void taskNotifications.lifecycle(event).catch(error => console.warn("[NotificationService] task notification failed", error));
+  });
+  agentService.onPatch((patch) => {
+    if (patch.type !== "conversation_interaction_snapshot") return;
+    void taskNotifications.patch(patch).catch(error => console.warn("[NotificationService] interaction notification failed", error));
+  });
   // 用量统计：启动后延迟调度异步分片回填历史 session jsonl + 扫描 subagent 归档
   // （水位+size/mtime 短路；分片让出事件循环，不阻塞启动；失败仅告警）
   try {
     setImmediate(() => {
       void agentService.usageStats
-        .backfillAllTasksAsync(agentService.usageStats.listSessionFiles())
+        .listSessionFiles()
+        .then(files => agentService.usageStats.backfillAllTasksAsync(files))
         .then(() => agentService.usageStats.reattributeToMyBuddyModelsAsync())
         .catch((err) => console.warn(`[usage] 启动回填失败: ${err instanceof Error ? err.message : String(err)}`));
     });
@@ -3735,7 +3747,7 @@ app.whenReady().then(async () => {
         if (!agentService.getAppSettings().memoryEnabled) return null;
         if (artifactId === BROWSER_CAPTURE_ARTIFACT_ID) return null;
         if (!workspaceSharedContextService) return null;
-        const artifact = artifactDomainService?.get(artifactId) as { taskId?: string } | null | undefined;
+        const artifact = await artifactDomainService?.readDescriptor(artifactId);
         const taskId = artifact?.taskId ?? null;
         // standalone / missing artifact -> no workspace context (真实 AppDatabase 链路)
         if (!taskId) return null;
@@ -3751,7 +3763,7 @@ app.whenReady().then(async () => {
   );
   // Artifact Domain 装配（双系统施工态收口：3C 后 Agent 产物创建/刷新已回 Domain）
   // extraSink：artifact updated/removed → SelectionStore（4D stale/clear 事件源）
-  artifactDomain = createArtifactDomain(db.connection, {
+  artifactDomain = createArtifactDomain(db.fixtureConnection, {
     created: (e) => remoteAccessController?.publishArtifactChanged(e.taskId),
     updated: (e) => { selectionStore?.onArtifactUpdated(e); remoteAccessController?.publishArtifactChanged(e.taskId); },
     removed: (e) => { selectionStore?.onArtifactRemoved(e); remoteAccessController?.publishArtifactChanged(e.taskId); },
@@ -3765,8 +3777,7 @@ app.whenReady().then(async () => {
     artifactService: artifactDomainService,
   });
   agentService.setArtifactDomain(artifactDomain.service, artifactDomain.coordinator);
-  // Gadget 独立 Domain：SQLite descriptor truth + durable storage + Main-owned runtime。
-  const gadgetRepository = new GadgetRepository(db.connection, db.runtimeAuditReader);
+  const gadgetRepository = new GadgetRepository({ core: db.runtimeAuditReader });
   const gadgetStorage = new GadgetStorage(getGadgetsDir(), db.runtimeAuditReader);
   const gadgetRegistry = new GadgetRegistry();
   const gadgetRuntime = new GadgetRuntime(gadgetStorage, gadgetRegistry, (state) => {
@@ -3789,7 +3800,7 @@ app.whenReady().then(async () => {
     },
     artifacts: {
       read: async (artifactId) => {
-        const descriptor = artifactDomainService.get(artifactId);
+        const descriptor = await artifactDomainService.readDescriptor(artifactId);
         const content = await artifactDomainService.readContent(artifactId);
         if (!descriptor || !content) return null;
         return { taskId: descriptor.taskId, title: descriptor.title ?? "HTML Gadget", kind: descriptor.kind, content: content.content };
@@ -3809,7 +3820,7 @@ app.whenReady().then(async () => {
   agentService.setGadgetDomain(gadgetService);
   // Blueprint 复用 project-template capability resolver，并仅协调既有 Workspace/Task/Library/Gadget 服务。
   blueprintService = new BlueprintService({
-    repository: new BlueprintRepository(db.connection, db.runtimeAuditReader),
+    repository: new BlueprintRepository({ core: db.runtimeAuditReader }),
     resolver: new BlueprintResolver(),
     planner: new BlueprintInstantiationPlanner(),
     db,
@@ -3906,7 +3917,7 @@ app.whenReady().then(async () => {
   // 3B.2：legacy artifact 数据源（session jsonl + artifact-index.json），首次 hydrate 时一次性迁移
   artifactLegacySource = {
     loadLegacyArtifacts: async (taskId) => {
-      const row = taskId === DOTS_TASK_ID ? undefined : db.getTask(taskId);
+      const row = taskId === DOTS_TASK_ID ? undefined : await db.readTask(taskId, { includeExpertBinding: false });
       if (!row?.sessionFile) return null;
       const history = await agentService.loadTaskHistory(taskId);
       return { artifacts: history.artifacts ?? [], cwd: history.cwd };
@@ -3968,8 +3979,8 @@ app.whenReady().then(async () => {
   agentService.setLocalWorkflowServices({ cron: cronService, terminal: new TaskTerminalService(terminalHost) });
   await agentService.init();
   // User-requested design retirement: use the same recoverable deletion as the task UI.
-  for (const legacy of db.listTasks().filter(task => (task.welcomeMode as string) === "design")) {
-    if (db.getTaskExecutionWorkspaceState(legacy.id)?.state !== "trashed") await taskLifecycle.trash(legacy.id);
+  for (const legacy of (await db.readNonTrashedTasks({ includeExpertBindings: false })).filter(task => (task.welcomeMode as string) === "design")) {
+    await taskLifecycle.trash(legacy.id);
   }
   registerIpc(memoryKernel);
   // Subagent 是编译内建能力：直接把 backend 接入稳定 IPC host，不扫描用户目录。
@@ -4033,7 +4044,7 @@ app.whenReady().then(async () => {
   }
 
   await agentService.resumePersistedTasks();
-  void dotsDelegations?.recover(request => agentService.prompt(request, { durableAdmissionOnly: true }), id => {
+  if (!db.runtimeAuditReader?.supervised) void dotsDelegations?.recover(request => agentService.prompt(request, { durableAdmissionOnly: true }), id => {
     const task = db.getTask(id);
     return !!task && !task.externalAgentPin && agentService.isDotsOrdinaryTask(id) && !db.isTaskEffectiveArchived(id)
       && db.getTaskExecutionWorkspaceState(id)?.state !== "trashed";
@@ -4041,13 +4052,14 @@ app.whenReady().then(async () => {
     (request, source) => dotsActions?.mayRecover(request, source) ?? true,
     (id, cwd) => agentService.matchesDotsInitialPrivateWorkspace(id, cwd))
     .catch(error => console.warn("[Dots] 恢复委派失败", error));
-  dotsActions?.startFileWatches();
+  if (db.fixtureConnection) dotsActions?.startFileWatches();
   startupMark("restoreDelivered");
   mainTimerRegistry.mark("dots-cron-loops", "background-maintenance", mainRolePolicy.ownsDotsAndCronLoops);
   if (mainRolePolicy.ownsDotsAndCronLoops) {
     cronService.start();
     dotsGoogleMonitor.start();
-    dotsProactiveDelivery.restoreNotifications(key => dotsDiscovery.retainedLinks(key));
+    void dotsProactiveDelivery.restoreNotifications(key => dotsDiscovery.retainedLinks(key)).catch(error =>
+      console.warn("[Dots] 恢复主动通知失败", error));
     dotsProactiveDelivery.start();
     dotsDiscovery.start();
   } else {
@@ -4058,7 +4070,9 @@ app.whenReady().then(async () => {
   }
   startupMark("cronReady");
   // 启动时恢复上次已连接的 IM 通道（Telegram 长轮询 / 飞书 / 企微 / 微信）
-  void gatewayService.restoreChannels().finally(() => startupMark("gatewayRestored"));
+  void gatewayService.restoreChannels().catch(error => {
+    console.warn("[Gateway] 渠道恢复失败", error);
+  }).finally(() => startupMark("gatewayRestored"));
   if (memoryGatewayController) {
     try {
       const status = await memoryGatewayController.start();
@@ -4164,9 +4178,9 @@ app.on("before-quit", (event) => {
     coreUiClient = undefined;
     await uiReconnect?.closeUiSession().catch(() => undefined);
     uiReconnect = undefined;
-    if (residentLifecycle.isStopping() && runtimeAuditExecutablePath && db?.connection.name && db.connection.name !== ":memory:") {
+    if (residentLifecycle.isStopping() && runtimeAuditExecutablePath && db?.databasePath && db.databasePath !== ":memory:") {
       try {
-        const stopClient = await CoreBusinessClient.connect(runtimeAuditExecutablePath, db.connection.name, {
+        const stopClient = await CoreBusinessClient.connect(runtimeAuditExecutablePath, db.databasePath, {
           dataDirectory: getMyBuddyDir(),
           role: "background-service",
           clientId: `stop-fence-${process.pid}`,
@@ -4183,11 +4197,11 @@ app.on("before-quit", (event) => {
       await syncCoreAutostart({
         executable: runtimeAuditExecutablePath,
         dataDirectory: getMyBuddyDir(),
-        dbPath: db.connection.name,
+        dbPath: db.databasePath,
         autostartEnabled: false,
         stoppedExplicitly: true,
       }).catch(() => undefined);
-      await shutdownCoreWorker(getMyBuddyDir(), db.connection.name).catch(() => undefined);
+      await shutdownCoreWorker(getMyBuddyDir(), db.databasePath).catch(() => undefined);
     }
     await db?.runtimeAuditReader?.close();
     // Keep the data-directory mutex held until the last database writer is closed.
@@ -4199,7 +4213,7 @@ app.on("before-quit", (event) => {
     return true;
   }).then(ready => {
     if (!ready) { quitCleanupPromise = null; return; }
-    try { if (!db?.connection.open) residentLifecycle.afterCleanup(); }
+    try { if (!db?.isOpen) residentLifecycle.afterCleanup(); }
     catch (error) { console.error("[ResidentHost] handoff failed; assistant is offline", error); }
     quitCleanupComplete = true;
     app.quit();

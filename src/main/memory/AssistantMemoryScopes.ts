@@ -73,3 +73,53 @@ export function resolveAssistantScopeChain(db: AppDatabase, request: MemorySearc
       seen.add(key); return true;
     });
   }
+
+export interface CoreMemoryRecallAuthority {
+  scopes: ReturnType<typeof resolveAssistantScopeChain>;
+  witness: string;
+}
+
+/** Ordinary desktop recall derives scope from Core. Other conversation owners need their own authority. */
+export async function readCoreRecallAuthority(db: AppDatabase, request: MemorySearchRequest): Promise<CoreMemoryRecallAuthority | undefined> {
+  const native = db.runtimeAuditReader;
+  if (!native || !db.isOpen || request.botId || request.teamId || request.workId || request.conversationId) return;
+  const taskId = request.taskId;
+  const allowed = request.scopeTypes?.length ? new Set(request.scopeTypes) : undefined;
+  const filter = (scopes: CoreMemoryRecallAuthority["scopes"]) => scopes.filter(scope => !allowed || allowed.has(scope.scopeType));
+  if (!taskId) {
+    if (request.projectId || request.workspaceId) return;
+    const scopes = filter([{ scopeType: "global", distance: 10 }]);
+    return { scopes, witness: JSON.stringify(["local-global", scopes]) };
+  }
+  if (taskId === DOTS_TASK_ID || isGatewayConversation(taskId) || /^(?:gw-|bot-(?:inbox|gateway|conversation)-)/.test(taskId)) return;
+  const [task, work, channelBot, workspace, durable] = await Promise.all([
+    db.readTask(taskId, { includeExpertBinding: false }),
+    native.readWorkTaskAccess(taskId),
+    native.readBotRegistry({ kind: "channel", userId: LOCAL_USER_ID, channelType: "desktop", channelIdentifier: JSON.stringify([LOCAL_USER_ID, taskId]) }),
+    db.readWorkspaceData({ kind: "navigation", userId: LOCAL_USER_ID }),
+    native.readDurableOpenState(taskId),
+  ]);
+  if (!db.isOpen || !task || task.gatewaySidebarChannelId || !work?.taskExists || work.hasWorkBinding || channelBot !== null || !workspace?.navigation || !durable || durable.trashed
+    || workspace.navigation.conversations.some(conversation => conversation.conversationId === taskId)) return;
+
+  const scopes: CoreMemoryRecallAuthority["scopes"] = [{ scopeType: "task", scopeId: taskId, distance: 0 }];
+  if (task.projectId) scopes.push({ scopeType: "project", scopeId: task.projectId, distance: 1 });
+  if (task.spaceId) {
+    const byId = new Map(workspace.spaces.map(space => [space.id, space]));
+    if (!byId.has(task.spaceId)) return;
+    scopes.push({ scopeType: "workspace", scopeId: task.spaceId, distance: 2 });
+    const visited = new Set([task.spaceId]);
+    let parent = byId.get(task.spaceId)?.parentId;
+    while (parent && request.includeInherited !== false) {
+      if (visited.has(parent)) return;
+      const ancestor = byId.get(parent);
+      if (!ancestor) return;
+      if (!ancestor.effectiveArchived) scopes.push({ scopeType: "workspace", scopeId: parent, distance: visited.size + 2 });
+      visited.add(parent);
+      parent = ancestor.parentId;
+    }
+  }
+  scopes.push({ scopeType: "global", distance: 10 });
+  const visible = filter(scopes);
+  return { scopes: visible, witness: JSON.stringify([task.id, task.projectId, task.spaceId, task.archived, scopes, visible]) };
+}

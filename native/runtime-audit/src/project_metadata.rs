@@ -1,5 +1,5 @@
 use crate::{Result, sqlite_rows::records};
-use rusqlite::{Connection, OptionalExtension, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -24,6 +24,7 @@ pub enum Query {
     MemoryWritesSupported,
     MemoryEditsSupported,
     ReviewWritesSupported,
+    WriteReceipt { operation_id: String },
     WithdrawalSnapshot {
         project_id: String,
         memory_id: Option<String>,
@@ -32,6 +33,12 @@ pub enum Query {
         include_archived: bool,
     },
     Details {
+        project_id: String,
+    },
+    ContextSnapshot {
+        project_id: String,
+    },
+    ContextWitness {
         project_id: String,
     },
     Todos {
@@ -62,11 +69,14 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
         Query::WritesSupported | Query::TodoWritesSupported | Query::EventTodoPromotionSupported
         | Query::EventLibraryPromotionSupported | Query::DeletionSupported | Query::MemoryWritesSupported
         | Query::MemoryEditsSupported | Query::ReviewWritesSupported => Ok(true.into()),
+        Query::WriteReceipt { operation_id } => Ok(crate::project_write::has_receipt(db, &operation_id)?.into()),
         Query::WithdrawalSnapshot { project_id, memory_id } => crate::project_memory_forget::snapshot(db, &project_id, memory_id.as_deref()),
         Query::List { include_archived } => Ok(records(db, &format!(
             "SELECT {PROJECT_COLUMNS} FROM projects WHERE (?1 OR archived = 0) ORDER BY updated_at DESC"
         ), [include_archived])?.into()),
-        Query::Details { project_id } => details(db, &project_id),
+        Query::Details { project_id } => Ok(serde_json::to_value(details(db, &project_id)?)?),
+        Query::ContextSnapshot { project_id } => context_snapshot(db, &project_id),
+        Query::ContextWitness { project_id } => context_witness(db, &project_id),
         Query::Memories { project_id } => memories(db, &project_id),
         Query::Todo { id } => Ok(records(db,
             "SELECT id,project_id,title,description,status,assignee,priority,tags_json,start_at,due_at,created_at,updated_at
@@ -75,21 +85,16 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
         Query::NextBoundary { project_id, now } => {
             let boundary: Option<f64> = db.query_row("WITH due AS (
                 SELECT due_at FROM project_todos WHERE project_id=?1 AND status<>'done' AND due_at IS NOT NULL
-            ), candidates(at) AS (
+            ), candidates(\"at\") AS (
                 SELECT due_at FROM due UNION ALL SELECT due_at-?3 FROM due
                 UNION ALL SELECT updated_at+?4 FROM tasks WHERE project_id=?1 AND archived=0
                     AND coalesce(status,'') NOT IN ('completed','failed')
-            ) SELECT min(at) FROM candidates WHERE at>?2 AND EXISTS(SELECT 1 FROM projects WHERE id=?1)", params![project_id, now, 3*DAY, 7*DAY], |row| row.get(0))?;
+            ) SELECT min(\"at\") FROM candidates WHERE \"at\">?2 AND EXISTS(SELECT 1 FROM projects WHERE id=?1)", params![project_id, now, 3*DAY, 7*DAY], |row| row.get(0))?;
             Ok(json!(boundary))
         }
         Query::Todos { project_id } => {
             if !exists(db, &project_id)? { return Ok(Value::Null); }
-            Ok(records(db,
-                "SELECT id, project_id, title, description, status, assignee, priority, tags_json, start_at,
-                        due_at, created_at, updated_at
-                 FROM project_todos WHERE project_id = ?1 ORDER BY updated_at DESC, id DESC",
-                [&project_id],
-            )?.into())
+            Ok(todos(db, &project_id)?.into())
         }
         Query::Events { project_id, limit } => {
             if !exists(db, &project_id)? { return Ok(Value::Null); }
@@ -98,14 +103,40 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
                  FROM project_events WHERE project_id = ?1 ORDER BY created_at DESC, id DESC LIMIT ?2",
                 params![project_id, limit],
             )?;
-            let ids: Vec<_> = events.iter().filter_map(|event| event["id"].as_str()).collect();
-            let promotions = if ids.is_empty() { Vec::new() } else {
-                records(db,
+            let ids: Vec<String> = events
+                .iter()
+                .filter_map(|event| event["id"].as_str().map(str::to_owned))
+                .collect();
+            let promotions = if ids.is_empty() {
+                Vec::new()
+            } else {
+                let slots = crate::database::anon_placeholders(ids.len());
+                let mut stmt = db.prepare(&format!(
                     "SELECT id, project_id, event_id, event_title, target_kind, target_id, target_title, promoted_by, note, created_at
-                     FROM project_event_promotions WHERE project_id = ?1 AND event_id IN (SELECT value FROM json_each(?2))
-                     ORDER BY created_at ASC",
-                    params![project_id, serde_json::to_string(&ids)?],
-                )?
+                     FROM project_event_promotions WHERE project_id = ? AND event_id IN ({slots})
+                     ORDER BY created_at ASC"
+                ))?;
+                let cols = {
+                    let mut params_vec: Vec<&dyn duckdb::ToSql> = vec![&project_id];
+                    for id in &ids {
+                        params_vec.push(id);
+                    }
+                    let mut rows = stmt.query(duckdb::params_from_iter(params_vec))?;
+                    let cols: Vec<String> = rows
+                        .as_ref()
+                        .map(|s| s.column_names())
+                        .unwrap_or_default();
+                    let mut out = Vec::new();
+                    while let Some(row) = rows.next()? {
+                        let mut map = serde_json::Map::new();
+                        for (i, name) in cols.iter().enumerate() {
+                            map.insert(name.clone(), crate::database::value_ref_to_json(row.get_ref(i)?)?);
+                        }
+                        out.push(Value::Object(map));
+                    }
+                    out
+                };
+                cols
             };
             Ok(json!({ "events": events, "promotions": promotions }))
         }
@@ -113,7 +144,13 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
     }
 }
 
-fn details(db: &Connection, project_id: &str) -> Result<Value> {
+#[derive(Serialize)]
+struct Details {
+    project: Value,
+    resources: Vec<Value>,
+}
+
+fn details(db: &Connection, project_id: &str) -> Result<Option<Details>> {
     let Some(project) = records(db, "SELECT p.*,
         e.allow_json AS expert_allow,e.deny_json AS expert_deny,e.recommended_json AS expert_recommended,
         s.allow_json AS skill_allow,s.prefer_json AS skill_prefer,s.demote_json AS skill_demote,s.hide_json AS skill_hide,
@@ -124,7 +161,7 @@ fn details(db: &Connection, project_id: &str) -> Result<Value> {
         LEFT JOIN project_skill_policy s ON s.project_id=p.id
         LEFT JOIN project_connector_policy c ON c.project_id=p.id
         LEFT JOIN project_mcp_policy m ON m.project_id=p.id WHERE p.id=?1", [project_id])?.pop() else {
-        return Ok(Value::Null);
+        return Ok(None);
     };
     let resources = records(
         db,
@@ -132,7 +169,104 @@ fn details(db: &Connection, project_id: &str) -> Result<Value> {
         FROM project_resources WHERE project_id=?1 ORDER BY sort_order,created_at,id",
         [project_id],
     )?;
-    Ok(json!({ "project": project, "resources": resources }))
+    Ok(Some(Details { project, resources }))
+}
+
+fn todos(db: &Connection, project_id: &str) -> Result<Vec<Value>> {
+    records(db,
+        "SELECT id, project_id, title, description, status, assignee, priority, tags_json, start_at,
+                due_at, created_at, updated_at
+         FROM project_todos WHERE project_id = ?1 ORDER BY updated_at DESC, id DESC",
+        [project_id],
+    )
+}
+
+fn context_snapshot(db: &Connection, project_id: &str) -> Result<Value> {
+    let Some(details) = details(db, project_id)? else {
+        return Ok(Value::Null);
+    };
+    Ok(json!({
+        "project": details.project,
+        "resources": details.resources,
+        "todos": todos(db, project_id)?,
+        "pins": crate::project_pins_data::list(db, project_id)?,
+    }))
+}
+
+fn select_ids(db: &Connection, sql: &str, project_id: &str) -> Result<Vec<String>> {
+    let mut stmt = db.prepare(sql)?;
+    let ids = stmt.query_map([project_id], |row| row.get(0))?.collect::<duckdb::Result<_>>()?;
+    Ok(ids)
+}
+
+fn context_witness(db: &Connection, project_id: &str) -> Result<Value> {
+    if !exists(db, project_id)? {
+        return Ok(Value::Null);
+    }
+    let enabled_resource_ids = select_ids(db,
+        "SELECT id FROM project_resources WHERE project_id = ?1 AND enabled <> 0 ORDER BY id", project_id)?;
+    let pinned_item_ids = select_ids(db,
+        "SELECT item_id FROM project_context_pins WHERE project_id = ?1 ORDER BY item_id", project_id)?;
+    Ok(json!({ "enabledResourceIds": enabled_resource_ids, "pinnedItemIds": pinned_item_ids }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_context_snapshot_and_witness_keep_a_single_cut_during_concurrent_edit() -> Result<()> {
+        let mut reader = Connection::open_in_memory()?;
+        reader.execute_batch(crate::database::CANONICAL_DUCKDB_SCHEMA_SQL)?;
+        reader.execute_batch(
+            "INSERT INTO projects (id, name, instructions, created_at, updated_at)
+             VALUES ('project', 'Project', 'old instructions', 1, 1);
+             INSERT INTO project_expert_policy (project_id, allow_json) VALUES ('project', '[\"expert\"]');
+             INSERT INTO project_resources (id, project_id, kind, title, value, created_at, updated_at)
+             VALUES ('resource', 'project', 'text', 'Resource', 'old body', 1, 1);
+             INSERT INTO project_todos (id, project_id, title, status, created_at, updated_at)
+             VALUES ('todo', 'project', 'Todo', 'doing', 1, 1);
+             INSERT INTO library_items (id, space_id, kind, title, filename, created_at, updated_at)
+             VALUES ('item', 'space', 'markdown', 'Pinned title', 'item.md', 1, 1);
+             INSERT INTO project_context_pins (id, project_id, item_id, note, created_at)
+             VALUES ('pin', 'project', 'item', 'pin note', 1);",
+        )?;
+        let snapshot_query = || Query::ContextSnapshot { project_id: "project".into() };
+        let witness_query = || Query::ContextWitness { project_id: "project".into() };
+        let mut writer = reader.try_clone()?;
+        let snapshot = reader.transaction()?;
+        let original = read(&snapshot, snapshot_query())?;
+        assert_eq!(original["project"]["instructions"], "old instructions");
+        assert_eq!(original["project"]["expert_allow"], "[\"expert\"]");
+        assert_eq!(original["resources"][0]["value"], "old body");
+        assert_eq!(original["todos"][0]["status"], "doing");
+        assert_eq!(original["pins"][0]["itemTitle"], "Pinned title");
+        assert_eq!(original["pins"][0]["note"], "pin note");
+
+        let update = writer.transaction()?;
+        update.execute_batch(
+            "UPDATE projects SET instructions = 'new instructions', archived = 1, updated_at = 2 WHERE id = 'project';
+             UPDATE project_resources SET enabled = 0 WHERE id = 'resource';
+             UPDATE project_todos SET status = 'done' WHERE id = 'todo';
+             DELETE FROM project_context_pins WHERE id = 'pin';",
+        )?;
+        update.commit()?;
+
+        assert_eq!(read(&snapshot, snapshot_query())?, original);
+        assert_eq!(read(&snapshot, witness_query())?, json!({ "enabledResourceIds": ["resource"], "pinnedItemIds": ["item"] }));
+        snapshot.commit()?;
+
+        let fresh = read(&reader, snapshot_query())?;
+        assert_eq!(fresh["project"]["instructions"], "new instructions");
+        assert_eq!(fresh["project"]["archived"], 1);
+        assert_eq!(fresh["resources"][0]["enabled"], 0);
+        assert_eq!(fresh["todos"][0]["status"], "done");
+        assert_eq!(fresh["pins"], json!([]));
+        assert_eq!(read(&reader, witness_query())?, json!({ "enabledResourceIds": [], "pinnedItemIds": [] }));
+        assert_eq!(read(&reader, Query::ContextSnapshot { project_id: "missing".into() })?, Value::Null);
+        assert_eq!(read(&reader, Query::ContextWitness { project_id: "missing".into() })?, Value::Null);
+        Ok(())
+    }
 }
 
 fn memories(db: &Connection, project: &str) -> Result<Value> {
@@ -141,43 +275,65 @@ fn memories(db: &Connection, project: &str) -> Result<Value> {
     }
     let rows = records(db,
         "SELECT m.id,m.kind,m.title,m.content,m.status,m.importance,m.created_at AS createdAt,m.updated_at AS updatedAt,
-           m.source_type AS sourceType,m.source_task_id AS sourceTaskId,m.metadata_json,
-           (SELECT json_group_array(json_object('id',e.id,'evidenceKind',e.evidence_kind,
-               'refId',e.ref_id,'refTitle',e.ref_title,'createdAt',e.created_at))
-            FROM (SELECT id,evidence_kind,ref_id,ref_title,created_at FROM memory_evidence
-                  WHERE memory_id=m.id ORDER BY created_at) e) AS evidence_json
+           m.source_type AS sourceType,m.source_task_id AS sourceTaskId,m.metadata_json
          FROM memory_records m JOIN memory_scopes s ON s.memory_id=m.id
          WHERE s.scope_type='project' AND s.scope_id=?1 AND m.status IN ('active','superseded','resolved')
          ORDER BY m.importance DESC,m.explicit DESC,m.updated_at DESC LIMIT 2000", [project])?;
     let mut seen = HashSet::new();
-    let mut result = Vec::new();
-    for mut row in rows {
+    let mut mem_ids = Vec::new();
+    let mut deduped = Vec::new();
+    for row in rows {
+        let Some(id) = row.get("id").and_then(Value::as_str).map(str::to_owned) else {
+            return Err("missing project memory id".into());
+        };
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        mem_ids.push(id);
+        deduped.push(row);
+    }
+    let mut ev_map: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
+    if !mem_ids.is_empty() {
+        let slots = crate::database::anon_placeholders(mem_ids.len());
+        let mut stmt = db.prepare(&format!(
+            "SELECT memory_id,id,evidence_kind,ref_id,ref_title,created_at
+             FROM memory_evidence WHERE memory_id IN ({slots}) ORDER BY created_at"
+        ))?;
+        let mut ev_rows = stmt.query(duckdb::params_from_iter(mem_ids.iter()))?;
+        while let Some(r) = ev_rows.next()? {
+            let mid: String = r.get(0)?;
+            ev_map.entry(mid).or_default().push(json!({
+                "id": r.get::<_, String>(1)?,
+                "evidenceKind": r.get::<_, String>(2)?,
+                "refId": r.get::<_, Option<String>>(3)?,
+                "refTitle": r.get::<_, Option<String>>(4)?,
+                "createdAt": r.get::<_, i64>(5)?,
+            }));
+        }
+    }
+    let mut result = Vec::with_capacity(deduped.len());
+    for mut row in deduped {
         let item = row.as_object_mut().ok_or("invalid project memory row")?;
         let id = item
             .get("id")
             .and_then(Value::as_str)
-            .ok_or("missing project memory id")?;
-        if !seen.insert(id.to_owned()) {
-            continue;
-        }
+            .ok_or("missing project memory id")?
+            .to_owned();
         let metadata = item
             .remove("metadata_json")
             .and_then(|raw| serde_json::from_str(raw.as_str()?).ok())
             .unwrap_or_default();
         item.insert("metadata".into(), Value::Object(metadata));
-        let evidence = item
-            .remove("evidence_json")
-            .ok_or("missing project memory evidence")?;
         item.insert(
             "evidence".into(),
-            serde_json::from_str(evidence.as_str().ok_or("invalid project memory evidence")?)?,
+            Value::Array(ev_map.remove(&id).unwrap_or_default()),
         );
         result.push(row);
     }
     Ok(result.into())
 }
 
-fn exists(db: &Connection, id: &str) -> rusqlite::Result<bool> {
+fn exists(db: &Connection, id: &str) -> duckdb::Result<bool> {
     db.query_row(
         "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
         [id],
@@ -208,29 +364,29 @@ struct Issue {
 
 fn plan_issues(db: &Connection, id: &str, now: i64, kind: IssueKind) -> Result<Vec<Issue>> {
     let predicate = match kind {
-        IssueKind::BlockingOverdue => "due_at < ?2 AND status = 'doing' AND priority IS 'high'",
-        IssueKind::Overdue => "due_at < ?2 AND NOT (status IS 'doing' AND priority IS 'high')",
+        IssueKind::BlockingOverdue => "due_at < ?2 AND status = 'doing' AND priority IS NOT DISTINCT FROM 'high'",
+        IssueKind::Overdue => "due_at < ?2 AND NOT (status IS NOT DISTINCT FROM 'doing' AND priority IS NOT DISTINCT FROM 'high')",
         IssueKind::NearDue => "due_at >= ?2 AND due_at < ?3",
         _ => return Err("invalid plan issue type".into()),
     };
-    let mut statement = db.prepare_cached(&format!(
-        "SELECT id,title,due_at FROM project_todos WHERE project_id = ?1 AND status IS NOT 'done' AND {predicate}
+    let mut statement = db.prepare(&format!(
+        "SELECT id,title,due_at FROM project_todos WHERE project_id = ?1 AND status IS DISTINCT FROM 'done' AND {predicate}
          ORDER BY updated_at DESC,id DESC LIMIT 5"
     ))?;
     let near_due_end = now.saturating_add(3 * DAY);
-    let mut values: Vec<&dyn rusqlite::ToSql> = vec![&id, &now];
+    let mut values: Vec<&dyn duckdb::ToSql> = vec![&id, &now];
     if matches!(kind, IssueKind::NearDue) {
         values.push(&near_due_end);
     }
     let records = statement
-        .query_map(rusqlite::params_from_iter(values), |row| {
+        .query_map(duckdb::params_from_iter(values), |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
             ))
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .collect::<duckdb::Result<Vec<_>>>()?;
     Ok(records
         .into_iter()
         .map(|(ref_id, title, due_at)| Issue {
@@ -261,7 +417,7 @@ fn status(db: &Connection, id: &str, now: i64) -> Result<Value> {
                     r.get::<_, String>(0)?,
                     r.get::<_, Option<String>>(1)?,
                     r.get::<_, Option<String>>(2)?,
-                    r.get::<_, bool>(3)?,
+                    crate::database::row_bool(r, 3)?,
                     r.get::<_, i64>(4)?,
                 ))
             },
@@ -273,7 +429,7 @@ fn status(db: &Connection, id: &str, now: i64) -> Result<Value> {
     let stale_after = now.saturating_sub(7 * DAY);
     let (task_count, active_tasks, doing_tasks, stale_tasks, last_task): (i64, i64, i64, i64, Option<i64>) =
         db.query_row(
-            "SELECT count(*), count(*) FILTER (WHERE archived = 0 AND status IS NOT 'completed' AND status IS NOT 'failed'),
+            "SELECT count(*), count(*) FILTER (WHERE archived = 0 AND status IS DISTINCT FROM 'completed' AND status IS DISTINCT FROM 'failed'),
                     count(*) FILTER (WHERE archived = 0 AND status = 'in_progress'),
                     count(*) FILTER (WHERE archived = 0 AND status = 'in_progress' AND updated_at < ?2), max(updated_at)
              FROM tasks WHERE project_id = ?1",
@@ -282,12 +438,12 @@ fn status(db: &Connection, id: &str, now: i64) -> Result<Value> {
     let (todo_count, doing_todos, overdue_todos, last_todo): (i64, i64, i64, Option<i64>) = db
         .query_row(
             "SELECT count(*), count(*) FILTER (WHERE status = 'doing'),
-                    count(*) FILTER (WHERE status IS NOT 'done' AND due_at < ?2), max(updated_at)
+                    count(*) FILTER (WHERE status IS DISTINCT FROM 'done' AND due_at < ?2), max(updated_at)
              FROM project_todos WHERE project_id = ?1",
             params![id, now],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
-    let mut statement = db.prepare_cached(
+    let mut statement = db.prepare(
         "SELECT m.id, m.title, m.kind, m.status, m.importance, m.updated_at FROM memory_records m
          JOIN memory_scopes s ON s.memory_id = m.id
          WHERE s.scope_type = 'project' AND s.scope_id = ?1 AND m.status IN ('active','superseded','resolved')
@@ -339,7 +495,7 @@ fn status(db: &Connection, id: &str, now: i64) -> Result<Value> {
     let blockers = plan_issues(db, id, now, IssueKind::BlockingOverdue)?;
     let mut at_risks = plan_issues(db, id, now, IssueKind::Overdue)?;
     at_risks.extend(plan_issues(db, id, now, IssueKind::NearDue)?);
-    let mut stale = db.prepare_cached(
+    let mut stale = db.prepare(
         "SELECT id,title FROM tasks WHERE project_id = ?1 AND archived = 0 AND status = 'in_progress' AND updated_at < ?2
          ORDER BY rowid LIMIT 3",
     )?;

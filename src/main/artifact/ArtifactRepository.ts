@@ -446,19 +446,8 @@ export class ArtifactRepository {
   get inTransaction(): boolean { return this.db.inTransaction; }
   get readonly(): boolean { return this.db.readonly; }
 
-  getWriteReceipt<T>(taskId: string, operationId: string): T | undefined {
-    const receipt = this.db.prepare("SELECT result_json FROM artifact_write_receipts WHERE task_id=? AND operation_id=?")
-      .pluck().get(taskId, operationId) as string | undefined;
-    return receipt === undefined ? undefined : JSON.parse(receipt) as T;
-  }
-
   canPurge(taskId: string): boolean {
     return Boolean(this.db.prepare("SELECT 1 FROM task_execution_workspace_state WHERE task_id=? AND state='trashed'").get(taskId));
-  }
-
-  clearWriteReceipt(taskId?: string): void {
-    if (taskId === undefined) this.db.exec("DELETE FROM artifact_write_receipts");
-    else this.db.prepare("DELETE FROM artifact_write_receipts WHERE task_id=?").run(taskId);
   }
 
   /** managed-content rows 的 storage_path 集合（orphan GC 对比用） */

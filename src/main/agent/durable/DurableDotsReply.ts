@@ -7,6 +7,7 @@ import { ActiveDurableConversation } from "./DurableConversationBranch";
 import { openDurablePassiveStorage } from "./DurableStorage";
 
 export const DOTS_REPLY_ENTRY = "mybuddy.dots-assistant-reply";
+export const DOTS_OUTBOX_WRITE_REVOKED = "DOTS_OUTBOX_WRITE_REVOKED";
 export type CommittedDotsDelivery = { reply: DotsAssistantReply; deliveredAt: number };
 export type DotsAppendOutcome = (CommittedDotsDelivery & { status: "appended" | "existing" }) | { status: "pending" | "discarded" };
 const pending = { status: "pending" } as const;
@@ -80,7 +81,7 @@ async function uniqueLegacySource(tx: Tx, reply: DotsAssistantReply, conversatio
 }
 
 export async function appendDurableDotsReply(conversation: Conversation, input: DotsAssistantReply,
-  isCurrent: () => boolean): Promise<DotsAppendOutcome> {
+  isCurrent: () => boolean, outboxEventKey?: string): Promise<DotsAppendOutcome> {
   const reply = replySchema.parse(input);
   return conversation.commit<DotsAppendOutcome>(async tx => {
     const receipt = await tx.doc(receipts, reply.deliveryKey, null);
@@ -121,7 +122,7 @@ export async function appendDurableDotsReply(conversation: Conversation, input: 
     if (!isCurrent()) return discarded;
     const userTimestamp = user.model?.find(message => message.role === "user")?.timestamp ?? 0;
     const timestamp = Math.max(Date.now(), (answer?.timestamp ?? userTimestamp) + 1);
-    const deliveryData = JSON.parse(JSON.stringify({ ...reply, deliveredAt: timestamp })) as JsonObject;
+    const deliveryData = JSON.parse(JSON.stringify({ ...reply, deliveredAt: timestamp, dotsOutboxEventKey: outboxEventKey })) as JsonObject;
     const entry = await tx.appendEntry(conversation.id, { kind: DOTS_REPLY_ENTRY, data: deliveryData,
       ...(reply.text.trim() ? { model: [{ role: "assistant", content: [{ type: "text", text: reply.text }], timestamp, stopReason: "stop",
         api: "mybuddy-delivery", provider: "mybuddy", model: "Dots", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
@@ -133,4 +134,8 @@ export async function appendDurableDotsReply(conversation: Conversation, input: 
     if (error instanceof DeliveryRevoked) return discarded;
     throw error;
   });
+}
+
+export function normalizeDotsAssistantReply(reply: DotsAssistantReply): DotsAssistantReply {
+  return replySchema.parse(reply);
 }

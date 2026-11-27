@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AgentPromptRequest, AgentPromptResult, AgentSubmissionReceipt } from "../../shared/agent-ipc";
 import { CoreBusinessClient, type CoreDomainEvent, type CoreExecutionDispatch } from "../platform/core-business-client";
 
@@ -12,9 +13,19 @@ export interface ExecutionBridgeRunner {
   pause?(executionId: string, taskId: string): Promise<void>;
 }
 
-const MAX_DURABLE_PROGRESS_QUEUE = 64;
+type ExecutionSettlement = Awaited<ReturnType<ExecutionBridgeRunner["start"]>>;
+
+interface ActiveExecution {
+  client: CoreBusinessClient;
+  attempt: number;
+  settle(result: ExecutionSettlement): Promise<void>;
+  control?: Promise<void>;
+}
+
+const MAX_PENDING_DURABLE_PROGRESS = 192;
 const MAX_COALESCED_DELTA_CHARS = 64 * 1024;
 const EPHEMERAL_COALESCE_MS = 16;
+const DURABLE_RETRY_DELAYS_MS = [0, 50, 150];
 
 interface BufferedDelta {
   progress: Record<string, unknown>;
@@ -22,10 +33,18 @@ interface BufferedDelta {
   text: string;
 }
 
+export class DurableProgressDeliveryError extends Error {
+  constructor(message: string, readonly causeError?: unknown) {
+    super(message);
+    this.name = "DurableProgressDeliveryError";
+  }
+}
+
 /**
- * Tiered per-execution progress pipeline (`P1-05`):
+ * Tiered per-execution progress pipeline (`P1-05`, `IN-10`, `IN-11`):
  * - Ephemeral deltas (`text_delta` / `thinking_delta`) coalesce within 16ms and cap at 1 in-flight RPC.
- * - Durable control/tool/lifecycle events queue in-order behind coalesced text flushes and flush before settlement.
+ * - Durable control/tool/lifecycle events queue in order with bounded backpressure and
+ *   block settlement until their delivery is confirmed.
  */
 class ExecutionProgressStream {
   private timer?: ReturnType<typeof setTimeout>;
@@ -33,46 +52,66 @@ class ExecutionProgressStream {
   private ephemeralInFlight?: Promise<void>;
   private durableTail: Promise<void> = Promise.resolve();
   private durableQueued = 0;
+  private durableFailure?: DurableProgressDeliveryError;
+  private sealed = false;
   private closed = false;
 
   constructor(
-    private readonly send: (progress: unknown, ephemeral: boolean) => Promise<void>,
+    private readonly send: (progress: unknown, progressId?: string) => Promise<void>,
   ) {}
 
   report(progress: unknown, ephemeral = false): Promise<void> {
-    if (this.closed) return Promise.resolve();
     if (ephemeral) {
-      this.enqueueEphemeral(progress);
+      if (!this.sealed && !this.closed) this.enqueueEphemeral(progress);
       return Promise.resolve();
     }
-    // Flush any buffered delta ahead of durable tool/assistant_end boundaries without blocking on failure.
-    const flushedDelta = this.flushEphemeralNow().catch(() => undefined);
-    if (this.durableQueued >= MAX_DURABLE_PROGRESS_QUEUE) {
-      console.warn(`[ExecutionProgressStream] durable progress queue full (${MAX_DURABLE_PROGRESS_QUEUE}); dropping oldest backpressure boundary`);
-      return Promise.resolve();
+    if (this.closed || this.sealed) {
+      return Promise.reject(new DurableProgressDeliveryError("Cannot enqueue required durable progress on closed stream"));
+    }
+    if (this.durableFailure) {
+      return Promise.reject(this.durableFailure);
+    }
+    if (this.durableQueued >= MAX_PENDING_DURABLE_PROGRESS) {
+      this.durableFailure = new DurableProgressDeliveryError(
+        `Durable progress queue overloaded (capacity=${MAX_PENDING_DURABLE_PROGRESS})`,
+      );
+      return Promise.reject(this.durableFailure);
     }
     this.durableQueued += 1;
+    const progressId = randomUUID();
+    void this.flushEphemeralNow();
     const task = this.durableTail
-      .then(() => flushedDelta)
-      .then(() => this.sendDurableWithRetry(progress))
-      .finally(() => {
-        this.durableQueued -= 1;
-      });
-    this.durableTail = task.catch(() => undefined);
+      .then(() => this.sendDurableWithRetry(progress, progressId))
+      .finally(() => { this.durableQueued -= 1; });
+    this.durableTail = task;
+    void task.catch((error: DurableProgressDeliveryError) => { this.durableFailure ??= error; });
     return task;
   }
 
-  private async sendDurableWithRetry(progress: unknown): Promise<void> {
-    try {
-      await this.send(progress, false);
-    } catch (firstErr) {
-      if (this.closed) return;
+  private async sendDurableWithRetry(progress: unknown, progressId: string): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < DURABLE_RETRY_DELAYS_MS.length; attempt++) {
+      const delayMs = DURABLE_RETRY_DELAYS_MS[attempt]!;
+      if (delayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+      if (this.closed) {
+        throw new DurableProgressDeliveryError("Execution progress stream closed before durable progress confirmation", lastError);
+      }
       try {
-        await this.send(progress, false);
-      } catch (retryErr) {
-        console.warn("[ExecutionProgressStream] durable progress delivery failed:", retryErr instanceof Error ? retryErr.message : String(firstErr));
+        await this.send(progress, progressId);
+        return;
+      } catch (err) {
+        if (err instanceof DurableProgressDeliveryError) throw err;
+        lastError = err;
       }
     }
+    throw new DurableProgressDeliveryError(
+      `Durable progress delivery failed after ${DURABLE_RETRY_DELAYS_MS.length} attempts: ${
+        lastError instanceof Error ? lastError.message : String(lastError)
+      }`,
+      lastError,
+    );
   }
 
   private enqueueEphemeral(progress: unknown): void {
@@ -91,7 +130,7 @@ class ExecutionProgressStream {
         this.buffered.progress = { ...obj, patch: nextPatch };
       } else {
         if (this.buffered) {
-          void this.flushEphemeralNow().catch(() => undefined);
+          void this.flushEphemeralNow();
         }
         this.buffered = {
           key,
@@ -110,7 +149,7 @@ class ExecutionProgressStream {
     if (!this.timer) {
       this.timer = setTimeout(() => {
         this.timer = undefined;
-        void this.flushEphemeralNow().catch(() => undefined);
+        void this.flushEphemeralNow();
       }, EPHEMERAL_COALESCE_MS);
       this.timer.unref?.();
     }
@@ -127,7 +166,7 @@ class ExecutionProgressStream {
     const batch = this.buffered;
     if (!batch) return Promise.resolve();
     this.buffered = undefined;
-    const flight = this.send(batch.progress, true)
+    const flight = this.send(batch.progress)
       .catch(error => {
         console.warn("[ExecutionProgressStream] ephemeral progress delivery error:", error instanceof Error ? error.message : String(error));
       })
@@ -135,7 +174,7 @@ class ExecutionProgressStream {
         if (this.ephemeralInFlight === flight) {
           this.ephemeralInFlight = undefined;
         }
-        if (this.buffered && !this.closed) {
+        if (this.buffered && !this.closed && !this.sealed) {
           void this.flushEphemeralNow();
         }
       });
@@ -144,17 +183,20 @@ class ExecutionProgressStream {
   }
 
   async flush(): Promise<void> {
-    while (this.buffered || this.ephemeralInFlight) {
-      await this.flushEphemeralNow();
-      if (this.ephemeralInFlight) {
-        await this.ephemeralInFlight;
-      }
-    }
+    this.sealed = true;
+    this.clearEphemeral();
     await this.durableTail;
+    if (this.durableFailure) {
+      throw this.durableFailure;
+    }
   }
 
   close(): void {
     this.closed = true;
+    this.clearEphemeral();
+  }
+
+  private clearEphemeral(): void {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = undefined;
@@ -299,7 +341,7 @@ export class ExecutionHostBridge {
   private disposed = false;
   private reconnecting = false;
   private reconnectTimer?: NodeJS.Timeout;
-  private readonly active = new Set<string>();
+  private readonly active = new Map<string, ActiveExecution>();
   private readonly eventListeners = new Set<(event: CoreDomainEvent) => void>();
   private readonly reconnectListeners = new Set<(client: CoreBusinessClient) => Promise<void> | void>();
 
@@ -385,76 +427,89 @@ export class ExecutionHostBridge {
 
   private async handleDispatch(client: CoreBusinessClient, dispatch: CoreExecutionDispatch): Promise<void> {
     const exec = dispatch.execution;
-    if (dispatch.action === "cancel") {
-      await this.runner.cancel?.(exec.executionId, exec.taskId).catch(() => undefined);
-      if (!client.isClosed && this.active.has(exec.executionId)) {
-        await client.executorSettled({
-          executionId: exec.executionId,
-          attempt: exec.attempt,
-          status: "cancelled",
-          ownerGeneration: exec.ownerGeneration,
-          hostGeneration: this.hostGeneration,
-        }).catch(() => undefined);
-        this.active.delete(exec.executionId);
-      }
+    const current = this.active.get(exec.executionId);
+    if (dispatch.action !== "start") {
+      if (!current || current.client !== client || current.attempt !== exec.attempt) return;
+      const action = dispatch.action;
+      const control = Promise.resolve().then(async () => {
+        let result: ExecutionSettlement = { status: action === "cancel" ? "cancelled" : "paused" };
+        try {
+          await this.runner[action]?.(exec.executionId, exec.taskId);
+        } catch (error) {
+          result = { status: "unknown", errorMessage: error instanceof Error ? error.message : String(error) };
+        }
+        if (current.control !== control) return;
+        await current.settle(result);
+      });
+      current.control = control;
+      await control;
       return;
     }
-    if (dispatch.action === "pause") {
-      await this.runner.pause?.(exec.executionId, exec.taskId).catch(() => undefined);
-      if (!client.isClosed && this.active.has(exec.executionId)) {
-        await client.executorSettled({
-          executionId: exec.executionId,
-          attempt: exec.attempt,
-          status: "paused",
-          ownerGeneration: exec.ownerGeneration,
-          hostGeneration: this.hostGeneration,
-        }).catch(() => undefined);
-        this.active.delete(exec.executionId);
+    if (current) return;
+    const progressStream = new ExecutionProgressStream(async (progress, progressId) => {
+      if (client.isClosed) throw new DurableProgressDeliveryError("Core disconnected before progress confirmation");
+      const reply = await client.executorProgress(
+        exec.executionId, exec.attempt, progress, exec.ownerGeneration, this.hostGeneration,
+        progressId ? { progressId } : { ephemeral: true },
+      );
+      if (reply.status !== "ok") {
+        throw new DurableProgressDeliveryError(`Core rejected execution progress: ${String(reply.code ?? reply.status)}`);
       }
-      return;
-    }
-    if (this.active.has(exec.executionId)) return;
-    this.active.add(exec.executionId);
-    const progressStream = new ExecutionProgressStream(async (progress, ephemeral) => {
-      if (client.isClosed) return;
-      await client.executorProgress(exec.executionId, exec.attempt, progress, exec.ownerGeneration, this.hostGeneration, { ephemeral });
     });
+    const active: ActiveExecution = {
+      client,
+      attempt: exec.attempt,
+      settle: async result => {
+        const control = active.control;
+        try {
+          await progressStream.flush();
+        } catch (error) {
+          result = { status: "unknown", errorMessage: error instanceof Error ? error.message : String(error) };
+        }
+        if (client.isClosed || active.control !== control || this.active.get(exec.executionId) !== active) return;
+        try {
+          const reply = await client.executorSettled({
+            executionId: exec.executionId,
+            attempt: exec.attempt,
+            ...result,
+            ownerGeneration: exec.ownerGeneration,
+            hostGeneration: this.hostGeneration,
+          });
+          if (reply.status !== "ok") {
+            console.warn("[ExecutionHostBridge] Core rejected settlement:", reply.code ?? reply.status);
+            return;
+          }
+          this.active.delete(exec.executionId);
+        } catch (error) {
+          console.error("[ExecutionHostBridge] settlement reply failed:", error instanceof Error ? error.message : String(error));
+        }
+      },
+    };
+    this.active.set(exec.executionId, active);
     try {
       const ack = await client.executorAck(exec.executionId, exec.attempt, exec.ownerGeneration, this.hostGeneration);
-      if (ack.status === "rejected") return;
-      const settled = await this.runner.start(dispatch, {
-        reportProgress: async (progress, opts) => {
-          await progressStream.report(progress, opts?.ephemeral === true);
-        },
-      });
-      await progressStream.flush();
-      if (!client.isClosed) {
-        await client.executorSettled({
-          executionId: exec.executionId,
-          attempt: exec.attempt,
-          status: settled.status,
-          result: settled.result,
-          errorMessage: settled.errorMessage,
-          ownerGeneration: exec.ownerGeneration,
-          hostGeneration: this.hostGeneration,
-        });
+      if (ack.status !== "ok" || this.active.get(exec.executionId) !== active) return;
+      if (!active.control) {
+        let result: ExecutionSettlement;
+        try {
+          result = await this.runner.start(dispatch, {
+            reportProgress: (progress, opts) => progressStream.report(progress, opts?.ephemeral === true),
+          });
+        } catch (error) {
+          result = { status: "failed", errorMessage: error instanceof Error ? error.message : String(error) };
+        }
+        if (!active.control) await active.settle(result);
       }
+      let control: Promise<void> | undefined;
+      do {
+        control = active.control;
+        await control;
+      } while (control !== active.control);
     } catch (error) {
-      await progressStream.flush().catch(() => undefined);
       console.error("[ExecutionHostBridge] dispatch failed:", error instanceof Error ? error.stack || error.message : String(error));
-      if (!client.isClosed) {
-        await client.executorSettled({
-          executionId: exec.executionId,
-          attempt: exec.attempt,
-          status: "failed",
-          errorMessage: error instanceof Error ? error.message : String(error),
-          ownerGeneration: exec.ownerGeneration,
-          hostGeneration: this.hostGeneration,
-        }).catch(() => undefined);
-      }
     } finally {
       progressStream.close();
-      this.active.delete(exec.executionId);
+      if (this.active.get(exec.executionId) === active) this.active.delete(exec.executionId);
     }
   }
 

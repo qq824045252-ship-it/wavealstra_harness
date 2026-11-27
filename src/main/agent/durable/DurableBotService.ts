@@ -7,15 +7,17 @@ import { ConversationIdle } from "@earendil-works/pi-durable";
 import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsAssistantReply, type DotsCapabilityRequirement } from "../../../shared/dots";
 import { sameWorkspacePath } from "../../task/QQTaskWorkspace";
 import { readDurableDotsResult, type DurableDotsOutcome } from "./DurableDotsResult";
-import { ConversationInteractionRepository } from "../ConversationInteractionRepository";
+import { DOTS_OUTBOX_WRITE_REVOKED } from "./DurableDotsReply";
+import { ConversationInteractionRepository, mapConversationInteraction } from "../ConversationInteractionRepository";
 import { isGatewayConversation } from "../../gateway/GatewayConversation";
 import { DEFAULT_WELCOME_MODE, defaultModePresetId } from "../../../shared/mode-profile";
 import type { GatewayBotTurnRequest } from "../../gateway/GatewayAgentTurn";
+import { rejectGatewayExecution } from "../../gateway/GatewayExecutionAuthority";
 import { importGatewayAttachments } from "../../gateway/GatewayMedia";
 import { WorkExecutionMetricsStore } from "../work/WorkExecutionMetrics";
 import { recordCollaborationExecutionStarted } from "../work/BotCollaborationExecutionFacts";
 import { createHash } from "node:crypto";
-import { existsSync, statSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, statSync, readFileSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join, extname, resolve, dirname } from "node:path";
 import { BACKGROUND_CONTEXT as context, withAbortSignal } from "@earendil-works/chord/context";
@@ -24,6 +26,7 @@ import { McpOAuthCredentialStore, SessionManager, convertToLlm, type ModelRuntim
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentDeleteUserMessageRequest, AgentRegenerateRequest, AgentRegenerateResult, AgentPromptRequest, AgentPromptResult, AgentSubmissionReceipt, AgentUiPatch, TaskDto, TaskHistoryDto, TaskHistoryTarget, TaskUserQuestionsDto, TaskUserQuestionsQuery } from "../../../shared/agent-ipc";
 import type { GoalContinuationOrigin } from "../../../shared/conversation-goal";
+import type { GoalUserInputWitness } from "../ConversationRuntimeData";
 import { normalizedEditorTextHash } from "../../../shared/regenerate-hash";
 import { durableTaskStatus, type BotToolMode, type DurableBotSnapshot } from "../../../shared/durable-bot";
 import { durableDelta } from "../../../../shared/src/durable-sync";
@@ -58,7 +61,8 @@ import { durableContentText } from "./DurableHistoryProjection";
 import { DurableMcp } from "./DurableMcp";
 import type { ExternalEffectRecovery } from "./DurableEffectRecovery";
 import { DurableStorageOwnedError } from "./DurableStorageLease";
-import type { WorkExecutionBindingDto } from "../../../shared/bot-work";
+import { purgeDurableStorage } from "./DurableStorage";
+import { LOCAL_USER_ID, type WorkExecutionBindingDto } from "../../../shared/bot-work";
 import type { RuntimeAuditReader } from "../../platform/runtime-audit";
 import { snapshotWorkspace } from "../../workspace/WorkspaceService";
 import { AgentDoc, LiveDoc, SessionFailed, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from "@earendil-works/pi-durable";
@@ -69,7 +73,13 @@ import type { ToolDiagnosticEvent } from "../../../shared/task-diagnostics";
 import type { CreateConversationBranchRequest } from "../../../shared/conversation-branch";
 import { captureDurableBranch, resolveDurableBranch, type DurableBranchAnchor, type MaterializedDurableBranch } from "./DurableTaskBranch";
 
-interface BotBinding { task_id: string; directory: string; cwd: string; backend: "pi-durable" }
+interface BotBinding { directory: string; cwd: string }
+export interface RuntimeDurableOpenState {
+  binding: BotBinding | null;
+  workspaceMove: { fromCwd: string; toCwd: string } | null;
+  memoryProjectionEntryId: number | null;
+  trashed: boolean;
+}
 type AdmissionMark = (stage: string) => void;
 const STOP_SETTLEMENT_TIMEOUT_MS = 10_000;
 
@@ -89,7 +99,10 @@ class DurableToolAssemblyError extends Error {
 interface BotModelRepair { from: string; to: string }
 interface OpenBot {
   runtime: DurableBotRuntime; mcp: DurableMcp; mcpConfigKey: string;
+  cwd: string; directory: string;
   retiredMcp: Set<DurableMcp>;
+  readWaitingForInput(): Promise<boolean>;
+  refreshPermissions(task?: TaskDto): Promise<TaskDto>;
   refreshingMcp?: { key: string; promise: Promise<DurableMcp> };
   /** 打开任务时持久化模型已失效，本次执行实际使用的替换模型。必须展示给用户。 */
   modelRepair?: BotModelRepair;
@@ -99,6 +112,7 @@ interface OpenBot {
 }
 export interface DurableInputOrigin {
   goalContinuation?: GoalContinuationOrigin;
+  goalUserInput?: GoalUserInputWitness;
   gatewayOrigin?: Omit<GatewayBotTurnRequest["gatewayOrigin"], "workTarget">;
 }
 
@@ -110,12 +124,12 @@ export interface DurableBotServiceOptions {
   agentDir: string;
   mcpDir: string;
   assetsDir?: string;
-  resolveCwd: (taskId: string) => string;
+  resolveCwd: (taskId: string) => string | Promise<string>;
   createDotsWorkspace?: () => string;
-  validateGatewayWorkspace?: (taskId: string, cwd: string, from?: string) => void;
+  validateGatewayWorkspace?: (taskId: string, cwd: string, from?: string) => void | Promise<void>;
   /** Desired organization root; undefined pins an execution-owned workspace. No projection writes. */
-  resolveNextCwd?: (taskId: string) => string | undefined;
-  instructions: (task: TaskDto) => string;
+  resolveNextCwd?: (taskId: string) => string | undefined | Promise<string | undefined>;
+  instructions: (task: TaskDto) => string | Promise<string>;
   evidence?: (task: TaskDto, messages: readonly Message[]) => string;
   evidenceProjection?: (task: TaskDto) => DurableEvidenceOptions | undefined;
   canReadAnswerEvidence?: (taskId: string, resource: "read" | "library_read") => boolean;
@@ -126,25 +140,26 @@ export interface DurableBotServiceOptions {
   improvementSkillAllowed?: (taskId: string, name: string) => boolean;
   readHints?: import("../hooks/ReadRecoveryHints").ReadRecoveryHints;
   tools?: (task: TaskDto, cwd: string, recovery: ExternalEffectRecovery) => Promise<DurableDomainTools>;
-  mcpSelection?: (task: TaskDto) => readonly string[] | undefined;
+  mcpSelection?: (task: TaskDto) => readonly string[] | undefined | Promise<readonly string[] | undefined>;
+  prepareToolPermissions?: (task: TaskDto) => Promise<unknown>;
   toolAllowed?: (task: TaskDto, name: string) => boolean;
-  assertDotsCapabilities?: (task: TaskDto, cwd: string, requirements: readonly DotsCapabilityRequirement[]) => void;
+  assertDotsCapabilities?: (task: TaskDto, cwd: string, requirements: readonly DotsCapabilityRequirement[]) => void | Promise<void>;
   onTurns?: (taskId: string, turns: ReturnType<typeof durableCompletedTurns>) => Promise<void>;
   onDotsProgress?: (taskId: string, operationId: string, identity: string, at: number) => void;
-  dotsRecoveryScope?: (taskId: string, operationId: string) => DotsRecoveryToolScope | undefined;
+  dotsRecoveryScope?: (taskId: string, operationId: string) => DotsRecoveryToolScope | undefined | Promise<DotsRecoveryToolScope | undefined>;
   onEntries?: (taskId: string, entries: readonly EntryRecord[], info: { conversationId: string; sourceKind: "main" | "subagent" }) => void;
   onResponse?: (taskId: string, message: AssistantMessage, info: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
   onGoalToolResult?: (taskId: string, identity: import("../../../shared/conversation-goal-activity").GoalActivityIdentity, tool: {
     name: string; callId: string; details: unknown;
   }) => void;
-  onRequest?: (taskId: string, info: import("../../../shared/conversation-goal-activity").GoalActivityAdmission & { sourceKind: "main" | "subagent" }) => void;
+  onRequest?: (taskId: string, info: import("../../../shared/conversation-goal-activity").GoalActivityAdmission & { sourceKind: "main" | "subagent" }) => void | Promise<void>;
   onTool?: (event: ToolDiagnosticEvent) => void;
   onGoalToolEvidence?: (taskId: string, ...args: Parameters<NonNullable<DurableBotOptions["onGoalToolEvidence"]>>) => void;
   observedUsage?: (taskId: string, conversationId: string) => import("../../../shared/task-diagnostics").ConversationUsageReceipt;
   waitingForInput?: (taskId: string) => boolean;
   /** Startup resumption width; interactive access bypasses the queue and is never throttled here. */
   resumeConcurrency?: number;
-  onSettled?: (taskId: string, snapshot: DurableBotSnapshot) => void;
+  onSettled?: (taskId: string, snapshot: DurableBotSnapshot) => void | Promise<void>;
   onRelease?: (taskId: string) => void;
   toolMode: (task: TaskDto) => BotToolMode;
   maxTurns?: (task: TaskDto) => number | null;
@@ -160,20 +175,21 @@ export interface DurableBotServiceOptions {
   projectArtifacts?: (taskId: string, snapshot: DurableBotSnapshot, before: Map<string, string>, cwd: string, messageWorkspaces?: ReadonlyMap<string, string>) => Promise<void>;
   thinking?: (task: TaskDto, request: AgentPromptRequest) => ModelThinkingLevel | undefined;
   prepareInput?: (request: AgentPromptRequest) => Promise<string> | string;
-  auditInput?: (request: AgentPromptRequest, origin?: DurableInputOrigin) => import("./DurableSkillProjection").DurableInputAudit | undefined;
+  auditInput?: (request: AgentPromptRequest, origin?: DurableInputOrigin) => import("./DurableSkillProjection").DurableInputAudit | undefined
+    | Promise<import("./DurableSkillProjection").DurableInputAudit | undefined>;
   prepareImages?: (request: AgentPromptRequest) => Promise<{ images: Array<{ type: "image"; mimeType: string; data: string }>; text?: string }>;
   prepareTask?: (request: AgentPromptRequest, mark?: AdmissionMark) => Promise<AgentPromptRequest>;
-  beforeSubmit?: (request: AgentPromptRequest) => void;
-  beforeModelRequest?: (taskId: string) => void;
+  beforeSubmit?: (request: AgentPromptRequest) => void | Promise<void>;
+  beforeModelRequest?: (taskId: string) => void | Promise<void>;
   beforeToolExecution?: (taskId: string, cwd: string, name: string, args: unknown) => void;
   providerAuthorityGuarded?: (taskId: string) => boolean;
   onProviderUsage?: (taskId: string, input: { conversationId: string; generationTaskId: number;
     reported: boolean; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
-  resumeAllowed?: (taskId: string) => boolean;
+  resumeAllowed?: (taskId: string) => boolean | Promise<boolean>;
   expertBindings?: TaskExpertBindingService;
 }
 
-/** One process owns each store. SQLite only binds product IDs; all execution state is in Durable. */
+/** One process owns each store. Core owns durable bindings in production. */
 export class DurableBotService {
   private readonly rebinding = new Map<string, Promise<OpenBot>>();
   private readonly opening = new Map<string, Promise<OpenBot>>();
@@ -193,29 +209,41 @@ export class DurableBotService {
   private readonly workMetrics: WorkExecutionMetricsStore;
   private readonly workspaceMoves: DurableWorkspaceMoves;
   constructor(private readonly options: DurableBotServiceOptions) {
-    this.workMetrics = new WorkExecutionMetricsStore(options.db.connection);
+    const fixture = options.db.fixtureConnection;
+    this.workMetrics = new WorkExecutionMetricsStore(fixture, this.core);
     this.workspaceMoves = new DurableWorkspaceMoves(options.db);
-    if (!options.db.connection.readonly) {
-      options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_bindings (
+    if (fixture && !fixture.readonly) {
+      fixture.exec(`CREATE TABLE IF NOT EXISTS durable_bot_bindings (
         task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
         backend TEXT NOT NULL CHECK(backend = 'pi-durable'), directory TEXT NOT NULL UNIQUE, cwd TEXT NOT NULL)`);
-      options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_memory_projection (
+      fixture.exec(`CREATE TABLE IF NOT EXISTS durable_bot_memory_projection (
         task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE, entry_id INTEGER NOT NULL)`);
-      options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_workspace_moves (
+      fixture.exec(`CREATE TABLE IF NOT EXISTS durable_bot_workspace_moves (
         task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
         from_cwd TEXT NOT NULL, to_cwd TEXT NOT NULL)`);
-      options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_message_workspaces (
+      fixture.exec(`CREATE TABLE IF NOT EXISTS durable_bot_message_workspaces (
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         message_id TEXT NOT NULL, cwd TEXT NOT NULL, PRIMARY KEY(task_id, message_id))`);
     }
-    organizeGatewayConversationStores(options.db, options.agentDir);
+    // Moving legacy SQLite directories would change the identity of an existing Core store.
+    if (fixture) organizeGatewayConversationStores(options.db, options.agentDir);
     this.config = new McpConfigService();
     this.credentials = new McpOAuthCredentialStore(
       new McpCredentialBackend(join(options.mcpDir, "mcp-native-auth.encrypted.json")), join(options.mcpDir, "mcp-native-refresh-locks"));
   }
 
+  private get core(): RuntimeAuditReader | undefined {
+    const reader = this.options.db.runtimeAuditReader;
+    return reader?.supervised ? reader : undefined;
+  }
+
   owns(taskId: string): boolean {
+    if (this.core) return this.opened.has(taskId) || this.opening.has(taskId);
     return Boolean(this.options.db.getTask(taskId) || this.binding(taskId));
+  }
+
+  async ownsTask(taskId: string): Promise<boolean> {
+    return this.core ? Boolean(await this.options.db.readTask(taskId, { includeExpertBinding: false })) : this.owns(taskId);
   }
   busy(taskId: string): boolean {
     const snapshot = this.opened.get(taskId)?.runtime.snapshot;
@@ -223,7 +251,15 @@ export class DurableBotService {
     return Boolean(snapshot?.busy || snapshot?.queued || this.opening.has(taskId)
       || admissions && Array.from(admissions.values()).some(controller => !controller?.signal.aborted));
   }
-  cwd(taskId: string): string | undefined { return this.workspaceMoves.read(taskId)?.toCwd ?? this.binding(taskId)?.cwd; }
+  cwd(taskId: string): string | undefined {
+    return this.core ? this.opened.get(taskId)?.cwd : this.workspaceMoves.read(taskId)?.toCwd ?? this.binding(taskId)?.cwd;
+  }
+
+  async readCwd(taskId: string): Promise<string | undefined> {
+    if (!this.core) return this.cwd(taskId);
+    const state = await this.readOpenState(taskId);
+    return state?.workspaceMove?.toCwd ?? state?.binding?.cwd;
+  }
   liveConversationId(taskId: string): string | undefined { return this.opened.get(taskId)?.runtime.snapshot.conversationId; }
   /** Called only within a Gateway trash restore transaction. Native cwd stays authoritative until migration commits. */
   prepareGatewayTrashRestore(taskId: string, legacy: string, destination: string): void {
@@ -256,7 +292,7 @@ export class DurableBotService {
   async contextManagementStatus(taskId: string): Promise<ContextManagementStatusDto | undefined> {
     const live = this.opened.get(taskId)?.runtime.contextManagementStatus();
     if (live) return live;
-    const binding = this.binding(taskId);
+    const binding = await this.readBinding(taskId);
     return binding ? readDurableContextStatus(binding.directory) : undefined;
   }
   /**
@@ -269,12 +305,12 @@ export class DurableBotService {
     return open.mcp.contextFacts();
   }
   async subagentSteerReceipts(taskId: string, childId: string) {
-    const binding = this.binding(taskId);
+    const binding = await this.readBinding(taskId);
     return binding ? await readDurableSteerReceipts(binding.directory, childId) : [];
   }
 
   async goalNativeEvidence(taskId: string, runs: readonly import("../../../shared/conversation-goal-activity").GoalActivityIdentity[]) {
-    const binding = this.binding(taskId);
+    const binding = await this.readBinding(taskId);
     if (!binding || !runs.length) return [];
     const { readGoalNativeEvidence } = await import("./DurableGoalNativeEvidence");
     return await readGoalNativeEvidence(binding.directory, runs);
@@ -284,12 +320,74 @@ export class DurableBotService {
     return this.options.db.connection.prepare("SELECT * FROM durable_bot_bindings WHERE task_id = ?").get(taskId) as BotBinding | undefined;
   }
 
+  private async readBinding(taskId: string): Promise<BotBinding | undefined> {
+    const core = this.core;
+    if (!core) return this.binding(taskId);
+    const binding = await core.readDurableTaskBinding(taskId);
+    if (binding === undefined) throw new Error("Core 未确认 Durable 会话绑定");
+    return binding ?? undefined;
+  }
+
+  private async readOpenState(taskId: string): Promise<RuntimeDurableOpenState | null> {
+    const state = await this.core!.readDurableOpenState(taskId);
+    if (state === undefined) throw new Error("Core 未确认 Durable 会话打开状态");
+    return state;
+  }
+
+  private async readWorkspaceMove(taskId: string) {
+    if (!this.core) return this.workspaceMoves.read(taskId);
+    return (await this.readOpenState(taskId))?.workspaceMove ?? undefined;
+  }
+
+  private async readWaitingForInput(taskId: string): Promise<boolean> {
+    if (!this.core) return this.options.waitingForInput?.(taskId) ?? false;
+    const snapshot = await this.core.readConversationRuntime(taskId, LOCAL_USER_ID);
+    if (snapshot === undefined) throw new Error("Core 未确认 Durable 任务的待答问题");
+    return snapshot?.interactions.some(interaction => interaction.status === "pending") ?? false;
+  }
+
+  private async readAdmissionCwd(taskId: string, open: Pick<OpenBot, "cwd" | "directory">, existingRun = false): Promise<string> {
+    const gateway = isGatewayConversation(taskId);
+    if (!this.core) {
+      const binding = this.binding(taskId);
+      if (!binding) throw new Error("Durable 会话绑定不存在");
+      if (gateway) {
+        if (!sameWorkspacePath(binding.cwd, open.cwd) || !sameWorkspacePath(binding.directory, open.directory)) {
+          throw new Error("Durable 会话绑定或工作目录已变化，请重新打开任务");
+        }
+        await this.options.validateGatewayWorkspace?.(taskId, binding.cwd);
+      }
+      return binding.cwd;
+    }
+    const state = await this.readOpenState(taskId);
+    if (!state || state.trashed) throw new Error("任务已删除或在回收站中");
+    const binding = state.binding;
+    const move = state.workspaceMove;
+    if (!binding || (move && (!existingRun || !sameWorkspacePath(move.fromCwd, open.cwd))) || !sameWorkspacePath(binding.cwd, open.cwd)
+      || !sameWorkspacePath(binding.directory, open.directory)) {
+      throw new Error("Durable 会话绑定或工作目录已变化，请重新打开任务");
+    }
+    if (gateway) await this.options.validateGatewayWorkspace?.(taskId, binding.cwd);
+    return binding.cwd;
+  }
+
+  private async readCoreDotsInputs(taskId: string) {
+    const core = this.core!;
+    const operationIds = new Set<string>();
+    if (taskId === DOTS_TASK_ID) return { operationIds };
+    const latest = await core.readDotsFollowupData<{ operationId: string } | null>({ kind: "latest", taskId });
+    if (latest === undefined) throw new Error("Core 未确认原任务 Dots 交办");
+    if (!latest) return { operationIds };
+    operationIds.add(latest.operationId);
+    for await (const row of core.readActiveDotsDelegations(taskId)) operationIds.add(row.id);
+    return { operationIds, latestOperationId: latest.operationId };
+  }
+
   private toolMode(task: TaskDto): BotToolMode {
     return isGatewayBotTaskId(task.id) ? "native" : this.options.toolMode(task);
   }
 
-  async resumePersisted(): Promise<void> {
-    const bindings = this.options.db.connection.prepare("SELECT task_id FROM durable_bot_bindings").all() as Array<Pick<BotBinding, "task_id">>;
+  async resumePersisted(): Promise<string[]> {
     const admission = new ResumeAdmission({
       concurrency: this.options.resumeConcurrency ?? DEFAULT_DURABLE_RESUME_CONCURRENCY,
       shouldSkip: taskId => this.resumeSkipReason(taskId),
@@ -298,23 +396,44 @@ export class DurableBotService {
       run: async taskId => { (await this.open(taskId)).runtime.resume(); },
     });
     this.resumeAdmission = admission;
-    admission.enqueue(bindings.map(binding => binding.task_id));
+    const reader = this.options.db.runtimeAuditReader;
+    if (reader?.supervised) {
+      let after: string | undefined;
+      do {
+        const page = await reader.readDurableResumePage(after);
+        if (!page) throw new Error("Durable 启动恢复候选列表未获 Rust Core 确认");
+        admission.enqueue(page.taskIds);
+        after = page.next ?? undefined;
+      } while (after !== undefined && !this.closing);
+    } else {
+      const bindings = this.options.db.connection.prepare("SELECT task_id FROM durable_bot_bindings").pluck().all() as string[];
+      admission.enqueue(bindings);
+    }
     const report = await admission.drain();
     this.lastResumeReport = report;
     if (report.failed.length) {
       console.warn(`[Durable] 启动恢复交付 ${report.delivered.length} 个会话，${report.failed.length} 个失败`, report.failed.slice(0, 5));
     }
+    return report.delivered;
   }
 
   /** Queue-time conditions can change while an item waits; re-check before spending a slot. */
-  private resumeSkipReason(taskId: string): string | undefined {
+  private async resumeSkipReason(taskId: string): Promise<string | undefined> {
+    const reader = this.options.db.runtimeAuditReader;
+    if (reader?.supervised) {
+      const binding = await reader.readDurableTaskBinding(taskId);
+      if (binding === undefined) throw new Error("Durable 恢复绑定读取未获 Rust Core 确认");
+      if (!binding) return "binding-removed";
+      if (await this.options.resumeAllowed?.(taskId) === false) return "not-resumable";
+      return binding.trashed ? "trashed" : undefined;
+    }
     if (!this.binding(taskId)) return "binding-removed";
-    if (this.options.resumeAllowed?.(taskId) === false) return "not-resumable";
+    if (await this.options.resumeAllowed?.(taskId) === false) return "not-resumable";
     if (this.options.db.getTaskExecutionWorkspaceState(taskId)?.state === "trashed") return "trashed";
     return undefined;
   }
 
-  private open(taskId: string, admissionBoundary = false): Promise<OpenBot> {
+  private open(taskId: string, admissionBoundary = false, signal?: AbortSignal): Promise<OpenBot> {
     // Reading history opens a paused native Harness but does not resume it. Keep the
     // startup queue entry: openBound deduplicates the runtime, and the drain still
     // owes this original input its resume hand-over. Claiming here stranded work
@@ -326,16 +445,17 @@ export class DurableBotService {
       try { open = await this.openBound(taskId); }
       catch (error) {
         if (!(error instanceof WorkspaceMigrationBusyError) || isGatewayConversation(taskId)) throw error;
-        const move = this.workspaceMoves.read(taskId);
+        const move = await this.readWorkspaceMove(taskId);
         if (!move) throw error;
         await this.workspaceMoves.write({ kind: "cancel", taskId, ...move });
         open = await this.openBound(taskId);
       }
-      if (!admissionBoundary && this.admissions.get(taskId)?.size) return open;
+      if (signal?.aborted || (!admissionBoundary && this.admissions.get(taskId)?.size)) return open;
       if (taskId === DOTS_TASK_ID && this.options.createDotsWorkspace) {
-        if (open.dotsWorkspace || !await open.runtime.canRebindWorkspace()) return open;
-        const workspace = this.options.createDotsWorkspace();
+        if (open.dotsWorkspace || await open.readWaitingForInput() || !await open.runtime.canRebindWorkspace()) return open;
         await this.rememberWorkspaceHistory(taskId, open);
+        if (signal?.aborted) return open;
+        const workspace = this.options.createDotsWorkspace();
         try { await bindDotsConversationWorkspace(open.runtime.conversation, workspace, context); }
         catch (error) {
           if (error instanceof WorkspaceMigrationBusyError) return open;
@@ -345,20 +465,21 @@ export class DurableBotService {
         await this.projections.get(taskId);
         return this.openBound(taskId);
       }
-      if (!this.options.resolveNextCwd || this.options.waitingForInput?.(taskId)) return open;
+      if (!this.options.resolveNextCwd || await open.readWaitingForInput()) return open;
       let desired: string | undefined;
-      try { desired = this.options.resolveNextCwd(taskId); }
+      try { desired = await this.options.resolveNextCwd(taskId); }
       catch (error) {
         // A broken destination must not prevent cancellation or recovery of the old namespace.
         if (!await open.runtime.canRebindWorkspace()) return open;
         throw error;
       }
-      const current = this.binding(taskId);
+      const current = await this.readBinding(taskId);
       if (!desired || !current || resolve(desired) === resolve(current.cwd)) return open;
       // Scan the native graph only when the directory actually changes, not on every UI read.
-      if (!await open.runtime.canRebindWorkspace()) return open;
+      if (!await open.runtime.canRebindWorkspace() || signal?.aborted) return open;
       if (!existsSync(desired) || !statSync(desired).isDirectory()) throw new Error(`Bot 工作目录不存在：${desired}`);
       await this.rememberWorkspaceHistory(taskId, open);
+      if (signal?.aborted) return open;
       await this.invalidate(taskId, open);
       await this.projections.get(taskId);
       // Persist intent before mutating the native store. A restart resumes this exact migration,
@@ -388,7 +509,7 @@ export class DurableBotService {
       do {
         const page = await tx.scanConversations({}, 100, conversations);
         for (const conversation of page.items) {
-          const cwd = (await tx.doc(AgentDoc, conversation.id)).cwd ?? this.binding(taskId)!.cwd;
+          const cwd = (await tx.doc(AgentDoc, conversation.id)).cwd ?? open.cwd;
           let entries: Cursor | undefined;
           do {
             const history = await tx.scanEntries({ conversationId: conversation.id, order: "ascending" }, 500, entries);
@@ -401,7 +522,7 @@ export class DurableBotService {
       return result;
     }, context);
     const { db } = this.options;
-    await new DurableTaskProjection(db.connection, db.runtimeAuditReader).rememberWorkspaces(taskId, rows);
+    await new DurableTaskProjection(db.fixtureConnection, db.runtimeAuditReader).rememberWorkspaces(taskId, rows);
   }
 
   private openBound(taskId: string): Promise<OpenBot> {
@@ -468,30 +589,41 @@ export class DurableBotService {
 
   private async openInternal(taskId: string): Promise<OpenBot> {
     const { db, agentDir, models } = this.options;
-    this.options.expertBindings?.ensureLegacy(taskId);
-    const task = db.getTask(taskId);
+    const core = this.core;
+    if (!core) this.options.expertBindings?.ensureLegacy(taskId);
+    const [task, state] = await Promise.all([db.readTask(taskId), core ? this.readOpenState(taskId) : undefined]);
     if (!task) throw new Error("任务不存在");
+    if (core && (!state || state.trashed)) throw new Error("任务已删除或在回收站中");
     if (isGatewayConversation(taskId) && !task.gatewaySidebarChannelId) throw new Error("网关对话缺少可信渠道，无法打开会话存储");
-    const prior = this.binding(taskId);
-    const move = this.workspaceMoves.read(taskId);
+    const prior = core ? state?.binding ?? undefined : this.binding(taskId);
+    const move = core ? state?.workspaceMove ?? undefined : this.workspaceMoves.read(taskId);
     const directoryName = createHash("sha256").update(taskId).digest("hex");
     const originalDirectory = join(agentDir, "durable", directoryName);
-    const directory = isGatewayConversation(taskId) && task.gatewaySidebarChannelId
-      ? gatewayConversationDirectory(db, taskId, task.gatewaySidebarChannelId, originalDirectory, prior?.directory)
-      : prior?.directory ?? originalDirectory;
+    let directory = prior?.directory ?? originalDirectory;
+    if (isGatewayConversation(taskId) && task.gatewaySidebarChannelId) {
+      if (!core) directory = gatewayConversationDirectory(db, taskId, task.gatewaySidebarChannelId, originalDirectory, prior?.directory);
+      else {
+        const target = join(gatewayChannelDirectory(db, task.gatewaySidebarChannelId, !prior), directoryName);
+        directory = prior?.directory ?? target;
+        if (![resolve(originalDirectory), resolve(target)].includes(resolve(directory))) throw new Error("渠道会话存储不属于原会话");
+        const entry = lstatSync(directory, { throwIfNoEntry: false });
+        if (entry && !entry.isDirectory()) throw new Error("渠道会话目录无效");
+      }
+    }
     const dots = taskId === DOTS_TASK_ID && this.options.createDotsWorkspace;
     const pinnedDotsWorkspace = dots ? await readDotsWorkspace(directory, context) : undefined;
     const initialDotsWorkspace = dots && !prior && !pinnedDotsWorkspace ? dots() : undefined;
     const dotsWorkspace = pinnedDotsWorkspace ?? initialDotsWorkspace;
-    const cwd = dotsWorkspace ?? move?.toCwd ?? prior?.cwd ?? this.options.resolveCwd(taskId);
-    if (isGatewayConversation(taskId)) this.options.validateGatewayWorkspace?.(taskId, cwd, move?.fromCwd);
+    const storedCwd = core ? task.cwd : undefined;
+    const cwd = dotsWorkspace ?? move?.toCwd ?? prior?.cwd ?? storedCwd ?? await this.options.resolveCwd(taskId);
+    if (isGatewayConversation(taskId)) await this.options.validateGatewayWorkspace?.(taskId, cwd, move?.fromCwd);
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`Bot 工作目录不存在：${cwd}`);
     // Pending native operations retain their root; idle moves are committed below.
-    if (!move && task.cwd !== cwd) db.bindTaskExecutionWorkspaceCwd(taskId, cwd);
+    if (!core && !move && task.cwd !== cwd) db.bindTaskExecutionWorkspaceCwd(taskId, cwd);
     task.cwd = cwd;
-    const taskProjection = new DurableTaskProjection(db.connection, db.runtimeAuditReader);
+    const taskProjection = new DurableTaskProjection(db.fixtureConnection, db.runtimeAuditReader);
     await taskProjection.bindBot(taskId, directory, cwd, Boolean(pinnedDotsWorkspace && prior?.cwd !== cwd));
-    const config = this.mcpConfiguration(taskId);
+    const config = await this.mcpConfiguration(taskId, task);
     const mcp = await DurableMcp.open(config, this.credentials, models, cwd);
     let openedRuntime: DurableBotRuntime | undefined;
     try {
@@ -519,12 +651,14 @@ export class DurableBotService {
           context: convertToLlm(legacy.buildSessionContext().messages),
         } : undefined;
       };
-      const projectionCheckpoint = db.connection.prepare("SELECT entry_id FROM durable_bot_memory_projection WHERE task_id = ?").get(taskId) as { entry_id: number } | undefined;
+      const projectionCheckpoint = core ? state?.memoryProjectionEntryId : (db.connection.prepare(
+        "SELECT entry_id FROM durable_bot_memory_projection WHERE task_id = ?").get(taskId) as { entry_id: number } | undefined)?.entry_id;
       let previousSnapshot: DurableBotSnapshot | undefined;
       let settledKey: string | undefined;
       // One task + binding read per synchronous permission phase. Approval/resource re-checks
       // land after a microtask, so the gate has already expired and they read fresh state.
-      const readActivity = db.connection.prepare("SELECT updated_at FROM tasks WHERE id = ?").pluck();
+      const readActivity = core ? undefined : db.connection.prepare("SELECT updated_at FROM tasks WHERE id = ?").pluck();
+      let indexedActivity = task.updatedAt;
       const pendingOrigins = new Map<string, string>();
       let pendingSnapshot: DurableBotSnapshot | undefined;
       let writer: Promise<void> | undefined;
@@ -539,6 +673,7 @@ export class DurableBotService {
           const workspaces = Array.from(pendingOrigins, ([messageId, cwd]) => ({ messageId, cwd }));
           try {
             const result = await taskProjection.writeSnapshot(taskId, durableTaskStatus(next), next.activityAt, workspaces);
+            indexedActivity = latestActivityTime(indexedActivity, result.activityAt) ?? indexedActivity;
             const visible = new Map(result.workspaces.map(row => [row.messageId, row.cwd]));
             for (const row of next.messages) {
               const known = messageWorkspaces.get(row.id);
@@ -556,17 +691,53 @@ export class DurableBotService {
         }
         writer = undefined;
       }
+      let permissionTask = task;
+      if (core) await this.options.prepareToolPermissions?.(task);
+      let coreWaitingForInput = core ? await this.readWaitingForInput(taskId) : false;
+      let interactionReads: Promise<unknown> = Promise.resolve();
+      const readWaitingForInput = () => {
+        if (!core) return this.readWaitingForInput(taskId);
+        const reading = interactionReads.then(async () => {
+          coreWaitingForInput = await this.readWaitingForInput(taskId);
+          return coreWaitingForInput;
+        });
+        interactionReads = reading.catch(() => {});
+        return reading;
+      };
       const toolGate = new ToolGate(
-        () => db.getTask(taskId) ?? task,
+        () => core ? permissionTask : db.getTask(taskId) ?? task,
         (candidate, name) => this.options.toolAllowed?.(candidate, name) ?? true,
       );
+      let permissionRead = 0;
+      const refreshPermissions = async (knownTask?: TaskDto) => {
+        if (!core) return permissionTask;
+        const revision = ++permissionRead;
+        const current = knownTask ?? await db.readTask(taskId);
+        if (!current) throw new Error("Durable 所属任务已不可用");
+        await this.options.prepareToolPermissions?.(current);
+        if (permissionRead === revision) {
+          permissionTask = current;
+          toolGate.reset();
+        }
+        return current;
+      };
+      let dotsInputs: Set<string> | undefined;
+      let deliveredInput: string | undefined;
+      const refreshDotsFacts = async () => {
+        if (!core) return;
+        const { operationIds, latestOperationId } = await this.readCoreDotsInputs(taskId);
+        const delivered = latestOperationId ? await core.readLatestDotsReply(taskId, null) : undefined;
+        deliveredInput = delivered?.operationId === latestOperationId ? delivered?.operationId : undefined;
+        dotsInputs = operationIds;
+      };
+      await refreshDotsFacts();
       const routing = taskId === DOTS_TASK_ID ? this.options.answerRouting : undefined;
       const runtime = await DurableBotRuntime.open({ directory, cwd, models, initialHistory,
         codeReview: this.options.codeReview && { taskId, workspace: cwd, review: this.options.codeReview },
         nativeHooks: this.options.nativeHooks && { store: this.options.nativeHooks, readHints: this.options.readHints, cwd, directory,
           improvement: this.options.nativeImprovement, skillAllowed: name => toolGate.allowed("read") && Boolean(this.options.improvementSkillAllowed?.(taskId, name)),
           toolAllowed: name => toolGate.allowed(name), scope: () => {
-          const current = db.getTask(taskId);
+          const current = core ? permissionTask : db.getTask(taskId);
           if (!current) throw new Error("Hook 所属任务已不可用");
           return { taskId, projectId: current.projectId, spaceId: current.spaceId };
         } },
@@ -578,10 +749,15 @@ export class DurableBotService {
         },
         workspaceMigrationFrom: move?.fromCwd,
         pinInitialDotsWorkspace: initialDotsWorkspace !== undefined,
-        projectionAfterEntryId: projectionCheckpoint?.entry_id ?? 0,
+        projectionAfterEntryId: projectionCheckpoint ?? 0,
         toolAllowed: name => toolGate.allowed(name),
-        beforeToolExecution: (name, args, toolCwd) => {
-          this.options.beforeModelRequest?.(taskId);
+        beforeToolExecution: async (name, args, toolCwd) => {
+          await this.options.beforeModelRequest?.(taskId);
+          if (core) {
+            const current = await refreshPermissions();
+            if (this.options.toolAllowed?.(current, name) === false) throw new Error(`当前任务工具已不可用：${name}`);
+          }
+          if (core || isGatewayConversation(taskId)) await this.readAdmissionCwd(taskId, { cwd, directory }, true);
           this.options.beforeToolExecution?.(taskId, toolCwd, name, args);
         },
         admittingUserInputs: () => Array.from(this.admittingUserInputs.get(taskId) ?? [], item => item.requestId),
@@ -613,30 +789,33 @@ export class DurableBotService {
         onResponse: (message, info) => { this.workMetrics.response(taskId, message, info); this.options.onResponse?.(taskId, message, info); },
         onRequest: info => this.options.onRequest?.(taskId, info),
         onGoalToolResult: (identity, tool) => this.options.onGoalToolResult?.(taskId, identity, tool),
-        beforeProviderRequest: () => {
-          this.options.beforeModelRequest?.(taskId);
-          recordCollaborationExecutionStarted(this.options.db.connection, taskId);
+        beforeProviderRequest: async () => {
+          await this.options.beforeModelRequest?.(taskId);
+          if (core) await Promise.all([refreshPermissions(), refreshDotsFacts()]);
+          if (core || isGatewayConversation(taskId)) await this.readAdmissionCwd(taskId, { cwd, directory }, true);
+          const fixture = this.options.db.fixtureConnection;
+          if (fixture) recordCollaborationExecutionStarted(fixture, taskId);
         },
         providerAuthorityGuarded: () => this.options.providerAuthorityGuarded?.(taskId) ?? false,
         onProviderUsage: input => { this.workMetrics.usage(taskId, input); this.options.onProviderUsage?.(taskId, input); },
         onTool: this.options.onTool,
         onGoalToolEvidence: this.options.onGoalToolEvidence ? (...args) => this.options.onGoalToolEvidence?.(taskId, ...args) : undefined,
         observedUsage: conversationId => this.options.observedUsage?.(taskId, conversationId) ?? { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheHitRate: null },
-        waitingForInput: () => this.options.waitingForInput?.(taskId) ?? false,
-        evidence: messages => this.options.evidence?.(db.getTask(taskId) ?? task, messages) ?? "",
+        waitingForInput: () => core ? coreWaitingForInput : this.options.waitingForInput?.(taskId) ?? false,
+        evidence: messages => this.options.evidence?.(core ? permissionTask : db.getTask(taskId) ?? task, messages) ?? "",
         evidenceProjection: this.options.evidenceProjection?.(task),
-        isDotsWorkerInput: requestId => this.isDotsWorkerInput(taskId, requestId),
+        isDotsWorkerInput: requestId => /^(?:dots-input-|goal-continuation:)/.test(requestId) &&
+          (dotsInputs?.has(requestId) ?? this.hasDotsDelegation(taskId, requestId)),
         dotsRecoveryScope: this.options.dotsRecoveryScope && (operationId => this.options.dotsRecoveryScope?.(taskId, operationId)),
-        hasDotsDelegation: () => this.hasDotsDelegation(taskId),
-        deliveredDotsInput: () => this.deliveredDotsInput(taskId),
+        hasDotsDelegation: () => dotsInputs ? dotsInputs.size > 0 : this.hasDotsDelegation(taskId),
+        deliveredDotsInput: () => core ? deliveredInput : this.deliveredDotsInput(taskId),
         isDelegatedMemoryInput: requestId => (taskId === DOTS_TASK_ID && isDotsAutomaticInput(requestId)) || (requestId.startsWith("dots-input-")
-          && Boolean(db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dots_delegations'").get())
-          && Boolean(db.connection.prepare("SELECT 1 FROM dots_delegations WHERE task_id=? AND operation_id=?").get(taskId, requestId))),
+          && (dotsInputs?.has(requestId) ?? this.hasDotsDelegation(taskId, requestId))),
         onTurns: this.options.onTurns && (turns => this.options.onTurns!(taskId, turns)),
         assets: durableSandboxAssets(this.options.assetsDir),
-        instructions: () => this.options.instructions(db.getTask(taskId) ?? task),
+        instructions: async () => this.options.instructions((await db.readTask(taskId)) ?? task),
         prepareSnapshot: async snapshot => {
-          snapshot.activityAt = latestActivityTime(snapshot.activityAt, readActivity.get(taskId));
+          snapshot.activityAt = latestActivityTime(snapshot.activityAt, core ? indexedActivity : readActivity?.get(taskId));
           for (const message of snapshot.messages) {
             if (!messageWorkspaces.has(message.id)) pendingOrigins.set(message.id, cwd);
           }
@@ -674,20 +853,22 @@ export class DurableBotService {
             settledKey = key;
             const currentInput = [...snapshot.messages].reverse().find(message => message.role === "user")?.inputRequestId;
             if (currentInput) routing?.clearPreparedTurns(taskId, currentInput);
-            this.options.onSettled?.(taskId, snapshot);
+            await this.options.onSettled?.(taskId, snapshot);
           }
         },
       });
       openedRuntime = runtime;
       if (move) await this.workspaceMoves.write({ kind: "commit", taskId, ...move, cwd, at: Date.now() });
-      return { runtime, mcp, mcpConfigKey: JSON.stringify(config), retiredMcp: new Set(), dotsWorkspace, ...(modelRepair ? { modelRepair } : {}) };
+      return { runtime, mcp, cwd, directory, readWaitingForInput, refreshPermissions, mcpConfigKey: JSON.stringify(config), retiredMcp: new Set(), dotsWorkspace,
+        ...(modelRepair ? { modelRepair } : {}) };
     } catch (error) { await openedRuntime?.close(); await mcp.close(); throw error; }
   }
 
-  private mcpConfiguration(taskId: string) {
+  private async mcpConfiguration(taskId: string, knownTask?: TaskDto) {
     const config = this.config.loadRuntimeConfig();
-    const task = this.options.db.getTask(taskId);
-    const selected = task && this.options.mcpSelection ? this.options.mcpSelection(task) : this.options.expertBindings?.active(taskId)?.mcpIds;
+    const task = knownTask ?? await this.options.db.readTask(taskId);
+    const selected = task && this.options.mcpSelection ? await this.options.mcpSelection(task)
+      : this.core ? task?.expertBinding?.active?.mcpIds : this.options.expertBindings?.active(taskId)?.mcpIds;
     const selectedConfig = selected === undefined ? config : {
       ...config, mcpServers: Object.fromEntries(Object.entries(config.mcpServers ?? {}).filter(([id]) => selected.includes(id))),
     };
@@ -695,8 +876,8 @@ export class DurableBotService {
     return toNativeMcpConfig(emptyMcpFilterResult(selectedConfig), this.config.getAppGlobalConfigPath(), false);
   }
 
-  private async configuredMcp(open: OpenBot, cwd: string, taskId: string): Promise<DurableMcp> {
-    const config = this.mcpConfiguration(taskId);
+  private async configuredMcp(open: OpenBot, cwd: string, task: TaskDto): Promise<DurableMcp> {
+    const config = await this.mcpConfiguration(task.id, task);
     const key = JSON.stringify(config);
     if (key === open.mcpConfigKey) return open.mcp;
     if (open.refreshingMcp?.key === key) return open.refreshingMcp.promise;
@@ -722,7 +903,7 @@ export class DurableBotService {
     const target = resolution.target;
     if (!resolution.repairedFrom) return resolution;
     const repair: BotModelRepair = { from: resolution.repairedFrom, to: modelKey(target) };
-    const current = this.options.db.getTask(task.id) ?? task;
+    const current = await this.options.db.readTask(task.id) ?? task;
     if (current.modelId !== repair.to) {
       // updatedAt 保持不变：修复模型归属不应把任务顶到列表最前。
       await this.options.db.writeTaskRecord({
@@ -752,15 +933,17 @@ export class DurableBotService {
     await this.options.models.refresh({ allowNetwork: false });
     signal?.throwIfAborted();
     mark?.("catalog");
-    this.options.expertBindings?.ensureLegacy(request.taskId);
-    const task = this.options.db.getTask(request.taskId);
+    if (!this.core) this.options.expertBindings?.ensureLegacy(request.taskId);
+    const task = await this.options.db.readTask(request.taskId);
     if (!task) throw new Error("任务不存在");
+    signal?.throwIfAborted();
+    const expertBinding = this.core ? task.expertBinding : this.options.expertBindings?.get(task.id);
     // Product selections are durable task configuration, never global scene state.
     await this.options.db.writeTaskRecord({ id: task.id, title: task.title,
       modelId: task.id === DOTS_TASK_ID ? task.modelId : request.modelId ?? task.modelId,
       permissionMode: request.permissionMode ?? task.permissionMode,
       welcomeMode: request.welcomeMode ?? task.welcomeMode,
-      expertId: this.options.expertBindings?.get(task.id) ? task.expertId : request.expertId ?? task.expertId,
+      expertId: expertBinding ? task.expertId : request.expertId ?? task.expertId,
       modePresetId: request.modePresetId !== undefined ? request.modePresetId : task.modePresetId, updatedAt: Date.now() },
     { preserveTitle: true });
     return request;
@@ -768,18 +951,35 @@ export class DurableBotService {
 
   private async configureRequest(open: OpenBot, request: AgentPromptRequest, mark?: AdmissionMark,
     signal?: AbortSignal): Promise<BotModelResolution["target"]> {
+      const { db, expertBindings } = this.options;
+      const core = this.core;
+      let current = await db.readTask(request.taskId);
+      if (!current) throw new Error("任务不存在");
       // Admission is serialized. Queued inputs and resumed work finish with the old active identity;
       // only a newly admitted input after native idle can adopt a saved desired revision.
       if (await open.runtime.isIdle()) {
-        const before = this.options.expertBindings?.get(request.taskId);
-        const binding = this.options.expertBindings?.promote(request.taskId);
-        if (before?.pending && binding) this.options.emit({ type: "expert_binding", taskId: request.taskId, binding });
+        if (core) {
+          if (current.expertBinding?.pending && !await open.readWaitingForInput()) {
+            signal?.throwIfAborted();
+            const promoted = await core.batch2Write<{ ok: boolean }>({ kind: "taskExpertPromote", taskId: request.taskId, updatedAt: Date.now() });
+            if (!promoted?.ok) throw new Error("Core 未确认任务专家配置已激活");
+            current = await db.readTask(request.taskId);
+            if (!current) throw new Error("任务不存在");
+            if (current.expertBinding) this.options.emit({ type: "expert_binding", taskId: request.taskId, binding: current.expertBinding });
+          }
+        } else {
+          const before = expertBindings?.get(request.taskId);
+          const binding = expertBindings?.promote(request.taskId);
+          if (before?.pending && binding) this.options.emit({ type: "expert_binding", taskId: request.taskId, binding });
+          current = await db.readTask(request.taskId);
+          if (!current) throw new Error("任务不存在");
+        }
       }
-      const current = this.options.db.getTask(request.taskId)!;
-      const cwd = this.binding(request.taskId)!.cwd;
+      const cwd = await this.readAdmissionCwd(request.taskId, open);
+      signal?.throwIfAborted();
       const requirements = request.dotsRequiredCapabilities;
-      if (requirements?.length) this.options.assertDotsCapabilities?.(current, cwd, requirements);
-      const mcp = await this.configuredMcp(open, cwd, request.taskId);
+      if (requirements?.length) await this.options.assertDotsCapabilities?.(current, cwd, requirements);
+      const mcp = await this.configuredMcp(open, cwd, current);
       mark?.("mcp");
       // 只有真正要发请求时才要求模型可用：这里解析失败会明确报错，而不是把会话标成损坏。
       const resolvedModel = await this.resolveTaskModel(current);
@@ -809,6 +1009,7 @@ export class DurableBotService {
           if (!available) throw new DotsCapabilityUnavailable(requirement, "该服务的工具目录没有开放所需工具。");
         }
       } : undefined;
+      await open.refreshPermissions(current);
       await open.runtime.configure(resolvedModel.target, this.toolMode(current), this.options.thinking?.(current, configuredRequest),
         [...mcp.tools, ...domain?.tools ?? []], domain?.contextHooks ?? [], domain?.toolHooks, domain?.foregroundHooks, verifyTools);
       mark?.("configure");
@@ -817,7 +1018,9 @@ export class DurableBotService {
 
   private async admit(request: AgentPromptRequest, signal: AbortSignal, origin?: DurableInputOrigin, mark?: AdmissionMark) {
     // Committed retries retain their original configuration and input preparation.
-    if (this.binding(request.taskId)) {
+    const binding = await this.readBinding(request.taskId);
+    signal.throwIfAborted();
+    if (binding) {
       const existing = await this.withRecovery(request.taskId, async open => {
         const record = await this.findSubmissionRecord(open, request.userMessageId);
         if (record?.type === "input" && origin?.gatewayOrigin) {
@@ -845,7 +1048,7 @@ export class DurableBotService {
       signal.throwIfAborted();
       mark?.("opened");
       if (origin?.gatewayOrigin && request.attachments?.length) {
-        request = { ...request, attachments: await importGatewayAttachments(this.binding(request.taskId)!.cwd,
+        request = { ...request, attachments: await importGatewayAttachments(await this.readAdmissionCwd(request.taskId, open),
           request.userMessageId, request.attachments) };
       }
       const model = await this.configureRequest(open, request, mark, signal);
@@ -862,19 +1065,23 @@ export class DurableBotService {
         if (mime && !this.options.prepareImages) content.push({ type: "image", mimeType: mime, data: readFileSync(attachment.path).toString("base64") });
         content.push({ type: "text", text: `\nAttached file: ${attachment.name}\n${attachment.path}` });
       }
-      const audit = this.options.auditInput?.(request, origin);
+      const audit = await this.options.auditInput?.(request, origin);
       signal.throwIfAborted();
-      this.options.beforeSubmit?.(request);
+      await this.options.beforeSubmit?.(request);
+      signal.throwIfAborted();
       mark?.("payload");
-      const guarded = request.dotsFileWatch || request.dotsSteerInputVersion || origin?.goalContinuation
+      const guarded = request.dotsFileWatch || request.dotsSteerInputVersion || origin?.goalContinuation || origin?.goalUserInput
         || request.userMessageId.startsWith("dots-input-") || request.taskId === DOTS_TASK_ID && isDotsAutomaticInput(request.userMessageId);
       const submission = await open.runtime.submit(content, request.userMessageId, request.streamingBehavior,
         { dotsMemoryRefs: request.dotsMemoryRefs, text: request.text, displayText: request.displayText ?? request.text, attachments: request.attachments ?? [],
           ...(audit ? { audit } : {}), ...(origin?.gatewayOrigin ? { gatewayOrigin: origin.gatewayOrigin } : {}),
-          ...(origin?.goalContinuation ? { goalContinuation: origin.goalContinuation } : {}) }, mark, request.requireActiveRun,
-        { inputVersion: request.dotsFileWatch?.inputVersion ?? request.dotsSteerInputVersion, validate: () => {
+          ...(origin?.goalContinuation ? { goalContinuation: origin.goalContinuation } : {}),
+          ...(origin?.goalUserInput ? { goalUserInput: origin.goalUserInput } : {}) }, mark, request.requireActiveRun,
+        { inputVersion: request.dotsFileWatch?.inputVersion ?? request.dotsSteerInputVersion, validate: async () => {
           signal.throwIfAborted();
-          if (guarded) this.options.beforeSubmit?.(request);
+          if (guarded || !this.options.db.fixtureConnection) await this.options.beforeSubmit?.(request);
+          if (this.core || isGatewayConversation(request.taskId)) await this.readAdmissionCwd(request.taskId, open);
+          signal.throwIfAborted();
         } });
       return { submission, open };
     });
@@ -898,6 +1105,13 @@ export class DurableBotService {
     const start = performance.now();
     const mark: AdmissionMark = stage => { timestamps[stage] = Math.round((performance.now() - start) * 10) / 10; };
     try { return await admit(mark); }
+    catch (error) {
+      if (error instanceof Error) {
+        const cause = error.cause instanceof Error ? error.cause : error;
+        console.warn("[SendAdmission] failed", cause.stack?.split("\n").slice(1).join("\n"));
+      }
+      throw error;
+    }
     finally { mark("finished"); console.info("[SendAdmission]", JSON.stringify({ inputId: request.userMessageId, ...timestamps })); }
   }
 
@@ -906,7 +1120,9 @@ export class DurableBotService {
     const pending = prior.catch(() => {}).then(async () => {
       controller?.signal.throwIfAborted();
       mark?.("queue");
-      if (this.options.db.getTask(taskId)) await this.open(taskId, true);
+      const task = await this.options.db.readTask(taskId, { includeExpertBinding: false });
+      controller?.signal.throwIfAborted();
+      if (task) await this.open(taskId, true, controller?.signal);
       mark?.("preopen");
       controller?.signal.throwIfAborted();
       return operation();
@@ -941,7 +1157,9 @@ export class DurableBotService {
   async openDots() {
     await this.options.db.openDotsAsync();
     await this.open(DOTS_TASK_ID);
-    return this.options.db.getTask(DOTS_TASK_ID)!;
+    const task = await this.options.db.readTask(DOTS_TASK_ID);
+    if (!task) throw new Error("未能读回 Dots 对话");
+    return task;
   }
 
   async newDotsConversation(): Promise<void> {
@@ -994,7 +1212,7 @@ export class DurableBotService {
     return this.trackAdmission(request.taskId, async () => {
       const fail = (code: Extract<AgentRegenerateResult, { ok: false }>["code"], message: string): AgentRegenerateResult => ({ ok: false, requestId: request.requestId, code, message });
       try {
-        if (!this.options.db.getTask(request.taskId)) return fail("SESSION_NOT_FOUND", "任务不存在");
+        if (!await this.options.db.readTask(request.taskId, { includeExpertBinding: false })) return fail("SESSION_NOT_FOUND", "任务不存在");
         const open = await this.open(request.taskId);
         const operationId = `regenerate:${request.requestId}`;
         const existing = await open.runtime.conversation.commit(tx => tx.submissionByRequest(open.runtime.conversation.id, operationId), context);
@@ -1011,7 +1229,7 @@ export class DurableBotService {
         if (request.expectedUserTextHash && normalizedEditorTextHash(displayText) !== request.expectedUserTextHash) return fail("TARGET_DRIFTED", "所选输入已发生变化，请刷新对话");
         const prepared = await this.prepareRequest({ ...request, text: displayText, displayText, userMessageId: operationId });
         await this.configureRequest(open, prepared);
-        const audit = this.options.auditInput?.(prepared);
+        const audit = await this.options.auditInput?.(prepared);
         await open.runtime.forkForRegeneration(selected.previous?.id, { operationId, content: user.content,
           metadata: { ...(metadata ?? { text: displayText, displayText, attachments: [] }), ...(audit ? { audit } : {}) } });
         await this.release(request.taskId);
@@ -1051,7 +1269,7 @@ export class DurableBotService {
   async findSubmission(taskId: string, operationId: string): Promise<AgentPromptResult | undefined> {
     if (!operationId) throw new Error("无效执行身份");
     await this.admissionTails.get(taskId)?.catch(() => {});
-    if (!this.binding(taskId)) return undefined;
+    if (!await this.readBinding(taskId)) return undefined;
     return this.withRecovery(taskId, async open => {
       const record = await this.findSubmissionRecord(open, operationId);
       return record?.type === "input" ? submissionResult(taskId, record) : undefined;
@@ -1084,7 +1302,7 @@ export class DurableBotService {
 
   async dotsSubmission(taskId: string, operationId: string, requestedFilename?: string):
     Promise<(DurableDotsOutcome & { completion?: import("../../dots/DotsGoalConclusion").DotsGoalCompletion }) | undefined> {
-    const binding = this.binding(taskId);
+    const binding = await this.readBinding(taskId);
     if (!binding) return undefined;
     return this.withRecovery(taskId, async open => {
       const input = await this.findSubmissionRecord(open, operationId);
@@ -1094,24 +1312,37 @@ export class DurableBotService {
       if (input.status === "placed") {
         const live = await open.runtime.harness.snapshot(LiveDoc, input.conversationId, context);
         if (live?.run?.inputs.at(-1) === input.id) {
-          const interactions = new ConversationInteractionRepository(this.options.db.connection);
+          const core = this.core;
+          const snapshot = core && await core.readConversationRuntime(taskId, LOCAL_USER_ID);
+          if (core && snapshot === undefined) throw new Error("Core 未确认原任务待答问题");
+          const fixture = core ? undefined : new ConversationInteractionRepository(this.options.db.connection);
+          const pending = new Map(snapshot?.interactions.filter(row => row.status === "pending").map(row => [row.execution_id, row]));
           for (const slot of [...live.tools ?? [], ...live.nestedTools ?? []]) {
             if (!slot.taskId || slot.status === "done") continue;
-            const found = interactions.pendingByExecution(`durable:${taskId}:${input.conversationId}:${slot.taskId}`);
+            const executionId = `durable:${taskId}:${input.conversationId}:${slot.taskId}`;
+            const row = pending.get(executionId);
+            const found = row ? mapConversationInteraction(row) : fixture?.pendingByExecution(executionId);
             if (found?.taskId === taskId) { question = found; break; }
           }
         }
         if (live?.run?.inputs.at(-1) !== input.id) return { status: "running" as const, text: "", messageIds: [], files: [] };
       }
-      const acceptance = (input.status === "done" || input.status === "unanswered") && this.hasDotsDelegation(taskId, operationId)
-        ? dotsGoalConclusion(this.options.db.connection, taskId, operationId)
-        : undefined;
+      let acceptance: { text: string; completion?: import("../../dots/DotsGoalConclusion").DotsGoalCompletion } | null | undefined;
+      if (input.status === "done" || input.status === "unanswered") {
+        const core = this.core;
+        if (core) {
+          acceptance = await core.readDotsFollowupData({ kind: "conclusion", taskId, operationId });
+          if (acceptance === undefined) throw new Error("Core 未确认原任务 Goal 回执");
+        } else if (this.hasDotsDelegation(taskId, operationId)) {
+          acceptance = dotsGoalConclusion(this.options.db.connection, taskId, operationId);
+        }
+      }
       const proof = acceptance?.completion?.native;
       const accepted = proof && (proof.conversationId !== input.conversationId || proof.submissionId !== input.id ||
         proof.entryId !== input.entry) ? undefined : acceptance;
       const result = await open.runtime.conversation.commit(
-        tx => readDurableDotsResult(tx, input, binding.directory, question, accepted &&
-          { text: accepted.text, citations: accepted.completion?.citations }, requestedFilename), context);
+        tx => readDurableDotsResult(tx, input, binding.directory, question, accepted ?
+          { text: accepted.text, citations: accepted.completion?.citations } : undefined, requestedFilename), context);
       // Logical waits can outlive a completed native turn. Refreshing them here
       // wakes the same Dots inspector again even though no new result exists.
       if (input.status === "done" && result.status !== "blocked") await open.runtime.refresh();
@@ -1140,7 +1371,7 @@ export class DurableBotService {
 
   /** Scheduling inspection only: opens the native session if needed, never submits. */
   async inspect(taskId: string): Promise<DurableBotSnapshot | undefined> {
-    if (!this.options.db.getTask(taskId)) return undefined;
+    if (!await this.ownsTask(taskId)) return undefined;
     const open = await this.open(taskId);
     await open.runtime.refresh();
     return open.runtime.snapshot;
@@ -1167,9 +1398,9 @@ export class DurableBotService {
     });
   }
 
-  async prompt(request: AgentPromptRequest, admissionOnly = true): Promise<AgentPromptResult> {
+  async prompt(request: AgentPromptRequest, admissionOnly = true, origin?: DurableInputOrigin): Promise<AgentPromptResult> {
     let accepted: AgentPromptResult;
-    try { accepted = await this.submit(request); }
+    try { accepted = await this.submit(request, origin); }
     catch (error) {
       if (error instanceof DotsIntentChanged) return { queued: false, error: { code: "DOTS_INTENT_CHANGED", message: error.message } };
       if (request.requireActiveRun && error instanceof ConversationIdle) {
@@ -1181,34 +1412,37 @@ export class DurableBotService {
   }
 
   async history(taskId: string, beforeEntryId?: TaskHistoryTarget, source: "stored" | "current" = "stored"): Promise<TaskHistoryDto> {
-    if (!this.binding(taskId) && !this.options.db.getTask(taskId)?.sessionFile) return { messages: [] };
+    let binding: BotBinding | undefined;
     try {
+      const [stored, task] = await Promise.all([this.readBinding(taskId), this.options.db.readTask(taskId, { includeExpertBinding: false })]);
+      binding = stored;
+      if (!binding && !task?.sessionFile) return { messages: [] };
       // Opening history is inspection, not permission to resume pending tasks, migrate a
       // Durable journal, repair configuration, or assemble execution tools. A legacy Pi
       // sessionFile has no Durable binding yet and retains its separate import path below.
-      if (this.binding(taskId)) {
+      if (binding) {
         // Read the very projection used by onSnapshot to produce deltas. Opening
         // another writer (or refreshing this one) would itself produce events.
         const current = source === "current" && beforeEntryId === undefined;
         if (current && this.opening.has(taskId)) await this.opening.get(taskId)?.catch(() => {});
         const snapshot = current ? this.opened.get(taskId)?.runtime.snapshot : undefined;
         const history = snapshot
-          ? { durable: snapshot, messages: snapshot.messages, cwd: this.binding(taskId)?.cwd }
+          ? { durable: snapshot, messages: snapshot.messages, cwd: this.opened.get(taskId)?.cwd ?? binding.cwd }
           : await this.passiveHistory(taskId, beforeEntryId);
-        const modelId = this.options.db.getTask(taskId)?.modelId;
+        const modelId = task?.modelId;
         const modelRepair = this.opened.get(taskId)?.modelRepair;
         return { ...history, ...(modelId ? { modelId } : {}), ...(modelRepair ? { modelRecovery: modelRepair } : {}) };
       }
       const recovered = await this.withRecovery(taskId, async open => {
         const block = beforeEntryId === undefined ? undefined : await open.runtime.loadHistoryWindow(beforeEntryId);
         const snapshot = block ? open.runtime.snapshot : await open.runtime.refresh();
-        return { runtime: open.runtime, snapshot, block, modelRepair: open.modelRepair };
+        return { runtime: open.runtime, cwd: open.cwd, snapshot, block, modelRepair: open.modelRepair };
       });
       await this.projections.get(taskId);
       // 复述任务当前模型（可能刚刚被目录漂移修复过），渲染层据此校正输入框的模型选择。
-      const modelId = this.options.db.getTask(taskId)?.modelId;
+      const modelId = (await this.options.db.readTask(taskId, { includeExpertBinding: false }))?.modelId;
       return { messages: recovered.block?.messages ?? recovered.snapshot.messages, durable: recovered.snapshot,
-        ...(recovered.block ? { page: { historyId: recovered.block.historyId, before: recovered.block.before, after: recovered.block.after } } : {}), cwd: this.binding(taskId)?.cwd,
+        ...(recovered.block ? { page: { historyId: recovered.block.historyId, before: recovered.block.before, after: recovered.block.after } } : {}), cwd: recovered.cwd,
         ...(modelId ? { modelId } : {}), ...(recovered.modelRepair ? { modelRecovery: recovered.modelRepair } : {}) };
     } catch (error) {
       if (error instanceof DurableToolAssemblyError) {
@@ -1218,17 +1452,19 @@ export class DurableBotService {
       // A Bot conversation that cannot be opened must say so: an empty projection renders as the
       // product's "waiting for the first message" state, which hides real damage from the user.
       console.warn("[Durable] Cannot open history", taskId, error);
-      return { messages: [], cwd: this.binding(taskId)?.cwd, historyError: describeDurableHistoryFailure(error) };
+      return { messages: [], cwd: binding?.cwd, historyError: describeDurableHistoryFailure(error) };
     }
   }
   async refresh(taskId: string): Promise<void> {
     const open = this.opened.get(taskId);
-    if (open) await open.runtime.refresh();
+    if (!open) return;
+    if (this.core) await open.readWaitingForInput();
+    await open.runtime.refresh();
   }
 
   /** 完整用户提问索引（历史提问弹窗用）；只读扫描，不改变实时窗口。 */
   async userQuestions(taskId: string, query?: TaskUserQuestionsQuery): Promise<TaskUserQuestionsDto> {
-    const binding = this.binding(taskId);
+    const binding = await this.readBinding(taskId);
     if (!binding) return { questions: [] };
     try {
       const opening = this.opening.get(taskId);
@@ -1246,7 +1482,7 @@ export class DurableBotService {
 
   /** 会话开头的前 N token（AI 命名用）；只读，不改变实时窗口。 */
   async historyHead(taskId: string, maxTokens = 1024): Promise<string> {
-    const binding = this.binding(taskId);
+    const binding = await this.readBinding(taskId);
     if (!binding) return "";
     try {
       const opening = this.opening.get(taskId);
@@ -1263,11 +1499,16 @@ export class DurableBotService {
   }
 
   private passiveHistory(taskId: string, beforeEntryId?: TaskHistoryTarget): Promise<TaskHistoryDto> {
-    return this.passiveRead(taskId, { messages: [] }, binding => readDurableReadOnlyHistory({
-      directory: binding.directory, cwd: binding.cwd, models: this.options.models, reader: this.options.passiveReader,
-      beforeEntryId, observedUsage: this.options.observedUsage?.bind(undefined, taskId),
-      isDotsWorkerInput: requestId => this.isDotsWorkerInput(taskId, requestId), hasDotsDelegation: () => this.hasDotsDelegation(taskId),
-    }));
+    return this.passiveRead(taskId, { messages: [] }, async binding => {
+      const facts = this.core ? await this.readCoreDotsInputs(taskId) : undefined;
+      return readDurableReadOnlyHistory({
+        directory: binding.directory, cwd: binding.cwd, models: this.options.models, reader: this.options.passiveReader,
+        beforeEntryId, observedUsage: this.options.observedUsage?.bind(undefined, taskId),
+        isDotsWorkerInput: requestId => /^(?:dots-input-|goal-continuation:)/.test(requestId) &&
+          (facts?.operationIds.has(requestId) ?? this.hasDotsDelegation(taskId, requestId)),
+        hasDotsDelegation: () => facts ? facts.operationIds.size > 0 : this.hasDotsDelegation(taskId),
+      });
+    });
   }
 
   private async passiveRead<T>(taskId: string, empty: T, read: (binding: BotBinding) => Promise<T>): Promise<T> {
@@ -1278,9 +1519,7 @@ export class DurableBotService {
     }
     if (this.closing) throw new Error("Bot runtime is closing");
     // Passive readers never claim a writer lease, even if a live runtime exists.
-    const binding = this.binding(taskId);
-    if (!binding) return empty;
-    const reading = read(binding);
+    const reading = this.readBinding(taskId).then(binding => binding ? read(binding) : empty);
     const barrier = reading.then(() => {}, () => {}).finally(() => {
       if (this.passiveReads.get(taskId) === barrier) this.passiveReads.delete(taskId);
     });
@@ -1336,9 +1575,20 @@ export class DurableBotService {
     return (await this.open(taskId)).runtime.dotsInputVersion();
   }
 
-  async appendDotsReply(reply: DotsAssistantReply, isCurrent: () => boolean) {
-    if (!this.binding(DOTS_TASK_ID)) return { status: "discarded" } as const;
-    return this.withRecovery(DOTS_TASK_ID, open => open.runtime.appendDotsReply(reply, isCurrent));
+  async appendDotsReply(reply: DotsAssistantReply, isCurrent: () => boolean, outboxEventKey?: string) {
+    const core = this.options.db.runtimeAuditReader;
+    if (outboxEventKey && core?.supervised) {
+      const binding = await core.readDurableTaskBinding(DOTS_TASK_ID);
+      if (!binding || binding.trashed) return { status: "pending" } as const;
+    } else if (!this.binding(DOTS_TASK_ID)) return { status: "discarded" } as const;
+    return this.withRecovery(DOTS_TASK_ID, async open => {
+      try { return await open.runtime.appendDotsReply(reply, isCurrent, outboxEventKey); }
+      catch (error) {
+        if (!(error instanceof Error) || error.message !== DOTS_OUTBOX_WRITE_REVOKED) throw error;
+        await this.invalidate(DOTS_TASK_ID, open);
+        return { status: "pending" } as const;
+      }
+    });
   }
 
   async appendDotsProactive(key: string, text: string, isCurrent: () => boolean) {
@@ -1348,7 +1598,7 @@ export class DurableBotService {
 
   async stopObservedRun(taskId: string, inputVersion?: string): Promise<"idle" | "stop_requested" | "intent_changed"> {
     if (inputVersion === undefined) this.cancelInputAdmissions(taskId);
-    if (!this.binding(taskId)) return "idle";
+    if (!await this.readBinding(taskId)) return "idle";
     let result: "idle" | "stop_requested" | "intent_changed" = "stop_requested";
     const settled = await this.withinStopBudget(`Dots stop ${taskId}`, async () => {
       const open = this.opened.get(taskId) ?? await this.openBound(taskId);
@@ -1370,7 +1620,7 @@ export class DurableBotService {
     try {
       const settled = await this.withinStopBudget(`stop ${taskId}`, () => Promise.all([
         (async () => {
-          if (!this.binding(taskId)) return;
+          if (!await this.readBinding(taskId)) return;
           const open = this.opened.get(taskId) ?? await this.openBound(taskId);
           await open.runtime.abort();
         })(),
@@ -1396,24 +1646,38 @@ export class DurableBotService {
   }
   async abortCompaction(taskId: string): Promise<boolean> { return await this.opened.get(taskId)?.runtime.abortCompaction() ?? false; }
   async purge(taskId: string): Promise<void> {
-    if (this.options.db.getTask(taskId)) throw new Error("Only a permanently deleted task can purge Durable storage");
+    if (await this.options.db.readTask(taskId, { includeExpertBinding: false })) {
+      throw new Error("Only a permanently deleted task can purge Durable storage");
+    }
     await this.release(taskId);
     this.options.answerRouting?.clearPreparedTurns(taskId);
+    if (this.core) {
+      // Core retires the bound Pi store in the same transaction that removes the task.
+      this.projections.delete(taskId);
+      return;
+    }
     const root = resolve(this.options.agentDir, "durable");
     const digest = createHash("sha256").update(taskId).digest("hex");
     const directory = resolve(root, digest);
     if (dirname(directory) !== root) throw new Error("Invalid Durable storage path");
     if (isGatewayConversation(taskId)) {
+      const channelDirs = Object.keys(GATEWAY_SIDEBAR_CHANNELS).map(channel =>
+        join(gatewayChannelDirectory(this.options.db, channel, false), digest),
+      );
       // A new inbound turn can recreate this exact task ID after release. Exclude admission during cleanup.
       this.options.db.connection.transaction(() => {
         if (this.options.db.getTask(taskId)) throw new Error("网关会话已重新创建，不能清理存储");
         rmSync(directory, { recursive: true, force: true });
-        for (const channel of Object.keys(GATEWAY_SIDEBAR_CHANNELS)) {
-          const channelRoot = gatewayChannelDirectory(this.options.db, channel, false);
-          rmSync(join(channelRoot, digest), { recursive: true, force: true });
+        for (const channelDir of channelDirs) {
+          rmSync(channelDir, { recursive: true, force: true });
         }
       }).immediate();
+      await purgeDurableStorage(directory, this.options.db.runtimeAuditReader);
+      for (const channelDir of channelDirs) {
+        await purgeDurableStorage(channelDir, this.options.db.runtimeAuditReader);
+      }
     } else {
+      await purgeDurableStorage(directory, this.options.db.runtimeAuditReader);
       await rm(directory, { recursive: true, force: true });
     }
     this.projections.delete(taskId);
@@ -1431,9 +1695,18 @@ export class DurableBotService {
     this.resumeAdmission?.cancel();
     await Promise.allSettled(this.passiveReads.values());
     await Promise.allSettled([...new Set([...this.opened.keys(), ...this.opening.keys()])].map(id => this.release(id)));
+    await this.workMetrics.drained();
   }
   async runGatewayTurn({ gatewayOrigin, modelId, ...request }: GatewayBotTurnRequest): Promise<string> {
-    if (this.options.db.connection.readonly) {
+    const core = this.core;
+    const fixture = this.options.db.fixtureConnection;
+    const { workTarget: _workTarget, ...source } = gatewayOrigin;
+    if (core) {
+      const materialization = await core.materializeGatewayTask({ origin: source, taskId: request.taskId, modelId });
+      if (materialization?.status !== "ready") rejectGatewayExecution(materialization);
+    } else if (!fixture) {
+      rejectGatewayExecution();
+    } else if (fixture.readonly) {
       const task = this.options.db.getTask(request.taskId);
       if (task?.archived || this.options.db.getTaskExecutionWorkspaceState(request.taskId)?.state === "trashed") throw new Error("请先恢复已归档或回收的渠道任务");
       if (!task) {
@@ -1444,7 +1717,7 @@ export class DurableBotService {
       }
       this.options.db.bindGatewayConversationSpace(request.taskId, gatewayOrigin.channelId);
     } else {
-      this.options.db.connection.transaction(() => {
+      fixture.transaction(() => {
         const task = this.options.db.getTask(request.taskId);
         if (task?.archived || this.options.db.getTaskExecutionWorkspaceState(request.taskId)?.state === "trashed") throw new Error("请先恢复已归档或回收的渠道任务");
         if (!task) {
@@ -1456,7 +1729,6 @@ export class DurableBotService {
         this.options.db.bindGatewayConversationSpace(request.taskId, gatewayOrigin.channelId);
       })();
     }
-    const { workTarget: _workTarget, ...source } = gatewayOrigin;
     const { submission, open } = await this.admitTracked(request, { gatewayOrigin: source });
     try {
       return await open.runtime.reply(submission, { requireText: true });

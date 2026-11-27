@@ -24,7 +24,6 @@ import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkProjectionDto } from "../src/sh
 import { NotificationService } from "../src/main/notification/NotificationService";
 import { DurableSqliteDatabase } from "../src/main/agent/durable/DurableSqliteDatabase";
 import { claimDurableStorageLease, type DurableStorageLease } from "../src/main/agent/durable/DurableStorageLease";
-import { NativeHookStore } from "../src/main/agent/hooks/NativeHookStore";
 
 const executable = process.env.RUNTIME_AUDIT_BINARY ?? locateRuntimeAudit(process.cwd());
 assert(executable && existsSync(executable), "The real Rust worker binary is required");
@@ -227,24 +226,6 @@ try {
   await durableDb.exec("CREATE TABLE IF NOT EXISTS pi_probe(id TEXT PRIMARY KEY, val TEXT); INSERT INTO pi_probe VALUES ('1', 'rw-ok');");
   const piRow = await durableDb.all<{ val?: string }>("SELECT val FROM pi_probe WHERE id='1'");
   assert.equal(piRow[0]?.val, "rw-ok", "Pi durable.sqlite must remain RW");
-
-  const hookStore = new NativeHookStore(join(sandbox, "native-hooks.sqlite"));
-  hookStore.record({
-    id: "hook-1",
-    revision: 1,
-    taskId: "task-rc09",
-    conversationId: "conv-rc09",
-    nativeTaskId: 1,
-    event: "beforeTool",
-    tool: "read",
-    callId: "call-1",
-    actor: "main",
-    at: now,
-    outcome: "pass",
-    message: "ok",
-  }, "run-1");
-  assert.equal(hookStore.receipts("hook-1").length, 1, "native-hooks.sqlite must remain RW");
-  hookStore.close();
 
   console.log("PASS RC-09 rust-writer-boundary: supervised readonly app.db enforced, Rust domain writes committed, Pi companion DBs RW");
 } finally {

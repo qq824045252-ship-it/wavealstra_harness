@@ -48,6 +48,7 @@ import { resolveWorkContinuationCwd } from "./work/WorkContinuationWorkspace";
 import { resolveBotModel } from "./durable/BotModelCatalog";
 import { createAgentSettingsManager } from "../agent-shell-settings";
 import { resolveTaskMemoryScope } from "./MemoryContextProjection";
+import { CoreMemoryRecallUnavailable } from "../memory/MemoryCoreRecall";
 import { durableDomainTools } from "./durable/DurableDomainTools";
 import { createDurableReadOnlyTools, createDurableSubagentTools, createDurableSubagentIpcBackend, stopDurableSubagentsForModelScopeChange } from "./durable/DurableSubagents";
 import { guardSubagentWriteCall } from "../capabilities/subagent/write-conflict";
@@ -83,7 +84,7 @@ import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
 import { recoverInterruptedExecutions, recoverInterruptedExecutionsAsync } from "./ExecutionRestartRecovery";
 import { ensurePresetRuntimeReadyWithRecovery } from "./RuntimeRequirementRecovery";
 
-import { prepareTaskWorkspace } from "../task/prepareTaskWorkspace";
+import { prepareTaskWorkspaceAsync } from "../task/prepareTaskWorkspace";
 import "../pi-bundled-runtime";
 import { ExecutionAttemptRepository } from "./ExecutionAttemptRepository";
 import { app, BrowserWindow } from "electron";
@@ -104,10 +105,16 @@ import {
   readDurableReadOnlyHistory,
   readDurableUserQuestions,
 } from "./durable/DurableReadOnlyHistory";
-import { durableStorageExists } from "./durable/DurableStorage";
+import { durableStorageExists, getDefaultPiHostGeneration } from "./durable/DurableStorage";
 import type { CoreBusinessClient, CoreDomainEvent } from "../platform/core-business-client";
 
 export type AgentExecutionMode = "in-process" | "host" | "isolated-client";
+
+interface AgentServiceDependencies {
+  models?: ModelRuntime;
+  executionMode?: AgentExecutionMode;
+  coreClient?: () => CoreBusinessClient | undefined;
+}
 
 
 
@@ -142,7 +149,7 @@ import {
   TaskExecutionWorkspaceError,
   TaskExecutionWorkspace,
 } from "../task/TaskExecutionWorkspace";
-import { ensureGatewayTaskCwd, validateGatewayTaskCwd, resolveTaskWorkspaceCwd } from "../task/TaskWorkspaceResolver";
+import { ensureGatewayTaskCwd, validateGatewayTaskCwdAsync, resolveTaskWorkspaceCwd, resolveTaskWorkspaceCwdAsync } from "../task/TaskWorkspaceResolver";
 import { isTaskWorktreeId } from "../../shared/task-worktree";
 import type {
   ExternalWriteDecision,
@@ -153,7 +160,8 @@ import { ConnectorService } from "../connectors/ConnectorService";
 import { ExpertService } from "../experts/ExpertService";
 import { TaskExpertBindingService } from "../experts/TaskExpertBindingService";
 import type { ExpertUpdateRequest, TaskExpertBindingDto, TaskExpertBindingSaveRequest, TaskExpertSnapshot } from "../../shared/expert-binding";
-import { SkillsService } from "../skills/SkillsService";
+import { SkillsService, type RuntimeSkillSelection } from "../skills/SkillsService";
+import type { ResolvedProjectContext } from "../../shared/project-domain";
 import { SkillAuthoringPartialStateError, SkillAuthoringService, skillAuthoringIdFromName, expertAuthoringIdFromName } from "../skills/SkillAuthoringService";
 import {
   EXPERT_AUTHORING_META_PROMPT,
@@ -216,8 +224,8 @@ import {
   resolveRuntimeContextPolicy,
   type RuntimeContextPolicyInput,
 } from "./RuntimeContextResolver";
-import { decodeRuntimeSnapshotPage, RuntimeContextSnapshotRepository } from "./RuntimeContextSnapshotRepository";
-import type { RuntimeAuditReader } from "../platform/runtime-audit";
+import { RuntimeContextSnapshotRepository } from "./RuntimeContextSnapshotRepository";
+import { RuntimeAuditUnknownOperationError, type RuntimeAuditReader } from "../platform/runtime-audit";
 import { CodeReviewService } from "./CodeReviewService";
 import { GitCodeReview } from "./GitCodeReview";
 import { withCodeReviewLease } from "./durable/DurableToolCoordination";
@@ -232,6 +240,8 @@ import { ConversationGoalActivity } from "./ConversationGoalActivity";
 import { ConversationGoalSavedArtifacts } from "./ConversationGoalSavedArtifacts";
 import type { SavedArtifactRequest } from "../../shared/saved-artifact";
 import { ConversationGoalService } from "./ConversationGoalService";
+import { normalizeGoalContinuationAttempts, projectConversationRuntime, projectCoreConversationGoal,
+  type GoalUserInputWitness, type RuntimeConversationGoalDraft, type WorkTaskAccess } from "./ConversationRuntimeData";
 import { renderConversationGoalSection } from "./ConversationGoalPrompt";
 import { GoalContinuationService } from "./work/GoalContinuationService";
 import { BotRegistry } from "./work/BotRegistry";
@@ -245,7 +255,8 @@ import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkProjectionDto } from "../../sha
 import type { ConversationRuntimeSnapshotDto } from "../../shared/conversation-runtime";
 import type { AgentLoadoutEffectiveSelectionDto } from "../../shared/agent-loadout";
 import type { ConversationInteractionAnswer, ConversationInteractionMutationResult } from "../../shared/conversation-interaction";
-import type { ConversationGoalContinuationDto, ConversationGoalCreateRequest, ConversationGoalDto, ConversationGoalUpdateRequest } from "../../shared/conversation-goal";
+import { CONVERSATION_GOAL_MAX_CRITERIA, type ConversationGoalContinuationDto, type ConversationGoalCreateRequest,
+  type ConversationGoalDto, type ConversationGoalSourceDto, type ConversationGoalUpdateRequest } from "../../shared/conversation-goal";
 import type { ConversationGoalMutationResult } from "../../shared/conversation-runtime";
 import { AgentLoadoutObservationService } from "./AgentLoadoutObservationService";
 
@@ -526,8 +537,8 @@ function readKeyPoolStates(value: unknown): Record<string, ApiKeyPoolStateDto> |
 }
 
 export type AgentTaskLifecycleEvent =
-  | { kind: "completed"; taskId: string; assistantMessageId: string; durationMs?: number }
-  | { kind: "failed"; taskId: string; assistantMessageId: string; error: string; durationMs?: number }
+  | { kind: "completed"; taskId: string; assistantMessageId: string; conversationId?: string; durationMs?: number }
+  | { kind: "failed"; taskId: string; assistantMessageId: string; conversationId?: string; error: string; durationMs?: number }
   | {
       kind: "action_required";
       taskId: string;
@@ -578,21 +589,19 @@ export class AgentService {
   private readonly conversationInteractionRepo: ConversationInteractionRepository;
   private readonly stopDiagnosticObservation: () => void;
   private readonly conversationInteractions: ConversationInteractionService;
-  private readonly conversationGoals: ConversationGoalService;
-  /** Host-side Goal auto-continuation scheduler; declared before DurableBots so its
-   * settle/tool hooks can reference it, assigned once the Work authority exists. */
-  private goalContinuations!: GoalContinuationService;
+  private readonly workFixture?: {
+    work: WorkService;
+    goals: ConversationGoalService;
+    continuations: GoalContinuationService;
+    history: HistoricalBotReader;
+  };
   private readonly botRegistry: BotRegistry;
-  private readonly botHistory: HistoricalBotReader;
   private readonly botSettings: BotSettingsService;
   private readonly botExpertBindings: BotExpertBindingService;
-  private readonly botWorkContext: BotWorkContextService;
-  private readonly workService: WorkService;
   private readonly workHostAuthority: WorkHostAuthority;
   // Retired channel outbox records must never replay after removing Bot mode.
   completeBotContinuation(_operationId: string): void {}
   canSendBotContinuation(_operationId: string): boolean { return false; }
-  private botReportImages?: BotReportImageService;
   private readonly executionFailures: ExecutionFailureRepository;
   private readonly executionAttempts: ExecutionAttemptRepository;
   private readonly loadoutObservations: AgentLoadoutObservationService;
@@ -651,21 +660,39 @@ export class AgentService {
     return this.localWorkflow.cron.holdDotsSchedule(id, holder, pause);
   }
 
-  assertDotsScheduleInput(source: string) {
-    if (source.startsWith("cron-") && isDotsAutomaticInput(source)) {
+  assertDotsScheduleInput(source: string | undefined, request?: AgentPromptRequest) {
+    if (source?.startsWith("cron-") && isDotsAutomaticInput(source)) {
       if (!this.localWorkflow) throw new Error("定时调度尚未就绪");
-      this.localWorkflow.cron.assertDotsInputCurrent(source);
+      return this.localWorkflow.cron.assertDotsInputCurrent(source, request);
     }
   }
 
   isDotsOrdinaryTask(taskId: string): boolean { return !this.workService.repo.bindingForTask(taskId); }
 
-  private boundedLocalTask(taskId: string): boolean {
-    return taskId !== DOTS_TASK_ID && !isGatewayConversation(taskId) && !isGatewayBotTaskId(taskId) && this.isDotsOrdinaryTask(taskId);
+  private boundedLocalTask(taskId: string, work?: WorkTaskAccess): boolean {
+    return taskId !== DOTS_TASK_ID && !isGatewayConversation(taskId) && !isGatewayBotTaskId(taskId)
+      && (work ? work.taskExists && !work.hasWorkBinding : this.isDotsOrdinaryTask(taskId));
   }
 
   private dotsWorkerActive(taskId: string): boolean {
     return this.boundedLocalTask(taskId) && this.dotsActions?.isActiveWorkerOperation(taskId) === true;
+  }
+
+  private async readDotsWorkerActive(taskId: string, operationId?: string): Promise<boolean> {
+    if (!this.dotsActions) return false;
+    if (!this.db.coreIdentity) return this.dotsActions.isActiveWorkerOperation(taskId, operationId);
+    const reader = this.runtimeAuditReader!;
+    if (operationId === undefined) {
+      const latest = await reader.readDotsFollowupData<{ operationId: string } | null>({ kind: "latest", taskId });
+      if (latest === undefined) throw new Error("Core 未确认任务当前的 Dots 交办身份");
+      if (!latest) return false;
+      operationId = latest.operationId;
+    }
+    const preferences = resolveDotsPreferences(this.settingsStore.read().dotsSettings);
+    const authority = await reader.readDotsWorkerAuthority(taskId, operationId, preferences.spaceIds, getDefaultPiHostGeneration());
+    if (authority === undefined) throw new Error("Core 未确认 Dots 交办的执行权限");
+    if (!authority || !this.dotsActions.allowsSpace(authority.spaceId)) return false;
+    return authority.privateCwd === null || this.matchesDotsPrivateWorkspaceFiles(taskId, authority.privateCwd);
   }
 
   setLocalWorkflowServices(services: Omit<LocalWorkflowBridge, "getPermissionMode">): void {
@@ -683,8 +710,7 @@ export class AgentService {
   private readonly memoryService: MemoryService;
   private latestAutomaticRecall?: import("../../shared/memory-kernel").AutomaticRecallReceipt;
   readonly answerRouting: AnswerRoutingService;
-  readonly nativeHooks = new NativeHookStore(join(getMyBuddyDir(), "native-hooks.sqlite"),
-    () => durableSandboxAssets(typeof __dirname === "string" ? __dirname : undefined));
+  readonly nativeHooks: NativeHookStore;
   readonly nativeImprovement: NativeImprovementService;
   private readonly workMemoryCapture: WorkMemoryCapture;
   private readonly memoryOrganization: MemoryOrganizationService;
@@ -831,22 +857,30 @@ export class AgentService {
     | ((refs: import("../../shared/selection").ChatSelectionRef[]) => Promise<string | null>)
     | null = null;
 
+  static async open(db: AppDatabase, taskWorkspace?: TaskExecutionWorkspace,
+    dependencies: AgentServiceDependencies = {}): Promise<AgentService> {
+    if (db.fixtureConnection) return new AgentService(db, taskWorkspace, dependencies);
+    if (!db.runtimeAuditReader) throw new Error("AgentService 装配需要 Rust Core");
+    const registry = new BotRegistry(undefined, db.runtimeAuditReader);
+    await registry.ensureDefaultBotSaved(LOCAL_USER_ID);
+    return new AgentService(db, taskWorkspace, dependencies, registry);
+  }
+
   constructor(
     private readonly db: AppDatabase,
     taskWorkspace?: TaskExecutionWorkspace,
-    dependencies: {
-      models?: ModelRuntime;
-      executionMode?: AgentExecutionMode;
-      coreClient?: () => CoreBusinessClient | undefined;
-    } = {},
+    dependencies: AgentServiceDependencies = {},
+    registry?: BotRegistry,
   ) {
     this.executionMode = dependencies.executionMode ?? "in-process";
     this.coreClientProvider = dependencies.coreClient;
     this.contextUsageWrites = new TaskContextUsageWrites(snapshots => db.writeTaskContextUsageBatch(snapshots));
     this.modelRuntime = dependencies.models ?? null;
     this.runtimeAuditReader = db.runtimeAuditReader;
+    this.nativeHooks = new NativeHookStore(this.runtimeAuditReader,
+      () => durableSandboxAssets(typeof __dirname === "string" ? __dirname : undefined));
     let improvementKnowledge: ImprovementKnowledge | undefined;
-    this.nativeImprovement = new NativeImprovementService(db, this.nativeHooks, join(getMyBuddyDir(), "native-improvement.sqlite"), Date.now, {
+    this.nativeImprovement = new NativeImprovementService(db, this.nativeHooks, getMyBuddyDir(), Date.now, {
       scope: taskId => {
         const settings = this.settingsStore.read(), task = this.db.getTask(taskId);
         if (!settings.memoryEnabled || taskId === DOTS_TASK_ID && this.dotsMemoryMode(settings) !== "readWrite"
@@ -882,7 +916,7 @@ export class AgentService {
       isSkillEnabled: (id, taskId) => this.skillsService.listInstalled(undefined, [], { botId: this.runtimeBotId(taskId) })
         .some(item => (item.id === id || item.name === id) && item.enabled),
     });
-    this.usageStats = new UsageStatsService(db.connection, this.runtimeAuditReader);
+    this.usageStats = new UsageStatsService(db.fixtureConnection, this.runtimeAuditReader);
     // P0：任务执行工作区唯一解析器（可注入测试 root；默认 ~/.mybuddy/task-workspaces）
     this.taskWorkspace = taskWorkspace ?? new TaskExecutionWorkspace();
     this.runtimeRequirements = new RuntimeRequirementOrchestrator(this.modeProfiles);
@@ -894,7 +928,7 @@ export class AgentService {
       emitLifecycle: (event) => this.emitTaskLifecycle(event),
     });
     // Project 域：resolver（上下文装配）与 service（计划工具 CRUD）共享同一 repository
-    const projectRepository = new ProjectRepository(db.connection, this.runtimeAuditReader);
+    const projectRepository = new ProjectRepository(db.fixtureConnection, this.runtimeAuditReader);
     this.memoryService = new MemoryService(db);
     this.workMemoryCapture = new WorkMemoryCapture(db, this.memoryService, () => this.notifyMemoryChanged({ scope: "settings" }));
     this.memoryOrganization = new MemoryOrganizationService(db, this.memoryService, () => {
@@ -921,13 +955,13 @@ export class AgentService {
       (taskId, evidence) => taskId !== DOTS_TASK_ID || this.dotsAnswerEvidenceAllowed(evidence),
     );
     this.projectService = new ProjectService(projectRepository, this.memoryService);
-    this.runtimeSnapshots = new RuntimeContextSnapshotRepository(db.connection, this.runtimeAuditReader);
-    this.codeReview = new CodeReviewService(db.connection, event => broadcast(CodeReviewIpc.changed, event), db.runtimeAuditReader);
-    this.taskDiagnostics = new TaskDiagnosticsRepository(db.connection, this.runtimeAuditReader);
-    this.conversationGoalActivity = new ConversationGoalActivity(db.connection, this.runtimeAuditReader);
-    this.conversationGoalSavedArtifacts = new ConversationGoalSavedArtifacts(db.connection, this.runtimeAuditReader);
+    this.runtimeSnapshots = new RuntimeContextSnapshotRepository(db.fixtureConnection, this.runtimeAuditReader);
+    this.codeReview = new CodeReviewService(db.fixtureConnection, event => broadcast(CodeReviewIpc.changed, event), db.runtimeAuditReader);
+    this.taskDiagnostics = new TaskDiagnosticsRepository(db.fixtureConnection, this.runtimeAuditReader);
+    this.conversationGoalActivity = new ConversationGoalActivity(db.fixtureConnection, this.runtimeAuditReader);
+    this.conversationGoalSavedArtifacts = new ConversationGoalSavedArtifacts(db.fixtureConnection, this.runtimeAuditReader);
     this.stopDiagnosticObservation = observeCacheRequestTraces((event, model) => this.taskDiagnostics.observeTrace(event, model));
-    this.conversationInteractionRepo = new ConversationInteractionRepository(db.connection, this.runtimeAuditReader);
+    this.conversationInteractionRepo = new ConversationInteractionRepository(db.fixtureConnection, this.runtimeAuditReader);
     this.conversationInteractions = new ConversationInteractionService(
       this.conversationInteractionRepo,
       patch => {
@@ -935,99 +969,22 @@ export class AgentService {
         if (patch.type === "conversation_interaction_snapshot") void this.durableBots?.refresh(patch.taskId).catch(error => console.warn("[Durable] Interaction projection failed", error));
       },
     );
-    this.botRegistry = new BotRegistry(db.connection);
-    this.botRegistry.ensureDefaultBot(LOCAL_USER_ID);
+    this.botRegistry = registry ?? new BotRegistry(db.fixtureConnection);
+    if (!registry) this.botRegistry.ensureDefaultBot(LOCAL_USER_ID);
     this.botExpertBindings = new BotExpertBindingService(this.expertBindings);
     this.botSettings = new BotSettingsService(this.db, this.botRegistry, LOCAL_USER_ID, join(getMyBuddyDir(), "bot-workspaces"));
     this.workHostAuthority = new WorkHostAuthority(
-      db.connection,
+      db.fixtureConnection,
       `authority-${randomUUID()}`,
       60_000,
       () => Date.now(),
       this.runtimeAuditReader,
       Boolean(this.runtimeAuditReader?.supervised),
     );
-    this.workHostAuthority.start();
-    this.workService = new WorkService(db.connection, {
-      bots: this.botRegistry,
-      runtimeAuditReader: this.runtimeAuditReader,
-      requestExpert: (work, botId) => botId === work.ownerBotId ? this.botSettings.workMessageSettings(work, botId)?.profile : undefined,
-      emitProjection: (projection) => {
-        if (this.settingsStore.read().memoryEnabled) {
-          try { this.workMemoryCapture.capture(projection.workId); } catch (error) { console.warn("[Work] memory capture deferred", error); }
-        }
-      },
-      isAuthority: () => this.workHostAuthority.isAuthority(),
-    });
-    this.workHostAuthority.onAcquired(() => {
-      void this.workMemoryCapture.catchUp(() => !this.memoryDisposed && this.db.connection.open
-        && this.settingsStore.read().memoryEnabled && this.workHostAuthority.isAuthority())
-        .catch(error => console.warn("[Work] memory catch-up deferred", error));
-    });
-    this.botReportImages = new BotReportImageService(db.connection, LOCAL_USER_ID, this.workService, () => this.artifactService);
-    this.botHistory = new HistoricalBotReader(db, this.botRegistry, this.workService, this.botReportImages);
-    this.conversationGoals = new ConversationGoalService(
-      this.workService,
-      (patch) => this.emitPatch(patch),
-      { userId: LOCAL_USER_ID, botId: DEFAULT_BOT_ID,
-        resolveContinuation: workId => this.goalContinuations?.read(workId),
-        onStatusChange: (goal, status) => this.goalContinuations?.onGoalStatusChange(goal, status),
-        onCreate: goal => this.goalContinuations?.register(goal),
-        resolvePrimaryTask: workId => this.goalContinuations?.resolveTaskId(workId),
-        resolveBotId: taskId => this.botWorkContext.resolveBot(LOCAL_USER_ID, "desktop", taskId, DEFAULT_BOT_ID).botId,
-        resolveSourceMessageId: taskId => {
-          const invocation = currentDurableInvocation();
-          return invocation?.execution.taskId === taskId ? invocation.sourceUserMessageId : undefined;
-        } },
-    );
-    this.botWorkContext = new BotWorkContextService(db.connection, this.botRegistry, this.workService);
-    this.goalContinuations = new GoalContinuationService({
-      db: db.connection,
-      work: this.workService,
-      goals: this.conversationGoals,
-      emit: patch => this.emitPatch(patch),
-      submit: async (request, origin) => {
-        if (!this.durableBots) throw new Error("执行服务尚未初始化");
-        const result = await this.durableBots.submit(request, origin);
-        if (result.receipt && this.dotsActions) {
-          try { await this.dotsActions.goalAccepted(request, origin.goalContinuation); }
-          catch (error) {
-            // Goal already owns the accepted input. Its recovery ledger can restore the Dots link.
-            console.warn("[Dots] 无法记录已接收的 Goal 续办", request.taskId, request.userMessageId, error);
-          }
-        }
-        return result;
-      },
-      inspect: taskId => this.durableBots?.inspect(taskId) ?? Promise.resolve(undefined),
-      artifactVersions: async (taskId, work) => {
-        const generations = this.conversationGoalActivity.generationsForRevision(taskId, work.workId, work.intentRevision);
-        const records = await this.durableBots?.goalNativeEvidence(taskId, generations) ?? [];
-        const latest = new Map<string, { version: string; at: number }>();
-        for (const { evidence } of records) {
-          if (evidence.kind !== "delivery" || !evidence.path || !evidence.digest) continue;
-          const at = evidence.saved?.registeredAt ?? 0;
-          if ((latest.get(evidence.path)?.at ?? 0) <= at)
-            latest.set(evidence.path, { version: JSON.stringify([evidence.digest, evidence.saved?.manifestPath]), at });
-        }
-        return [...latest].map(([path, { version }]) => JSON.stringify([path, version])).sort();
-      },
-      waitingForInput: taskId => this.conversationInteractions.listByTask(taskId).some(interaction => interaction.status === "pending"),
-      canAdvance: (taskId, goalId) => this.dotsActions?.canAdvanceGoal(taskId, goalId) ?? true,
-      enabled: () => this.settingsStore.read().conversationGoalContinuationEnabled !== false
-        && process.env.MYBUDDY_DISABLE_GOAL_CONTINUATION !== "1",
-      maxAttempts: () => {
-        const configured = this.settingsStore.read().conversationGoalMaxAttempts;
-        const fallback = Number(process.env.MYBUDDY_GOAL_MAX_ATTEMPTS);
-        return Number.isFinite(configured) ? configured! : Number.isFinite(fallback) && fallback > 0 ? fallback : 3;
-      },
-      tokenBudget: () => {
-        const configured = this.settingsStore.read().conversationGoalTokenBudget;
-        return typeof configured === "number" && Number.isFinite(configured) && configured > 0 ? configured : null;
-      },
-    });
-    this.executionFailures = new ExecutionFailureRepository(db.connection, this.runtimeAuditReader);
-    this.executionAttempts = new ExecutionAttemptRepository(db.connection, this.runtimeAuditReader);
-    if (!db.connection.readonly && !this.runtimeAuditReader?.supervised) {
+    if (db.fixtureConnection) this.workFixture = this.createWorkFixture(db.fixtureConnection);
+    this.executionFailures = new ExecutionFailureRepository(db.fixtureConnection, this.runtimeAuditReader);
+    this.executionAttempts = new ExecutionAttemptRepository(db.fixtureConnection, this.runtimeAuditReader);
+    if (!db.readonly && !this.runtimeAuditReader?.supervised) {
       recoverInterruptedExecutions(this.executionAttempts, this.executionFailures);
     }
     this.loadoutObservations = new AgentLoadoutObservationService(db);
@@ -1105,7 +1062,16 @@ export class AgentService {
       libraryWorkspace: this.libraryWorkspaceContext,
       resolveLibraryEvidenceJudge: () => this.resolveLibraryEvidenceJudge(),
       conversationInteractions: this.conversationInteractions,
-      conversationGoals: this.conversationGoals,
+      conversationGoals: this.workFixture?.goals,
+      readConversationGoal: this.workFixture ? undefined : (taskId, workId) => this.readLiveConversationGoalForTool(taskId, workId),
+      createConversationGoal: this.workFixture ? undefined : async request => {
+        await this.assertMayExecuteTask(request.taskId);
+        const invocation = currentDurableInvocation();
+        return this.createCoreConversationGoal(request, undefined, {
+          createdBy: "bot",
+          originMessageId: invocation?.execution.taskId === request.taskId ? invocation.sourceUserMessageId : undefined,
+        });
+      },
       executionAttempts: this.executionAttempts,
       executionFailures: this.executionFailures,
       mcpRuntime: this.mcpRuntime,
@@ -1149,15 +1115,14 @@ export class AgentService {
     registerLocalCapabilityChecks(this.builtinCapabilities, this.browserAutomation, this.pythonRuntime);
     // P3-3：settings.taskConnectorIds 孤儿 key 对账（幂等）——
     // purge 删行与 onPurge 清理之间崩溃的窗口由下次启动兜底；trash/archive 行仍在不受影响。
-    try {
-      const taskIds = new Set(this.db.listTasks().map((t) => t.id));
-      if (this.db.getTask(DOTS_TASK_ID)) taskIds.add(DOTS_TASK_ID);
-      const orphans = this.settingsStore.reconcileTaskConnectorIds(taskIds);
-      if (orphans.length > 0) {
-        console.log(`[AgentService] taskConnectorIds 孤儿 key 已清理：${orphans.join(",")}`);
+    if (this.db.fixtureConnection) {
+      try {
+        const taskIds = new Set(this.db.listTasks().map((t) => t.id));
+        if (this.db.getTask(DOTS_TASK_ID)) taskIds.add(DOTS_TASK_ID);
+        this.settingsStore.reconcileTaskConnectorIds(taskIds);
+      } catch (err) {
+        console.warn("[AgentService] taskConnectorIds reconcile failed", err);
       }
-    } catch (err) {
-      console.warn("[AgentService] taskConnectorIds reconcile failed", err);
     }
     // 启动时物化场景文案 .md，避免目录里只有 policy.json
     try {
@@ -1165,7 +1130,90 @@ export class AgentService {
     } catch (err) {
       console.warn("[AgentService] mode materialize on boot failed", err);
     }
+    this.workHostAuthority.start();
   }
+
+  private createWorkFixture(fixture: NonNullable<AppDatabase["fixtureConnection"]>): NonNullable<AgentService["workFixture"]> {
+    const work = new WorkService(fixture, {
+      bots: this.botRegistry,
+      runtimeAuditReader: this.runtimeAuditReader,
+      requestExpert: (work, botId) => botId === work.ownerBotId ? this.botSettings.workMessageSettings(work, botId)?.profile : undefined,
+      emitProjection: (projection) => {
+        if (this.settingsStore.read().memoryEnabled) {
+          try { this.workMemoryCapture.capture(projection.workId); } catch (error) { console.warn("[Work] memory capture deferred", error); }
+        }
+      },
+      isAuthority: () => this.workHostAuthority.isAuthority(),
+    });
+    this.workHostAuthority.onAcquired(() => {
+      void this.workMemoryCapture.catchUp(() => !this.memoryDisposed && this.db.fixtureConnection?.open !== false
+        && this.settingsStore.read().memoryEnabled && this.workHostAuthority.isAuthority())
+        .catch(error => console.warn("[Work] memory catch-up deferred", error));
+    });
+    const images = new BotReportImageService(fixture, LOCAL_USER_ID, work, () => this.artifactService);
+    const history = new HistoricalBotReader(this.db, this.botRegistry, work, images);
+    const botWorkContext = new BotWorkContextService(fixture, this.botRegistry, work);
+    const goals = new ConversationGoalService(
+      work,
+      (patch) => this.emitPatch(patch),
+      { userId: LOCAL_USER_ID, botId: DEFAULT_BOT_ID,
+        resolveContinuation: workId => continuations.read(workId),
+        onStatusChange: (goal, status) => continuations.onGoalStatusChange(goal, status),
+        onCreate: goal => continuations.register(goal),
+        resolvePrimaryTask: workId => continuations.resolveTaskId(workId),
+        resolveBotId: taskId => botWorkContext.resolveBot(LOCAL_USER_ID, "desktop", taskId, DEFAULT_BOT_ID).botId,
+        resolveSourceMessageId: taskId => {
+          const invocation = currentDurableInvocation();
+          return invocation?.execution.taskId === taskId ? invocation.sourceUserMessageId : undefined;
+        } },
+    );
+    const continuations: GoalContinuationService = new GoalContinuationService({
+      db: fixture,
+      work,
+      goals,
+      emit: patch => this.emitPatch(patch),
+      submit: async (request, origin) => {
+        if (!this.durableBots) throw new Error("执行服务尚未初始化");
+        const result = await this.durableBots.submit(request, origin);
+        if (result.receipt && this.dotsActions) {
+          try { await this.dotsActions.goalAccepted(request, origin.goalContinuation); }
+          catch (error) {
+            // Goal already owns the accepted input. Its recovery ledger can restore the Dots link.
+            console.warn("[Dots] 无法记录已接收的 Goal 续办", request.taskId, request.userMessageId, error);
+          }
+        }
+        return result;
+      },
+      inspect: taskId => this.durableBots?.inspect(taskId) ?? Promise.resolve(undefined),
+      artifactVersions: async (taskId, work) => {
+        const generations = this.conversationGoalActivity.generationsForRevision(taskId, work.workId, work.intentRevision);
+        const records = await this.durableBots?.goalNativeEvidence(taskId, generations) ?? [];
+        const latest = new Map<string, { version: string; at: number }>();
+        for (const { evidence } of records) {
+          if (evidence.kind !== "delivery" || !evidence.path || !evidence.digest) continue;
+          const at = evidence.saved?.registeredAt ?? 0;
+          if ((latest.get(evidence.path)?.at ?? 0) <= at)
+            latest.set(evidence.path, { version: JSON.stringify([evidence.digest, evidence.saved?.manifestPath]), at });
+        }
+        return [...latest].map(([path, { version }]) => JSON.stringify([path, version])).sort();
+      },
+      waitingForInput: taskId => this.conversationInteractions.listByTask(taskId).some(interaction => interaction.status === "pending"),
+      canAdvance: (taskId, goalId) => this.dotsActions?.canAdvanceGoal(taskId, goalId) ?? true,
+      enabled: () => this.goalContinuationPolicy().enabled,
+      maxAttempts: () => this.goalContinuationPolicy().maxAttempts,
+      tokenBudget: () => this.goalContinuationPolicy().tokenBudget,
+    });
+    return { work, goals, continuations, history };
+  }
+
+  private requireWorkFixture(): NonNullable<AgentService["workFixture"]> {
+    if (!this.workFixture) throw new Error("此操作需要对应的 Core Work 领域接口");
+    return this.workFixture;
+  }
+
+  private get workService(): WorkService { return this.requireWorkFixture().work; }
+  private get conversationGoals(): ConversationGoalService { return this.requireWorkFixture().goals; }
+  private get goalContinuations(): GoalContinuationService { return this.requireWorkFixture().continuations; }
 
   /** MCP 运行时（Pi 原生 MCP + OAuth/状态桥） */
   readonly mcpRuntime: McpRuntimeService;
@@ -1209,6 +1257,11 @@ export class AgentService {
     return resolveTaskWorkspaceCwd(this.db, this.taskWorkspace, taskId);
   }
 
+  private resolveTaskWorkspaceForAdmission(taskId: string): Promise<string> {
+    return this.db.coreIdentity ? resolveTaskWorkspaceCwdAsync(this.db, this.taskWorkspace, taskId)
+      : Promise.resolve(this.resolveTaskExecutionWorkspaceCwd(taskId));
+  }
+
   matchesDotsInitialPrivateWorkspace(taskId: string, cwd: string): boolean {
     const task = this.db.getTask(taskId);
     if (task?.cwd !== cwd || this.durableBots?.cwd(taskId) !== cwd || task.externalAgentPin ||
@@ -1216,6 +1269,14 @@ export class AgentService {
       this.db.getTaskExecutionWorkspaceState(taskId)?.state === "trashed") return false;
     try {
       if (this.db.resolveWorkspaceExecutionPath(task.spaceId, { requireExisting: true })) return false;
+      return this.matchesDotsPrivateWorkspaceFiles(taskId, cwd);
+    } catch {
+      return false;
+    }
+  }
+
+  private matchesDotsPrivateWorkspaceFiles(taskId: string, cwd: string): boolean {
+    try {
       this.taskWorkspace.assertTaskExecutionWorkspaceDir(taskId, cwd);
       this.taskWorkspace.readManifest(taskId);
       const expected = join(realpathSync(this.taskWorkspace.getTaskExecutionWorkspacesRoot()), this.taskWorkspace.getTaskDirectoryName(taskId));
@@ -1236,7 +1297,7 @@ export class AgentService {
   ): Promise<string[]> {
     const taskRoot = this.resolveTaskExecutionWorkspaceCwd(taskId);
     await this.emitChangedArtifacts(taskId, messageId, taskRoot, before);
-    return this.artifactService?.listMessageRefs(taskId, { messageId }).map((ref) => ref.artifactId) ?? [];
+    return (await this.artifactService?.readMessageRefs(taskId, { messageId }))?.map(ref => ref.artifactId) ?? [];
   }
   /** Artifact/快照/guard 用权威 taskRoot（与 resolveTaskExecutionWorkspaceCwd 同一规则） */
   private getTaskRoot(taskId: string): string {
@@ -1303,9 +1364,72 @@ export class AgentService {
     };
   }
 
-  goalForNotificationMessage(taskId: string, messageId: string): string | undefined {
-    const conversationId = this.durableBots?.liveConversationId(taskId);
-    return conversationId ? this.conversationGoalActivity.ownerForMessage(taskId, conversationId, messageId)?.goalId : undefined;
+  async readConversationRuntimeSnapshot(taskId: string): Promise<ConversationRuntimeSnapshotDto | undefined> {
+    if (this.db.fixtureConnection) {
+      return this.db.getTask(taskId) ? this.getConversationRuntimeSnapshot(taskId) : undefined;
+    }
+    await this.conversationInteractionRepo.flush(taskId);
+    const snapshot = await this.runtimeAuditReader?.readConversationRuntime(taskId, LOCAL_USER_ID);
+    if (snapshot === undefined) throw new Error("Core 未确认对话状态读取");
+    if (!snapshot) return undefined;
+    return projectConversationRuntime(taskId, snapshot, this.goalContinuationPolicy());
+  }
+
+  async readLiveConversationGoalForTool(taskId: string, workId?: string) {
+    const snapshot = await this.runtimeAuditReader?.readConversationRuntime(taskId, LOCAL_USER_ID);
+    if (snapshot === undefined) throw new Error("Core 未确认 Goal 版本读取");
+    const matches = snapshot?.goals.filter(row => row.live && (workId === undefined || row.work_id === workId)) ?? [];
+    if (matches.length > 1) throw new Error("当前对话涉及多个 Work，请明确事项引用");
+    const row = matches[0];
+    if (!row) return undefined;
+    return {
+      goal: projectCoreConversationGoal(taskId, row, this.goalContinuationPolicy()),
+      versionGuard: { expectedStateVersion: row.state_version, expectedIntentRevision: row.intent_revision, expectedOwnerEpoch: row.owner_epoch },
+    };
+  }
+
+  private async readGoalUserInputWitness(taskId: string): Promise<GoalUserInputWitness | undefined> {
+    const snapshot = await this.runtimeAuditReader?.readConversationRuntime(taskId, LOCAL_USER_ID);
+    if (snapshot === undefined) throw new Error("Core 未确认对话 Goal 是否等待用户输入");
+    const goals = snapshot?.goals.filter(row => row.linked && row.live && row.lifecycle === "active") ?? [];
+    const goal = goals.length === 1 ? goals[0] : undefined;
+    if (!goal || goal.continuation_state !== "deferred" || goal.continuation_task_id !== taskId
+      || goal.continuation_intent_revision !== goal.intent_revision || goal.continuation_attempt_serial == null
+      || goal.continuation_updated_at == null || goal.deferred_at == null || !goal.defer_reason
+      || goal.defer_reason === "budget" || goal.defer_reason === "attempts") return undefined;
+    return { taskId, workId: goal.work_id, intentRevision: goal.intent_revision,
+      stateVersion: goal.state_version, ownerEpoch: goal.owner_epoch, attemptSerial: goal.continuation_attempt_serial,
+      deferredAt: goal.deferred_at, continuationUpdatedAt: goal.continuation_updated_at, deferReason: goal.defer_reason };
+  }
+
+  private goalContinuationPolicy() {
+    const settings = this.settingsStore.read();
+    const budget = settings.conversationGoalTokenBudget;
+    const fallback = Number(process.env.MYBUDDY_GOAL_MAX_ATTEMPTS);
+    const configured = settings.conversationGoalMaxAttempts;
+    const attempts = Number.isFinite(configured) ? configured! : fallback > 0 ? fallback : 3;
+    return {
+      enabled: settings.conversationGoalContinuationEnabled !== false && process.env.MYBUDDY_DISABLE_GOAL_CONTINUATION !== "1",
+      maxAttempts: normalizeGoalContinuationAttempts(attempts),
+      tokenBudget: typeof budget === "number" && Number.isFinite(budget) && budget > 0 ? budget : null,
+    };
+  }
+
+  private async readWorkTaskAccess(taskId: string): Promise<WorkTaskAccess> {
+    if (this.db.fixtureConnection) {
+      return { taskExists: Boolean(this.db.getTask(taskId)), hasWorkBinding: Boolean(this.workService.repo.bindingForTask(taskId)) };
+    }
+    const access = await this.runtimeAuditReader?.readWorkTaskAccess(taskId);
+    if (!access) throw new Error("Core 未确认任务的 Work 归属");
+    return access;
+  }
+
+  private async assertMayExecuteTask(taskId: string): Promise<void> {
+    const historical = "独立 Bot 模式已移除，历史 Bot 执行仅供查看。";
+    if (isGatewayBotTaskId(taskId)) throw new Error(historical);
+    const access = await this.readWorkTaskAccess(taskId);
+    if (access.hasWorkBinding) throw new Error(historical);
+    if (!access.taskExists) throw new Error("任务不存在");
   }
 
   async getConversationGoalEvidence(taskId: string, goalId: string) {
@@ -1382,6 +1506,51 @@ export class AgentService {
     return result;
   }
 
+  async createSavedConversationGoal(request: ConversationGoalCreateRequest): Promise<ConversationGoalMutationResult> {
+    if (this.db.fixtureConnection) return this.createConversationGoal(request);
+    if (typeof request.taskId !== "string" || !request.taskId.trim()) {
+      return { ok: false, code: "invalid_request", message: "Task 与目标标题不能为空" };
+    }
+    if (request.sourceMessage) {
+      const access = await this.readWorkTaskAccess(request.taskId);
+      if (!access.taskExists || access.hasWorkBinding) {
+        return { ok: false, code: "not_found", message: "找不到可以建立 Goal 的对话" };
+      }
+      return this.createConversationGoalFromMessage(request, request.sourceMessage);
+    }
+    return this.createCoreConversationGoal(request);
+  }
+
+  private async createCoreConversationGoal(
+    request: ConversationGoalCreateRequest,
+    source?: ConversationGoalSourceDto,
+    author?: Pick<RuntimeConversationGoalDraft, "createdBy" | "originMessageId">,
+  ): Promise<ConversationGoalMutationResult> {
+    if (typeof request.title !== "string" || !request.title.trim()) {
+      return { ok: false, code: "invalid_request", message: "Task 与目标标题不能为空" };
+    }
+    const reader = this.runtimeAuditReader;
+    if (!reader) throw new Error("Core Goal 写入服务尚未初始化");
+    const operationId = `goal-create-${randomUUID()}`;
+    const draft: RuntimeConversationGoalDraft = {
+      userId: LOCAL_USER_ID, taskId: request.taskId, defaultBotId: DEFAULT_BOT_ID,
+      title: request.title.trim().slice(0, 240),
+      description: request.description?.trim().slice(0, 2000),
+      criteria: (request.criteria ?? []).slice(0, CONVERSATION_GOAL_MAX_CRITERIA).map(({ text }) => text.trim().slice(0, 500)),
+      source,
+      ...author,
+    };
+    const reply = await reader.createConversationGoal(operationId, draft).catch(error => {
+      if (error instanceof RuntimeAuditUnknownOperationError) return reader.createConversationGoal(operationId, draft);
+      throw error;
+    });
+    if (!reply) throw new Error("Core 未确认 Goal 写入");
+    if (!reply.ok) return reply;
+    const goal = projectCoreConversationGoal(request.taskId, reply.goal, this.goalContinuationPolicy());
+    if (!reply.replayed) this.emitPatch({ type: "conversation_goal_snapshot", taskId: request.taskId, goal });
+    return { ok: true, goal };
+  }
+
   createConversationGoal(request: ConversationGoalCreateRequest & { sourceMessage?: undefined }): ConversationGoalMutationResult;
   createConversationGoal(request: ConversationGoalCreateRequest): ConversationGoalMutationResult | Promise<ConversationGoalMutationResult>;
   createConversationGoal(request: ConversationGoalCreateRequest): ConversationGoalMutationResult | Promise<ConversationGoalMutationResult> {
@@ -1409,10 +1578,11 @@ export class AgentService {
     }
     const index = history.messages.findIndex(candidate => candidate.id === reference.messageId && candidate.entryId === reference.entryId);
     const message = history.messages[index];
-    if (!message || !this.db.getTask(request.taskId) || this.workService.repo.bindingForTask(request.taskId)) {
+    const access = await this.readWorkTaskAccess(request.taskId);
+    if (!message || !access.taskExists || access.hasWorkBinding) {
       return { ok: false, code: "not_found", message: "此对话中找不到已保存的原始消息" };
     }
-    if (!message.entryId || message.streaming || message.goalContinuation
+    if ((message.role !== "user" && message.role !== "assistant") || !message.entryId || message.streaming || message.goalContinuation
       || message.role === "assistant" && (!message.text.trim() || history.durable && !message.finalAssistantReply)) {
       return { ok: false, code: "invalid_request", message: "仅可使用已保存的用户消息或带正文的已完成回复" };
     }
@@ -1431,18 +1601,21 @@ export class AgentService {
         return { ok: false, code: "invalid_request", message: "自动续跑回复不能建立新的 Goal" };
       }
     }
+    const currentAccess = await this.readWorkTaskAccess(request.taskId);
     const liveConversationId = this.durableBots?.liveConversationId(request.taskId);
-    if (!this.db.getTask(request.taskId) || this.workService.repo.bindingForTask(request.taskId)
+    if (!currentAccess.taskExists || currentAccess.hasWorkBinding
       || liveConversationId !== undefined && liveConversationId !== history.durable?.conversationId) {
       return { ok: false, code: "conflict", message: "对话历史已变化，请重新选择来源消息" };
     }
     const sourceTitle = message.text.trim().split(/\r?\n/)[0]?.trim().slice(0, 240);
     const title = typeof request.title === "string" ? request.title.trim() : "";
-    return this.conversationGoals.create({ ...request, title: title || sourceTitle || "消息目标",
-      createdBy: "user" }, { source: {
+    const source = {
       taskId: request.taskId, conversationId: history.durable?.conversationId ?? request.taskId,
       messageId: message.id, entryId: message.entryId, inputRequestId: message.inputRequestId, role: message.role, text: message.text,
-    } });
+    } satisfies ConversationGoalSourceDto;
+    const goalRequest = { ...request, title: title || sourceTitle || "消息目标", createdBy: "user" } as const;
+    if (!this.db.fixtureConnection) return this.createCoreConversationGoal(goalRequest, source);
+    return this.conversationGoals.create(goalRequest, { source });
   }
 
   private goalMutationAllowed(goalId: string, taskId?: string): boolean {
@@ -1508,15 +1681,15 @@ export class AgentService {
 
   /** Read-only ledger projection for diagnostics and tests; the Goal chip uses the DTO. */
   getGoalContinuation(goalId: string): ConversationGoalContinuationDto | undefined {
-    return this.goalContinuations?.read(goalId);
+    return this.workFixture?.continuations.read(goalId);
   }
 
   botWorkspaceNavigation() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).readNavigation(); }
   readWorkspaceSpaces() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).readSpaces(); }
   botMessageForHtmlExport(request: import('../../shared/saved-artifact').MessageHtmlRequest) {
-    return this.botHistory.messageForHtmlExport(request);
+    return this.requireWorkFixture().history.messageForHtmlExport(request);
   }
-  botMessageHistory(request: unknown) { return this.botHistory.history(request); }
+  botMessageHistory(request: unknown) { return this.requireWorkFixture().history.history(request); }
 
   getWorkProjection(workId: string): WorkProjectionDto | undefined {
     if (this.workService.getWork(workId)?.userId !== LOCAL_USER_ID) return undefined;
@@ -1640,10 +1813,12 @@ export class AgentService {
     expertId?: string | null,
     connectorIds?: string[],
     taskId?: string | null,
+    activeExpert?: TaskExpertSnapshot | null,
   ): Pick<RuntimeContextPolicyInput, "expertGloballyEnabled" | "connectorGloballyEnabled"> {
     return {
       expertGloballyEnabled: expertId
-        ? Boolean(taskId && this.expertBindings.active(taskId)) || this.expertsService.isRuntimeAvailable(expertId)
+        ? Boolean(activeExpert === undefined && taskId ? this.expertBindings.active(taskId) : activeExpert)
+          || this.expertsService.isRuntimeAvailable(expertId)
         : undefined,
       connectorGloballyEnabled: Object.fromEntries(
         (connectorIds ?? []).map((id) => [id, this.connectorsService.isActive(id)]),
@@ -1675,6 +1850,19 @@ export class AgentService {
   }
 
   handleCoreExecutionEvent(ev: CoreDomainEvent): void {
+    if (ev.domain === "work" && (ev.kind === "work.goalContinuationDeferred" || ev.kind === "work.goalContinuationCleared")) {
+      const { taskId, workId } = ev.payload;
+      if (typeof taskId === "string" && typeof workId === "string") {
+        void this.readLiveConversationGoalForTool(taskId, workId).then(current => {
+          const continuation = current?.goal.continuation;
+          if (current && (ev.kind === "work.goalContinuationCleared" ? continuation?.state === "idle"
+            : continuation?.state === "deferred" && continuation.deferReason === "restart")) {
+            this.emitPatch({ type: "conversation_goal_snapshot", taskId, goal: current.goal });
+          }
+        }).catch(error => console.warn("[AgentService] Goal recovery snapshot failed", error));
+      }
+      return;
+    }
     if (ev.domain !== "execution") return;
     const executionId = ev.entityId;
     const payload = (ev.payload ?? {}) as Record<string, unknown>;
@@ -1722,14 +1910,14 @@ export class AgentService {
     }
   }
 
-  private durableBindingForTask(taskId: string): { directory: string; cwd: string } | undefined {
-    try {
-      return this.db.connection
-        .prepare("SELECT directory, cwd FROM durable_bot_bindings WHERE task_id = ?")
-        .get(taskId) as { directory: string; cwd: string } | undefined;
-    } catch {
-      return undefined;
+  private async durableBindingForTask(taskId: string): Promise<{ directory: string; cwd: string } | undefined> {
+    if (this.runtimeAuditReader?.supervised) {
+      const binding = await this.runtimeAuditReader.readDurableTaskBinding(taskId);
+      if (binding === undefined) throw new Error("Durable 会话绑定读取未获 Rust Core 确认");
+      return binding ?? undefined;
     }
+    return this.db.fixtureConnection?.prepare("SELECT directory, cwd FROM durable_bot_bindings WHERE task_id = ?")
+      .get(taskId) as { directory: string; cwd: string } | undefined;
   }
 
   private async submitCorePiExecution<T>(input: {
@@ -1826,17 +2014,17 @@ export class AgentService {
   }
 
   async init(): Promise<void> {
-    if (this.db.connection.readonly || this.runtimeAuditReader?.supervised) {
-      await recoverInterruptedExecutionsAsync(this.executionAttempts, this.executionFailures);
-      void this.runtimeAuditReader?.workScheduler?.({ action: "scanRecovery" }).catch(() => undefined);
-    }
     this.settingsStore.migrateShellPreferences();
     if (this.executionMode === "isolated-client") {
       // Main runs in thin isolated-client mode: ModelRuntime, DurableBotService, and
       // Pi writer leases belong solely to the standalone Pi Node Host process.
       return;
     }
-    const azureMigration = await migratePiAzureProviderAsync(getMyBuddyDir(), this.db.connection, this.runtimeAuditReader);
+    if (this.db.readonly || this.runtimeAuditReader?.supervised) {
+      await recoverInterruptedExecutionsAsync(this.executionAttempts, this.executionFailures);
+      void this.runtimeAuditReader?.workScheduler?.({ action: "scanRecovery" }).catch(() => undefined);
+    }
+    const azureMigration = await migratePiAzureProviderAsync(getMyBuddyDir(), this.db.fixtureConnection, this.runtimeAuditReader);
     if (azureMigration.files || azureMigration.selections) console.log("[AgentService] Pi Azure provider migrated", azureMigration);
     const suppliedModels = Boolean(this.modelRuntime);
     this.modelRuntime ??= await ModelRuntime.create({
@@ -1862,7 +2050,7 @@ export class AgentService {
     ));
     this.durableBots = new DurableBotService(isolateGatewayConversations({
       passiveReader: this.runtimeAuditReader,
-      nativeHooks: this.nativeHooks,
+      nativeHooks: this.runtimeAuditReader ? this.nativeHooks : undefined,
       nativeImprovement: this.nativeImprovement,
       improvementSkillAllowed: (taskId, name) => {
         const task = this.db.getTask(taskId);
@@ -1885,16 +2073,22 @@ export class AgentService {
       expertBindings: this.expertBindings,
       db: this.db, codeReview: this.codeReview, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
       assetsDir: typeof __dirname === "string" ? __dirname : undefined,
-      resolveCwd: id => this.resolveTaskExecutionWorkspaceCwd(id),
+      resolveCwd: id => this.db.coreIdentity ? resolveTaskWorkspaceCwdAsync(this.db, this.taskWorkspace, id) : this.resolveTaskExecutionWorkspaceCwd(id),
       createDotsWorkspace: () => {
         const selected = this.settingsStore.read().dotsSettings?.workspaceRoot;
         const root = selected ?? this.defaultDotsWorkspaceRoot();
         if (!selected) mkdirSync(root, { recursive: true });
         return createDotsWorkspace(validateDotsWorkspaceRoot(root));
       },
-      validateGatewayWorkspace: (id, cwd, from) => validateGatewayTaskCwd(this.db, this.taskWorkspace, id, cwd, from),
-      resolveNextCwd: id => {
+      validateGatewayWorkspace: (id, cwd, from) => validateGatewayTaskCwdAsync(this.db, this.taskWorkspace, id, cwd, from),
+      resolveNextCwd: async id => {
         if (id === DOTS_TASK_ID) return undefined;
+        if (this.db.coreIdentity) {
+          const task = await this.db.readTask(id, { includeExpertBinding: false });
+          if (!task || task.archived || isTaskWorktreeId(id) || (await this.readWorkTaskAccess(id)).hasWorkBinding) return undefined;
+          if (!isGatewayConversation(id) && task.welcomeMode !== "general") return undefined;
+          return resolveTaskWorkspaceCwdAsync(this.db, this.taskWorkspace, id, { candidateOnly: true });
+        }
         if (isGatewayConversation(id)) return ensureGatewayTaskCwd(this.db, this.taskWorkspace, id);
         const task = this.db.getTask(id);
         if (task?.welcomeMode !== "general" || isTaskWorktreeId(id) || this.workService.repo.bindingForTask(id)
@@ -1920,28 +2114,24 @@ export class AgentService {
       onContextStatus: (taskId, status) =>
         this.publishCompactionState(this.durableCompactionStatus(taskId, status, this.lastCompactionStatus.get(taskId))),
       prepareTask: (request, mark) => this.prepareDurableTask(request, mark),
-      beforeSubmit: request => {
-        this.dotsActions?.assertAdmission(request);
-        if (request.taskId === DOTS_TASK_ID) this.assertDotsScheduleInput(request.userMessageId);
+      beforeSubmit: async request => {
+        await this.assertMayExecuteTask(request.taskId);
+        await this.dotsActions?.assertAdmissionForSubmit(request);
+        if (request.taskId === DOTS_TASK_ID) await this.assertDotsScheduleInput(request.userMessageId, request);
         const goalId = /^goal-continuation:(.+):\d+:\d+$/.exec(request.userMessageId)?.[1];
         if (goalId && this.dotsActions?.canAdvanceGoal(request.taskId, goalId) === false)
           throw new Error("Dots 设置当前暂停主动推进这项目标");
-        if (isGatewayBotTaskId(request.taskId) || this.workService.repo.bindingForTask(request.taskId))
-          throw new Error("独立 Bot 模式已移除，历史 Bot 执行仅供查看。");
-        const blocked = this.workService.checkTaskInput(request.taskId, request.userMessageId);
-        if (blocked) throw new Error(blocked);
       },
-      providerAuthorityGuarded: taskId => Boolean(this.workService.repo.bindingForTask(taskId)),
-      beforeModelRequest: taskId => {
-        if (isGatewayBotTaskId(taskId) || this.workService.repo.bindingForTask(taskId))
-          throw new Error("独立 Bot 模式已移除，历史 Bot 执行仅供查看。");
-      },
-      resumeAllowed: taskId => {
+      beforeModelRequest: taskId => this.assertMayExecuteTask(taskId),
+      resumeAllowed: async taskId => {
         // Keep Ordinary recovery, but do not resurrect the removed Bot mode's
         // workers or legacy Gateway sessions through the shared Durable engine.
-        return !isGatewayBotTaskId(taskId) && !this.workService.repo.bindingForTask(taskId);
+        if (isGatewayBotTaskId(taskId)) return false;
+        const access = await this.readWorkTaskAccess(taskId);
+        return access.taskExists && !access.hasWorkBinding;
       },
-      mcpSelection: task => task.id === DOTS_TASK_ID ? [] : this.durableAssembly(task).mcpFilter.enabled,
+      mcpSelection: async task => task.id === DOTS_TASK_ID ? [] : (await this.prepareDurableAssembly(task)).mcpFilter.enabled,
+      prepareToolPermissions: async task => { if (task.id !== DOTS_TASK_ID) await this.prepareDurableAssembly(task); },
       toolAllowed: (task, name) => this.durableToolAllowed(task, name),
       assertDotsCapabilities: (task, cwd, requirements) => this.assertDotsCapabilityPolicy(requirements, cwd, task),
       toolMode: task => {
@@ -1951,43 +2141,41 @@ export class AgentService {
         return preset?.durableToolMode ?? (task.modePresetId === "codemode" ? "codemode" : "native");
       },
       instructions: task => this.botInstructions(task),
-      maxTurns: task => this.boundedLocalTask(task.id) ? LOCAL_TASK_MAX_TOOL_ROUNDS : null,
-      dotsRecoveryScope: (taskId, operationId) => this.dotsActions?.recoveryToolScope(taskId, operationId),
+      maxTurns: task => this.boundedLocalTask(task.id, this.coreDurableAssemblies.get(task)?.work) ? LOCAL_TASK_MAX_TOOL_ROUNDS : null,
+      dotsRecoveryScope: (taskId, operationId) => this.dotsActions?.readRecoveryToolScope(taskId, operationId),
       waitingForInput: taskId => this.conversationInteractions.listByTask(taskId).some(interaction => interaction.status === "pending"),
       onRelease: taskId => { this.durableSkills.release(taskId); computerUseRunCoordinator.endTask(taskId, "failed"); },
-      onSettled: (taskId, snapshot) => {
-        // A continuation is decided from the settle, including aborted/failed ones:
-        // the host must record why it will not point at the Goal again.
-        const last = snapshot.messages.at(-1);
-        const lastInput = snapshot.messages.filter(message => message.role === "user").at(-1);
-        const owner = last?.role === "assistant"
-          ? this.conversationGoalActivity.ownerForMessage(taskId, snapshot.conversationId, last.id)
-          : undefined;
-        this.goalContinuations.onSettled(taskId, snapshot, owner?.goalId ?? lastInput?.goalContinuation?.workId ?? null);
+      onSettled: async (taskId, snapshot) => {
+        if (this.workFixture) {
+          const last = snapshot.messages.at(-1);
+          const lastInput = snapshot.messages.filter(message => message.role === "user").at(-1);
+          const owner = last?.role === "assistant"
+            ? this.conversationGoalActivity.ownerForMessage(taskId, snapshot.conversationId, last.id)
+            : undefined;
+          this.workFixture.continuations.onSettled(taskId, snapshot, owner?.goalId ?? lastInput?.goalContinuation?.workId ?? null);
+        }
         computerUseRunCoordinator.endTask(taskId, snapshot.outcome === "completed" ? "completed" : "failed");
         if (!snapshot.outcome || snapshot.outcome === "aborted") return;
         const message = snapshot.messages.filter(message => message.role === "assistant").at(-1);
         if (!message) return;
-        this.emitTaskLifecycle(snapshot.outcome === "failed" ? { kind: "failed", taskId, assistantMessageId: message.id, error: snapshot.error ?? "Durable 执行未完成" }
-          : { kind: "completed", taskId, assistantMessageId: message.id });
+        if (!this.workFixture) await this.conversationGoalActivity.flush(taskId);
+        const target = { taskId, assistantMessageId: message.id, conversationId: snapshot.conversationId };
+        this.emitTaskLifecycle(snapshot.outcome === "failed" ? { kind: "failed", ...target, error: snapshot.error ?? "Durable 执行未完成" }
+          : { kind: "completed", ...target });
       },
       onResponse: (taskId, message, info) => this.recordDurableUsage(taskId, message, info),
       onTool: event => {
         this.taskDiagnostics.observeTool(event);
         if (event.dotsOperationId) this.dotsActions?.observeTool(event);
-        if (event.phase === "finish" && event.taskId) this.goalContinuations.account(event.taskId);
+        if (event.phase === "finish" && event.taskId) this.workFixture?.continuations.account(event.taskId);
       },
       onGoalToolEvidence: (taskId, owner, toolTaskId, receipt) => {
         const identity = { taskId, ...owner };
         if (receipt.readPath) {
-          const pathKey = resolvedPathKey(receipt.readPath);
-          if (this.conversationGoalActivity.authoredSkillAtPath(pathKey)) {
-            this.conversationGoalActivity.recordAuthoredSkillRead(pathKey,
-              createHash("sha256").update(readFileSync(receipt.readPath)).digest("hex"), Date.now());
-          }
+          this.conversationGoalActivity.recordAuthoredSkillReadFromPath(taskId, receipt.readPath, resolvedPathKey(receipt.readPath), Date.now());
           return;
         }
-        if (!receipt.skill || !this.conversationGoalActivity.generation(identity)) return;
+        if (!receipt.skill || (this.workFixture && !this.conversationGoalActivity.generation(identity))) return;
         const { id, filePath } = receipt.skill;
         const skill = this.skillsService.listInstalled().find(item => item.id === id && item.filePath === filePath && item.installed);
         if (!skill) return;
@@ -2002,13 +2190,13 @@ export class AgentService {
       },
       observedUsage: (taskId, conversationId) => this.taskDiagnostics.usageForConversation(taskId, conversationId),
       onGoalToolResult: (taskId, identity, tool) => this.conversationGoalActivity.recordTool({ taskId, ...identity }, tool),
-      onRequest: (taskId, info) => {
+      onRequest: async (taskId, info) => {
         this.conversationGoalActivity.admit(taskId, info);
         if (info.sourceKind !== "main") return;
         this.durableSkills.started(taskId, info.conversationId);
-        const task = this.db.getTask(taskId);
+        const task = await this.db.readTask(taskId);
         if (!task) return;
-        const assembly = this.durableAssembly(task);
+        const assembly = await this.prepareDurableAssembly(task, true);
         this.runtimeSnapshots.capture({ taskId, executionId: `durable:${taskId}:${info.conversationId}:${info.generationTaskId}`,
           userMessageId: `durable-run-${info.generationTaskId}`, assistantMessageId: `durable-generation-${info.generationTaskId}`,
           status: "running", startedAt: Date.now(), workingDirectory: task.cwd,
@@ -2039,12 +2227,20 @@ export class AgentService {
           this.latestAutomaticRecall = { ...receipt, at: Date.now(), taskId: task.id };
         },
         enabled: () => task.id === DOTS_TASK_ID ? this.dotsMemoryMode() !== "off" : this.settingsStore.read().memoryEnabled,
-        supplementalEvidence: () => [...this.libraryWorkspaceContext.projectionSources(task.id),
-          ...new WorkCollaborationContext(this.workService).sources(task.id)],
-        validateEvidenceAccess: access => access.kind === "work-collaboration"
-          ? new WorkCollaborationContext(this.workService).validate(task.id, access)
-          : this.libraryWorkspaceContext.validateEvidenceAccess(task.id, access),
-        scope: () => resolveTaskMemoryScope(task.id, this.db.getTask(task.id)),
+        supplementalEvidence: () => this.db.coreIdentity ? this.libraryWorkspaceContext.readProjectionSources(task.id)
+          : [...this.libraryWorkspaceContext.projectionSources(task.id), ...new WorkCollaborationContext(this.workService).sources(task.id)],
+        validateEvidenceAccess: access => {
+          if (!this.db.coreIdentity) return access.kind === "work-collaboration"
+            ? new WorkCollaborationContext(this.workService).validate(task.id, access)
+            : this.libraryWorkspaceContext.validateEvidenceAccess(task.id, access);
+          if (access.kind === "work-collaboration") throw new Error("历史 Work 协作资料不能用于普通对话的模型请求");
+          return this.libraryWorkspaceContext.readEvidenceAccess(task.id, access);
+        },
+        scope: async () => {
+          const current = await this.db.readTask(task.id, { includeExpertBinding: false });
+          if (!current) throw new Error("对话资料所属任务已不可用");
+          return resolveTaskMemoryScope(task.id, current);
+        },
       }),
       onTurns: async (taskId, turns) => {
         const extract = await this.memoryPipeline.projectCompleted(taskId, turns,
@@ -2055,7 +2251,7 @@ export class AgentService {
         void this.queuePendingMemoryExtraction([taskId]).catch(error => console.warn("[Durable] Memory extraction failed", error));
       },
       auditInput: (request, origin) => this.durableInputAudit(request, origin?.goalContinuation),
-      prepareInput: request => {
+      prepareInput: async request => {
         let text = request.text;
         if (request.taskId === DOTS_TASK_ID) {
           const calendar = dotsCalendarContext(request.displayText ?? text, Date.now());
@@ -2063,7 +2259,7 @@ export class AgentService {
         }
         const command = /^\/skill:([^\s]+)(?:\s+([\s\S]*))?$/.exec(text);
         if (command) {
-          const skill = this.durableInputAudit(request).skills.find(item => item.id === command[1] || item.name === command[1]);
+          const skill = (await this.durableInputAudit(request)).skills.find(item => item.id === command[1] || item.name === command[1]);
           if (!skill) throw new Error(`当前任务未授权 Skill：${command[1]}`);
           text = `# Skill: ${skill.name}\n${readFileSync(skill.path, "utf8")}\n\n${command[2] ?? ""}`;
         }
@@ -2072,12 +2268,12 @@ export class AgentService {
       prepareImages: async request => {
         const attachments = request.attachments?.filter(item => isImageAttachment(item.name, item.path)) ?? [];
         if (!attachments.length) return { images: [] };
-        const id = request.modelId ?? this.db.getTask(request.taskId)?.modelId ?? this.settingsStore.read().defaultModelId ?? "";
+        const id = request.modelId ?? (await this.db.readTask(request.taskId))?.modelId ?? this.settingsStore.read().defaultModelId ?? "";
         const model = this.durableModels?.getModel(id.slice(0, id.indexOf("/")), id.slice(id.indexOf("/") + 1));
         if (modelSupportsImageInput(model)) return { images: await loadAttachmentImages(attachments) };
         const vision = await routeVisionForPaths({ model, provider: this.builtinCapabilities.visionProvider(),
           imagePaths: attachments.map(item => item.path), prompt: "准确描述用户附带图片中的可见内容及文字。",
-          context: { taskId: request.taskId, taskRoot: this.resolveTaskExecutionWorkspaceCwd(request.taskId), toolCallId: `attachment-${request.userMessageId}` } });
+          context: { taskId: request.taskId, taskRoot: request.cwd ?? await this.resolveTaskWorkspaceForAdmission(request.taskId), toolCallId: `attachment-${request.userMessageId}` } });
         return { images: [], text: vision.route === "delegated-vision"
           ? `图片识别结果：\n${vision.descriptions?.map(item => `${item.imagePath}\n${item.text}`).join("\n")}`
           : `当前模型未接收图片，图片识别不可用：${vision.error ?? "未配置识别模型"}。请勿声称看到了图片内容。` };
@@ -2127,30 +2323,52 @@ export class AgentService {
   }
 
   /** Resume Ordinary task sessions only. Standalone Bot orchestration is retired. */
-  async resumePersistedTasks(): Promise<void> {
+  async resumePersistedTasks(): Promise<string[]> {
     if (this.executionMode === "isolated-client") {
       // Isolated Pi Node Host handles Durable session resumption under its own single writer lease.
-      return;
+      return [];
     }
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
-    await this.durableBots.resumePersisted();
+    if (this.db.coreIdentity) {
+      void this.reconcileCoreTaskConnectors().catch(error => console.warn("[AgentService] taskConnectorIds reconcile failed", error));
+    }
+    const recovered = await this.durableBots.resumePersisted();
     if (this.settingsStore.read().memoryEnabled) {
       this.memoryService.cognition.queueDotsViews();
-      if (this.memoryCaptureEnabled(DOTS_TASK_ID) && this.memoryPipeline.turns.listPending(DOTS_TASK_ID, 1).length) {
-        void this.queuePendingMemoryExtraction([DOTS_TASK_ID]).catch(error => console.warn("[Dots] Memory recovery failed", error));
-      }
+      if (this.memoryCaptureEnabled(DOTS_TASK_ID)) this.queueDotsMemoryRecovery();
     }
-    // A run the host pointed at before the crash is never replayed silently.
-    this.goalContinuations.reconcileRestart();
+    // Core defers interrupted Goal continuations in the fenced Pi bootstrap transaction.
+    this.workFixture?.continuations.reconcileRestart();
+    return recovered;
+  }
+
+  private async reconcileCoreTaskConnectors(): Promise<void> {
+    const entries = Object.entries(this.settingsStore.read().taskConnectorIds ?? {});
+    const missing: Record<string, string[]> = Object.create(null);
+    // Keep the startup read load bounded, including when many old settings keys remain.
+    for (let offset = 0; offset < entries.length; offset += 8) {
+      const batch = entries.slice(offset, offset + 8);
+      await Promise.all(batch.map(async ([taskId, connectorIds]) => {
+        if (!await this.db.readTask(taskId, { includeExpertBinding: false })) missing[taskId] = connectorIds;
+      }));
+    }
+    this.settingsStore.clearMissingTaskConnectorIds(missing);
+  }
+
+  private queueDotsMemoryRecovery(): void {
+    void this.memoryPipeline.turns.hasPending(DOTS_TASK_ID).then(pending => {
+      if (pending) return this.queuePendingMemoryExtraction([DOTS_TASK_ID]);
+    }).catch(error => console.warn("[Dots] Memory recovery failed", error));
   }
 
   private boundExpertPrompt(identity: TaskExpertSnapshot): string {
     return `## 当前任务的专家身份\n名称：${identity.name}\n以下身份与职责持续用于当前任务：\n${identity.instructions}`;
   }
 
-  private expertConnectorIds(taskId?: string | null, manual?: string[]): string[] {
+  private expertConnectorIds(taskId?: string | null, manual?: string[], activeExpert?: TaskExpertSnapshot | null): string[] {
+    const expert = activeExpert === undefined && taskId ? this.expertBindings.active(taskId) : activeExpert;
     return [...new Set([...(manual ?? (taskId ? this.settingsStore.read().taskConnectorIds?.[taskId] : []) ?? []),
-      ...(taskId ? this.expertBindings.active(taskId)?.connectorIds ?? [] : [])])];
+      ...(expert?.connectorIds ?? [])])];
   }
 
   private expertSkillPaths(taskId: string | null | undefined, expertId: string | null | undefined, connectorIds: string[], expertAllowed = true): string[] {
@@ -2201,24 +2419,25 @@ export class AgentService {
     return this.durableBots.openDots();
   }
 
-  private botInstructions(task: TaskDto): string {
+  private async botInstructions(task: TaskDto): Promise<string> {
     if (task.id === DOTS_TASK_ID) {
       return this.getDotsPromptSegments().map(segment => segment.content).join("\n\n");
     }
-    const assembly = this.durableAssembly(task);
-    const identity = this.expertBindings.active(task.id);
-    const connectors = this.expertConnectorIds(task.id);
-    const paths = this.expertSkillPaths(task.id, identity?.sourceExpertId, connectors);
-    const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId, taskId: task.id }).dtos;
+    const assembly = await this.prepareDurableAssembly(task, true);
+    const core = this.coreDurableAssemblies.get(task);
+    const connectors = core?.connectorIds ?? this.expertConnectorIds(task.id);
+    const skills = core?.runtimeSkills.dtos ?? this.resolveSkillsForContext(task.cwd,
+      this.expertSkillPaths(task.id, this.expertBindings.active(task.id)?.sourceExpertId, connectors),
+      { projectId: task.projectId, workspaceId: task.spaceId, taskId: task.id }).dtos;
     return [
       ...assembly.appendParts,
       isGatewayConversation(task.id) || isGatewayBotTaskId(task.id) ? "" : CHAT_REPLY_INSTRUCTIONS,
-      this.boundedLocalTask(task.id) ? "对于有限执行任务，按原要求用 project_verify 运行当前项目适用的检查。按约定顺序完成必验检查和已授权的本地提交，最终以交付版本的验收回执为准，再直接结束回复。只有相关输入确有变化、已有证据未涵盖必验项或出现有依据的新失败时，才再运行检查。" : "",
-      this.dotsWorkerActive(task.id) ? "Dots 交办结束时优先单独调用 dots_task_end(action=complete)，在 checks 和 commitSha 中列出当前有效验收和已约定的本地提交。只有在独立工作已做完且只能等另一项委派时，单独调用 dots_task_end(action=wait)，填已知的依赖 operationId 和实质进展。交由 Dots 等待回执，避免用 shell 轮询。" : "",
+      this.boundedLocalTask(task.id, core?.work) ? "对于有限执行任务，按原要求用 project_verify 运行当前项目适用的检查。按约定顺序完成必验检查和已授权的本地提交，最终以交付版本的验收回执为准，再直接结束回复。只有相关输入确有变化、已有证据未涵盖必验项或出现有依据的新失败时，才再运行检查。" : "",
+      (core?.workerActive ?? this.dotsWorkerActive(task.id)) ? "Dots 交办结束时优先单独调用 dots_task_end(action=complete)，在 checks 和 commitSha 中列出当前有效验收和已约定的本地提交。只有在独立工作已做完且只能等另一项委派时，单独调用 dots_task_end(action=wait)，填已知的依赖 operationId 和实质进展。交由 Dots 等待回执，避免用 shell 轮询。" : "",
       // Live Goal state, re-read per model request: a foreground conversation has no
       // execution binding, so this section is the only place the open requirement and
       // its stop rules reach the model. Never cache it with the static capsule.
-      this.conversationGoalPrompt(task.id),
+      await this.conversationGoalPrompt(task.id),
       browserAgentPolicy,
       this.durableToolAllowed(task, CAD_USE_TOOLS.inspect) ? cadUseInstructions(this.durableToolAllowed(task, CAD_USE_TOOLS.edit)) : "",
       this.durableToolAllowed(task, DRAWIO_USE_TOOLS.read) ? drawioUseInstructions(this.durableToolAllowed(task, DRAWIO_USE_TOOLS.edit)) : "",
@@ -2231,10 +2450,18 @@ export class AgentService {
     ].filter(Boolean).join("\n\n");
   }
 
-  /** The Goal section must never fail a turn: ambiguity is a UI conflict, not a prompt fact.
-   * A delegated execution (binding) keeps its own worker contract and tool surface, so the
-   * interactive Goal rules are only injected into conversations the user actually drives. */
-  private conversationGoalPrompt(taskId: string): string {
+  /** Project a single confirmed Goal into the conversation the user drives. */
+  async conversationGoalPrompt(taskId: string): Promise<string> {
+    if (!this.workFixture) {
+      const access = await this.readWorkTaskAccess(taskId);
+      if (!access.taskExists || access.hasWorkBinding) return "";
+      const snapshot = await this.runtimeAuditReader?.readConversationRuntime(taskId, LOCAL_USER_ID);
+      if (snapshot === undefined) throw new Error("Core 未确认用于提示词的 Goal 状态");
+      const live = snapshot?.goals.filter(row => row.live) ?? [];
+      if (live.length !== 1) return "";
+      const goal = projectCoreConversationGoal(taskId, live[0], this.goalContinuationPolicy());
+      return renderConversationGoalSection(goal, goal.source?.text) ?? "";
+    }
     const goal = this.liveConversationGoal(taskId);
     const original = goal && this.workService.repo.getGoalSource(goal.id);
     return renderConversationGoalSection(goal, original?.text) ?? "";
@@ -2249,51 +2476,83 @@ export class AgentService {
     }
   }
 
-  private durableInputAudit(request: AgentPromptRequest,
-    continuation?: import("../../shared/conversation-goal").GoalContinuationOrigin): DurableInputAudit {
-    const task = this.db.getTask(request.taskId);
+  private async durableInputAudit(request: AgentPromptRequest,
+    continuation?: import("../../shared/conversation-goal").GoalContinuationOrigin): Promise<DurableInputAudit> {
+    const task = await this.db.readTask(request.taskId);
     if (!task) throw new Error("任务不存在");
     if (task.id === DOTS_TASK_ID) return {
       userMessageId: request.userMessageId, assistantMessageId: request.assistantMessageId,
       ...(this.memoryCaptureEnabled(task.id) ? {} : { skipMemoryCapture: true }),
-      cwd: task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id), skills: [],
+      cwd: task.cwd ?? await this.resolveTaskWorkspaceForAdmission(task.id), skills: [],
       recommendation: { query: request.text, mode: "general", context: { memoryIds: [], scenarioIds: [], profileIds: [] }, capabilities: [] },
     };
-    const assembly = this.durableAssembly(task);
-    const identity = this.expertBindings.active(task.id);
-    const connectors = this.expertConnectorIds(task.id);
-    const paths = this.expertSkillPaths(task.id, identity?.sourceExpertId, connectors);
-    const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId, taskId: task.id }).dtos
+    const assembly = await this.prepareDurableAssembly(task);
+    const core = this.coreDurableAssemblies.get(task);
+    const identity = core ? core.identity : this.expertBindings.active(task.id);
+    const connectors = core?.connectorIds ?? this.expertConnectorIds(task.id);
+    const runtimeSkills = core?.runtimeSkills ?? this.resolveSkillsForContext(task.cwd,
+      this.expertSkillPaths(task.id, identity?.sourceExpertId, connectors),
+      { projectId: task.projectId, workspaceId: task.spaceId, taskId: task.id });
+    const skills = runtimeSkills.dtos
       .filter(skill => skill.enabled && skill.filePath && assembly.skillFilter.visible.includes(skill.name))
       .map(skill => ({ id: skill.id, name: skill.name, path: skill.filePath!, learned: this.skillsService.getLearnedSkillMetadataForFile(skill.filePath!) }));
     // A frozen task-owned package is an authorized read location for the same
     // advertised Skill. Preserve that exact location and lineage for native read receipts.
-    for (const pack of this.expertBindings.activeSkillPackages(task.id)) {
+    for (const pack of core?.packages ?? this.expertBindings.activeSkillPackages(task.id)) {
       const advertised = skills.find(skill => skill.id === pack.id);
       const filePath = join(pack.directory, "SKILL.md");
       if (!advertised || skills.some(skill => resolve(skill.path) === resolve(filePath))
-        || !this.learnedSkillVisibleInContext({ id: pack.id, filePath }, {
+        || !(core ? await this.readCoreSkillAccess({ id: pack.id, filePath }, core) : this.learnedSkillVisibleInContext({ id: pack.id, filePath }, {
           projectId: task.projectId, workspaceId: task.spaceId, botId: this.runtimeBotId(task.id), taskId: task.id,
-        })) continue;
+        }))) continue;
       skills.push({ id: advertised.id, name: advertised.name, path: filePath,
         learned: this.skillsService.getLearnedSkillMetadataForFile(filePath) });
     }
-    const goal = this.liveConversationGoal(request.taskId);
+    const coreGoal = core && !core.work.hasWorkBinding && await this.readLiveConversationGoalForTool(task.id);
+    const goal = core ? null : this.liveConversationGoal(request.taskId);
     const work = goal?.status === "active" ? this.workService.getWork(goal.id) : undefined;
-    const goalOwner = continuation
-      ? { goalId: continuation.workId, intentRevision: continuation.intentRevision }
-      : work && work.lifecycle === "active" ? { goalId: work.workId, intentRevision: work.intentRevision } : undefined;
+    const coreOwner = coreGoal && coreGoal.goal.status === "active" ? { goalId: coreGoal.goal.id,
+      intentRevision: coreGoal.versionGuard.expectedIntentRevision, ownerEpoch: coreGoal.versionGuard.expectedOwnerEpoch } : undefined;
+    const fixtureOwner = work?.lifecycle === "active"
+      ? { goalId: work.workId, intentRevision: work.intentRevision, ownerEpoch: work.ownerEpoch } : undefined;
+    let goalOwner: import("../../shared/conversation-goal-activity").GoalActivityOwner | undefined = core ? coreOwner : fixtureOwner;
+    if (continuation) {
+      if (core) {
+        if (coreOwner?.goalId !== continuation.workId || coreOwner.intentRevision !== continuation.intentRevision || coreOwner.ownerEpoch !== continuation.ownerEpoch)
+          goalOwner = undefined;
+      } else {
+        goalOwner = { goalId: continuation.workId, intentRevision: continuation.intentRevision, ownerEpoch: continuation.ownerEpoch };
+      }
+    }
+    const recommendation = core ? this.loadoutService.resolveSnapshot({ task, projectContext: core.projectContext, runtimeSkills,
+      effectiveness: [], memoryContext: await this.readLoadoutMemory(task, request.text) }, request.text, assembly, identity?.sourceExpertId)
+      : this.loadoutService.resolve(task.id, request.text, assembly, connectors, identity?.sourceExpertId);
     return durableInputAuditSchema.parse(JSON.parse(JSON.stringify({ goalOwner, userMessageId: request.userMessageId,
-      assistantMessageId: request.assistantMessageId, cwd: task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id), skills,
-      recommendation: this.loadoutService.resolve(task.id, request.text, assembly, connectors, identity?.sourceExpertId) })));
+      assistantMessageId: request.assistantMessageId, cwd: task.cwd ?? await this.resolveTaskWorkspaceForAdmission(task.id), skills, recommendation })));
+  }
+
+  private async readLoadoutMemory(task: TaskDto, query: string) {
+    if (!this.settingsStore.read().memoryEnabled) return null;
+    const request = { ...resolveTaskMemoryScope(task.id, task), query, includeInherited: true, statuses: ["active" as const], limit: 24 };
+    try {
+      const authority = await this.memoryService.readCoreRecallAuthority(request);
+      const hits = await this.memoryService.searchCoreLexical(request, authority);
+      return { items: hits.map(({ memory, score, reasons }) => {
+        const { scopeType, scopeId } = this.memoryService.bestMatchedScope(memory, authority.scopes);
+        return { ...memory, scopeType, scopeId, score, reasons };
+      }) };
+    } catch (error) {
+      if (error instanceof CoreMemoryRecallUnavailable) return null;
+      throw error;
+    }
   }
 
   private recordDurableUsage(taskId: string, message: import("@earendil-works/pi-ai").AssistantMessage,
     info: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent"; assistantMessageId?: string }): void {
     const outcome = message.stopReason === "aborted" ? "aborted" : message.stopReason === "error" || message.stopReason === "length" ? "failed" : "completed";
     const owner = this.conversationGoalActivity.settle({ taskId, ...info }, outcome, info.assistantMessageId);
-    this.runtimeSnapshots.finish(`durable:${taskId}:${info.conversationId}:${info.generationTaskId}`,
-      message.stopReason === "aborted" ? "aborted" : message.stopReason === "error" || message.stopReason === "length" ? "failed" : "completed", message.errorMessage);
+    this.runtimeSnapshots.finish(taskId, `durable:${taskId}:${info.conversationId}:${info.generationTaskId}`,
+      outcome, message.errorMessage);
     this.usageStats.recordLive({ taskId, sessionFile: `durable:${taskId}:${info.conversationId}`,
       reportedUsage: this.taskDiagnostics.usageForGeneration(taskId, info.conversationId, info.generationTaskId),
       persistedEntryId: `durable:${taskId}:${info.conversationId}:generation:${info.generationTaskId}:${message.timestamp}`,
@@ -2305,7 +2564,7 @@ export class AgentService {
     // Goal continuation budget is measured from real provider usage, independent
     // of the observation-only diagnostics table. The event key makes a replay of
     // the same committed message (live + projection) count once.
-    if (owner) this.goalContinuations.noteResponse(taskId, `durable:${taskId}:${info.conversationId}:${info.generationTaskId}:${message.timestamp}`, {
+    if (owner) this.workFixture?.continuations.noteResponse(taskId, `durable:${taskId}:${info.conversationId}:${info.generationTaskId}:${message.timestamp}`, {
       input: message.usage.input, output: message.usage.output, cacheRead: message.usage.cacheRead,
     }, owner.goalId);
   }
@@ -2324,6 +2583,7 @@ export class AgentService {
   private readonly durableAssemblies = new Map<string, { key: string; assembly: AssemblyTraceDto }>();
   /** Keyed by the task object a synchronous permission phase shares; see durableToolAllowed. */
   private readonly durableAssemblyMemo = new WeakMap<TaskDto, AssemblyTraceDto>();
+  private readonly coreDurableAssemblies = new WeakMap<TaskDto, Awaited<ReturnType<AgentService["readCoreDurableAssembly"]>>>();
   private readonly toolSelectionMemo = new WeakMap<AssemblyTraceDto, Map<string, SessionToolSelection>>();
 
   private async durableTaskTools(task: TaskDto, cwd: string, effectRecovery: import("./durable/DurableEffectRecovery").ExternalEffectRecovery) {
@@ -2374,20 +2634,26 @@ export class AgentService {
       }),
     });
     const getPermissionMode = (): PermissionMode => "auto";
-    const providerIds = this.durableAssembly(task).mcpFilter.enabled;
-    const getPolicy = () => new TaskFileAccessPolicy({ taskId: task.id, taskRoot: cwd,
-      writeGrants: this.db.listTaskWriteGrants(task.id).map(grant => ({ path: grant.path, source: "user-approval", createdAt: grant.createdAt })) });
-    const sessionPolicy = getPolicy();
+    const providerIds = (await this.prepareDurableAssembly(task)).mcpFilter.enabled;
+    const core = this.coreDurableAssemblies.get(task);
+    const sessionPolicy = new TaskFileAccessPolicy({ taskId: task.id, taskRoot: cwd });
     const readOnlyTag = readOnlyCodingTag(codingPreset?.id);
     const policy = createDurableToolPolicy({ taskId: task.id, taskRoot: cwd, getPermissionMode,
       interactions: this.conversationInteractions, failures: this.executionFailures, attempts: this.executionAttempts,
-      providerIds, getPolicy, effectRecovery, ensureRuntimeReady: id => this.runtimeRequirements.ensureProviderReady(id),
-      admitWorkAction: input => this.workService.admitTaskAction(task.id, input),
-      settleWorkAction: receipt => this.workService.settleTaskNativeAction(task.id, receipt),
-      toolAllowed: name => this.durableToolAllowed(this.db.getTask(task.id) ?? task, name) });
-    const skillPaths = this.expertSkillPaths(task.id, this.expertBindings.active(task.id)?.sourceExpertId ?? task.expertId, this.expertConnectorIds(task.id));
+      providerIds, effectRecovery, ensureRuntimeReady: id => this.runtimeRequirements.ensureProviderReady(id),
+      admitWorkAction: input => this.workFixture?.work.admitTaskAction(task.id, input),
+      settleWorkAction: receipt => this.workFixture?.work.settleTaskNativeAction(task.id, receipt),
+      toolAllowed: async name => {
+        const current = await this.db.readTask(task.id);
+        if (!current) return false;
+        if (core) await this.prepareDurableAssembly(current);
+        return this.durableToolAllowed(current, name);
+      } });
+    const skillPaths = core?.skillPaths
+      ?? this.expertSkillPaths(task.id, this.expertBindings.active(task.id)?.sourceExpertId ?? task.expertId, this.expertConnectorIds(task.id));
     const domain = await durableDomainTools(this.sessionExtensions.durableExtensions({
       taskId: task.id, taskRoot: cwd, memoryEnabled: this.settingsStore.read().memoryEnabled,
+      taskScope: core ? task : undefined,
       gadgetService: this.gadgetService, getPermissionMode, requestApproval: policy.requestApproval,
       builtinCapability: {
         nativeExecution: true, runtime: this.builtinCapabilities, browser: this.browserAutomation,
@@ -2400,7 +2666,14 @@ export class AgentService {
           return candidate && /^durable-\d+$/.test(candidate) ? candidate : undefined;
         },
         getIsolationLevel: () => this.getShellIsolationLevel(), pythonRuntime: this.pythonRuntime,
-        resolveSkillScript: path => this.skillsService.resolveSkillScriptOwner(path, cwd, skillPaths),
+        resolveSkillScript: async path => {
+          if (!core) return this.skillsService.resolveSkillScriptOwner(path, cwd, skillPaths);
+          const current = await this.db.readTask(task.id);
+          if (!current) throw new Error("技能脚本所属任务已不可用");
+          const { assembly, runtimeSkills } = await this.readCoreDurableAssembly(current);
+          return this.skillsService.skillScriptOwnerFromSelection(path,
+            runtimeSkills.skills.filter(skill => assembly.skillFilter.visible.includes(skill.name)));
+        },
         skillAuthoring: { assess: (intent, modelId) => this.assessSkillAuthoring({ intent, modelId }),
           create: (intent, forceCreate, modelId) => this.createSkillFromMeta({ intent, forceCreate, modelId }) },
         consult: (id, input, signal, onUpdate) => {
@@ -2416,7 +2689,12 @@ export class AgentService {
           }).finally(() => { this.consultWorkers.delete(key); });
         },
       },
-    }), { cwd, models: this.durableModels!, taskId: task.id });
+    }), { cwd, models: this.durableModels!, taskId: task.id, ...(core ? { readTaskScope: async () => {
+      await this.assertMayExecuteTask(task.id);
+      const current = await this.db.readTask(task.id, { includeExpertBinding: false });
+      if (!current) throw new Error("工具所属任务已不可用");
+      return current;
+    } } : {}) });
     const consultHooks = createDurableConsultToolHooks({ policy: sessionPolicy, isEnabled: () => this.builtinCapabilities.config().multiModelConsult.enabled });
     const toolHooks: NonNullable<typeof domain.toolHooks> = {
       beforeTool: async (call, api, context) => {
@@ -2426,16 +2704,19 @@ export class AgentService {
         if (call.name === "read" && typeof call.arguments.path === "string") {
           const expanded = call.arguments.path.replace(/^~(?=[\\/])/, homedir());
           const filePath = resolve(cwd, expanded);
-          const frozen = this.expertBindings.activeSkillPackages(task.id).find(pack => {
+          const currentTask = await this.db.readTask(task.id);
+          if (!currentTask) return { block: "所属任务已不可用" };
+          const current = core ? await this.readCoreSkillContext(currentTask) : undefined;
+          const frozen = (current?.packages ?? this.expertBindings.activeSkillPackages(task.id)).find(pack => {
             const root = resolve(pack.directory);
             return filePath === root || filePath.startsWith(root + sep);
           });
           if (frozen || basename(filePath).toLowerCase() === "skill.md") {
             const skillFile = frozen ? join(frozen.directory, "SKILL.md") : filePath;
-            const currentTask = this.db.getTask(task.id) ?? task;
-            if (!this.learnedSkillVisibleInContext({ id: frozen?.id, filePath: skillFile }, {
+            const candidate = { id: frozen?.id, filePath: skillFile };
+            if (!(current ? await this.readCoreSkillAccess(candidate, current) : this.learnedSkillVisibleInContext(candidate, {
               projectId: currentTask.projectId, workspaceId: currentTask.spaceId, botId: this.runtimeBotId(task.id), taskId: task.id,
-            })) return { block: "该方法已撤销、版本/内容已变化或不属于当前执行范围，不能读取旧技能包。" };
+            }))) return { block: "该方法已撤销、版本/内容已变化或不属于当前执行范围，不能读取旧技能包。" };
           }
         }
         const writeConflict = guardSubagentWriteCall(call, api.conversationId, task.id);
@@ -2451,18 +2732,18 @@ export class AgentService {
       },
     };
     const dots = this.dotsActions;
-    const workerTools = dots && this.dotsWorkerActive(task.id) ? [createDurableDotsWorker(task.id,
-      (id, operation) => dots.isActiveWorkerOperation(id, operation),
+    const workerTools = dots && (core?.workerActive ?? this.dotsWorkerActive(task.id)) ? [createDurableDotsWorker(task.id,
+      (id, operation) => this.readDotsWorkerActive(id, operation),
       (id, operation, dependency) => dots.validateWorkerDependency(id, operation, dependency),
       async ({ checks, commitSha, completedItems }, api, context, operationId) => {
-        const contract = dots.completionRequirements(task.id, operationId);
+        const contract = await dots.readCompletionRequirements(task.id, operationId);
         const required = [...new Set([...(contract?.checks ?? []), ...(checks ?? [])])];
         if (contract) assertDotsWorkCompletion(contract, completedItems);
         if (contract?.requireTests && !required.some(dotsProjectTestCheck))
           throw new Error("原交办要求运行相关测试，请用 project_verify，并在 checks 中提供通过的检查名称。");
         if (contract?.requireCommit && !commitSha) throw new Error("原交办要求提交，请提供已完成的本地提交 SHA。");
         if (!required.length && !commitSha) return {};
-        const evidence = await readCurrentProjectVerification(api, context, cwd, required, contract.checkManagers);
+        const evidence = await readCurrentProjectVerification(api, context, cwd, required, contract?.checkManagers);
         const missing = required.filter(script => !evidence.verified.includes(script));
         if (missing.length) throw new Error("当前版本缺少通过的验收回执：" + missing.join("、"));
         if (commitSha && (!evidence.clean || !evidence.head.startsWith(commitSha.toLowerCase())))
@@ -2473,10 +2754,10 @@ export class AgentService {
         return { verifiedChecks: evidence.verified, ...(commitSha ? { verifiedCommit: evidence.head } : {}) };
       })] : [];
     if (dots && this.durableToolAllowed(task, DOTS_RECOVER_COMMIT))
-      workerTools.push(createDurableDotsCommitRecovery(cwd, operationId => ({
-        scope: dots.recoveryToolScope(task.id, operationId),
-        start: dots.recoveryCommitStart(task.id, operationId),
-      })));
+      workerTools.push(createDurableDotsCommitRecovery(cwd, async operationId => {
+        const [scope, start] = await Promise.all([dots.readRecoveryToolScope(task.id, operationId), dots.readRecoveryCommitStart(task.id, operationId)]);
+        return { scope, start };
+      }));
     const projectVerification = this.durableToolAllowed(task, PROJECT_VERIFY_TOOL)
       ? [createDurableProjectVerification({ taskId: task.id, cwd })] : [];
     return { ...domain, foregroundHooks: workflow, toolHooks, tools: [...domain.tools, ...workflow?.tools ?? [], ...workerTools, ...projectVerification,
@@ -2492,6 +2773,7 @@ export class AgentService {
   }
 
   private durableAssembly(task: TaskDto): AssemblyTraceDto {
+    if (this.db.coreIdentity) return this.coreDurableAssembly(task).assembly;
     // Same task object = same synchronous permission phase (see ToolGate), so the assembly and
     // its selection can be reused without caching across approval/resource waits.
     const memoized = this.durableAssemblyMemo.get(task);
@@ -2512,6 +2794,87 @@ export class AgentService {
     return assembly;
   }
 
+  private coreDurableAssembly(task: TaskDto) {
+    const context = this.coreDurableAssemblies.get(task);
+    if (!context) throw new Error("当前任务的 Core 运行权限尚未确认");
+    return context;
+  }
+
+  private async prepareDurableAssembly(task: TaskDto, includeCatalog = false): Promise<AssemblyTraceDto> {
+    if (!this.db.coreIdentity) return this.durableAssembly(task);
+    const prepared = this.coreDurableAssemblies.get(task);
+    const context = prepared && (!includeCatalog || prepared.catalogLoaded) ? prepared : await this.readCoreDurableAssembly(task, includeCatalog);
+    this.coreDurableAssemblies.set(task, context);
+    return context.assembly;
+  }
+
+  private async readCoreSkillContext(task: TaskDto) {
+    const reader = this.runtimeAuditReader!;
+    const [expertState, workspace, work] = await Promise.all([
+      reader.readTaskExpertBinding(task.id), reader.readTaskWorkspaceAuthority(task.id), this.readWorkTaskAccess(task.id),
+    ]);
+    if (expertState === undefined || workspace === undefined) throw new Error("Core 未确认任务专家或工作空间");
+    if (!workspace || workspace.trashed || !work.taskExists || workspace.spaceId !== (task.spaceId ?? null)) {
+      throw new Error("运行权限读取期间任务或工作空间已变化");
+    }
+    const bot = work.hasWorkBinding ? undefined : await this.botRegistry.readChannelBot(LOCAL_USER_ID, "desktop", JSON.stringify([LOCAL_USER_ID, task.id]));
+    const binding = this.expertBindings.bindingFromState(task.id, expertState);
+    const packages = this.expertBindings.activeSkillPackagesFromState(task.id, expertState);
+    return { binding, packages, botId: bot?.botId, work, workspaceIds: new Set(workspace.spaceChain.map(space => space.id)),
+      projectId: task.projectId };
+  }
+
+  private async readCoreDurableAssembly(task: TaskDto, includeCatalog = false) {
+    const [context, projectContext, soul, catalog] = await Promise.all([
+      this.readCoreSkillContext(task), task.projectId ? this.projectContextResolver.readResolvedProject(task.projectId) : null,
+      readSoulProfile(this.db), includeCatalog ? this.libraryWorkspaceContext.readCatalog(task.id) : null,
+    ]);
+    const identity = context.binding?.active ?? null;
+    const mode = this.modeAssembly({ taskId: task.id, welcomeMode: resolveWelcomeMode(task.welcomeMode), projectId: task.projectId,
+      spaceId: task.spaceId ?? undefined, cwd: task.cwd, modePresetId: task.modePresetId,
+      expertId: identity?.sourceExpertId ?? task.expertId, permissionMode: task.permissionMode }, undefined,
+    { identity, projectContext, soul });
+    const skillPaths = [
+      ...(mode.expertDecision?.enabled === false ? [] : context.binding
+        ? this.expertBindings.skillDirectoriesFromPackages(task.id, context.packages, id => this.skillsService.listInstalled(undefined, [], { botId: context.botId })
+          .some(item => (item.id === id || item.name === id) && item.enabled))
+        : collectSessionSkillPaths(mode.effectiveExpertId, [], { expertSkillDir: id => this.expertsService.getPrivateSkillsDir(id), connectorSkillDirs: () => [] })),
+      ...this.connectorsService.getPrivateSkillDirs(mode.effectiveConnectorIds),
+    ];
+    const [runtimeSkills, workerActive] = await Promise.all([
+      this.skillsService.readRuntimeSkills(task.cwd, this.runtimeSkillPaths(skillPaths), skill => this.readCoreSkillAccess(skill, context), { botId: context.botId }),
+      this.boundedLocalTask(task.id, context.work) && this.readDotsWorkerActive(task.id),
+    ]);
+    const assembly = this.renderModeAssembly(mode, runtimeSkills, undefined, { catalog, available: includeCatalog });
+    return { ...context, assembly, identity, runtimeSkills, skillPaths, connectorIds: mode.effectiveConnectorIds, projectContext,
+      catalogLoaded: includeCatalog, workerActive };
+  }
+
+  private async readCoreSkillAccess(skill: Pick<SkillDto, "filePath"> & Partial<Pick<SkillDto, "id">>,
+    context: Awaited<ReturnType<AgentService["readCoreSkillContext"]>>): Promise<boolean> {
+    if (!skill.filePath) return true;
+    const directory = dirname(resolve(skill.filePath));
+    const frozen = context.packages.find(pack => resolve(pack.directory) === directory);
+    const learned = this.skillsService.getLearnedSkillMetadataForFile(skill.filePath);
+    if (!frozen && !learned && !this.skillsService.hasLearnedSkillProvenance(skill.filePath)) return true;
+    const id = frozen?.id ?? learned?.skillId ?? skill.id ?? basename(directory);
+    const current = this.skillsService.getLearnedSkillRevisionSource(id);
+    const allowedScope = (source: NonNullable<typeof current>) => source.scopeType === "global"
+      || source.scopeType === "bot" && Boolean(context.botId && source.scopeId === context.botId)
+      || source.scopeType === "project" && Boolean(context.projectId && source.scopeId === context.projectId)
+      || source.scopeType === "workspace" && Boolean(source.scopeId && context.workspaceIds.has(source.scopeId));
+    const grounded = current?.candidateId && allowedScope(current) && await this.memoryService.learning.readInstalledSkillRunnable(
+      current.skillId, current.sourceMemoryIds, { candidateId: current.candidateId, scopeType: current.scopeType, scopeId: current.scopeId });
+    const verified = this.skillsService.getLearnedSkillRevisionSource(id);
+    if (current?.candidateId !== verified?.candidateId || current?.contentHash !== verified?.contentHash
+      || current?.scopeType !== verified?.scopeType || current?.scopeId !== verified?.scopeId) return false;
+    return createBotComposerSkillAccess({ identity: { botId: context.botId ?? "", shared: !context.botId },
+      current: skillId => skillId === id ? verified : undefined,
+      runnable: (_skillId, sourceIds) => Boolean(grounded && current
+        && JSON.stringify([...sourceIds].sort()) === JSON.stringify([...current.sourceMemoryIds].sort())),
+      scopeAllowed: allowedScope }).canRead({ id, directory });
+  }
+
   private pstackActive(task: TaskDto | null | undefined): boolean {
     return task?.welcomeMode === "coding" && this.modeProfiles.pstackEnabled();
   }
@@ -2530,17 +2893,18 @@ export class AgentService {
       const memoryMode = this.dotsMemoryMode(settings);
       return memoryMode === "readWrite" ? DOTS_MEMORY_TOOLS.has(name) : memoryMode === "readOnly" && DOTS_MEMORY_READ_TOOLS.has(name);
     }
+    const core = this.db.coreIdentity ? this.coreDurableAssembly(task) : undefined;
     if (name === DOTS_ACTION || name === DOTS_RESIDENT_READ) return false;
-    if (name === DOTS_TASK_END) return this.dotsWorkerActive(task.id);
-    if (name === DOTS_RECOVER_COMMIT) return this.dotsWorkerActive(task.id) && task.permissionMode !== "readonly"
+    if (name === DOTS_TASK_END) return core?.workerActive ?? this.dotsWorkerActive(task.id);
+    if (name === DOTS_RECOVER_COMMIT) return (core?.workerActive ?? this.dotsWorkerActive(task.id)) && task.permissionMode !== "readonly"
       && this.durableToolAllowed(task, "bash");
-    if (name === PROJECT_VERIFY_TOOL) return this.boundedLocalTask(task.id) && this.durableToolAllowed(task, "bash");
+    if (name === PROJECT_VERIFY_TOOL) return this.boundedLocalTask(task.id, core?.work) && this.durableToolAllowed(task, "bash");
     if (task.welcomeMode === "coding" && readOnlyCodingTag(resolveModePreset(
       this.modeProfiles.getProfile("coding").policy, task.modePresetId, "coding")?.id) &&
         ![...codingReadTools, "pstack_workflow", "pstack_delegate", "subagent", "subagent_list", "request_user_input"].includes(name)) return false;
     if (isPstackForegroundTool(name) && !this.pstackActive(task)) return false;
     if (["pstack_decision_append","pstack_eval_save"].includes(name) && !this.durableToolAllowed(task, "write")) return false;
-    if (!workExecutionToolAllowed(name, () => this.workService.repo.bindingForTask(task.id))) return false;
+    if (!workExecutionToolAllowed(name, () => core?.work.hasWorkBinding ?? Boolean(this.workFixture?.work.repo.bindingForTask(task.id)))) return false;
     if (BUILTIN_CAPABILITY_TOOLS["office-use"].includes(name) && this.builtinCapabilities.config().officeUse?.enabled === false) return false;
     if (BUILTIN_CAPABILITY_TOOLS["drawio-use"].includes(name)) {
       if (this.builtinCapabilities.config().drawioUse?.enabled === false) return false;
@@ -2608,27 +2972,29 @@ export class AgentService {
     requiredCapabilities?: readonly DotsCapabilityRequirement[];
     configuration?: DotsExecutionConfiguration;
   }): Promise<void> {
-    const task = options?.taskId ? this.db.getTask(options.taskId) : null;
+    const task = options?.taskId ? await this.db.readTask(options.taskId) : null;
     if (options?.taskId && !task) throw new Error("原任务不存在");
     const configuration = options?.configuration;
     if (task && configuration) throw new Error("原任务沿用已保存的执行配置。");
-    const cwd = task?.cwd ?? (spaceId ? this.db.resolveWorkspaceExecutionPath(spaceId) : undefined) ?? process.cwd();
+    const cwd = task ? task.cwd ?? await this.resolveTaskWorkspaceForAdmission(task.id)
+      : (spaceId ? this.db.resolveWorkspaceExecutionPath(spaceId) : undefined) ?? process.cwd();
     const requirements = [...(options?.requiredCapabilities ?? [])];
     if (configuration?.welcomeMode) requirements.push({ kind: "mode", id: configuration.welcomeMode });
     if (configuration?.modePresetId) requirements.push({ kind: "preset", id: configuration.modePresetId });
     if (configuration?.expertId) requirements.push({ kind: "expert", id: configuration.expertId });
     for (const id of configuration?.connectorIds ?? []) requirements.push({ kind: "connector", id });
-    if (requirements.length) this.assertDotsCapabilityPolicy(requirements, cwd, task ?? undefined, spaceId, configuration);
+    if (requirements.length) await this.assertDotsCapabilityPolicy(requirements, cwd, task ?? undefined, spaceId, configuration);
     if (!task?.modelId) await this.assertDefaultModelEnabled(cwd);
     else if (!await this.resolveEnabledModel(task.modelId, createAgentSettingsManager(cwd, getMyBuddyDir()))) {
       throw new Error(`原任务的模型 ${task.modelId} 在当前工作空间不可用。`);
     }
   }
 
-  private assertDotsCapabilityPolicy(requirements: readonly DotsCapabilityRequirement[], cwd: string, task?: TaskDto, spaceId?: string,
-    configuration?: DotsExecutionConfiguration): void {
+  private async assertDotsCapabilityPolicy(requirements: readonly DotsCapabilityRequirement[], cwd: string, task?: TaskDto, spaceId?: string,
+    configuration?: DotsExecutionConfiguration): Promise<void> {
     const modePresetId = task?.modePresetId ?? configuration?.modePresetId;
-    const assembly = this.assembleModePreview({
+    if (task && this.db.coreIdentity && task.cwd !== cwd) task = { ...task, cwd };
+    const assembly = task && this.db.coreIdentity ? await this.prepareDurableAssembly(task) : this.assembleModePreview({
       taskId: task?.id, spaceId: task?.spaceId ?? spaceId, projectId: task?.projectId, cwd,
       welcomeMode: resolveWelcomeMode(task?.welcomeMode, configuration?.welcomeMode), permissionMode: task?.permissionMode,
       modePresetId, connectorIds: configuration?.connectorIds,
@@ -2661,12 +3027,16 @@ export class AgentService {
   private async prepareDurableTask(request: AgentPromptRequest, mark?: (stage: string) => void): Promise<AgentPromptRequest> {
     this.durableAssemblies.delete(request.taskId);
     assertSingleExpertId(request.expertId);
-    const cwd = prepareTaskWorkspace(this.db, this.taskWorkspace, this.executionFailures, request.taskId, request.assistantMessageId,
+    const core = Boolean(this.db.coreIdentity);
+    if (core) await this.assertMayExecuteTask(request.taskId);
+    const cwd = await prepareTaskWorkspaceAsync(this.db, this.taskWorkspace, this.executionFailures, request.taskId, request.assistantMessageId,
       () => this.resolveTaskExecutionWorkspaceCwd(request.taskId));
-    const binding = this.workService.repo.bindingForTask(request.taskId);
-    if (binding) this.botExpertBindings.install(binding);
-    else this.expertBindings.ensureLegacy(request.taskId);
-    const task = this.db.getTask(request.taskId);
+    if (!core) {
+      const binding = this.workService.repo.bindingForTask(request.taskId);
+      if (binding) this.botExpertBindings.install(binding);
+      else this.expertBindings.ensureLegacy(request.taskId);
+    }
+    const task = await this.db.readTask(request.taskId);
     if (!task) throw new Error("任务不存在");
     await this.dotsActions?.captureCommitBase(task.id, request.userMessageId, async () => {
       try { return await projectCommitStart(cwd); }
@@ -2678,12 +3048,16 @@ export class AgentService {
     const profile = this.modeProfiles.getProfile(welcomeMode);
     const requestedPreset = request.modePresetId !== undefined ? request.modePresetId : task.modePresetId;
     const preset = resolveModePreset(profile.policy, requestedPreset, profile.id);
+    const activeExpert = core ? task.expertBinding?.active ?? null : this.expertBindings.active(task.id);
+    const projectContext = core
+      ? task.projectId ? await this.projectContextResolver.readResolvedProject(task.projectId) : null
+      : this.projectContextResolver.resolveTask(task.id);
     const resolved = resolveRuntimeContextPolicy({ welcomeMode, profile,
-      projectContext: this.projectContextResolver.resolveTask(task.id), preset,
-      expertId: this.expertBindings.active(task.id)?.sourceExpertId ?? request.expertId ?? task.expertId,
-      connectorIds: this.expertConnectorIds(task.id, request.connectorIds),
-      ...this.runtimeCapabilityAvailability(request.expertId ?? task.expertId, request.connectorIds, task.id) });
-    const requiredMcpIds = new Set([...(preset?.providerMcpIds ?? []), ...(this.expertBindings.active(task.id)?.mcpIds ?? [])]);
+      projectContext, preset,
+      expertId: activeExpert?.sourceExpertId ?? request.expertId ?? task.expertId,
+      connectorIds: this.expertConnectorIds(task.id, request.connectorIds, activeExpert),
+      ...this.runtimeCapabilityAvailability(request.expertId ?? task.expertId, request.connectorIds, task.id, activeExpert) });
+    const requiredMcpIds = new Set([...(preset?.providerMcpIds ?? []), ...(activeExpert?.mcpIds ?? [])]);
     const requiredMcp = requiredMcpIds.size ? this.mcpRuntime.previewMcpFilter(welcomeMode,
       resolved.runtimePolicy.mcpPolicy, resolved.mcpPolicySources) : undefined;
     const requiredMcpDecisions = requiredMcp?.capabilities.filter(decision => requiredMcpIds.has(decision.id) && !decision.enabled) ?? [];
@@ -2710,9 +3084,9 @@ export class AgentService {
     this.durableBots.prepareGatewayTrashRestore(taskId, legacy, destination);
   }
 
-  async appendDotsReply(reply: import("../../shared/dots").DotsAssistantReply, isCurrent: () => boolean = () => true) {
+  async appendDotsReply(reply: import("../../shared/dots").DotsAssistantReply, isCurrent: () => boolean = () => true, outboxEventKey?: string) {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
-    return this.durableBots.appendDotsReply(reply, isCurrent);
+    return this.durableBots.appendDotsReply(reply, isCurrent, outboxEventKey);
   }
 
   async appendDotsProactive(key: string, text: string, isCurrent: () => boolean) {
@@ -2733,13 +3107,24 @@ export class AgentService {
   async closeDurableBots(): Promise<void> {
     await this.durableBots?.close();
     await this.nativeImprovement.close();
-    this.nativeHooks.close();
   }
 
   async runGatewayTurn(request: GatewayBotTurnRequest): Promise<string> {
-    if (!isGatewayConversation(request.taskId) || request.taskId !== assignedGatewayConversation(this.db.connection, request.gatewayOrigin)
-      || this.workService.repo.bindingForTask(request.taskId)) {
+    if (!isGatewayConversation(request.taskId)) {
       throw new Error("历史 Bot 渠道绑定仅供查看，不能转换为新的渠道对话。");
+    }
+    const fixture = this.db.fixtureConnection;
+    if (fixture) {
+      if (request.taskId !== assignedGatewayConversation(fixture, request.gatewayOrigin) || this.workService.repo.bindingForTask(request.taskId)) {
+        throw new Error("历史 Bot 渠道绑定仅供查看，不能转换为新的渠道对话。");
+      }
+    } else {
+      const assignment = await this.runtimeAuditReader?.readGatewayAssignment(request.gatewayOrigin);
+      if (assignment?.status !== "assigned" || assignment.command || !assignment.oldTaskAvailable || assignment.taskId !== request.taskId
+        || assignment.personalMemoryBindingId !== (request.gatewayOrigin.personalMemoryBindingId ?? null)
+        || (await this.readWorkTaskAccess(request.taskId)).hasWorkBinding) {
+        throw new Error("Core 未确认当前渠道会话的执行权限。");
+      }
     }
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     return this.durableBots.runGatewayTurn(request);
@@ -3515,7 +3900,7 @@ export class AgentService {
     return { models: await this.listModels() };
   }
 
-  listSkills(cwd?: string): SkillDto[] {
+  async listSkills(cwd?: string): Promise<SkillDto[]> {
     return cwd ? this.skillsService.listInstalled(cwd) : this.ownedInstalledSkills();
   }
 
@@ -3857,16 +4242,16 @@ export class AgentService {
     return { skill: installed, packagePath: authored.path, validation: authored.validation };
   }
 
-  uninstallSkill(id: string): void {
-    this.skillsService.uninstall(id, this.ownedSkillContext(id));
+  async uninstallSkill(id: string): Promise<void> {
+    this.skillsService.uninstall(id, await this.ownedSkillContext(id));
   }
 
   deleteMarketSkill(id: string): void {
     this.skillsService.deleteFromMarket(id);
   }
 
-  setSkillEnabled(id: string, enabled: boolean): Promise<SkillDto> {
-    return this.skillsService.writeEnabled(id, enabled, this.ownedSkillContext(id), this.runtimeAuditReader);
+  async setSkillEnabled(id: string, enabled: boolean): Promise<SkillDto> {
+    return this.skillsService.writeEnabled(id, enabled, await this.ownedSkillContext(id), this.runtimeAuditReader);
   }
 
   /* ---------- 专家（ExpertService 委托） ---------- */
@@ -4083,15 +4468,23 @@ export class AgentService {
 
   /** 装配预览（不创建 session、不调模型）；与 createSession 同一技能/MCP/权限解析路径 */
   assembleModePreview(req: AssembleModePreviewRequest, loadoutSelection?: AgentLoadoutEffectiveSelectionDto): AssemblyTraceDto {
-    const identity = req.taskId ? this.expertBindings.active(req.taskId) : null;
-    req = { ...req, connectorIds: this.expertConnectorIds(req.taskId, req.connectorIds) };
+    const mode = this.modeAssembly(req, loadoutSelection);
+    const runtimeSkills = this.resolveSkillsForContext(
+      req.cwd, this.expertSkillPaths(req.taskId, mode.effectiveExpertId, mode.effectiveConnectorIds, mode.expertDecision?.enabled !== false),
+      { projectId: req.projectId, workspaceId: req.spaceId, taskId: req.taskId ?? undefined },
+    );
+    return this.renderModeAssembly(mode, runtimeSkills, loadoutSelection);
+  }
+
+  private modeAssembly(req: AssembleModePreviewRequest, loadoutSelection?: AgentLoadoutEffectiveSelectionDto,
+    authority?: { identity: TaskExpertSnapshot | null; projectContext: ResolvedProjectContext | null; soul: SoulDto }) {
+    const identity = authority ? authority.identity : req.taskId ? this.expertBindings.active(req.taskId) : null;
+    req = { ...req, connectorIds: this.expertConnectorIds(req.taskId, req.connectorIds, identity) };
     const welcomeMode = resolveWelcomeMode(req.welcomeMode);
     const profile = this.modeProfiles.getProfile(welcomeMode);
     // 预览同样走 preset 合成，保证与 createSession 一致
     const preset = resolveModePreset(profile.policy, req.modePresetId, profile.id);
-    const projectContext = req.projectId
-      ? this.projectContextResolver.resolveProject(req.projectId)
-      : null;
+    const projectContext = authority ? authority.projectContext : req.projectId ? this.projectContextResolver.resolveProject(req.projectId) : null;
     const resolvedContext = resolveRuntimeContextPolicy({
       welcomeMode,
       profile,
@@ -4099,7 +4492,7 @@ export class AgentService {
       preset,
       expertId: req.expertId?.trim(),
       connectorIds: req.connectorIds,
-      ...this.runtimeCapabilityAvailability(req.expertId?.trim(), req.connectorIds, req.taskId),
+      ...this.runtimeCapabilityAvailability(req.expertId?.trim(), req.connectorIds, req.taskId, authority?.identity),
     });
     const effProfile = resolvedContext.effectiveProfile;
     const settings = this.settingsStore.read();
@@ -4119,9 +4512,8 @@ export class AgentService {
       effProfile.policy.suggestedPermissionMode,
       settings.permissionMode ?? "default",
     );
-    const soul = this.db.getSoul();
+    const soul = authority ? authority.soul : this.db.getSoul();
     const memoryEnabled = settings.memoryEnabled;
-    let expertPrompt: string | null = null;
     const { expertDecision, connectorDecisions } = resolvedContext;
     const selectedConnectorIds = loadoutSelection
       ? new Set(loadoutSelection.connectorIds.map((id) => id.toLowerCase()))
@@ -4132,6 +4524,16 @@ export class AgentService {
         : item,
     );
     const effectiveExpertId = expertDecision?.enabled ? req.expertId?.trim() : undefined;
+    const effectiveConnectorIds = effectiveConnectorDecisions.filter(item => item.enabled).map(item => item.id);
+    return { req, welcomeMode, profile, preset, projectContext, resolvedContext, effProfile, settings, permissionMode, soul,
+      contextBudgetChars, memoryEnabled, identity, expertDecision, effectiveExpertId, effectiveConnectorDecisions, effectiveConnectorIds };
+  }
+
+  private renderModeAssembly(mode: ReturnType<AgentService["modeAssembly"]>, runtimeSkills: RuntimeSkillSelection,
+    loadoutSelection?: AgentLoadoutEffectiveSelectionDto, core?: { catalog: string | null; available: boolean }): AssemblyTraceDto {
+    const { req, welcomeMode, profile, preset, projectContext, resolvedContext, effProfile, settings, permissionMode, soul,
+      contextBudgetChars, memoryEnabled, identity, expertDecision, effectiveExpertId, effectiveConnectorDecisions } = mode;
+    let expertPrompt: string | null = null;
     if ((identity && expertDecision?.enabled !== false) || effectiveExpertId) {
       try {
         expertPrompt = identity ? this.boundExpertPrompt(identity) : this.expertsService.getRolePrompt(effectiveExpertId!).prompt;
@@ -4139,12 +4541,6 @@ export class AgentService {
         expertPrompt = null;
       }
     }
-    // 与 createSession 同一规则：Global + 当前 Expert + Active Connector（不扫描其它）
-    const effectiveConnectorIds = effectiveConnectorDecisions.filter((item) => item.enabled).map((item) => item.id);
-    const sessionSkillPaths = this.expertSkillPaths(req.taskId, effectiveExpertId, effectiveConnectorIds, expertDecision?.enabled !== false);
-    const runtimeSkills = this.resolveSkillsForContext(
-      req.cwd, sessionSkillPaths, { projectId: req.projectId, workspaceId: req.spaceId, taskId: req.taskId ?? undefined },
-    );
     // Collision diagnostics are computed after learned-scope eligibility, matching the real loader.
     const shadowed = runtimeSkills.shadowedExtraSkillNames;
     const selectedSkillIds = loadoutSelection
@@ -4163,7 +4559,11 @@ export class AgentService {
       effProfile.policy.mcpPolicy,
       resolvedContext.mcpPolicySources,
     );
-    const mcpPreview = applyMcpLoadoutSelection(policyMcpPreview, this.boundMcpSelection(req.taskId, loadoutSelection?.mcpIds));
+    const selectedMcpIds = core
+      ? identity && loadoutSelection ? identity.mcpIds.filter(id => loadoutSelection.mcpIds.some(item => item.toLowerCase() === id.toLowerCase()))
+        : identity?.mcpIds ?? loadoutSelection?.mcpIds
+      : this.boundMcpSelection(req.taskId, loadoutSelection?.mcpIds);
+    const mcpPreview = applyMcpLoadoutSelection(policyMcpPreview, selectedMcpIds);
     const capabilityTrace: ResolvedCapabilityDto[] = [
       ...(expertDecision ? [expertDecision] : []),
       ...effectiveConnectorDecisions,
@@ -4200,8 +4600,9 @@ export class AgentService {
       // 预览与真实会话一致：有 workspace 上下文时注入「当前任务工作目录 + 写边界」段
       // （与 createSession 的 workspace: opts.cwd 同源；无 cwd 则不注入，与现状一致）
       workspace: req.cwd?.trim() || undefined,
-      libraryCatalog: this.libraryWorkspaceContext.catalog(req.projectId ?? null, req.libraryToolsAvailable ?? true, req.taskId, req.spaceId),
-      libraryReadable: req.libraryToolsAvailable ?? true,
+      libraryCatalog: core ? core.catalog
+        : this.libraryWorkspaceContext.catalog(req.projectId ?? null, req.libraryToolsAvailable ?? true, req.taskId, req.spaceId),
+      libraryReadable: (req.libraryToolsAvailable ?? true) && (core?.available ?? true),
       contextBudgetChars,
     });
     // 受管 provider preflight 警告（只读，不改变装配结果）
@@ -4270,19 +4671,23 @@ export class AgentService {
     context: { projectId?: string | null; workspaceId?: string | null; botId?: string; taskId?: string },
   ) {
     const identity = { ...context, botId: context.botId ?? this.runtimeBotId(context.taskId) };
-    const config = this.builtinCapabilities.config();
     return this.skillsService.resolveRuntimeSkills(
       cwd,
-      [
-        ...extraSkillPaths,
-        join(app.isPackaged ? process.resourcesPath : app.getAppPath(), "builtin-skills", MYBUDDY_GUIDE_SKILL_ID),
-        ...(config.cadUse?.enabled === false ? [] : [cadUseSkillDirectory()]),
-        ...(config.drawioUse?.enabled === false ? [] : [drawioUseSkillDirectory()]),
-        ...(config.officeUse?.enabled === false ? [] : [officeUseSkillDirectory()]),
-      ],
+      this.runtimeSkillPaths(extraSkillPaths),
       (skill) => this.learnedSkillVisibleInContext(skill, identity),
       { botId: identity.botId },
     );
+  }
+
+  private runtimeSkillPaths(extraSkillPaths: string[]): string[] {
+    const config = this.builtinCapabilities.config();
+    return [
+      ...extraSkillPaths,
+      join(app.isPackaged ? process.resourcesPath : app.getAppPath(), "builtin-skills", MYBUDDY_GUIDE_SKILL_ID),
+      ...(config.cadUse?.enabled === false ? [] : [cadUseSkillDirectory()]),
+      ...(config.drawioUse?.enabled === false ? [] : [drawioUseSkillDirectory()]),
+      ...(config.officeUse?.enabled === false ? [] : [officeUseSkillDirectory()]),
+    ];
   }
 
   private runtimeBotId(taskId?: string): string | undefined {
@@ -4298,23 +4703,24 @@ export class AgentService {
     return this.botRegistry.resolveBotByChannel("desktop", JSON.stringify([LOCAL_USER_ID, taskId]))?.botId;
   }
 
-  private ownedInstalledSkills() {
-    return this.skillsService.listInstalledForBots(this.botRegistry.listBots(LOCAL_USER_ID).map(bot => bot.botId));
+  private async ownedInstalledSkills(): Promise<SkillDto[]> {
+    const bots = await this.botRegistry.readBots(LOCAL_USER_ID);
+    return this.skillsService.listInstalledForBots(bots.map(bot => bot.botId));
   }
 
-  private ownedSkillContext(id: string): { botId?: string } {
-    const installed = this.ownedInstalledSkills().find(skill => skill.id === id || skill.name === id);
+  private async ownedSkillContext(id: string): Promise<{ botId?: string }> {
+    const installed = (await this.ownedInstalledSkills()).find(skill => skill.id === id || skill.name === id);
     const learned = installed?.filePath && this.skillsService.getLearnedSkillMetadataForFile(installed.filePath);
     if (learned && learned.scopeType === "bot") {
-      if (!learned.scopeId || this.botRegistry.getBot(learned.scopeId)?.userId !== LOCAL_USER_ID) throw new Error("技能不属于当前用户的 Bot");
+      if (!learned.scopeId || (await this.botRegistry.readBot(learned.scopeId))?.userId !== LOCAL_USER_ID) throw new Error("技能不属于当前用户的 Bot");
       return { botId: learned.scopeId };
     }
     return {};
   }
 
-  listAgentLoadoutObservations(taskId: string, limit = 50) {
-    if (!this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
-    return this.loadoutObservations.list(taskId, limit);
+  async listAgentLoadoutObservations(taskId: string, limit = 50) {
+    if (!await this.db.readTask(taskId, { includeExpertBinding: false })) throw new Error(`任务不存在：${taskId}`);
+    return this.loadoutObservations.readList(taskId, limit);
   }
 
   /**
@@ -4410,23 +4816,13 @@ export class AgentService {
   }
 
   async listRuntimeContextSnapshots(taskId: string, limit = 50): Promise<RuntimeContextSnapshotDto[]> {
-    if (!this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
-    await this.runtimeSnapshots.flush();
-    const page = await this.runtimeAuditReader?.snapshots(taskId, limit);
-    if (!this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
-    if (page) {
-      try { return decodeRuntimeSnapshotPage(page); }
-      catch { /* retain the host reader if the native page is invalid */ }
-    }
-    return this.runtimeSnapshots.list(taskId, limit);
+    if (!await this.db.readTask(taskId, { includeExpertBinding: false })) throw new Error(`任务不存在：${taskId}`);
+    return this.runtimeSnapshots.readList(taskId, limit);
   }
 
   async getTaskDiagnostics(taskId: string, limit?: number, offset = 0): Promise<TaskDiagnosticsDto> {
-    if (!this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
-    await this.taskDiagnostics.flush();
-    const diagnostics = await this.runtimeAuditReader?.diagnostics(taskId, limit, offset);
-    if (!this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
-    return diagnostics?.taskId === taskId ? diagnostics : this.taskDiagnostics.list(taskId, limit, offset);
+    if (!await this.db.readTask(taskId, { includeExpertBinding: false })) throw new Error(`任务不存在：${taskId}`);
+    return this.taskDiagnostics.readForTask(taskId, limit, offset);
   }
 
   getTaskFailuresForDiagnosis(taskId: string) {
@@ -4439,13 +4835,13 @@ export class AgentService {
   }
 
   async clearRuntimeContextSnapshots(taskId?: string): Promise<number> {
-    if (taskId && !this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
+    if (taskId && !await this.db.readTask(taskId, { includeExpertBinding: false })) throw new Error(`任务不存在：${taskId}`);
     return this.runtimeSnapshots.clearSaved(taskId);
   }
 
   async clearRuntimeAudit(taskId?: string): Promise<import("../../shared/agent-loadout").RuntimeAuditClearResultDto> {
-    if (taskId && !this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
-    const loadoutObservations = this.loadoutObservations.clear(taskId);
+    if (taskId && !await this.db.readTask(taskId, { includeExpertBinding: false })) throw new Error(`任务不存在：${taskId}`);
+    const loadoutObservations = await this.loadoutObservations.clearSaved(taskId);
     const runtimeSnapshots = await this.runtimeSnapshots.clearSaved(taskId);
     return { runtimeSnapshots, loadoutObservations, total: runtimeSnapshots + loadoutObservations };
   }
@@ -4616,9 +5012,7 @@ export class AgentService {
     const nextDotsMemory = this.dotsMemoryMode(nextApp);
     if (previousDotsMemory !== nextDotsMemory) {
       this.dotsMemoryEpoch += 1;
-      if (nextDotsMemory === "readWrite" && this.memoryPipeline.turns.listPending(DOTS_TASK_ID, 1).length) {
-        void this.queuePendingMemoryExtraction([DOTS_TASK_ID]).catch(error => console.warn("[Dots] Memory recovery failed", error));
-      }
+      if (nextDotsMemory === "readWrite") this.queueDotsMemoryRecovery();
     }
     const next = this.getAppSettings();
     if (previous.compactionTriggerRatio !== nextApp.compactionTriggerRatio ||
@@ -5225,7 +5619,7 @@ export class AgentService {
   async kernelSkillLearningStatus(): Promise<import("../../shared/memory-kernel").MemorySkillLearningStatusDto> {
     const counts = await this.memoryPipeline.turns.readSkillLearningCounts();
     const blockedSkills: import("../../shared/memory-kernel").MemorySkillLearningStatusDto["blockedSkills"] = [];
-    for (const skill of this.ownedInstalledSkills()) {
+    for (const skill of await this.ownedInstalledSkills()) {
       if (!skill.filePath) continue;
       const learned = this.skillsService.getLearnedSkillMetadataForFile(skill.filePath);
       if (!learned) continue;
@@ -5316,13 +5710,13 @@ export class AgentService {
   kernelSkillRevisionCandidates(status?: import("../../shared/memory-kernel").MemorySkillRevisionStatus, limit?: number) {
     return this.skillRevision.list(status, limit);
   }
-  refreshKernelSkillRevisionCandidates() {
+  async refreshKernelSkillRevisionCandidates() {
     let evaluated = 0;
     let created = 0;
     let staled = 0;
     let ready = 0;
     const activeLearned = new Set<string>();
-    for (const skill of this.ownedInstalledSkills()) {
+    for (const skill of await this.ownedInstalledSkills()) {
       const source = this.skillsService.getLearnedSkillRevisionSource(skill.id);
       if (!source) continue;
       activeLearned.add(source.skillId);
@@ -5336,7 +5730,7 @@ export class AgentService {
     this.notifyMemoryChanged({ scope: "settings" });
     return { evaluated, created, staled, ready };
   }
-  approveKernelSkillRevisionCandidate(id: string) {
+  async approveKernelSkillRevisionCandidate(id: string) {
     const candidate = this.skillRevision.get(id);
     if (!candidate) throw new Error(`Skill Revision Candidate 不存在：${id}`);
     const source = this.skillsService.getLearnedSkillRevisionSource(candidate.skillId);
@@ -5346,7 +5740,7 @@ export class AgentService {
       const recovered = candidate.status === "materialized"
         ? candidate
         : this.skillRevision.markMaterialized(id, candidate.id, source.version);
-      const installed = this.ownedInstalledSkills().find((skill) => skill.id === candidate.skillId || skill.name === candidate.skillId);
+      const installed = (await this.ownedInstalledSkills()).find((skill) => skill.id === candidate.skillId || skill.name === candidate.skillId);
       if (!installed) throw new Error(`已物化 Skill 不可见：${candidate.skillId}`);
       return { candidate: recovered, skill: installed };
     }
@@ -5574,8 +5968,8 @@ export class AgentService {
   async loadTaskHistory(taskId: string, beforeEntryId?: TaskHistoryTarget, source: "stored" | "current" = "stored"): Promise<TaskHistoryDto> {
     if (this.durableBots?.owns(taskId)) return this.durableBots.history(taskId, beforeEntryId, source);
     if (!this.durableBots) {
-      const binding = this.durableBindingForTask(taskId);
-      if (binding && durableStorageExists(binding.directory)) {
+      const binding = await this.durableBindingForTask(taskId);
+      if (binding && await durableStorageExists(binding.directory, this.runtimeAuditReader)) {
         const history = await readDurableReadOnlyHistory({
           directory: binding.directory,
           cwd: binding.cwd,
@@ -5583,11 +5977,11 @@ export class AgentService {
           reader: this.runtimeAuditReader,
           beforeEntryId,
         });
-        const modelId = this.db.getTask(taskId)?.modelId;
+        const modelId = (await this.db.readTask(taskId, { includeExpertBinding: false }))?.modelId;
         return { ...history, ...(modelId ? { modelId } : {}) };
       }
     }
-    const row = this.db.listTasks().find((t) => t.id === taskId);
+    const row = await this.db.readTask(taskId, { includeExpertBinding: false });
     if (!row?.sessionFile) return { messages: [] };
     try {
       // §7.3：以数据库中的 canonical cwd 覆盖会话 header cwd，child 分支会话的
@@ -5624,8 +6018,8 @@ export class AgentService {
   async listTaskUserQuestions(taskId: string, query?: TaskUserQuestionsQuery): Promise<TaskUserQuestionsDto> {
     if (this.durableBots?.owns(taskId)) return this.durableBots.userQuestions(taskId, query);
     if (!this.durableBots) {
-      const binding = this.durableBindingForTask(taskId);
-      if (binding && durableStorageExists(binding.directory)) {
+      const binding = await this.durableBindingForTask(taskId);
+      if (binding && await durableStorageExists(binding.directory, this.runtimeAuditReader)) {
         return await readDurableUserQuestions({
           directory: binding.directory,
           cwd: binding.cwd,
@@ -5690,8 +6084,8 @@ export class AgentService {
         console.warn("[AgentService] durable conversation head failed", taskId, error);
       }
     } else if (!this.durableBots) {
-      const binding = this.durableBindingForTask(taskId);
-      if (binding && durableStorageExists(binding.directory)) {
+      const binding = await this.durableBindingForTask(taskId);
+      if (binding && await durableStorageExists(binding.directory, this.runtimeAuditReader)) {
         try {
           const head = await readDurableConversationHead({
             directory: binding.directory,
@@ -5747,7 +6141,10 @@ export class AgentService {
     this.dotsForeground = handler;
   }
 
-  async prompt(req: AgentPromptRequest, options?: { durableAdmissionOnly?: boolean }): Promise<AgentPromptResult> {
+  async prompt(req: AgentPromptRequest, options?: { durableAdmissionOnly?: boolean; foregroundUser?: boolean }): Promise<AgentPromptResult> {
+    if (!this.db.fixtureConnection && req.taskId === DOTS_TASK_ID) {
+      await this.assertDotsScheduleInput(req.userMessageId, req);
+    }
     if (this.executionMode === "isolated-client") {
       const opId = req.userMessageId?.trim() || randomUUID();
       const executionId = `pi:${req.taskId}:${opId}`;
@@ -5772,10 +6169,15 @@ export class AgentService {
       }
     }
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
-    // A real user input always wins over a pending automatic continuation.
-    this.goalContinuations.noteUserInput(req.taskId);
+    // Core checks the witness when it first places the actual user entry.
+    this.workFixture?.continuations.noteUserInput(req.taskId);
+    const goalUserInput = this.db.coreIdentity && options?.foregroundUser && req.taskId !== DOTS_TASK_ID
+        && !isGatewayConversation(req.taskId) && !req.dotsFileWatch && !req.dotsSteerInputVersion
+        && !isDotsAutomaticInput(req.userMessageId)
+      ? await this.readGoalUserInputWitness(req.taskId) : undefined;
     const resume = req.taskId === DOTS_TASK_ID && !isDotsAutomaticInput(req.userMessageId) ? this.dotsForeground?.() : undefined;
-    const result = await this.durableBots.prompt(req, options?.durableAdmissionOnly ?? true).finally(() => resume?.());
+    const result = await this.durableBots.prompt(req, options?.durableAdmissionOnly ?? true, goalUserInput ? { goalUserInput } : undefined)
+      .finally(() => resume?.());
     if (result.receipt && !result.error && !result.cancelled) await this.dotsActions?.accepted(req, result.receipt.submissionId);
     return result;
   }
@@ -5824,7 +6226,7 @@ export class AgentService {
   }
 
   async dotsSubmission(taskId: string, operationId: string) {
-    const result = await this.durableBots?.dotsSubmission(taskId, operationId, this.dotsActions?.requestedFilename(taskId, operationId));
+    const result = await this.durableBots?.dotsSubmission(taskId, operationId, await this.dotsActions?.requestedFilename(taskId, operationId));
     if (!result) return undefined;
     if ("completion" in result && result.completion) {
       return { status: result.status, text: result.text, interactionId: undefined,
@@ -5836,18 +6238,23 @@ export class AgentService {
     if (result.status !== "running") {
       // A workspace diff can include another task's edits in the same bound folder.
       // Forward native registrations and tool-attributed files, never the whole directory diff.
-      const ids = new Set(result.messageIds.flatMap(messageId => domain?.listMessageRefs(taskId, { messageId })
-        .filter(ref => ref.toolCallId).map(ref => ref.artifactId) ?? []));
+      const messageIds = new Set(result.messageIds);
+      const refs = await domain?.readMessageRefs(taskId) ?? [];
+      const ids = new Set(refs.filter(ref => ref.toolCallId && messageIds.has(ref.messageId)).map(ref => ref.artifactId));
+      const taskArtifacts = await domain?.readTaskArtifacts(taskId) ?? [];
+      const byId = new Map(taskArtifacts.map(artifact => [artifact.id, artifact]));
       const saved = new Map<string, import("../../shared/saved-artifact").SavedArtifactRequest>();
       for (const file of result.files) {
-        const existing = domain?.findByEntryFile(taskId, file.path);
+        const entry = file.path.replace(/\\/g, "/").toLowerCase();
+        const existing = taskArtifacts.find(artifact => artifact.source.type === "workspace-file"
+          && artifact.source.entryFile.replace(/\\/g, "/").toLowerCase() === entry);
         const name = basename(file.path);
         const snapshot = { name, snapshotPath: file.snapshotPath, manifestPath: file.manifestPath };
         if (existing) { ids.add(existing.id); saved.set(existing.id, snapshot); }
         else artifacts.push({ id: "saved:" + file.snapshotPath, name, saved: snapshot });
       }
       for (const id of ids) {
-        const item = domain?.get(id);
+        const item = byId.get(id);
         if (item?.taskId === taskId) artifacts.push({ id, name: item.title || basename(item.source.type === "workspace-file" ? item.source.entryFile : id),
           saved: saved.get(id), version: item.version });
       }
@@ -6327,12 +6734,14 @@ export class AgentService {
   async decideCodeReview(request: CodeReviewDecisionRequest) {
     if (!request || typeof request.taskId !== "string" || !Array.isArray(request.ids) ||
       request.ids.some(id => typeof id !== "string") ||
-      (request.action !== "accept" && request.action !== "reject") || !this.db.getTask(request.taskId)) {
+      (request.action !== "accept" && request.action !== "reject") || !await this.db.readTask(request.taskId, { includeExpertBinding: false })) {
       throw new Error("代码审查操作无效");
     }
     const restored = new Map<string, string[]>();
-    const result = await this.codeReview.decide(request, () => this.db.getTask(request.taskId)
-      ? this.resolveTaskExecutionWorkspaceCwd(request.taskId) : undefined, withCodeReviewLease, ({ cwd, path }) => {
+    const result = await this.codeReview.decide(request, async () => {
+      const task = await this.db.readTask(request.taskId, { includeExpertBinding: false });
+      if (task) return this.db.coreIdentity ? task.cwd ?? undefined : this.resolveTaskExecutionWorkspaceCwd(task.id);
+    }, withCodeReviewLease, ({ cwd, path }) => {
         const paths = restored.get(cwd) ?? [];
         paths.push(path);
         restored.set(cwd, paths);
@@ -6403,9 +6812,9 @@ export class AgentService {
   }
 
   dispose(): void {
-    this.goalContinuations?.dispose();
+    this.workFixture?.continuations.dispose();
     this.builtinCapabilities.speechStreams.close();
-    this.workService.scheduler.stop();
+    this.workFixture?.work.scheduler.stop();
     this.workHostAuthority.stop();
     this.stopDiagnosticObservation();
     this.memoryDisposed = true;
@@ -6910,8 +7319,12 @@ export class AgentService {
       );
       return;
     }
-    if (this.db.getTask(taskId)?.welcomeMode !== "general" && isInternalTaskPath(filePath)) return;
     try {
+      if (isInternalTaskPath(filePath)) {
+        const task = await this.db.readTask(taskId, { includeExpertBinding: false });
+        if (task?.welcomeMode !== "general") return;
+        assertPathInsideTask(rootDir, filePath);
+      }
       let preview: Awaited<ReturnType<typeof previewWorkspaceFile>>;
       try {
         preview = await previewWorkspaceFile(filePath);
@@ -6928,7 +7341,6 @@ export class AgentService {
           language: extname(name).slice(1) || undefined,
         };
       }
-      this.emittedArtifactPaths.get(taskId)?.add(filePath.toLowerCase());
       // 3C：Artifact 创建/刷新唯一通道 = Artifact Domain（P1：不再写 legacy artifact-index）
       const isCodeOrText = ["code", "markdown", "html"].includes(preview.kind);
       const lineCount = isCodeOrText && preview.content ? preview.content.split("\n").length : undefined;
@@ -6943,6 +7355,7 @@ export class AgentService {
       });
       const artifactId = descriptor?.id;
       if (!artifactId) return; // register 失败：created/updated 事件由 Domain 负责，不阻塞消息
+      this.emittedArtifactPaths.get(taskId)?.add(filePath.toLowerCase());
       this.emitPatch({
         type: "artifact_ref",
         taskId,

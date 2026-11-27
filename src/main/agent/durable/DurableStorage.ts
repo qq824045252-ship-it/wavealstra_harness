@@ -1,46 +1,136 @@
-import type { Storage } from '@earendil-works/pi-durable';
-import type { Context } from '@earendil-works/chord';
-import { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite';
-import { claimDurableStorageLease, type DurableStorageLease } from './DurableStorageLease';
-import { DurableRustSqliteDatabase, DurableSqliteDatabase } from './DurableSqliteDatabase';
-import { ensureDurableSqlite, selectedDurableSqlite } from './DurableStorageFormat';
-import type { RuntimeAuditReader } from '../../platform/runtime-audit';
+import type { Context } from "@earendil-works/chord";
+import type { Storage } from "@earendil-works/pi-durable";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { PiStorageClient, RuntimeAuditDurableSnapshot, RuntimeAuditReader } from "../../platform/runtime-audit";
+import { claimDurableStorageLease, type DurableStorageLease } from "./DurableStorageLease";
+import {
+  DuckDbStorage,
+  duckDbStoreInfo,
+  purgeDuckDbStore,
+  resolveStoreId,
+} from "./DuckDbStorage";
 
 export interface DurableStorageHandle {
   storage: Storage;
   lease?: DurableStorageLease;
 }
-/** Selectors are authoritative; malformed/missing selected artifacts are errors, not empty histories. */
-export function durableStorageExists(directory: string): boolean {
-  return Boolean(selectedDurableSqlite(directory));
+
+let defaultPiStorageClient: PiStorageClient | undefined;
+let defaultHostGeneration: string | undefined;
+
+export function setDefaultPiStorageClient(client: PiStorageClient | undefined): void {
+  defaultPiStorageClient = client;
 }
-/** Sole writer opener: mutex -> discard old owned data -> current official SQLite. */
-export function openDurableStorage(directory: string, context: Context, options?: { readOnly?: false }): Promise<DurableStorageHandle & { lease: DurableStorageLease }>;
-export function openDurableStorage(directory: string, context: Context, options: { readOnly?: boolean; reader?: RuntimeAuditReader }): Promise<DurableStorageHandle>;
-export async function openDurableStorage(directory: string, context: Context, options: { readOnly?: boolean; reader?: RuntimeAuditReader } = {}): Promise<DurableStorageHandle> {
+
+export function getDefaultPiStorageClient(): PiStorageClient | undefined {
+  return defaultPiStorageClient;
+}
+
+export function setDefaultPiHostGeneration(hostGeneration: string | undefined): void {
+  defaultHostGeneration = hostGeneration;
+}
+
+export function getDefaultPiHostGeneration(): string | undefined {
+  return defaultHostGeneration;
+}
+
+export function resolvePiStorageClient(client?: PiStorageClient): PiStorageClient {
+  const resolved = client ?? defaultPiStorageClient;
+  if (!resolved) {
+    throw new Error("DuckDbStorage requires a PiStorageClient (RuntimeAuditReader not initialized)");
+  }
+  return resolved;
+}
+
+export async function durableStorageExists(
+  directory: string,
+  reader?: PiStorageClient,
+): Promise<boolean> {
+  const client = reader ?? defaultPiStorageClient;
+  if (!client) return false;
+  const storeId = await resolveStoreId(client, directory);
+  const info = await duckDbStoreInfo(client, storeId);
+  return info.exists && !info.retired;
+}
+
+export async function purgeDurableStorage(
+  directory: string,
+  reader?: PiStorageClient,
+): Promise<void> {
+  const client = reader ?? defaultPiStorageClient;
+  if (!client) return;
+  const storeId = await resolveStoreId(client, directory);
+  await purgeDuckDbStore(client, storeId);
+}
+
+export function openDurableStorage(
+  directory: string,
+  context: Context,
+  options?: { readOnly?: false; reader?: PiStorageClient },
+): Promise<DurableStorageHandle & { lease: DurableStorageLease }>;
+export function openDurableStorage(
+  directory: string,
+  context: Context,
+  options: { readOnly?: boolean; reader?: PiStorageClient },
+): Promise<DurableStorageHandle>;
+export async function openDurableStorage(
+  directory: string,
+  context: Context,
+  options: { readOnly?: boolean; reader?: PiStorageClient } = {},
+): Promise<DurableStorageHandle> {
+  context.abortSignal?.throwIfAborted();
+  const client = resolvePiStorageClient(options.reader);
   if (options.readOnly) {
-    const storage = options.reader
-      ? (await openRustDurableStorage(directory, options.reader))?.storage
-      : await openDurablePassiveStorage(directory, context);
-    if (!storage) throw new Error('Durable storage does not exist');
-    return { storage };
+    const storeId = await resolveStoreId(client, directory);
+    context.abortSignal?.throwIfAborted();
+    return { storage: await DuckDbStorage.openReadOnly(client, storeId) };
   }
   const lease = claimDurableStorageLease(directory);
   try {
-    const path = await ensureDurableSqlite(directory, context);
-    return { storage: await SqliteStorage.openExisting(await DurableSqliteDatabase.open(path)), lease };
-  } catch (error) { lease.release(); throw error; }
-}
-/** No ownership/repair/bootstrap writes or task execution. SQLite snapshot lasts until close. */
-export async function openDurablePassiveStorage(directory: string, _context: Context): Promise<Storage | undefined> {
-  const path = selectedDurableSqlite(directory);
-  return path ? SqliteStorage.openReadOnly(await DurableSqliteDatabase.open(path, { readonly: true, snapshot: true })) : undefined;
+    const storeId = await resolveStoreId(client, directory);
+    context.abortSignal?.throwIfAborted();
+    const storage = await DuckDbStorage.openWriter(client, storeId, {
+      hostGeneration: defaultHostGeneration,
+      leaseHolder: `${lease.owner.host}:${lease.owner.pid}:${lease.owner.token ?? ""}`,
+      forceTakeover: true,
+    });
+    return { storage, lease };
+  } catch (error) {
+    lease.release();
+    throw error;
+  }
 }
 
-export async function openRustDurableStorage(directory: string, reader: RuntimeAuditReader) {
-  const path = selectedDurableSqlite(directory);
-  if (!path) return undefined;
-  const database = await DurableRustSqliteDatabase.open(path, reader);
-  const storage = await SqliteStorage.openReadOnly(database);
-  return { storage, snapshot: database.snapshot };
+export async function openDurablePassiveStorage(
+  directory: string,
+  _context: Context,
+  reader?: PiStorageClient,
+): Promise<Storage | undefined> {
+  const client = reader ?? defaultPiStorageClient;
+  if (!client) return undefined;
+  const storeId = await resolveStoreId(client, directory);
+  const info = await duckDbStoreInfo(client, storeId);
+  if (!info.exists || info.retired) return undefined;
+  return await DuckDbStorage.openReadOnly(client, storeId);
+}
+
+export async function openRustDurableStorage(
+  directory: string,
+  reader?: RuntimeAuditReader,
+): Promise<{ storage: Storage; snapshot: RuntimeAuditDurableSnapshot } | undefined> {
+  if (!reader) return undefined;
+  const storeId = await resolveStoreId(reader, directory);
+  const info = await duckDbStoreInfo(reader, storeId);
+  if (!info.exists || info.retired) return undefined;
+  const storage = await DuckDbStorage.openReadOnly(reader, storeId);
+  const snapshot = await reader.openDurable(directory, storage.incarnationKey);
+  if (!snapshot) {
+    await storage.close(BACKGROUND_CONTEXT);
+    return undefined;
+  }
+  const close = storage.close.bind(storage);
+  storage.close = async context => {
+    try { await close(context); } finally { await snapshot.close(); }
+  };
+  return { storage, snapshot };
 }

@@ -1,6 +1,6 @@
 use super::{DOTS_TASK_ID, Reply, Scope, assert_scope, forget};
 use crate::{Result, memory_records_data};
-use rusqlite::{Connection, TransactionBehavior, params};
+use duckdb::{Connection, params};
 
 pub(super) fn promote(
     db: &mut Connection,
@@ -9,17 +9,18 @@ pub(super) fn promote(
     user_id: &str,
     now: i64,
 ) -> Result<Reply> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     if !tx
-        .prepare_cached("SELECT 1 FROM memory_records WHERE id=?1")?
+        .prepare("SELECT 1 FROM memory_records WHERE id=?1")?
         .exists([id])?
     {
         return Err(format!("记忆不存在：{id}").into());
     }
     assert_scope(&tx, &scope, user_id)?;
-    tx.prepare_cached(
-        "INSERT OR IGNORE INTO memory_scopes(id,memory_id,scope_type,scope_id,binding,created_at)
-         VALUES (?1,?2,?3,?4,'promoted',?5)",
+    tx.prepare(
+        "INSERT INTO memory_scopes(id,memory_id,scope_type,scope_id,binding,created_at)
+         VALUES (?1,?2,?3,?4,'promoted',?5)
+         ON CONFLICT DO NOTHING",
     )?
     .execute(params![scope.id, id, scope.scope_type, scope.scope_id, now])?;
     invalidate_scope(&tx, &scope.scope_type, scope.scope_id.as_deref(), now)?;
@@ -43,10 +44,10 @@ pub(super) fn detach(
     scope_id: Option<&str>,
     withdrawal: forget::Withdrawal,
 ) -> Result<Reply> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     if scope_type == "project"
         && tx
-            .prepare_cached("SELECT 1 FROM projects WHERE id=?1 AND archived=1")?
+            .prepare("SELECT 1 FROM projects WHERE id=?1 AND archived=1")?
             .exists([scope_id])?
     {
         return Err("项目已归档（只读），不能修改其关联记忆".into());
@@ -55,8 +56,8 @@ pub(super) fn detach(
         return Ok(Reply::Stale);
     }
     if !tx
-        .prepare_cached(
-            "SELECT 1 FROM memory_scopes WHERE memory_id=?1 AND scope_type=?2 AND scope_id IS ?3",
+        .prepare(
+            "SELECT 1 FROM memory_scopes WHERE memory_id=?1 AND scope_type=?2 AND scope_id IS NOT DISTINCT FROM ?3",
         )?
         .exists(params![id, scope_type, scope_id])?
     {
@@ -66,12 +67,12 @@ pub(super) fn detach(
     if scope_type == "task" && scope_id == Some(DOTS_TASK_ID) {
         forget::delete_dots_projections(&tx, id)?;
     }
-    tx.prepare_cached(
-        "DELETE FROM memory_scopes WHERE memory_id=?1 AND scope_type=?2 AND scope_id IS ?3",
+    tx.prepare(
+        "DELETE FROM memory_scopes WHERE memory_id=?1 AND scope_type=?2 AND scope_id IS NOT DISTINCT FROM ?3",
     )?
     .execute(params![id, scope_type, scope_id])?;
     let forgotten = !tx
-        .prepare_cached("SELECT 1 FROM memory_scopes WHERE memory_id=?1")?
+        .prepare("SELECT 1 FROM memory_scopes WHERE memory_id=?1")?
         .exists([id])?;
     invalidate_scope(&tx, scope_type, scope_id, withdrawal.cutoff_at)?;
     forget::invalidate_skills(&tx, id, withdrawal.cutoff_at)?;
@@ -87,18 +88,18 @@ fn invalidate_scope(
     scope_type: &str,
     scope_id: Option<&str>,
     now: i64,
-) -> rusqlite::Result<()> {
+) -> duckdb::Result<()> {
     if matches!(scope_type, "global" | "workspace" | "project") {
         for table in ["memory_scenarios", "memory_core_profiles"] {
-            db.prepare_cached(&format!(
+            db.prepare(&format!(
                 "UPDATE {table} SET status='stale',updated_at=?3
-                 WHERE scope_type=?1 AND scope_id IS ?2 AND status='active'",
+                 WHERE scope_type=?1 AND scope_id IS NOT DISTINCT FROM ?2 AND status='active'",
             ))?
             .execute(params![scope_type, scope_id, now])?;
         }
     }
     if scope_type == "project" {
-        db.prepare_cached("UPDATE projects SET updated_at=MAX(updated_at+1,?2) WHERE id=?1")?
+        db.prepare("UPDATE projects SET updated_at=GREATEST(updated_at+1, ?2) WHERE id=?1")?
             .execute(params![scope_id, now])?;
     }
     Ok(())

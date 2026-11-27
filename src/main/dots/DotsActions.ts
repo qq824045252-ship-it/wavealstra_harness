@@ -1,6 +1,6 @@
 import { DotsForegroundReads, DotsForegroundUnavailable, type ForegroundInput } from "./DotsForegroundReads";
 import { dotsDeferredDelegationAuthorized, dotsDeferredInstruction, dotsForwardingDenied, dotsInstructionText, dotsOriginalTaskFollowUp, dotsReferencesDeferred, dotsRetryQuestions, dotsSteerAuthorized } from "./DotsFollowUpInput";
-import { DotsDeferredRequirements } from "./DotsDeferredRequirements";
+import { DotsDeferredRequirements, type DeferredReservation } from "./DotsDeferredRequirements";
 import { DotsCapabilityUnavailable, dotsCapabilityRequirements, dotsExecutionConfiguration, type DotsExecutionConfiguration, type DotsExecutionSelection } from "./DotsCapabilityRequirements";
 import type { ToolDiagnosticEvent } from "../../shared/task-diagnostics";
 import { DotsFollowup, dotsDeliveryInstruction, followupInstructions } from "./DotsFollowup";
@@ -22,7 +22,7 @@ import { realpathSync } from "node:fs";
 import { lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { AppDatabase } from "../db/AppDatabase";
-import { TaskBoardRepository } from "../task/TaskBoardRepository";
+import type { TaskBoardRepository } from "../task/TaskBoardRepository";
 import type { GoalContinuationOrigin } from "../../shared/conversation-goal";
 import type { ConversationInteractionDto } from "../../shared/conversation-interaction";
 import type { BoardQuery } from "../../shared/task-board";
@@ -34,17 +34,18 @@ import { DOTS_TASK_ID, dotsLocalSpacePath, isDotsAutomaticInput, type DotsAssist
 import { gatewayChannelForSpace, isGatewayConversation } from "../../shared/gateway-task";
 import { assertSafeEntryName, listWorkspaceFiles, readWorkspaceFile } from "../workspace/WorkspaceService";
 
-type Agent = Pick<AgentService, "dotsLibrary" | "dotsAnswerEvidenceAllowed" | "isTaskBusy" | "findSubmission" | "prompt" | "assertDelegationAdmissible" | "listDotsExecutionConfigurations" | "stopDotsTarget" | "loadTaskHistory" | "isDotsOrdinaryTask" | "dotsSubmission" | "getConversationRuntimeSnapshot" | "respondConversationInteraction" | "dotsMemoryReferenceCurrent" | "dotsInputVersion" | "getAppSettings" | "dotsScheduleIds" | "dotsScheduleOwnerTask" | "controlDotsSchedule" | "holdDotsSchedule" | "assertDotsScheduleInput" | "getConversationGoals" | "resolveTaskExecutionWorkspaceCwd" | "matchesDotsInitialPrivateWorkspace">;
+type Agent = Pick<AgentService, "dotsLibrary" | "dotsAnswerEvidenceAllowed" | "isTaskBusy" | "findSubmission" | "prompt" | "assertDelegationAdmissible" | "listDotsExecutionConfigurations" | "stopDotsTarget" | "loadTaskHistory" | "isDotsOrdinaryTask" | "dotsSubmission" | "getConversationRuntimeSnapshot" | "readConversationRuntimeSnapshot" | "respondConversationInteraction" | "dotsMemoryReferenceCurrent" | "dotsInputVersion" | "getAppSettings" | "dotsScheduleIds" | "dotsScheduleOwnerTask" | "controlDotsSchedule" | "holdDotsSchedule" | "assertDotsScheduleInput" | "getConversationGoals" | "readLiveConversationGoalForTool" | "resolveTaskExecutionWorkspaceCwd" | "matchesDotsInitialPrivateWorkspace">;
 type DiagnosticAgent = Pick<AgentService, "getTaskDiagnostics" | "getTaskFailuresForDiagnosis">;
 export interface DotsActionHooks {
   observeProgress?(taskId: string, operationId: string, identity: string, at: number): void;
   observeTool?(event: ToolDiagnosticEvent): void;
   preferences?: () => { followupMode: "continue" | "notify" | "paused"; spaceIds: readonly string[] | null };
-  fileNotice?: (event: { id: string; revision: string; taskId: string; file: string }) => void;
+  fileNotice?: (event: { id: string; revision: string; taskId: string; file: string }) => void | Promise<unknown>;
   progressNotice?: (event: { operationId: string; taskId: string; text: string }) => void;
   failedTask?: (event: { taskId: string; title: string; reason: string }) => void;
-  rememberOrigin?(sourceId:string, origin:DotsReplyOrigin):void;
-  link(targetTaskId: string, operationId: string, sourceMessageId: string, supersedes: boolean, request: AgentPromptRequest): void;
+  rememberOrigin?(sourceId:string, origin:DotsReplyOrigin):void | Promise<void>;
+  link(targetTaskId: string, operationId: string, sourceMessageId: string, supersedes: boolean, request: AgentPromptRequest,
+    deferred?: DeferredReservation): void | Promise<void>;
   list?(): DotsDelegation[];
   changed?(): void;
   failed?(targetTaskId: string, operationId: string, reason: string): void;
@@ -212,17 +213,22 @@ export class DotsActions {
   }
 
   constructor(private readonly db: AppDatabase, private readonly agent: Agent & DiagnosticAgent, private readonly hooks: DotsActionHooks,
-    private readonly board = new TaskBoardRepository(db.connection, db.runtimeAuditReader)) {
-    this.foreground = new DotsForegroundReads(db.connection, db.runtimeAuditReader);
-    this.deferred = new DotsDeferredRequirements(db.connection, db.runtimeAuditReader);
+    private readonly board: Pick<TaskBoardRepository, "page">) {
+    this.foreground = new DotsForegroundReads(db.fixtureConnection, db.runtimeAuditReader);
+    this.deferred = new DotsDeferredRequirements(db.fixtureConnection, db.runtimeAuditReader);
     if (!db.readonly) {
       db.connection.exec(`CREATE TABLE IF NOT EXISTS dots_control_batches(id TEXT PRIMARY KEY, selection TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS dots_proactive_pauses(scope TEXT PRIMARY KEY,timer_ids TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS dots_continuation_targets(source TEXT NOT NULL,task_id TEXT NOT NULL,
           prior_operation_id TEXT,assignment_quote TEXT,PRIMARY KEY(source,task_id))`);
     }
-    this.followups = new DotsFollowup(db.connection, {
+    this.followups = new DotsFollowup(db.fixtureConnection, {
       native: db.runtimeAuditReader,
+      coreAccess: {
+        allowed: taskId => this.readAllowsCoreResult(taskId),
+        proactive: async taskId => this.preferences.followupMode === "continue" && await this.readAllowsCoreResult(taskId),
+        goal: async (taskId, goalId) => (await agent.readLiveConversationGoalForTool(taskId, goalId))?.goal,
+      },
       allowed: taskId => {
         try {
           this.task(taskId);
@@ -231,7 +237,8 @@ export class DotsActions {
       },
       proactive: taskId => this.autonomousForTask(taskId),
       link: (request, source) => {
-        this.link(request, source);
+        const persisted = this.link(request, source);
+        if (persisted) return persisted.then(() => this.hooks.changed?.());
         this.hooks.changed?.();
       },
       goal: (taskId, goalId) => {
@@ -245,7 +252,7 @@ export class DotsActions {
       prerequisite: (taskId, operationId, prerequisiteId) => this.workerPrerequisite(taskId, operationId, prerequisiteId),
       send: async (request, source) => {
         this.assertAdmission(request);
-        this.link(request, source);
+        await this.link(request, source);
         const result = await agent.prompt(request, { durableAdmissionOnly: true });
         if (result.error || result.cancelled) {
           this.hooks.failed?.(request.taskId, request.userMessageId, result.error?.message ?? "执行已取消");
@@ -255,7 +262,7 @@ export class DotsActions {
         return Boolean(result.receipt);
       },
     });
-    agent.getConversationGoals().bindDotsCompletion(
+    if (db.fixtureConnection) agent.getConversationGoals().bindDotsCompletion(
       (taskId, operationId, workId, revision) => this.followups.goalCompletion(taskId, operationId, workId, revision),
       (taskId, operationId, workId, revision) => this.followups.recoverGoalCompletionLink(taskId, operationId, workId, revision),
     );
@@ -271,10 +278,11 @@ export class DotsActions {
         return root;
       },
       inputVersion: id => agent.dotsInputVersion(id), find: (id, operation) => agent.findSubmission(id, operation),
-      send: (request, source) => {
-        this.assertAdmission(request);
-        this.followups.remember(request,source,request.displayText??request.text);
-        this.link(request, source);
+      send: async (request, source) => {
+        if (this.db.fixtureConnection) this.assertAdmission(request);
+        else await this.watches.validateForSubmit(request, this.preferences.spaceIds);
+        await this.followups.remember(request,source,request.displayText??request.text);
+        await this.link(request, source);
         return agent.prompt(request, { durableAdmissionOnly: true });
       },
       proactivePaused: spaceId => !this.autonomousIn(spaceId),
@@ -301,6 +309,11 @@ export class DotsActions {
     this.watches.refresh();
   }
 
+  runCoreFileWatchCycle(): Promise<void> {
+    const { spaceIds, followupMode } = this.preferences;
+    return this.watches.runCoreCycle(spaceIds, followupMode);
+  }
+
   async closeFileWatches() {
     await Promise.all([this.watches.close(), this.controlRecovery]);
     await this.flushWrites();
@@ -318,6 +331,23 @@ export class DotsActions {
   allowsResult(taskId: string) {
     const task = this.db.getTask(taskId);
     return Boolean(task && this.allowsSpace(task.spaceId));
+  }
+
+  private async readAllowsCoreResult(taskId: string): Promise<boolean> {
+    if (this.db.fixtureConnection) return this.allowsResult(taskId);
+    if (taskId === DOTS_TASK_ID || taskId.startsWith("gw-") || isGatewayConversation(taskId)) return false;
+    const core = this.db.runtimeAuditReader;
+    if (!core) throw new Error("Dots 的任务范围需要 Core");
+    const [task, work, binding] = await Promise.all([
+      this.db.readTask(taskId), core.readWorkTaskAccess(taskId), core.readDurableTaskBinding(taskId),
+    ]);
+    if (work === undefined || binding === undefined) throw new Error("Core 未确认 Dots 的任务范围");
+    if (!task || !work.taskExists || work.hasWorkBinding || binding?.trashed || task.archived || task.externalAgentPin
+      || task.gatewaySidebarChannelId || gatewayChannelForSpace(task.spaceId ?? "") || !this.allowsSpace(task.spaceId)) return false;
+    if (!task.spaceId) return true;
+    const spaces = new Map((await this.db.readSpaces()).map(space => [space.id, space]));
+    const space = spaces.get(task.spaceId);
+    return Boolean(space && !space.effectiveArchived && dotsLocalSpacePath(space, id => spaces.get(id)));
   }
 
   isActiveWorkerOperation(taskId: string, operationId?: string): boolean {
@@ -531,14 +561,16 @@ export class DotsActions {
 
   private assertScheduleSource(source?: string) {
     if (!source || !source.startsWith("cron-") || !isDotsAutomaticInput(source)) return;
-    this.agent.assertDotsScheduleInput(source);
+    return this.agent.assertDotsScheduleInput(source);
   }
 
-  private link(request: AgentPromptRequest, source: string, supersedes = false) {
+  private link(request: AgentPromptRequest, source: string, supersedes = false, deferred?: DeferredReservation) {
     // Snapshot the execution directory after its first resolution, before submitting to Durable.
-    const task = this.db.getTask(request.taskId);
-    if (task && !task.cwd) this.agent.resolveTaskExecutionWorkspaceCwd(request.taskId);
-    this.hooks.link(request.taskId, request.userMessageId, source, supersedes, request);
+    if (this.db.fixtureConnection) {
+      const task = this.db.getTask(request.taskId);
+      if (task && !task.cwd) this.agent.resolveTaskExecutionWorkspaceCwd(request.taskId);
+    }
+    return this.hooks.link(request.taskId, request.userMessageId, source, supersedes, request, deferred);
   }
 
   assertAdmission(request: AgentPromptRequest) {
@@ -591,9 +623,34 @@ export class DotsActions {
     }
   }
 
+  async assertAdmissionForSubmit(request: AgentPromptRequest): Promise<void> {
+    if (!request.dotsFileWatch || this.db.fixtureConnection) {
+      this.assertAdmission(request);
+      return;
+    }
+    await this.watches.validateForSubmit(request, this.preferences.spaceIds);
+    const core = this.db.runtimeAuditReader;
+    if (!core) throw new DotsIntentChanged("文件订阅需要 Core 确认原交办");
+    for await (const delegation of core.readActiveDotsDelegations(request.taskId)) {
+      if (delegation.id !== request.userMessageId) continue;
+      const current = await core.dotsRecoveryCurrent(request.taskId, request.userMessageId, {
+        sequence: delegation.sequence, spaceIds: this.preferences.spaceIds ? [...this.preferences.spaceIds] : null,
+        allowAutomatic: this.preferences.followupMode === "continue",
+      });
+      if (!current) break;
+      const [snapshot] = await Promise.all([
+        this.agent.readConversationRuntimeSnapshot(request.taskId), this.followups.validateInCore(request),
+      ]);
+      if (!snapshot || snapshot.interactions.some(row => row.status === "pending"))
+        throw new DotsIntentChanged("原任务正在等待答复，请通过原问题继续");
+      return;
+    }
+    throw new DotsIntentChanged("文件订阅的原交办或授权已变化");
+  }
+
   async accepted(request: Pick<AgentPromptRequest,"taskId"|"userMessageId">, submissionId: number) {
     if (!request.userMessageId.startsWith("dots-input-")) return;
-    this.deferred.accepted(request.userMessageId);
+    await this.deferred.acceptConfirmed(request.userMessageId, request.taskId, submissionId);
     const control = this.control(request.taskId);
     if (!control || control.operation_id !== request.userMessageId) return;
     const version = await this.agent.dotsInputVersion(request.taskId);
@@ -801,7 +858,7 @@ export class DotsActions {
     throw new DotsIntentChanged("原交办的工作空间已变化，请核对执行目录后重新交办");
   }
 
-  private delegationAdmission(task: TaskDto, operationId: string, result?: Awaited<ReturnType<Agent["prompt"]>>, goalId?: string) {
+  private async delegationAdmission(task: TaskDto, operationId: string, result?: Awaited<ReturnType<Agent["prompt"]>>, goalId?: string) {
     if (result?.error || result?.cancelled) {
       const reason = result.error?.message ?? "执行已取消";
       this.hooks.failed?.(task.id, operationId, reason);
@@ -810,7 +867,7 @@ export class DotsActions {
     this.hooks.changed?.();
     if (!result?.receipt) return { operationId, taskId: task.id, admission: "pending" as const,
       message: "普通任务的持久受理尚未确认。继续核对同一操作后才能报告交办成功。" };
-    this.deferred.accepted(operationId);
+    await this.deferred.acceptConfirmed(operationId, task.id, result.receipt.submissionId);
     return { ...this.summary(task), operationId, goalId, queued: result.queued, receipt: result.receipt };
   }
 
@@ -898,15 +955,23 @@ export class DotsActions {
   }
 
   requestedFilename(taskId: string, operationId: string) {
-    return this.followups.requestedFilename(taskId, operationId);
+    return this.followups.readRequestedFilename(taskId, operationId);
   }
 
   recoveryToolScope(taskId: string, operationId: string) {
     return this.followups.recoveryToolScope(taskId, operationId);
   }
 
+  readRecoveryToolScope(taskId: string, operationId: string) {
+    return this.followups.readRecoveryToolScope(taskId, operationId);
+  }
+
   completionRequirements(taskId: string, operationId: string) {
     return this.followups.completionRequirements(taskId, operationId);
+  }
+
+  readCompletionRequirements(taskId: string, operationId: string) {
+    return this.followups.readCompletionRequirements(taskId, operationId);
   }
 
   captureCommitBase(taskId: string, operationId: string, readStart: Parameters<DotsFollowup["captureCommitBase"]>[2]) {
@@ -917,10 +982,14 @@ export class DotsActions {
     return this.followups.recoveryCommitStart(taskId, operationId);
   }
 
+  readRecoveryCommitStart(taskId: string, operationId: string) {
+    return this.followups.readRecoveryCommitStart(taskId, operationId);
+  }
+
   async followup(row: DotsDelegation, original?: AgentPromptRequest) {
-    if (!this.allowsResult(row.taskId)) return {kind:"deferred"} as const;
+    if (!await this.readAllowsCoreResult(row.taskId)) return {kind:"deferred"} as const;
     const decision = await this.followups.handle(row, original);
-    if (!this.allowsResult(row.taskId)) return {kind:"deferred"} as const;
+    if (!await this.readAllowsCoreResult(row.taskId)) return {kind:"deferred"} as const;
     if (decision.kind === "deferred" && decision.text && this.preferences.followupMode === "notify")
       this.hooks.progressNotice?.({operationId:row.id,taskId:row.taskId,text:decision.text});
     if (decision.kind === "progress" && !this.allowsReply("progress")) return {kind:"quiet"} as const;
@@ -964,22 +1033,22 @@ export class DotsActions {
     const root = inputs[0];
     const latest = inputs.at(-1);
     if (!root || !latest) throw new DotsForegroundUnavailable("无法确认本轮原生输入，前台读取已停止");
-    const current = () => {
-      this.foreground.state(root.id);
-      if (latest.id !== root.id) this.foreground.state(latest.id);
+    const current = async () => {
+      await Promise.all(latest.id === root.id ? [this.foreground.readState(root.id)]
+        : [this.foreground.readState(root.id), this.foreground.readState(latest.id)]);
       if (!mayRead()) throw new DotsForegroundUnavailable("本轮读取授权已撤销");
     };
     const origin = { conversationId: originConversation, entryId: root.entryId };
     const { result, reached } = await this.inForegroundReadOrder(root.id, async () => {
       await fresh();
-      current();
-      const state = this.foreground.freeze(root.id);
+      await current();
+      const state = await this.foreground.freezeForInput(root.id);
       let result: unknown;
       let reached = state.exhausted;
       if (!reached) {
         result = await this.execute(DOTS_TASK_ID, root.id, input, root.text, origin, root.createdAt, { read: true });
         await fresh();
-        current();
+        await current();
         const response = result as { content?: string; text?: string; path?: string; truncated?: boolean; canonicalFile?: string };
         if (response.canonicalFile && !this.agent.dotsAnswerEvidenceAllowed({ kind: "file", path: response.canonicalFile }))
           throw new DotsForegroundUnavailable("读取授权在交付之前已撤销");
@@ -987,9 +1056,10 @@ export class DotsActions {
           : input.action === "read_material" ? "material:" + input.itemId
           : JSON.stringify([input.action, input.spaceId, input.targetTaskId, input.path]);
         const body = response.content ?? response.text ?? JSON.stringify(result);
-        const charge = this.foreground.charge(root.id, call, source,
+        const charge = await this.foreground.chargeRead(root.id, call, source,
           JSON.stringify({ action: input.action, spaceId: input.spaceId, path: response.path ?? input.path,
-            itemId: input.itemId, version: input.version, offset: input.offset, contentHash: (result as {contentHash?: string}).contentHash }), body);
+            itemId: input.itemId, version: input.version, offset: input.offset, contentHash: (result as {contentHash?: string}).contentHash }), body,
+          latest.id === root.id ? undefined : { relatedInputIds: [latest.id] });
         reached = charge.exhausted;
         if (input.action === "read_file") {
           const { canonicalFile: _file, ...visible } = response;
@@ -1005,7 +1075,7 @@ export class DotsActions {
       const target = this.waitingForSuppliedFile(input, latest, originConversation);
       if (target) {
         await fresh();
-        current();
+        await current();
         if (!dotsOperationEnabled(this.agent.getAppSettings().dotsSettings, "answer"))
           throw new DotsForegroundUnavailable("补充资料的答复授权已撤回");
         const handoff = await this.execute(DOTS_TASK_ID, latest.id, { action: "answer", targetTaskId: target.taskId, operationId: target.operationId },
@@ -1024,7 +1094,7 @@ export class DotsActions {
     if (!spaceId) return blocked("还需要核对更多资料。可以在哪个工作空间继续？");
     this.space(spaceId);
     await fresh();
-    current();
+    await current();
     if (!mayDelegate()) return blocked("后台任务的授权已撤回，暂时无法继续。");
     if (input.handoffOperationId && !input.targetTaskId)
       return blocked("续办需要同时指定原任务和原交办操作。");
@@ -1041,22 +1111,22 @@ export class DotsActions {
   }
 
   async recoverForegroundHandoffs() {
-    for (const saved of this.foreground.unlinked()) {
+    for (const saved of await this.foreground.readUnlinked()) {
       const last = saved.inputs.at(-1);
       if (!last || !dotsOperationEnabled(this.agent.getAppSettings().dotsSettings, "delegate")) continue;
       try {
         const receipt = (await this.agent.findSubmission(DOTS_TASK_ID, last.id))?.receipt;
         const [conversation, current] = JSON.parse(await this.agent.dotsInputVersion(DOTS_TASK_ID)) as [number, number];
         if (receipt?.status !== "placed" || receipt.submissionId !== current || conversation !== saved.origin.conversationId) continue;
-        for (const input of saved.inputs) this.foreground.state(input.id);
+        await Promise.all(saved.inputs.map(input => this.foreground.readState(input.id)));
         await this.sendForegroundHandoff(saved);
       } catch (error) { console.warn("[Dots] 恢复前台移交失败", error); }
     }
   }
 
   private async admitForegroundHandoff(root: ForegroundInput, inputs: readonly ForegroundInput[], origin: DotsReplyOrigin, spaceId: string, targetTaskId?: string, priorOperationId?: string) {
-    const reads = this.foreground.state(root.id).reads;
-    const request = this.foreground.handoff(root.id, { spaceId, inputs, origin, targetTaskId, priorOperationId,
+    const { reads } = await this.foreground.readState(root.id);
+    const request = await this.foreground.prepareHandoff(root.id, { spaceId, inputs, origin, targetTaskId, priorOperationId,
       text: ["前台达到读取上限，请按以下用户原文继续完成尚未交付的工作。",
         ...inputs.map((input, index) => `${index === 0 ? "原始要求" : "后续修订"}：
 ${input.text}`),
@@ -1065,15 +1135,15 @@ ${input.text}`),
     return this.sendForegroundHandoff(request);
   }
 
-  private async sendForegroundHandoff(request: ReturnType<DotsForegroundReads["handoff"]>) {
+  private async sendForegroundHandoff(request: Awaited<ReturnType<DotsForegroundReads["prepareHandoff"]>>) {
     const root = request.inputs[0];
-    for (const input of request.inputs) this.foreground.state(input.id);
+    const [rootState] = await Promise.all(request.inputs.map(input => this.foreground.readState(input.id)));
     if (!dotsOperationEnabled(this.agent.getAppSettings().dotsSettings, "delegate"))
       throw new DotsIntentChanged("自动移交授权已撤销");
     const workspace = this.db.resolveWorkspaceExecutionPath(request.spaceId, { requireExisting: true });
     const canonicalRoot = workspace ? await realpath(workspace) : undefined;
     const candidates: { canonical: string; path: string; source: string; quote: string }[] = [];
-    for (const read of this.foreground.state(root.id).reads) {
+    for (const read of rootState.reads) {
       if (!canonicalRoot || !read.source.startsWith("file:") || !read.excerpt) continue;
       const path = await realpath(read.source.slice(5)).catch(() => undefined);
       if (!path || resolvedPathKey(path) !== read.source.slice(5)) continue;
@@ -1212,7 +1282,7 @@ ${input.text}`),
       throw new Error("完成事项需逐字引用本轮用户交办。");
     if (followUp && (!foreground?.followUp || !input.targetTaskId || !source || isDotsAutomaticInput(source)))
       throw new Error("追问需要本轮用户指令和原任务");
-    this.assertScheduleSource(source);
+    await this.assertScheduleSource(source);
     if (input.action === "find_tasks") return this.findTasks(source, input.query, input.spaceId, originalText, foreground?.offerFollowUp);
     if (input.action === "execution_configs") {
       const space = this.space(input.spaceId);
@@ -1233,7 +1303,7 @@ ${input.text}`),
         return { ...summary, capabilityEligibility: { status: "blocked", requirement: error.requirement, reason: error.message } };
       }
     }
-    if (source && origin) this.hooks.rememberOrigin?.(source, origin);
+    if (source && origin) await this.hooks.rememberOrigin?.(source, origin);
     const offset = input.offset ?? 0;
     switch (input.action) {
       case "materials":
@@ -1253,11 +1323,20 @@ ${input.text}`),
             : taskId ? this.allowsSpace(originSpace) : !owner.projectId));
         });
       }
-      case "file_watches": return this.watches.list(input.targetTaskId).filter(row => {
-        const task = this.db.getTask(row.taskId);
-        return task && this.allowsSpace(task.spaceId) && this.ordinary(task) && !this.db.isTaskEffectiveArchived(task.id) && task.spaceId === row.spaceId &&
-          (!input.spaceId || row.spaceId === input.spaceId) && this.db.getTaskExecutionWorkspaceState(task.id)?.state !== "trashed";
-      });
+      case "file_watches": {
+        const rows = await this.watches.readList(input.targetTaskId);
+        if (this.db.fixtureConnection) return rows.filter(row => {
+          const task = this.db.getTask(row.taskId);
+          return task && this.allowsSpace(task.spaceId) && this.ordinary(task) && !this.db.isTaskEffectiveArchived(task.id) && task.spaceId === row.spaceId &&
+            (!input.spaceId || row.spaceId === input.spaceId) && this.db.getTaskExecutionWorkspaceState(task.id)?.state !== "trashed";
+        });
+        const visible = await Promise.all(rows.map(async row => {
+          if ((input.spaceId && row.spaceId !== input.spaceId) || !await this.readAllowsCoreResult(row.taskId)) return undefined;
+          const task = await this.db.readTask(row.taskId, { includeExpertBinding: false });
+          return task?.spaceId === row.spaceId ? row : undefined;
+        }));
+        return visible.filter(row => row !== undefined);
+      }
       case "deliveries": {
         const query = input.query?.trim().toLowerCase() ?? "";
         const links = this.hooks.list?.() ?? [];
@@ -1300,7 +1379,7 @@ ${input.text}`),
       }
       case "task": {
         const task = await this.inspectTask(input, foreground?.offerFollowUp);
-        const deferred = this.deferred.pending(task.id, origin?.conversationId);
+        const deferred = await this.deferred.readPending(task.id, origin?.conversationId);
         return { ...task, ...(deferred.length ? { deferred } : {}) };
       }
       case "spaces": return this.db.listSpaces().filter(s => this.allowsSpace(s.id) && !s.effectiveArchived && this.isLocalSpace(s)).map(spaceLink);
@@ -1343,12 +1422,12 @@ ${input.text}`),
       await foreground?.checkCurrentInstruction?.();
       const task = this.task(input.targetTaskId, input.spaceId);
       const id = "dots-deferred-" + dotsRequestDigest(sourceId, task.id);
-      const saved = this.deferred.get(id, origin.conversationId);
+      const saved = await this.deferred.read(id, origin.conversationId);
       if (saved) return { ...saved, status: saved.applied ? "applied" : "saved" };
       const prerequisiteId = required(this.latestOperation(task.id) ?? undefined, "原任务当前的交办");
       if (input.operationId && input.operationId !== prerequisiteId) throw new DotsIntentChanged("原交办已变化，请核对任务。");
       this.assertContinuationScope(task, prerequisiteId);
-      return { ...this.deferred.save({ id, conversationId: origin.conversationId, taskId: task.id, prerequisiteId, text }),
+      return { ...await this.deferred.saveConfirmed({ id, conversationId: origin.conversationId, taskId: task.id, prerequisiteId, text }, sourceId),
         status: "saved", trigger: "原交办完成且用户明确要求在后续交办带上此待办" };
     }
     if (input.action === "pause_proactive" || input.action === "resume_proactive") {
@@ -1407,6 +1486,15 @@ ${input.text}`),
     }
     if (input.action === "watch_file" || input.action === "cancel_watch") {
       if (sourceId.startsWith("cron-") || sourceId.startsWith("goal-continuation:")) throw new Error("需要用户明确交代文件订阅");
+      if (!this.db.fixtureConnection) {
+        const taskId = required(input.targetTaskId, "原任务 ID");
+        const current = await this.db.readTask(taskId, { includeExpertBinding: false });
+        if (!current || !await this.readAllowsCoreResult(taskId) || (input.spaceId && current.spaceId !== input.spaceId))
+          throw new DotsIntentChanged("原任务或工作空间已变化");
+        if (input.action === "cancel_watch") return this.watches.cancel(required(input.watchId, "订阅 ID"), taskId);
+        return this.watches.create({ taskId, spaceId: required(current.spaceId ?? undefined, "原任务工作空间"),
+          file: required(input.path, "订阅文件相对路径"), instruction: required(input.text, "文件变化后的任务要求"), source: sourceId }, this.preferences.spaceIds);
+      }
       const task = this.task(input.targetTaskId, input.spaceId, input.action === "cancel_watch");
       if (input.action === "cancel_watch") {
         const result = this.watches.cancel(required(input.watchId, "订阅 ID"), task.id);
@@ -1590,27 +1678,26 @@ ${input.text}`),
     const referencesDeferred = dotsReferencesDeferred(originalText);
     let deferredId = input.deferredId;
     if (!deferredId && origin && eligibleForDeferred && (input.targetTaskId || referencesDeferred)) {
-      const candidates = this.deferred.candidates(origin.conversationId, sourceId, input.targetTaskId, input.spaceId);
+      const candidates = await this.deferred.readCandidates(origin.conversationId, sourceId, input.targetTaskId, input.spaceId);
       if (candidates.length > 1) throw new Error("找到多条待办，请通过 task 核对并引用本次要带上的待办 ID。");
       deferredId = candidates[0];
       if (!deferredId && referencesDeferred) throw new Error("没找到用户要带上的待办，请先核对原任务和工作空间。");
     }
-    const deferred = deferredId && origin ? this.deferred.get(deferredId, origin.conversationId) : undefined;
+    const deferredState = deferredId && origin ? await this.deferred.readRouting(deferredId, origin.conversationId) : undefined;
+    const deferred = deferredState?.requirement;
     if (deferredId) {
       if (!deferred || !eligibleForDeferred)
         throw new Error("只有本轮用户明确要求委派或追问时，才可带上当前对话的待办。");
       if (deferred.operationId) {
-        const attempt = this.db.connection.prepare("SELECT source_message_id,status FROM dots_delegations WHERE operation_id=?")
-          .get(deferred.operationId) as { source_message_id: string; status: string } | undefined;
-        if (attempt?.source_message_id !== sourceId && (deferred.applied || attempt?.status !== "failed"))
+        const attempt = deferredState?.attempt;
+        if (attempt?.sourceMessageId !== sourceId && (deferred.applied || attempt?.status !== "failed"))
           throw new Error(deferred.applied ? "这条待办已经用于一次交办。" : "待办已有正等待受理的交办。");
       }
       const originalTask = this.task(deferred.taskId, input.spaceId);
       if (input.targetTaskId ? input.targetTaskId !== originalTask.id : input.spaceId !== originalTask.spaceId || !referencesDeferred)
         throw new Error("待办只可用于用户明确关联的原事项。");
       this.assertContinuationScope(originalTask, deferred.prerequisiteId);
-      const prerequisite = this.db.connection.prepare("SELECT status FROM dots_delegations WHERE operation_id=?").pluck().get(deferred.prerequisiteId);
-      if (prerequisite !== "completed" || input.targetTaskId && this.agent.isTaskBusy(originalTask.id))
+      if (deferredState?.prerequisiteStatus !== "completed" || input.targetTaskId && this.agent.isTaskBusy(originalTask.id))
         throw new Error("原交办尚未完成，待办继续保留。");
     }
     const requestedQuote = creating ? input.assignmentQuote?.trim() : undefined;
@@ -1724,7 +1811,7 @@ ${input.text}`),
     }
     const previous = newTask ? undefined : await this.agent.findSubmission(task.id, operationId);
     if ((creating || foreground?.revisions || continuationIdentity) && previous) {
-      if (foreground?.revisions) this.foreground.linked(sourceId);
+      if (foreground?.revisions) await this.foreground.markLinked(sourceId);
       return { ...this.summary(task), queued: previous.queued, receipt: previous.receipt,
         existingAssignment: this.followups.assignment(operationId) };
     }
@@ -1796,8 +1883,8 @@ ${input.text}`),
         foreground?.validateEvidence?.();
         if ((creating || foreground?.revisions || continuationIdentity) && (this.hooks.list?.().some(r => r.id === operationId)
           || this.db.connection.prepare("SELECT 1 FROM dots_delegations WHERE operation_id=?").get(operationId))) {
-          if (foreground?.revisions) this.foreground.linked(sourceId);
-          return true;
+          if (foreground?.revisions && this.db.fixtureConnection) this.foreground.linked(sourceId);
+          return { alreadyLinked: true, committedLink: undefined };
         }
         if (continuationIdentity && this.latestOperation(task.id) !== continuationBase)
           throw new DotsIntentChanged("接续期间原任务已有更新，请读取当前进度");
@@ -1831,21 +1918,38 @@ ${input.text}`),
           }
         }
         if (!previous) {
-          this.assertScheduleSource(sourceId);
+          if (this.db.fixtureConnection) this.assertScheduleSource(sourceId);
           this.assertAdmission(request);
         }
-        if (deferred) this.deferred.reserve(deferred.id, operationId);
-        if (resumed && !followUp) this.followups.rememberResume(request, deliverySource, resumed,
-          [input.text?.trim(), calendar].filter(Boolean).join("\n"), currentDeliveryInstruction, Boolean(unblocked), input.completionItems, completionSource);
-        else this.followups.remember(request, sourceId, [message, calendar].filter(Boolean).join("\n"), steps,
-          currentDeliveryInstruction, completionSource, input.completionItems);
+        if (deferred && this.db.fixtureConnection) this.deferred.reserve(deferred.id, operationId);
+        const remember = () => resumed && !followUp ? this.followups.rememberResume(request, deliverySource, resumed,
+          [input.text?.trim(), calendar].filter(Boolean).join("\n"), currentDeliveryInstruction, Boolean(unblocked), input.completionItems, completionSource)
+          : this.followups.remember(request, sourceId, [message, calendar].filter(Boolean).join("\n"), steps,
+            currentDeliveryInstruction, completionSource, input.completionItems);
+        const link = () => this.link(request, deliverySource, input.action === "steer" || continuePlan || Boolean(foreground?.priorOperationId),
+          deferred && !this.db.fixtureConnection ? { id: deferred.id, conversationId: deferred.conversationId, originalTaskId: deferred.taskId } : undefined);
+        if (!this.db.fixtureConnection) {
+          const committedLink = (async () => {
+            await this.assertScheduleSource(sourceId);
+            await remember();
+            for (const anchor of splitAnchors) await this.followups.anchorAssignment(anchor.operationId, anchor.quote, true);
+            if (creating && assignment) await this.followups.anchorAssignment(operationId, assignment, splitAnchors.length > 0);
+            await link();
+          })();
+          return { alreadyLinked: false, committedLink };
+        }
+        remember();
         for (const anchor of splitAnchors) this.followups.anchorAssignment(anchor.operationId, anchor.quote, true);
         if (creating && assignment) this.followups.anchorAssignment(operationId, assignment, splitAnchors.length > 0);
-        this.link(request, deliverySource, input.action === "steer" || continuePlan || Boolean(foreground?.priorOperationId));
+        const committedLink = link();
         if (foreground?.revisions) this.foreground.linked(sourceId);
-        return false;
+        return { alreadyLinked: false, committedLink };
       };
-      const alreadyLinked = this.requiresRustWrites ? linkPhase() : this.db.connection.transaction(linkPhase)();
+      const { alreadyLinked, committedLink } = this.requiresRustWrites ? linkPhase() : this.db.connection.transaction(linkPhase)();
+      if (committedLink) {
+        await committedLink;
+      }
+      if (foreground?.revisions && !this.db.fixtureConnection) await this.foreground.markLinked(sourceId);
       const persisted = alreadyLinked && (foreground?.revisions || continuationIdentity) ? this.db.connection.prepare(
         "SELECT request_json FROM dots_delegations WHERE operation_id=? AND status='pending'"
       ).pluck().get(operationId) as string | undefined : undefined;

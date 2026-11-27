@@ -1,6 +1,9 @@
 import { DEFAULT_WELCOME_MODE } from "../../shared/mode-profile";
 import type { AssemblyTraceDto } from "../../shared/mode-profile";
 import type { AgentLoadoutRecommendationDto } from "../../shared/agent-loadout";
+import type { TaskDto } from "../../shared/agent-ipc";
+import type { MemorySkillEffectivenessSummaryDto } from "../../shared/memory-kernel";
+import type { ResolvedProjectContext } from "../../shared/project-domain";
 import { isRemovedExpertTeamId, normalizeSingleExpertId } from "../../shared/expert-id";
 import {
   matchesSkillPolicyNeedles,
@@ -41,6 +44,14 @@ export interface AgentLoadoutServiceDeps {
   ) => RuntimeSkillSelection;
 }
 
+export interface AgentLoadoutSnapshot {
+  task: TaskDto;
+  projectContext: ResolvedProjectContext | null;
+  runtimeSkills: Pick<RuntimeSkillSelection, "dtos">;
+  effectiveness: readonly MemorySkillEffectivenessSummaryDto[];
+  memoryContext: Parameters<typeof resolveAgentLoadout>[0]["memoryContext"];
+}
+
 /**
  * Builds the capability candidate set and recommendation/effective-selection evidence.
  * It is intentionally side-effect free: actual capability mutation belongs to session assembly.
@@ -58,17 +69,59 @@ export class AgentLoadoutService {
     const d = this.deps;
     const task = d.db.getTask(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
-    const welcomeMode = task.welcomeMode ?? DEFAULT_WELCOME_MODE;
-    const profile = d.modeProfiles.getProfile(welcomeMode);
-    const preset = resolveModePreset(profile.policy, task.modePresetId, profile.id);
     const projectContext = d.projectContextResolver.resolveTask(taskId);
-    const connectorIds = connectorIdsOverride;
-    const selectedExpertId = normalizeSingleExpertId(expertIdOverride === undefined ? task.expertId : expertIdOverride);
-    const resolved = resolveRuntimeContextPolicy({ welcomeMode, profile, projectContext, preset });
-    const effectiveProfile = resolved.effectiveProfile;
     const cwd = task.cwd
       ?? (task.spaceId ? d.db.getSpace(task.spaceId)?.path : undefined)
       ?? d.taskWorkspace.resolveTaskExecutionWorkspaceDir(taskId);
+    const selectedExpertId = normalizeSingleExpertId(expertIdOverride === undefined ? task.expertId : expertIdOverride);
+    const capabilities = assembly?.capabilities ?? [];
+    const effectiveExpertId = selectedExpertId && capabilities.filter(item =>
+      item.kind === "expert" && item.id.toLowerCase() === selectedExpertId.toLowerCase()).at(-1)?.enabled ? selectedExpertId : undefined;
+    const effectiveConnectorIds = connectorIdsOverride.filter(id => capabilities.some(item =>
+      item.kind === "connector" && item.enabled && item.id.toLowerCase() === id.toLowerCase()));
+    const skillPaths = collectSessionSkillPaths(effectiveExpertId, effectiveConnectorIds, {
+      expertSkillDir: (id) => d.expertsService.getPrivateSkillsDir(id),
+      connectorSkillDirs: (ids) => d.connectorsService.getPrivateSkillDirs(ids),
+    });
+    const effectiveness = d.skillEffectiveness.summaries(500);
+    const runtimeSkills = d.resolveSkillsForContext(
+      cwd,
+      skillPaths,
+      { projectId: task.projectId, workspaceId: task.spaceId, taskId: task.id },
+    );
+    const memoryScopeChain = d.memoryService.resolveScopeChain({ taskId, projectId: task.projectId ?? undefined,
+      workspaceId: task.spaceId ?? undefined, includeInherited: true });
+    const memoryContext = d.memoryEnabled()
+      ? { items: d.memoryService.search({
+          taskId,
+          projectId: task.projectId ?? undefined,
+          workspaceId: task.spaceId ?? undefined,
+          query,
+          includeInherited: true,
+          statuses: ["active"],
+          limit: 24,
+        }).map((hit) => {
+          const scope = d.memoryService.bestMatchedScope(hit.memory, memoryScopeChain);
+          return { ...hit.memory, scopeType: scope.scopeType, scopeId: scope.scopeId,
+            score: hit.score, reasons: hit.reasons };
+        }) }
+      : null;
+    return this.resolveSnapshot({ task, projectContext, runtimeSkills, effectiveness, memoryContext }, query, assembly, expertIdOverride);
+  }
+
+  resolveSnapshot(
+    { task, projectContext, runtimeSkills, effectiveness, memoryContext }: AgentLoadoutSnapshot,
+    query: string,
+    assembly?: AssemblyTraceDto | null,
+    expertIdOverride?: string | null,
+  ): AgentLoadoutRecommendationDto {
+    const d = this.deps;
+    const welcomeMode = task.welcomeMode ?? DEFAULT_WELCOME_MODE;
+    const profile = d.modeProfiles.getProfile(welcomeMode);
+    const preset = resolveModePreset(profile.policy, task.modePresetId, profile.id);
+    const selectedExpertId = normalizeSingleExpertId(expertIdOverride === undefined ? task.expertId : expertIdOverride);
+    const resolved = resolveRuntimeContextPolicy({ welcomeMode, profile, projectContext, preset });
+    const effectiveProfile = resolved.effectiveProfile;
     const actualCapabilities = new Map(
       (assembly?.capabilities ?? []).map((item) => [`${item.kind}:${item.id.toLowerCase()}`, item]),
     );
@@ -185,21 +238,6 @@ export class AgentLoadoutService {
       });
     }
 
-    const effectiveExpertId = selectedExpertId
-      && actualCapabilities.get(`expert:${selectedExpertId.toLowerCase()}`)?.enabled
-      ? selectedExpertId
-      : undefined;
-    const effectiveConnectorIds = connectorIds.filter((id) => actualConnectorIds.has(id.toLowerCase()));
-    const skillPaths = collectSessionSkillPaths(effectiveExpertId, effectiveConnectorIds, {
-      expertSkillDir: (id) => d.expertsService.getPrivateSkillsDir(id),
-      connectorSkillDirs: (ids) => d.connectorsService.getPrivateSkillDirs(ids),
-    });
-    const effectiveness = d.skillEffectiveness.summaries(500);
-    const runtimeSkills = d.resolveSkillsForContext(
-      cwd,
-      skillPaths,
-      { projectId: task.projectId, workspaceId: task.spaceId, taskId: task.id },
-    );
     for (const skill of runtimeSkills.dtos) {
       const decision = resolveSkillCapability(
         { id: skill.id, name: skill.name, description: skill.description, command: skill.command, enabled: skill.enabled },
@@ -260,25 +298,8 @@ export class AgentLoadoutService {
       });
     }
 
-    const memoryScopeChain = d.memoryService.resolveScopeChain({ taskId, projectId: task.projectId ?? undefined,
-      workspaceId: task.spaceId ?? undefined, includeInherited: true });
-    const memoryContext = d.memoryEnabled()
-      ? { items: d.memoryService.search({
-          taskId,
-          projectId: task.projectId ?? undefined,
-          workspaceId: task.spaceId ?? undefined,
-          query,
-          includeInherited: true,
-          statuses: ["active"],
-          limit: 24,
-        }).map((hit) => {
-          const scope = d.memoryService.bestMatchedScope(hit.memory, memoryScopeChain);
-          return { ...hit.memory, scopeType: scope.scopeType, scopeId: scope.scopeId,
-            score: hit.score, reasons: hit.reasons };
-        }) }
-      : null;
     return resolveAgentLoadout({
-      taskId,
+      taskId: task.id,
       query,
       mode: welcomeMode,
       projectId: task.projectId ?? undefined,

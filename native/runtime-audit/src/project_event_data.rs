@@ -1,4 +1,4 @@
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -70,7 +70,7 @@ pub fn run(db: &mut Connection, request: Request) -> Reply {
     })
 }
 
-fn apply(db: &mut Connection, request: Request) -> rusqlite::Result<Reply> {
+fn apply(db: &mut Connection, request: Request) -> duckdb::Result<Reply> {
     match request {
         Request::Read { event_id } => match read_event(db, &event_id)? {
             Some(event) => Ok(Reply::Found { event }),
@@ -81,7 +81,7 @@ fn apply(db: &mut Connection, request: Request) -> rusqlite::Result<Reply> {
             event_id,
             triage_status,
         } => {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let archived = tx
                 .query_row(
                     "SELECT archived FROM projects WHERE id = ?1",
@@ -110,8 +110,8 @@ fn apply(db: &mut Connection, request: Request) -> rusqlite::Result<Reply> {
     }
 }
 
-fn read_event(db: &Connection, event_id: &str) -> rusqlite::Result<Option<EventRow>> {
-    db.prepare_cached(
+fn read_event(db: &Connection, event_id: &str) -> duckdb::Result<Option<EventRow>> {
+    db.prepare(
         "SELECT id, project_id, source, kind, title, body, ref, payload_json, triage_status, created_at
          FROM project_events WHERE id = ?1",
     )?

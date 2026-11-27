@@ -6,6 +6,8 @@ import type { ConversationInteractionService } from "./ConversationInteractionSe
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import { projectLegacyExecutionControlHistory } from "./LegacyExecutionControlHistory";
 import type { ConversationInteractionAnswer, ConversationInteractionRequest } from "../../shared/conversation-interaction";
+import type { ConversationGoalCreateRequest, ConversationGoalDto } from "../../shared/conversation-goal";
+import type { ConversationGoalMutationResult } from "../../shared/conversation-runtime";
 import { currentDurableInvocation } from "./durable/DurableExecutionContext";
 import { readGoalObservations, type GoalObservationQuote } from "./durable/DurableGoalCompletion";
 import { criterionNeedsEnvironment, isCriterionResolved, isRequiredCriterion, type WorkDto, type ExpectedVersionGuard } from "../../shared/bot-work";
@@ -13,7 +15,12 @@ import { criterionNeedsEnvironment, isCriterionResolved, isRequiredCriterion, ty
 export interface ConversationRuntimeBridge {
   resolveContext: () => ConversationExecutionContext | undefined;
   interaction: ConversationInteractionService;
-  goal: ConversationGoalService;
+  goal?: ConversationGoalService;
+  readGoal?: (taskId: string, workId?: string) => Promise<{
+    goal: ConversationGoalDto;
+    versionGuard: ExpectedVersionGuard;
+  } | undefined>;
+  createGoal?: (request: ConversationGoalCreateRequest) => Promise<ConversationGoalMutationResult>;
   requestInteraction?: (context: ConversationExecutionContext, request: ConversationInteractionRequest,
     signal: AbortSignal, toolCallId: string) => Promise<ConversationInteractionAnswer>;
 }
@@ -61,6 +68,10 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
     const remember = (taskId: string, work: WorkDto | undefined) => {
       if (observed.size >= 128 && !observed.has(taskId)) observed.delete(observed.keys().next().value!);
       if (work) observed.set(taskId, structuredClone(work)); else observed.delete(taskId);
+    };
+    const legacyGoal = () => {
+      if (!bridge.goal) throw new Error("当前 Goal 操作需要 Core 写入接口");
+      return bridge.goal;
     };
     pi.on("context", (event) => {
       const messages = projectLegacyExecutionControlHistory(event.messages);
@@ -110,11 +121,21 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
       execute: async (_id, params: { workId?: string }) => {
         try {
           const taskId = requireContext(bridge).taskId;
-          const goal = bridge.goal.getLive(taskId, params.workId);
-          const work = goal ? bridge.goal.workService.getWork(goal.id) : undefined;
+          if (bridge.readGoal) {
+            const snapshot = await bridge.readGoal(taskId, params.workId);
+            if (!snapshot) return result("当前对话没有进行中的 Work。");
+            const { goal, versionGuard } = snapshot;
+            return result(
+              `当前 Work：${goal.title}（${goal.status}，r${versionGuard.expectedIntentRevision} / v${versionGuard.expectedStateVersion} / epoch ${versionGuard.expectedOwnerEpoch}）`,
+              { goal, versionGuard },
+            );
+          }
+          const goals = legacyGoal();
+          const goal = goals.getLive(taskId, params.workId);
+          const work = goal ? goals.workService.getWork(goal.id) : undefined;
           remember(taskId, work);
           const operation = currentDurableInvocation()?.sourceUserMessageId;
-          const policy = work && operation ? await bridge.goal.resolveDotsCompletion(taskId, operation, work) : undefined;
+          const policy = work && operation ? await goals.resolveDotsCompletion(taskId, operation, work) : undefined;
           const completion = policy && !policy.stale ? policy.userAcceptance ? "user_confirmation" : "dots_evidence" : undefined;
           const goalDetails = work && completion ? "\n" + JSON.stringify({ completion,
             criteria: work.criteria.map(({ id, text, status }) => ({ id, text, status })),
@@ -147,13 +168,19 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
       execute: async (_id, params: { title: string; description?: string; criteria?: string[] }) => {
         try {
           const context = requireContext(bridge);
-          const created = bridge.goal.create({
+          const request: ConversationGoalCreateRequest = {
             taskId: context.taskId,
             title: params.title,
             description: params.description,
             criteria: params.criteria?.map((text) => ({ text })),
             createdBy: "agent_explicit_request",
-          }, { actor: bridge.goal.modelActor(context.taskId) });
+          };
+          let created: ConversationGoalMutationResult;
+          if (bridge.createGoal) created = await bridge.createGoal(request);
+          else {
+            const goals = legacyGoal();
+            created = goals.create(request, { actor: goals.modelActor(context.taskId) });
+          }
           if (!created.ok) throw new Error(created.message);
           return result(`已创建对话 Goal「${created.goal.title}」。`, { goal: created.goal });
         } catch (error) { return failure("conversation_goal_create", error); }
@@ -178,7 +205,8 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
       execute: async (_id, params: any) => {
         try {
           const context = requireContext(bridge);
-          const goal = bridge.goal.getLive(context.taskId, params.workId);
+          const goals = legacyGoal();
+          const goal = goals.getLive(context.taskId, params.workId);
           if (!goal) throw new Error("当前对话没有进行中的 Work");
           if (params.status === "achieved") throw new Error("完成 Work 必须使用 conversation_goal_propose_complete 并由用户确认");
           const guard: ExpectedVersionGuard = {
@@ -186,23 +214,23 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
             expectedIntentRevision: params.expectedIntentRevision,
             expectedOwnerEpoch: params.expectedOwnerEpoch,
           };
-          const latest = bridge.goal.workService.getWork(goal.id);
+          const latest = goals.workService.getWork(goal.id);
           if (canRefreshProgressGuard(observed.get(context.taskId), latest, params)) guard.expectedStateVersion = latest!.stateVersion;
-          const updated = bridge.goal.update(
+          const updated = goals.update(
             { goalId: goal.id, ...params },
-            { actor: bridge.goal.modelActor(context.taskId), versionGuard: guard },
+            { actor: goals.modelActor(context.taskId), versionGuard: guard },
           );
           if (!updated.ok) {
-            const current = bridge.goal.workService.getWork(goal.id);
+            const current = goals.workService.getWork(goal.id);
             remember(context.taskId, current);
             return { ...failure("conversation_goal_update", new Error(updated.message)), details: {
-              error: updated.message, goal: bridge.goal.getLive(context.taskId, params.workId),
+              error: updated.message, goal: goals.getLive(context.taskId, params.workId),
               versionGuard: current ? { expectedStateVersion: current.stateVersion,
                 expectedIntentRevision: current.intentRevision, expectedOwnerEpoch: current.ownerEpoch } : undefined,
               instruction: "请基于返回的最新目标与进展重新评估；不要盲目重放原更新。",
             } };
           }
-          remember(context.taskId, bridge.goal.workService.getWork(goal.id));
+          remember(context.taskId, goals.workService.getWork(goal.id));
           return result(`已更新 Work「${updated.goal.title}」。`, { goal: updated.goal });
         } catch (error) { return failure("conversation_goal_update", error); }
       },
@@ -227,13 +255,14 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
       execute: async (id, params: { workId?: string; summary: string; deliveryText?: string; evidence?: string[]; observations?: GoalObservationQuote[]; expectedStateVersion: number; expectedIntentRevision: number; expectedOwnerEpoch: number }, signal: AbortSignal) => {
         try {
           const context = requireContext(bridge);
-          const goal = bridge.goal.getLive(context.taskId, params.workId);
+          const goals = legacyGoal();
+          const goal = goals.getLive(context.taskId, params.workId);
           if (!goal) throw new Error("当前对话没有进行中的 Work");
           if (signal?.aborted) throw new Error("当前执行已中止");
           // Watch executors report observations, not lifetime control. Waiting for
           // confirmation here prevents the terminal receipt the owner needs to
           // evaluate the user's stop condition, so return without an interaction.
-          const work = bridge.goal.workService.getWork(goal.id);
+          const work = goals.workService.getWork(goal.id);
           if (work?.mode === "watch") {
             bridge.interaction.cancelDurable(context, id, "持续委托由前台核对结束，不再等待旧版完成确认");
             return result("这是持续委托的一轮观察，不需要用户确认完成。请直接交付本轮实际观察、停止条件及对应证据后结束本轮回复；前台会依据原委托核对并自动处理持续委托的结束。不要调用 automation_exec 取消订阅，Work 的调度不是普通 automation。此回执没有宣布目标达成，也没有停止后续检查。", {
@@ -247,7 +276,7 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
           if (!work || work.stateVersion !== guard.expectedStateVersion || work.intentRevision !== guard.expectedIntentRevision ||
             work.ownerEpoch !== guard.expectedOwnerEpoch) throw new Error("原目标版本已变化，请读取最新目标后重新核对");
           const operation = currentDurableInvocation()?.sourceUserMessageId;
-          const policy = operation ? await bridge.goal.resolveDotsCompletion(context.taskId, operation, work) : undefined;
+          const policy = operation ? await goals.resolveDotsCompletion(context.taskId, operation, work) : undefined;
           if (policy?.stale) throw new Error("原交办已调整，请按最新要求重新核对");
           if (policy && operation) {
             const delivery = params.deliveryText ?? "";
@@ -262,7 +291,7 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
             if (confirmed) proof = await readGoalObservations(policy.evidenceOrigin, operation, params.observations ?? [], policy.lineage, delivery);
             await checkCurrentToolInput();
             signal?.throwIfAborted();
-            const updated = bridge.goal.completeFromDots(context.taskId, operation, goal.id, guard, params.summary, { ...proof, text: delivery }, confirmed);
+            const updated = goals.completeFromDots(context.taskId, operation, goal.id, guard, params.summary, { ...proof, text: delivery }, confirmed);
             if (!updated.ok) throw new Error(updated.message);
             return result(`Work「${updated.goal.title}」已验收，应用会回传本次已登记的交付。请直接结束本轮，最后回复仅保留原任务的执行记录。`,
               { confirmed, goal: updated.goal });
@@ -280,7 +309,7 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
           if (answer !== true) return result("用户暂未确认完成 Work，事项保持原状态。", { confirmed: false });
           await checkCurrentToolInput();
           signal?.throwIfAborted();
-          const updated = bridge.goal.completeFromConfirmation(context, goal.id, guard, params.summary);
+          const updated = goals.completeFromConfirmation(context, goal.id, guard, params.summary);
           if (!updated.ok) throw new Error(updated.message);
           return result(`Work「${updated.goal.title}」已由用户确认结束。`, { confirmed: true, goal: updated.goal });
         } catch (error) {

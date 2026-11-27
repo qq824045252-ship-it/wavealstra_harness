@@ -1,5 +1,5 @@
 use crate::{Result, library_text};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, symlink_metadata},
@@ -114,12 +114,12 @@ fn version_is_current(
     db: &Connection,
     item: &ItemVersion,
     require_revision: bool,
-) -> rusqlite::Result<bool> {
+) -> duckdb::Result<bool> {
     Ok(db
         .query_row(
             "SELECT 1 FROM library_items WHERE id=? AND space_id=? AND filename=?
-             AND kind=? AND mime_type=? AND content_hash IS ? AND size_bytes=?
-             AND extract_status IS ? AND trashed_at IS NULL AND (NOT ? OR (title=? AND updated_at=?))",
+             AND kind=? AND mime_type=? AND content_hash IS NOT DISTINCT FROM ? AND size_bytes=?
+             AND extract_status IS NOT DISTINCT FROM ? AND trashed_at IS NULL AND (NOT ? OR (title=? AND updated_at=?))",
             params![
                 item.id,
                 item.space_id,
@@ -139,7 +139,7 @@ fn version_is_current(
         .is_some())
 }
 
-fn has_item_chunks(db: &Connection, id: &str) -> rusqlite::Result<bool> {
+fn has_item_chunks(db: &Connection, id: &str) -> duckdb::Result<bool> {
     db.query_row(
         "SELECT EXISTS(SELECT 1 FROM library_chunks WHERE item_id=?)",
         [id],
@@ -147,44 +147,58 @@ fn has_item_chunks(db: &Connection, id: &str) -> rusqlite::Result<bool> {
     )
 }
 
-fn refresh_fts(db: &Connection, item: &ItemVersion, body: Option<&str>) -> rusqlite::Result<()> {
+fn refresh_fts(db: &Connection, item: &ItemVersion, body: Option<&str>) -> Result<()> {
     refresh_item_fts(db, &item.id, body)
 }
 
-fn refresh_item_fts(db: &Connection, id: &str, body: Option<&str>) -> rusqlite::Result<()> {
-    if has_table(db, "library_fts")? {
-        db.execute("DELETE FROM library_fts WHERE item_id=?", [id])?;
-        if let Some(body) = body {
-            db.execute(
-                "INSERT INTO library_fts(item_id,title,filename,body)
-                 SELECT id,title,filename,? FROM library_items WHERE id=?",
-                params![body, id],
-            )?;
-        }
-    }
+pub(crate) fn refresh_item_fts(db: &Connection, id: &str, body: Option<&str>) -> Result<()> {
+    let doc_key = format!("library:{id}");
+    let Some(body_text) = body else {
+        crate::search_postings::delete_document_postings_in_tx(db, &doc_key)?;
+        return Ok(());
+    };
+    let row: Option<(String, String, String, Option<String>, i64)> = db
+        .query_row(
+            "SELECT space_id, title, filename, content_hash, updated_at FROM library_items WHERE id=?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()?;
+    let Some((space_id, title, filename, content_hash, updated_at)) = row else {
+        crate::search_postings::delete_document_postings_in_tx(db, &doc_key)?;
+        return Ok(());
+    };
+    let doc = crate::search_postings::SearchDocumentInput {
+        doc_key,
+        domain: "library".to_owned(),
+        scope: format!("library_space:{space_id}"),
+        entity_id: id.to_owned(),
+        title: format!("{title} {filename}"),
+        body: body_text.to_owned(),
+        content_revision: updated_at,
+        content_hash: content_hash.unwrap_or_default(),
+        metadata_json: None,
+    };
+    let postings = crate::search_postings::prepare_document_postings(&doc);
+    let _ = crate::search_postings::publish_document_postings_in_tx(db, &doc, &postings, updated_at)?;
     Ok(())
 }
 
-pub(crate) fn has_table(db: &Connection, name: &str) -> rusqlite::Result<bool> {
-    db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE type='table' AND name=?)",
-        [name],
-        |row| row.get(0),
-    )
+pub(crate) fn has_table(db: &Connection, name: &str) -> Result<bool> {
+    crate::database::table_exists(db, name)
 }
 
 pub fn publish(db: &mut Connection, publication: Publication) -> Result<Status> {
-    db.execute(
-        "ATTACH DATABASE ? AS library_index_stage",
-        [&publication.staging_uri],
-    )?;
-    let result = publish_transaction(db, &publication);
-    db.execute_batch("DETACH DATABASE library_index_stage")?;
-    result
+    let staged = library_text::read_staged_chunks(&publication.staging_uri)?;
+    publish_transaction(db, &publication, &staged)
 }
 
-fn publish_transaction(db: &mut Connection, publication: &Publication) -> Result<Status> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+fn publish_transaction(
+    db: &mut Connection,
+    publication: &Publication,
+    staged: &[library_text::StagedChunk],
+) -> Result<Status> {
+    let tx = db.transaction()?;
     let item = &publication.item;
     if !version_is_current(&tx, item, true)? {
         return Ok(Status::Skipped);
@@ -196,9 +210,14 @@ fn publish_transaction(db: &mut Connection, publication: &Publication) -> Result
     if !publication.source.is_current() {
         return Ok(Status::SourceChanged);
     }
-    refresh_fts(&tx, item, Some(""))?;
+    let combined_body: String = staged
+        .iter()
+        .map(|c| c.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    refresh_fts(&tx, item, Some(&combined_body))?;
     if has_chunks {
-        replace_chunks(&tx, publication)?;
+        replace_chunks(&tx, publication, staged)?;
     }
     if !publication.source.is_current() {
         return Ok(Status::SourceChanged);
@@ -207,28 +226,35 @@ fn publish_transaction(db: &mut Connection, publication: &Publication) -> Result
     Ok(Status::Indexed)
 }
 
-fn replace_chunks(db: &Connection, publication: &Publication) -> rusqlite::Result<()> {
+fn replace_chunks(
+    db: &Connection,
+    publication: &Publication,
+    staged: &[library_text::StagedChunk],
+) -> Result<()> {
     let id = &publication.item.id;
-    db.execute(
+    let mut insert = db.prepare(
         "INSERT INTO library_chunks(id,item_id,chunk_index,content,char_offset,hash,updated_at)
-         SELECT ? || '#' || chunk_index, ?, chunk_index, content, char_offset, hash, ?
-         FROM library_index_stage.chunks WHERE 1 ORDER BY chunk_index
+         VALUES (?,?,?,?,?,?,?)
          ON CONFLICT(id) DO UPDATE SET chunk_index=excluded.chunk_index,content=excluded.content,
            char_offset=excluded.char_offset,hash=excluded.hash,updated_at=excluded.updated_at",
-        params![id, id, publication.indexed_at],
     )?;
-    if has_table(db, "library_chunks_fts")? {
-        db.execute("DELETE FROM library_chunks_fts WHERE item_id=?", [id])?;
-        db.execute(
-            "INSERT INTO library_chunks_fts(item_id,chunk_id,content)
-             SELECT ?, ? || '#' || chunk_index, content FROM library_index_stage.chunks ORDER BY chunk_index",
-            [id, id],
-        )?;
+    for chunk in staged {
+        let chunk_id = format!("{id}#{}", chunk.chunk_index);
+        insert.execute(params![
+            chunk_id,
+            id,
+            chunk.chunk_index,
+            chunk.content,
+            chunk.char_offset,
+            chunk.hash,
+            publication.indexed_at
+        ])?;
     }
-    prune_chunks(db, id, publication.chunk_count)
+    prune_chunks(db, id, publication.chunk_count)?;
+    Ok(())
 }
 
-fn prune_chunks(db: &Connection, id: &str, chunk_count: usize) -> rusqlite::Result<()> {
+fn prune_chunks(db: &Connection, id: &str, chunk_count: usize) -> duckdb::Result<()> {
     db.execute(
         "DELETE FROM library_chunk_embeddings
          WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id=?)
@@ -312,7 +338,7 @@ pub fn publish_document(db: &mut Connection, publication: DocumentPublication) -
         publication.chunk_size,
         publication.overlap,
     )?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let item = &publication.item;
     if !version_is_current(&tx, item, false)? {
         return Ok(Status::Skipped);
@@ -456,29 +482,18 @@ fn write_document_chunks(
     indexed_at: i64,
     document: impl FnOnce(&mut dyn FnMut(&str, &str, usize) -> Result<()>) -> Result<()>,
 ) -> Result<()> {
-    let mut insert = db.prepare_cached(
+    let mut insert = db.prepare(
         "INSERT INTO library_chunks(id,item_id,chunk_index,content,char_offset,hash,updated_at)
          VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
            chunk_index=excluded.chunk_index,content=excluded.content,char_offset=excluded.char_offset,
            hash=excluded.hash,updated_at=excluded.updated_at",
     )?;
-    let mut fts = if has_table(db, "library_chunks_fts")? {
-        db.execute("DELETE FROM library_chunks_fts WHERE item_id=?", [item_id])?;
-        Some(db.prepare_cached(
-            "INSERT INTO library_chunks_fts(item_id,chunk_id,content) VALUES (?,?,?)",
-        )?)
-    } else {
-        None
-    };
     let mut index = 0;
     document(&mut |content, hash, offset| {
         let id = format!("{item_id}#{index}");
         insert.execute(params![
             id, item_id, index, content, offset, hash, indexed_at
         ])?;
-        if let Some(fts) = &mut fts {
-            fts.execute(params![item_id, id, content])?;
-        }
         index += 1;
         Ok(())
     })?;

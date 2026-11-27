@@ -20,6 +20,7 @@ writeFileSync(join(folder, "input.txt"), "客户档案编号 A456");
 const { DOTS_TASK_ID } = await import("../src/shared/dots");
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
 const { DotsActions } = await import("../src/main/dots/DotsActions");
+const { fixtureTaskBoard } = await import("./fixtures/legacy-task-board-store");
 const { dotsFollowUpInput, dotsForwardingDenied, hasDotsResumeInstruction } = await import("../src/main/dots/DotsFollowUpInput");
 const { DotsDelegations } = await import("../src/main/dots/DotsDelegations");
 const { createAgentDurableFixture } = await import("./agent-durable-fixture");
@@ -150,7 +151,7 @@ const terminal = new TerminalHost({ resolveCwd: () => folder });
 agent.setLocalWorkflowServices({ cron, terminal: new TaskTerminalService(terminal) });
 const journal = new DotsDelegations(db.connection, (...args) => agent.dotsSubmission(...args), () => {});
 const makeActions = () => new DotsActions(db, agent, { link: (...args) => journal.link(...args), list: () => journal.list(), changed: () => journal.refresh(),
-  failed: (...args) => journal.failed(...args) });
+  failed: (...args) => journal.failed(...args) }, fixtureTaskBoard(db.connection));
 let actions = makeActions();
 agent.setDotsActions(actions);
 actions.startFileWatches();

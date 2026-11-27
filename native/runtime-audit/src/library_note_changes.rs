@@ -2,7 +2,7 @@ use crate::{
     Result, library_index, library_metadata::ITEMS, library_text, scoped_notes,
     sqlite_rows::records,
 };
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::{
@@ -47,7 +47,7 @@ pub enum Change {
 }
 
 fn writable(db: &Connection, item: &Target, include_trash: bool) -> Result<bool> {
-    let scope = db.prepare_cached(
+    let scope = db.prepare(
         "SELECT s.project_id,s.workspace_id FROM library_items i JOIN library_spaces s ON s.id=i.space_id
          WHERE i.id=?1 AND i.space_id=?2 AND (?3 OR i.trashed_at IS NULL)"
     )?.query_row(params![item.id, item.space_id, include_trash], |row| {
@@ -64,7 +64,7 @@ fn writable(db: &Connection, item: &Target, include_trash: bool) -> Result<bool>
 }
 
 pub fn write(db: &mut Connection, change: Change, updated_at: i64) -> Result<Value> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let items = match &change {
         Change::Metadata { item, .. } => std::slice::from_ref(item),
         Change::Move { items, .. } | Change::Trash { items } | Change::Restore { items, .. } => {
@@ -129,7 +129,7 @@ pub fn write(db: &mut Connection, change: Change, updated_at: i64) -> Result<Val
                     return Ok(json!({ "status": "folderChanged" }));
                 }
             }
-            let mut update = tx.prepare_cached(
+            let mut update = tx.prepare(
                 "UPDATE library_items SET collection_id=?1,updated_at=?2 WHERE id=?3",
             )?;
             for item in items {
@@ -138,7 +138,7 @@ pub fn write(db: &mut Connection, change: Change, updated_at: i64) -> Result<Val
             json!({ "status": "updated" })
         }
         Change::Trash { items } => {
-            let mut update = tx.prepare_cached(
+            let mut update = tx.prepare(
                 "UPDATE library_items SET trashed_at=?1,updated_at=?1 WHERE id=?2 AND coalesce(trashed_at,0)=0"
             )?;
             for item in items {
@@ -190,8 +190,8 @@ fn restore_item(
     overlap: usize,
 ) -> Result<RestoreItem> {
     let row = db
-        .prepare_cached(
-            "UPDATE library_items SET trashed_at=NULL,updated_at=max(updated_at,?1)
+        .prepare(
+            "UPDATE library_items SET trashed_at=NULL,updated_at=GREATEST(updated_at, ?1)
          WHERE id=?2 AND coalesce(trashed_at,0)!=0 RETURNING kind,filename,size_bytes",
         )?
         .query_row(params![updated_at, item.id], |row| {

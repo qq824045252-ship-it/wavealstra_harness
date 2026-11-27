@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type Database from "better-sqlite3";
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import type { ExecutionVerificationResult } from "../../shared/execution-verification";
@@ -52,29 +53,35 @@ export class ExecutionAttemptRepository {
   private writeTail: Promise<unknown> = Promise.resolve();
 
   constructor(
-    private readonly db: Database.Database,
+    private readonly fixture: Database.Database | undefined,
     private readonly reader?: import("../platform/runtime-audit").RuntimeAuditReader,
   ) {}
+
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("执行尝试记录需要通过 Rust Core 读取或写入");
+    return this.fixture;
+  }
 
   flush(): Promise<void> {
     return this.writeTail.then(() => undefined, () => undefined);
   }
 
   private get rustRequired(): boolean {
-    return Boolean(this.db.readonly || this.reader?.supervised);
+    return !this.fixture || Boolean(this.fixture.readonly || this.reader?.supervised);
   }
 
   private enqueueRustWrite(request: Record<string, unknown>): void {
-    const reader = this.reader;
-    if (!reader) throw new Error("ExecutionAttemptRepository 缺少 Rust 写入通道");
-    const next = this.writeTail.then(async () => {
-      const reply = await reader.batch1Write(request);
-      if (reply === undefined) throw new Error(`执行尝试写入未获 Rust 确认: ${String(request.kind)}`);
-      return reply;
-    });
+    const next = this.writeTail.then(() => this.writeRust(request));
     this.writeTail = next.catch(error => {
       console.warn(`[ExecutionAttempts] Rust write failed: ${error instanceof Error ? error.message : String(error)}`);
     });
+  }
+
+  private async writeRust<T>(request: Record<string, unknown>): Promise<T> {
+    if (!this.reader) throw new Error("ExecutionAttemptRepository 缺少 Rust 写入通道");
+    const reply = await this.reader.batch1Write<T>(request);
+    if (reply === undefined) throw new Error(`执行尝试写入未获 Rust 确认: ${String(request.kind)}`);
+    return reply;
   }
 
   begin(input: ExecutionAttemptBegin): ExecutionAttempt {
@@ -91,8 +98,28 @@ export class ExecutionAttemptRepository {
     return row ? JSON.parse(row.record_json) as ExecutionAttempt : undefined;
   }
 
-  private insert(input: ExecutionAttemptBegin, id: string): ExecutionAttempt {
-    const record: ExecutionAttempt = {
+  async beginDurableAsync(input: ExecutionAttemptBegin): Promise<ExecutionAttempt> {
+    if (!this.rustRequired) return this.beginDurable(input);
+    const record = this.runningRecord(input, durableAttemptId(input, input.toolCallId));
+    const reply = await this.writeRust<{ ok: true; recordJson: string }>({ ...this.insertRequest(record), ifAbsent: true });
+    const saved = JSON.parse(reply.recordJson) as ExecutionAttempt;
+    if (!matchesIdentity(saved, record, record.toolCallId) || saved.id !== record.id ||
+      saved.target !== record.target || saved.toolName !== record.toolName) throw new Error("Durable execution attempt identity is already in use");
+    return saved;
+  }
+
+  async findDurableAsync(context: ConversationExecutionContext, toolCallId: string): Promise<ExecutionAttempt | undefined> {
+    if (!this.rustRequired) return this.findDurable(context, toolCallId);
+    const id = durableAttemptId(context, toolCallId);
+    const record = await this.reader?.readExecutionAttempt(id, context, toolCallId);
+    if (record === undefined) throw new Error("执行尝试读取未获 Rust 核心确认");
+    if (record === null) return undefined;
+    if (record.id !== id || !matchesIdentity(record, context, toolCallId)) throw new Error("Invalid durable execution identity");
+    return record;
+  }
+
+  private runningRecord(input: ExecutionAttemptBegin, id: string): ExecutionAttempt {
+    return {
       ...input,
       protocolVersion: 1,
       id,
@@ -102,34 +129,76 @@ export class ExecutionAttemptRepository {
       verifierId: input.verifierId ?? "unassigned",
       verifierVersion: input.verifierVersion ?? 0,
     };
-    const recordJson = JSON.stringify(record);
+  }
+
+  private insertRequest(record: ExecutionAttempt) {
+    return {
+      kind: "executionAttemptInsert",
+      id: record.id,
+      taskId: record.taskId,
+      executionId: record.executionId,
+      assistantMessageId: record.assistantMessageId,
+      toolCallId: record.toolCallId,
+      target: record.target,
+      status: record.status,
+      recordJson: JSON.stringify(record),
+      createdAt: record.startedAt,
+    };
+  }
+
+  private insert(input: ExecutionAttemptBegin, id: string): ExecutionAttempt {
+    const record = this.runningRecord(input, id);
     if (this.reader && this.rustRequired) {
-      this.enqueueRustWrite({
-        kind: "executionAttemptInsert",
-        id: record.id,
-        taskId: record.taskId,
-        executionId: record.executionId,
-        assistantMessageId: record.assistantMessageId,
-        toolCallId: record.toolCallId,
-        target: record.target,
-        status: record.status,
-        recordJson,
-        createdAt: record.startedAt,
-      });
+      this.enqueueRustWrite(this.insertRequest(record));
       return record;
     }
     if (this.db.readonly) throw new Error("只读数据库模式下无法写入 execution_attempts");
     this.db.prepare(`INSERT INTO execution_attempts
       (id,task_id,execution_id,assistant_message_id,tool_call_id,target,status,record_json,created_at)
       VALUES (?,?,?,?,?,?,?,?,?)`).run(record.id, record.taskId, record.executionId,
-      record.assistantMessageId, record.toolCallId, record.target, record.status, recordJson, record.startedAt);
+      record.assistantMessageId, record.toolCallId, record.target, record.status, JSON.stringify(record), record.startedAt);
     return record;
   }
 
   /** A recovered native result can settle an attempt marked uncertain during startup. */
   settleDurable(record: ExecutionAttempt): void {
-    if (record.id !== durableAttemptId(record, record.toolCallId)) throw new Error("Invalid durable execution identity");
     const prior = this.findDurable(record, record.toolCallId);
+    if (!this.validateDurableSettlement(record, prior)) return;
+    if (this.reader && this.rustRequired) {
+      this.enqueueRustWrite(this.settlementRequest(record));
+      return;
+    }
+    if (prior.status === "running") { this.update(record); return; }
+    if (this.db.readonly) throw new Error("只读数据库模式下无法写入 execution_attempts");
+    this.db.prepare("UPDATE execution_attempts SET status=?,record_json=?,finished_at=? WHERE id=? AND status='inconclusive'")
+      .run(record.status, JSON.stringify(record), record.finishedAt ?? null, record.id);
+  }
+
+  async settleDurableAsync(record: ExecutionAttempt): Promise<void> {
+    if (!this.rustRequired) return this.settleDurable(record);
+    const prior = await this.findDurableAsync(record, record.toolCallId);
+    if (!this.validateDurableSettlement(record, prior)) return;
+    await this.writeRust(this.settlementRequest(record));
+  }
+
+  private settlementRequest(record: ExecutionAttempt) {
+    return {
+      kind: "executionAttemptSettleDurable",
+      id: record.id,
+      taskId: record.taskId,
+      executionId: record.executionId,
+      assistantMessageId: record.assistantMessageId,
+      toolCallId: record.toolCallId,
+      target: record.target,
+      status: record.status,
+      recordJson: JSON.stringify(record),
+      finishedAt: record.finishedAt ?? null,
+      allowInconclusiveSettle: true,
+    };
+  }
+
+  private validateDurableSettlement(record: ExecutionAttempt, prior: ExecutionAttempt | undefined): prior is ExecutionAttempt {
+    if (record.id !== durableAttemptId(record, record.toolCallId)) throw new Error("Invalid durable execution identity");
     if (!prior) throw new Error("Durable execution attempt is missing");
     const receipt = record.nativeReceipt;
     if (receipt && (!this.matchesVerification(record) || receipt.attemptId !== prior.id || receipt.taskId !== prior.taskId ||
@@ -140,32 +209,13 @@ export class ExecutionAttemptRepository {
       receipt.checkedAt !== record.finishedAt || receipt.exitCode !== record.observedExitCode || receipt.causeCode !== record.causeCode ||
       (receipt.transport === "returned" ? "succeeded" : "failed") !== record.transportStatus))
       throw new Error("Durable execution attempt disagrees with its native receipt");
-    if (prior.nativeReceipt && JSON.stringify(prior.nativeReceipt) !== JSON.stringify(receipt))
+    if (prior.nativeReceipt && !isDeepStrictEqual(prior.nativeReceipt, receipt))
       throw new Error("Durable execution receipt cannot be replaced");
-    if (prior.status !== "running" && (prior.status !== "inconclusive" || prior.causeCode !== "application-restarted")) return;
+    if (prior.status !== "running" && (prior.status !== "inconclusive" || prior.causeCode !== "application-restarted")) return false;
     if (record.status === "passed" && (prior.status === "inconclusive" || record.protocolVersion === 1) && !this.hasMatchingVerification(record)) {
       throw new Error(prior.status === "inconclusive" ? "Durable result has no matching verifier evidence" : "Execution attempt has no matching passed verifier evidence");
     }
-    if (this.reader && this.rustRequired) {
-      this.enqueueRustWrite({
-        kind: "executionAttemptSettleDurable",
-        id: record.id,
-        taskId: record.taskId,
-        executionId: record.executionId,
-        assistantMessageId: record.assistantMessageId,
-        toolCallId: record.toolCallId,
-        target: record.target,
-        status: record.status,
-        recordJson: JSON.stringify(record),
-        finishedAt: record.finishedAt ?? null,
-        allowInconclusiveSettle: prior.status === "inconclusive" && prior.causeCode === "application-restarted",
-      });
-      return;
-    }
-    if (prior.status === "running") { this.update(record); return; }
-    if (this.db.readonly) throw new Error("只读数据库模式下无法写入 execution_attempts");
-    this.db.prepare("UPDATE execution_attempts SET status=?,record_json=?,finished_at=? WHERE id=? AND status='inconclusive'")
-      .run(record.status, JSON.stringify(record), record.finishedAt ?? null, record.id);
+    return true;
   }
 
   update(record: ExecutionAttempt): void {
@@ -241,6 +291,11 @@ export class ExecutionAttemptRepository {
     }
     return recovered;
   }
+}
+
+function matchesIdentity(record: ExecutionAttempt, context: ConversationExecutionContext, toolCallId: string): boolean {
+  return record.taskId === context.taskId && record.executionId === context.executionId &&
+    record.assistantMessageId === context.assistantMessageId && record.toolCallId === toolCallId;
 }
 
 function durableAttemptId(context: ConversationExecutionContext, toolCallId: string): string {

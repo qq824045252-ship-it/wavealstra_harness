@@ -41,7 +41,7 @@ export function gatewayConversationDirectory(db: AppDatabase, taskId: string, ch
       // Serialize binding changes in app.db and verify the old native writer has released the store.
       claimDurableStorageLease(originalDirectory).release();
       renameSync(originalDirectory, target);
-    } else if (!destination || !lstatSync(join(target, "durable.sqlite"), { throwIfNoEntry: false })?.isFile()) {
+    } else if (!destination || !lstatSync(target, { throwIfNoEntry: false })?.isDirectory()) {
       throw new Error("原渠道会话记录缺失");
     }
     // If the process exited after rename, only the destination exists. Finish that same move.

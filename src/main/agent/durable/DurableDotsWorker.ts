@@ -48,7 +48,7 @@ type VerifyCompletion = (
 
 export function createDurableDotsWorker(
   taskId: string,
-  isActive: (taskId: string, operationId: string) => boolean,
+  isActive: (taskId: string, operationId: string) => boolean | Promise<boolean>,
   validateDependency: (taskId: string, operationId: string, dependencyOperationId: string) => DotsTerminalDependency,
   verifyCompletion: VerifyCompletion,
 ): ToolRegistration {
@@ -89,7 +89,7 @@ export function createDurableDotsWorker(
       // input can own the terminal receipt, and it must match Dots' active operation.
       const receiptId = live.run?.inputs.at(-1);
       const source = await durableSourceInput(api, context, api.conversationId, live.run?.inputs ?? [], true);
-      if (!source || !isActive(taskId, source.id))
+      if (!source || !await isActive(taskId, source.id))
         return toolError("当前执行没有可结束的 Dots 后台交办。");
       let terminal: DotsTerminalOutcome;
       try {
@@ -111,7 +111,7 @@ export function createDurableDotsWorker(
         return toolError(error instanceof Error ? error.message : String(error));
       }
       const current = await api.snapshot(LiveDoc, api.conversationId, context);
-      if (current?.run?.inputs.at(-1) !== receiptId || !isActive(taskId, source.id))
+      if (current?.run?.inputs.at(-1) !== receiptId || !await isActive(taskId, source.id))
         return toolError("原交办已发生变化，未结束本次执行。");
       return {
         output: [{ type: "text", text: terminal.action === "wait" ? "已交给 Dots 等待依赖。" : "已提交原交办结果。" }],
@@ -122,8 +122,10 @@ export function createDurableDotsWorker(
   };
 }
 
+type DotsCommitRecoveryAuthorization = { scope?: DotsRecoveryToolScope; start?: ProjectCommitStart };
+
 export function createDurableDotsCommitRecovery(cwd: string,
-  authorization: (operationId: string) => { scope?: DotsRecoveryToolScope; start?: ProjectCommitStart }) {
+  authorization: (operationId: string) => DotsCommitRecoveryAuthorization | Promise<DotsCommitRecoveryAuthorization>) {
   return defineTool({
     name: DOTS_RECOVER_COMMIT,
     description: "仅在原交办明确授权且补救轮缺少一次本地提交时，提交已核实的任务改动。返回真实 SHA。",
@@ -137,7 +139,7 @@ export function createDurableDotsCommitRecovery(cwd: string,
         if (live?.run?.inputs.length !== 1 || live.tools?.length !== 1 || live.tools[0]?.taskId !== api.taskId)
           throw new Error("请在主任务中单独调用本地提交工具。");
         const source = await durableSourceInput(api, context, api.conversationId, live.run.inputs);
-        const { scope, start } = source ? authorization(source.id) : {};
+        const { scope, start } = source ? await authorization(source.id) : {};
         if (scope?.kind !== "local-repair" || !scope.commitFiles?.length || !start || !message.trim())
           throw new Error("当前补救轮没有本地提交授权。");
         const agent = await api.agent(context);

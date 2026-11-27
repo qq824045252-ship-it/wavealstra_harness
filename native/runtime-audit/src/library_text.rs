@@ -1,13 +1,76 @@
 use crate::Result;
-use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     ffi::OsString,
     fs::{File, Metadata, OpenOptions, symlink_metadata},
-    io::{BufWriter, ErrorKind, Read, Write},
+    io::{BufRead, BufReader, BufWriter, ErrorKind, Read, Write},
     path::{Component, Path, PathBuf},
 };
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StagedChunk {
+    pub chunk_index: usize,
+    pub content: String,
+    pub char_offset: usize,
+    pub hash: String,
+}
+
+pub(crate) fn resolve_staging_path(uri_or_path: &str) -> PathBuf {
+    let trimmed = uri_or_path.split('?').next().unwrap_or(uri_or_path);
+    if let Some(rest) = trimmed.strip_prefix("file://") {
+        let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+        let decoded = percent_decode(rest);
+        #[cfg(windows)]
+        let decoded = if decoded.starts_with('/')
+            && decoded.as_bytes().get(2) == Some(&b':')
+        {
+            decoded[1..].to_owned()
+        } else {
+            decoded
+        };
+        PathBuf::from(decoded)
+    } else {
+        PathBuf::from(trimmed)
+    }
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3])
+            && let Ok(val) = u8::from_str_radix(hex, 16)
+        {
+            out.push(val);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+pub(crate) fn read_staged_chunks(uri_or_path: &str) -> Result<Vec<StagedChunk>> {
+    let path = resolve_staging_path(uri_or_path);
+    let file = File::open(&path)
+        .map_err(|error| format!("open staged library chunks {}: {error}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut chunks = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        chunks.push(serde_json::from_str::<StagedChunk>(&line)?);
+    }
+    Ok(chunks)
+}
 
 const READ_BYTES: usize = 64 * 1024;
 pub(crate) const LARGE_TEXT_BYTES: usize = 1024 * 1024;
@@ -180,27 +243,23 @@ pub fn stage(request: Request) -> Result<Stage> {
                 .map_err(|error| format!("create managed library copy: {error}"))
         })
         .transpose()?;
-    OpenOptions::new()
+    let staging_file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&request.staging_path)
         .map_err(|error| format!("create library index stage: {error}"))?;
-    let mut staging =
-        Connection::open_with_flags(&request.staging_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    // This database is unpublished and can be discarded if the process is interrupted.
-    staging.execute_batch(
-        "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
-         CREATE TABLE chunks (
-           chunk_index INTEGER PRIMARY KEY, content TEXT NOT NULL,
-           char_offset INTEGER NOT NULL, hash TEXT NOT NULL
-         );",
-    )?;
-    let transaction = staging.transaction()?;
-    let mut insert = transaction.prepare("INSERT INTO chunks VALUES (?1,?2,?3,?4)")?;
+    let mut staging = BufWriter::new(staging_file);
     let mut chunk_count = 0;
     let write_chunk = |units: &[u16], offset: usize| -> Result<()> {
         if let Some((text, hash)) = chunk_content(units)? {
-            insert.execute(params![chunk_count, text, offset, hash])?;
+            let chunk = StagedChunk {
+                chunk_index: chunk_count,
+                content: text,
+                char_offset: offset,
+                hash,
+            };
+            serde_json::to_writer(&mut staging, &chunk)?;
+            staging.write_all(b"\n")?;
             chunk_count += 1;
         }
         Ok(())
@@ -235,8 +294,7 @@ pub fn stage(request: Request) -> Result<Stage> {
     if let Some(target) = &mut copy {
         target.flush()?;
     }
-    drop(insert);
-    transaction.commit()?;
+    staging.flush()?;
     Ok(Stage::Ready {
         content_hash: format!("{:x}", digest.finalize()),
         chunk_count,

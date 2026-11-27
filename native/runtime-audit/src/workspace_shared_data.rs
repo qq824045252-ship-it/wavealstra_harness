@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
@@ -72,7 +72,7 @@ pub fn read(
         .map(str::to_owned)
         .or_else(|| task_space.clone());
     let spaces = {
-        let mut statement = snapshot.prepare_cached(
+        let mut statement = snapshot.prepare(
             "SELECT id,name,parent_id,archived FROM spaces ORDER BY updated_at DESC,rowid",
         )?;
         let rows = statement.query_map([], |row| {
@@ -83,7 +83,7 @@ pub fn read(
                 archived: row.get::<_, i64>(3)? != 0,
             })
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
+        rows.collect::<duckdb::Result<Vec<_>>>()?
     };
     let mut items_by_space = Vec::new();
     let mut task_items = Vec::new();
@@ -139,7 +139,7 @@ fn read_items(
     space_id: &str,
     limit: i64,
 ) -> Result<Vec<ContextItem>> {
-    let mut statement = db.prepare_cached(
+    let mut statement = db.prepare(
         "SELECT m.id,m.title,m.content,m.created_at,m.updated_at,m.kind,m.source_type,m.source_task_id,
            CASE WHEN ?1='workspace' THEN (
              SELECT b.binding FROM memory_scopes b WHERE b.memory_id=m.id AND b.scope_type=?1 AND b.scope_id=?2

@@ -1,5 +1,5 @@
 use crate::{MAX_REPLY_BYTES, Result};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -52,7 +52,7 @@ pub fn read(db: &mut Connection, query: Query) -> Result<Value> {
     };
     let scope = if query.include_closed { "all" } else { "open" };
     let Some(cursor) = query.cursor else {
-        let mut statement = tx.prepare_cached(
+        let mut statement = tx.prepare(
             "SELECT work_id FROM works WHERE user_id=?1 AND (?2 OR lifecycle!='closed')
              ORDER BY updated_at DESC,work_id",
         )?;
@@ -81,7 +81,7 @@ pub fn read(db: &mut Connection, query: Query) -> Result<Value> {
     {
         return Ok(json!({ "kind": "resync_required" }));
     }
-    let mut statement = tx.prepare_cached(
+    let mut statement = tx.prepare(
         "SELECT e.sequence,e.work_id,w.lifecycle,CASE WHEN a.archived_at IS NOT NULL THEN a.deleted_at END
          FROM work_projection_events e
          LEFT JOIN works w ON w.work_id=e.work_id AND w.user_id=e.user_id
@@ -160,7 +160,7 @@ pub fn mark_read(db: &mut Connection, request: MarkRead) -> Reply {
 }
 
 fn apply_mark(db: &mut Connection, request: MarkRead) -> Result<Value> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let owns: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM works WHERE work_id=?1 AND user_id=?2)",
         params![request.work_id, request.user_id],

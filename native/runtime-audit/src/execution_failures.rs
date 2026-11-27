@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, TransactionBehavior, params};
+use duckdb::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -12,7 +12,7 @@ pub struct ExecutionFailureRow {
 }
 
 pub fn list(db: &Connection, task_id: &str) -> Result<Vec<ExecutionFailureRow>> {
-    let mut query = db.prepare_cached(
+    let mut query = db.prepare(
         "SELECT record_json, resolved_at, dismissed_at FROM execution_failures
          WHERE task_id=?1 AND dismissed_at IS NULL
          ORDER BY created_at DESC, rowid DESC LIMIT 100",
@@ -24,7 +24,7 @@ pub fn list(db: &Connection, task_id: &str) -> Result<Vec<ExecutionFailureRow>> 
             dismissed_at: row.get(2)?,
         })
     })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    Ok(rows.collect::<duckdb::Result<_>>()?)
 }
 
 #[derive(Serialize)]
@@ -87,13 +87,13 @@ pub enum WriteRequest {
 }
 
 fn insert_and_prune(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &duckdb::Transaction<'_>,
     id: &str,
     task_id: &str,
     cause_code: &str,
     record_json: &str,
     created_at: i64,
-) -> rusqlite::Result<()> {
+) -> duckdb::Result<()> {
     tx.execute(
         "INSERT INTO execution_failures(id,task_id,cause_code,record_json,created_at) VALUES (?1,?2,?3,?4,?5)",
         params![id, task_id, cause_code, record_json, created_at],
@@ -108,7 +108,7 @@ fn insert_and_prune(
 }
 
 pub fn write(db: &mut Connection, request: WriteRequest) -> Result<Value> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let out = match request {
         WriteRequest::Record {
             id,
@@ -143,7 +143,7 @@ pub fn write(db: &mut Connection, request: WriteRequest) -> Result<Value> {
                         row.get::<_, Option<i64>>(2)?,
                     ))
                 })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+                .collect::<duckdb::Result<Vec<_>>>()?;
             drop(stmt);
             let mut existing = None;
             for (raw, resolved_at, _dismissed_at) in rows {
@@ -200,7 +200,7 @@ pub fn write(db: &mut Connection, request: WriteRequest) -> Result<Value> {
                         row.get::<_, String>(2)?,
                     ))
                 })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+                .collect::<duckdb::Result<Vec<_>>>()?;
             drop(stmt);
             let mut ids = Vec::new();
             for (row_id, cause_code, raw) in rows {

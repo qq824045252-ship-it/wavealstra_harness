@@ -3,6 +3,7 @@ import type { ReportedTokenUsage } from "./task-diagnostics";
 export interface GoalActivityOwner {
   goalId: string;
   intentRevision: number;
+  ownerEpoch?: number;
 }
 
 export interface GoalActivityIdentity {

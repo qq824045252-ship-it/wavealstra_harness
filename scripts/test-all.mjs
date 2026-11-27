@@ -59,7 +59,7 @@ const SELF_EXCLUDE_PATTERNS = [/^test:all/, /^test:verify/];
  * 内部还会再跑一遍同类用例，所以性能用例仍放在最后。
  * 不跳过用例、不重试失败，也不调整 timeout 或失败基线。
  */
-const SERIAL_TEST_PATTERNS = [/^test:memory-semantic-scale$/,/^test:durable-storage-(current|lease)$/,/^test:improvement-release$/,/^test:core-performance/, /^test:bot-work-summary-query$/, /^test:gateway-port-fallback$/];
+const SERIAL_TEST_PATTERNS = [/^test:memory-semantic-scale$/,/^test:improvement-release$/,/^test:core-performance/, /^test:bot-work-summary-query$/, /^test:gateway-port-fallback$/];
 
 /**
  * 排除集合按执行前置条件分类（+ 一个临时桶），默认套件只跑 headless 用例：
@@ -241,19 +241,25 @@ const DATASET_TESTS = new Set([
   "test:runtime-audit-native-contract", // Real native worker binary (prepare-runtime-audit.cjs); missing binary must fail.
   "test:core-supervisor", // Same binary; proves the supervisor keeps the worker alive across clients.
   "test:core-client", // Production Core socket adapter; requires the real supervised worker.
+  "test:core-task-and-python", // Task writes, workspace reference safety, and Python binding resolution on the same database.
+  "test:core-cron", // Real Core snapshots, expected plan state, and cleanup of scheduling references.
+  "test:core-notifications", // Two Core clients, persisted desktop activation and bell state.
+  "test:core-task-board", // Supervisor-backed DuckDB board pages and concurrent actions.
+  "test:core-workbench", // Real Gadget files, scope checks and Blueprint receipts through Core.
+  "test:core-artifacts", // Two clients use Core for artifact registration, provenance and persisted receipts.
+  "test:core-observability", // Snapshot/diagnostic producers, conversation runtime and file review through Core.
+  "test:durable-provider-authority", // Real Pi Storage and model adapters with a local provider and asynchronous Core authority.
   "test:core-business-protocol", // Step 3 multi-role Core protocol, cursor events, execution bridge, and watchdog recovery.
-  "test:rust-writer-boundary", // Step 4 RC-09 unique Rust writer, readonly app.db boundary, and Pi companion RW exclusion.
-  "test:rust-domain-equivalence", // Step 4 RC-10 host RW vs supervised Rust readonly equivalence and rollback parity.
   "test:rust-work-scheduler", // Step 5 RC-11..13 Rust Core Work scheduler, owner fencing, conflict concurrency, and crash recovery.
-  "test:rust-background-services", // Step 6 RC-14..16 Rust Core Cron, Dots, Gateway, Remote background orchestration & notification catch-up.
   "test:rust-gadget-host", // Step 7 RC-17..19 Shared Rust HTTP static Gadget host, on-demand backends, and generation split.
   "test:pi-node-host", // Step 8 RC-20..22 Isolated Pi Node Host, crash/restart single-lease recovery, and passive Main reads.
+  "test:pi-duckdb-storage-conformance", // Official Pi Storage contract over real Core IPC and process recovery.
+  "test:native-hooks", // Hook management and actual Pi tool callbacks through the supervised DuckDB worker.
+  "test:improvement-packages-core", // Publication, rollback, review ownership and scan recovery across real Core clients.
   "test:thin-main", // Step 9 RC-23..24 20 UI close/reopen cycles, WebContents reclaim/restore, platform waiting, and zero Main business timers/fallbacks.
   "test:core-production-lifecycle", // Step 10 §6 End-to-end production lifecycle story across Core, Pi Node Host, offline activity, faults, stop, and upgrade.
   "test:wave2-capabilities-recovery", // Wave 2 P0-01..05 & P1-06 domain wiring, capability filtering, Platform RPC, unattended recovery, and cursor replay.
   "test:wave3-thin-main-concurrency", // Wave 3 P1-01..09 Thin Main policy, offline maintenance, multi-in-flight concurrency, fairness, tiered progress, and per-path Gadget locking.
-  "test:wave4-data-process", // Wave 4 T21..T22 readonly/busy/corrupt/SIGKILL DB safety & managed process-tree cleanup.
-  "test:runtime-audit-lifecycle", // Real write contention, overload and crash/restart receipts.
   "test:google-workspace-write", // Existing POSIX Python runtime required for isolated SDK subprocess fixtures.
   // node-pty 原生模块 + 真实 pty。
   "test:terminal",
@@ -328,8 +334,7 @@ const KNOWN_HEADLESS_RED = new Set([
 const HEADLESS_TESTS = new Set([
   "test:pstack-settings-toggle",
   "test:pstack-worker-contract", "test:pstack-interrogate", "test:pstack-advanced-artifacts", "test:pstack-statechart",
-  "test:improvement-release", "test:native-improvement", "test:improvement-weekly-report", "test:improvement-delivery-contract", "test:native-hooks",
-  "test:gateway-conversation",
+  "test:improvement-release", "test:native-improvement", "test:improvement-weekly-report", "test:improvement-delivery-contract",
   "test:deepseek-connection",
   "test:deepseek-search",
   "test:deepseek-media-provider",
@@ -354,14 +359,12 @@ const HEADLESS_TESTS = new Set([
   "test:gateway-channel-ui",
   "test:gateway-qr-race-ui",
   "test:gateway-setup-guide",
-  "test:durable-storage-current",
   "test:durable-context-live-assessment",
   "test:durable-context-active-view",
   "test:durable-context-entrypoints",
   "test:durable-context-window-matrix",
   "test:durable-context-summary-limit",
   "test:durable-storage-replay-api",
-  "test:durable-storage-lease",
   "test:durable-delete-stop",
   "test:gadget-save-copies",
   "test:bot-task-reply-presentation",
@@ -370,8 +373,6 @@ const HEADLESS_TESTS = new Set([
   "test:web-access-extract-runtime", // Default fixture is local; real weather request is opt-in.
   "test:chat-composer-ui", // React DOM behavior using linkedom; no Electron/display dependency.
   "test:cloudflared-cli-detect",
-  "test:durable-close-retry",
-  "test:durable-sqlite-close-retry",
   "test:wechat-callback-auth",
   "test:wecom-media",
   "test:weixin-media",
@@ -404,9 +405,7 @@ const HEADLESS_TESTS = new Set([
   "test:bot-work-phase5-owner-summary",
   "test:remote-work-sync",
 
-  "test:durable-projection",
   "test:durable-sync",
-  "test:durable-tool-policy",
   "test:verification-workflow-comparison",
   "test:desktop-dev-harness-result",
   "test:team-subagent-policy",
@@ -415,11 +414,7 @@ const HEADLESS_TESTS = new Set([
   "test:work-effect-retirement",
   "test:task-diagnostics",
   "test:task-board",
-  "test:dots-actions",
   "test:dots-profile",
-  "test:dots-delivery",
-  "test:dots-reply-recovery",
-  "test:dots-followup",
   "test:dots-completion",
   "test:durable-subagent",
   "test:durable-consult",
@@ -427,7 +422,6 @@ const HEADLESS_TESTS = new Set([
   "test:app-store-runtime",
   "test:app-store-transactions",
   "test:task-file-changes",
-  "test:task-code-review",
   "test:git-code-review",
   "test:canban-review-engine",
   "test:browser-benchmark-report",

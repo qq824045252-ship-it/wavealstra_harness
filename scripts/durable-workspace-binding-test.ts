@@ -47,6 +47,7 @@ async function snapshot(options: DurableBotOptions, ids: string[]) {
   try { await options.prepareSnapshot?.(value); }
   finally { if (useNative) db.connection.pragma("query_only = OFF"); }
   options.onSnapshot(value);
+  await options.onProjected?.(value);
 }
 DurableBotRuntime.open = async (options: DurableBotOptions) => {
   const taskId = options.taskId!;

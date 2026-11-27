@@ -1,7 +1,6 @@
 use crate::{MAX_REPLY_BYTES, Result};
-use rusqlite::{
-    Connection, OptionalExtension, TransactionBehavior, params, params_from_iter, types::Value,
-};
+use duckdb::{
+    Connection, OptionalExt, params, params_from_iter, types::Value};
 use serde_json::{Value as Json, json};
 
 pub(crate) fn list(db: &Connection, status: Option<String>, limit: i64) -> Result<Json> {
@@ -14,8 +13,8 @@ pub(crate) fn list(db: &Connection, status: Option<String>, limit: i64) -> Resul
     } else {
         ""
     };
-    bindings.push(Value::Integer(limit));
-    let mut statement = db.prepare_cached(&format!(
+    bindings.push(Value::BigInt(limit));
+    let mut statement = db.prepare(&format!(
         "SELECT {COLUMNS} FROM memory_candidates{filter} ORDER BY created_at DESC LIMIT ?"
     ))?;
     let mut rows = statement.query(params_from_iter(bindings))?;
@@ -50,7 +49,7 @@ pub(crate) fn list(db: &Connection, status: Option<String>, limit: i64) -> Resul
 }
 
 pub(crate) fn reject(db: &mut Connection, id: &str, at: i64) -> Result<()> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let affected = tx.execute(
         "UPDATE memory_candidates SET status='rejected', resolved_at=?2, resolved_memory_id=NULL
          WHERE id=?1 AND status IN ('pending','needs_review')",

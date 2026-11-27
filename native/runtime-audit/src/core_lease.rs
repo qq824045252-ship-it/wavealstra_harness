@@ -7,7 +7,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fs::{self, File, OpenOptions},
     hash::{Hash, Hasher},
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
     thread,
@@ -263,6 +263,23 @@ fn write_private(path: &Path, content: &str) -> Result<(), String> {
         .map_err(|error| format!("flush {}: {error}", path.display()))
 }
 
+fn canonical_database_path(path: &Path) -> io::Result<PathBuf> {
+    match fs::canonicalize(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        result => return result,
+    }
+    match fs::symlink_metadata(path) {
+        // A dangling link must fail instead of turning into a new database target.
+        Ok(_) => return fs::canonicalize(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let name = path.file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "database path has no file name"))?;
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    Ok(fs::canonicalize(parent)?.join(name))
+}
+
 impl Lease {
     pub fn acquire(directory: &Path, db_path: &Path) -> Result<Self, String> {
         fs::create_dir_all(directory)
@@ -282,7 +299,7 @@ impl Lease {
             pid: std::process::id(),
             nonce: nonce.clone(),
             started_at: now_ms(),
-            db_path: fs::canonicalize(db_path)
+            db_path: canonical_database_path(db_path)
                 .map_err(|error| format!("database path: {error}"))?
                 .to_string_lossy()
                 .into_owned(),
@@ -401,7 +418,7 @@ impl WorkerLease {
             &fs::read_to_string(directory.join(LEASE_FILE)).map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
-        let database = fs::canonicalize(db_path).map_err(|error| error.to_string())?;
+        let database = canonical_database_path(db_path).map_err(|error| error.to_string())?;
         if record.nonce != generation || Path::new(&record.db_path) != database {
             return Err("core generation or database changed before worker startup".into());
         }

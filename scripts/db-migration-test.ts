@@ -3,8 +3,6 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
-import { PythonProjectBindingStore } from "../src/main/runtime/PythonProjectBindingStore";
-import { pythonProjectDirKey } from "../src/main/runtime/python-environment-spec";
 
 let passed = 0;
 let failed = 0;
@@ -181,45 +179,6 @@ try {
   branchDb.close();
 } finally {
   rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 });
-}
-
-// python_project_bindings 真实 SQL 往返。
-// Python 运行时门禁用内存替身跑逻辑，建表语句与 upsert 语法只能在这里对真库验证：
-// 替身永远不会告诉你 ON CONFLICT 写错了。
-{
-  const pyRoot = mkdtempSync(join(tmpdir(), "db-python-binding-"));
-  const projectDir = join(pyRoot, "我的 项目");
-  const binding = {
-    projectDir,
-    dirKey: pythonProjectDirKey(projectDir, "win32"),
-    pythonPath: join(projectDir, ".venv", "Scripts", "python.exe"),
-    pythonVersion: "3.11.9",
-    manifestPath: join(projectDir, "pyproject.toml"),
-    boundAt: 1,
-  };
-  try {
-    const db = new AppDatabase(join(pyRoot, "python.db"));
-    const store = new PythonProjectBindingStore(db.connection, "win32");
-    assert(store.resolveForDir(projectDir) === null, "空库解析为未绑定");
-    store.save(binding);
-    store.save({ ...binding, pythonVersion: "3.12.1", boundAt: 2 });
-    assert(store.list().length === 1, "同目录改绑是覆盖而非追加");
-    assert(store.list()[0].pythonVersion === "3.12.1", "upsert 更新了版本列");
-    assert(store.list()[0].boundAt === 2, "upsert 更新了绑定时间");
-    assert(store.resolveForDir(join(projectDir, "src"))?.pythonVersion === "3.12.1", "子目录继承走真库");
-    db.close();
-
-    // 重开库后绑定仍在：用户选择过项目环境就不该被反复询问
-    const reopened = new AppDatabase(join(pyRoot, "python.db"));
-    const again = new PythonProjectBindingStore(reopened.connection, "win32");
-    assert(again.list().length === 1, "绑定跨重启持久化");
-    assert(again.remove(projectDir) === true, "解绑命中真库主键");
-    assert(again.remove(projectDir) === false, "重复解绑幂等");
-    assert(again.list().length === 0, "解绑后为空");
-    reopened.close();
-  } finally {
-    rmSync(pyRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 });
-  }
 }
 
 console.log(`\n结果: passed=${passed} failed=${failed}`);

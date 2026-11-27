@@ -141,9 +141,13 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
       execute: async (_id: string, params: { id: string }) => {
         try {
           readable("memory_get");
-          const memory = requireVisible(params.id);
-          const revision = bridge.service.history(memory.id)[0]?.revision ?? 0;
-          const dotsSource = bridge.taskId === DOTS_TASK_ID ? dotsToolSource(bridge.service, memory.id, revision, true) : undefined;
+          const native = bridge.service.usesCoreRecall;
+          const saved = native ? await bridge.service.readCurrentCoreMemory(params.id, context()) : undefined;
+          if (native && !saved) throw new Error("记忆不存在或不属于当前任务可见作用域");
+          readable("memory_get");
+          const memory = saved?.memory ?? requireVisible(params.id);
+          const revision = saved?.revision ?? bridge.service.history(memory.id)[0]?.revision ?? 0;
+          const dotsSource = !native && bridge.taskId === DOTS_TASK_ID ? dotsToolSource(bridge.service, memory.id, revision, true) : undefined;
           return textResult([
             short(memory),
             `revision=${revision}`,
@@ -152,7 +156,8 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
             `source=${memory.sourceType}${memory.sourceTaskId ? ` task=${memory.sourceTaskId}` : ""} explicit=${memory.explicit}`,
             dotsSource ? `本修订出处=${JSON.stringify(dotsSource)}` : `evidence=${memory.evidence.map((e) => `${e.evidenceKind}:${e.refTitle ?? e.refId}`).join(" | ") || "（无）"}`,
             `relations=${memory.relations.map((r) => `${r.fromMemoryId === memory.id ? "→" : "←"}${r.relation}:${r.fromMemoryId === memory.id ? r.toMemoryId : r.fromMemoryId}`).join(" | ") || "（无）"}`,
-          ].join("\n"), dotsSource ? { memory: { ...memory, evidence: [] }, revision, source: dotsSource } : { memory });
+          ].join("\n"), dotsSource ? { memory: { ...memory, evidence: [] }, revision, source: dotsSource }
+            : native ? { memory: { ...memory, metadata: {} }, revision } : { memory });
         } catch (error) { return errorResult(error); }
       },
     });

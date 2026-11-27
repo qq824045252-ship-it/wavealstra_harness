@@ -7,7 +7,7 @@ import type { Task } from "../src/renderer/src/types";
 import type { ArtifactDescriptor } from "../src/shared/artifact-types";
 import type { DurableBotSnapshot } from "../src/shared/durable-bot";
 import { durableDelta } from "../shared/src/durable-sync";
-import type { TaskDto, TaskHistoryDto, TaskSidebarEdit } from "../src/shared/agent-ipc";
+import type { ModelInfoDto, TaskDto, TaskHistoryDto, TaskSidebarEdit } from "../src/shared/agent-ipc";
 import { loadRuntimeBootstrap } from "../src/renderer/src/store/app/runtime/bootstrap";
 import { mapTaskRowToTask } from "../src/renderer/src/store/app/tasks/taskMapper";
 import { recomputeEffectiveArchived } from "../src/renderer/src/store/app/workspaces/spaceHelpers";
@@ -694,6 +694,7 @@ async function main(): Promise<void> {
     artifactReconcileNoOpKeepsStoreState,
     lateModelCatalogKeepsUserSelection,
     bootstrapAppliesCriticalDataBeforeOptionalCatalogs,
+    bootstrapMakesTasksAvailableBeforeModels,
     bootstrapCriticalFailureLeavesNoPartialScreen,
   ];
   for (const test of tests) {
@@ -885,6 +886,39 @@ async function bootstrapAppliesCriticalDataBeforeOptionalCatalogs(): Promise<voi
   assert.deepEqual(app.useAppStore.getState().notificationMessageTarget,
     { taskId: "critical", messageId: "persisted-reply", interactionId: "real-question" },
     "恢复同一活跃任务时保留待定位的具体交互");
+}
+
+async function bootstrapMakesTasksAvailableBeforeModels(): Promise<void> {
+  const models = deferred<ModelInfoDto[]>();
+  const modelId = "fixture/new";
+  const refreshedModel = { id: modelId, name: "New model", vendor: "fixture", contextWindow: 64_000,
+    supportsImages: false, supportsReasoning: false };
+  const api = {
+    db: {
+      listSpaces: async () => [],
+      listTasks: async () => ["selected", "unchanged"].map(id => ({ id, title: id, updatedAt: 1, modelId: "fixture/stored" })),
+      getSoul: async () => null,
+    },
+    agent: { listModels: () => models.promise, listSkills: async () => [] },
+  };
+  const { context, useAppStore } = store(api);
+  const bootstrap = loadRuntimeBootstrap({ context, api: api as unknown as NonNullable<Window["api"]>,
+    isActive: () => true, addCleanup: () => {} }, { mapTaskRowToTask, recomputeEffectiveArchived, emptySoul: EMPTY_SOUL });
+  await tick();
+  assert.deepEqual(useAppStore.getState().tasks.map(row => [row.id, row.modelId]), [
+    ["selected", "fixture/stored"], ["unchanged", "fixture/stored"],
+  ]);
+  assert.deepEqual(useAppStore.getState().models, []);
+  useAppStore.setState(state => ({ models: [refreshedModel], activeTaskId: "selected", activeModelId: "fixture/manual", tasks: state.tasks.map(row =>
+    row.id === "selected" ? { ...row, modelId: "fixture/manual" } : row) }));
+  models.resolve([{ ...refreshedModel, id: "fixture/old-snapshot" }]);
+  await bootstrap;
+  assert.deepEqual(useAppStore.getState().models.map(model => model.id), [modelId]);
+  assert.deepEqual(useAppStore.getState().tasks.map(row => [row.id, row.modelId]), [
+    ["selected", "fixture/manual"], ["unchanged", modelId],
+  ]);
+  assert.equal(useAppStore.getState().activeModelId, "fixture/manual");
+  assert.equal(useAppStore.getState().defaultModelId, modelId);
 }
 
 async function bootstrapCriticalFailureLeavesNoPartialScreen(): Promise<void> {

@@ -63,11 +63,11 @@ export class BlueprintService {
 
   async recoverStorage(): Promise<void> {
     const reader = this.deps.db.runtimeAuditReader;
-    const rustRequired = Boolean(this.deps.db.connection.readonly || reader?.supervised);
+    const rustRequired = Boolean(reader?.supervised || this.deps.db.readonly);
     const failures = reader ? await reader.reconcileBlueprintStorage(resolve(this.deps.workspaceInstancesRoot)) : "needsHost";
     if (failures === "needsHost") {
       if (rustRequired) {
-        console.warn("[BlueprintService] Supervised mode skipped host orphan cleanup");
+        console.warn("[BlueprintService] Rust Core 将在下次启动重试孤立实例目录清理");
         return;
       }
       this.reconcileWorkspaceInstances();
@@ -183,6 +183,7 @@ export class BlueprintService {
         gadgets: gadgets.map(gadget => gadgetInsertValues(gadget.descriptor)),
       };
       const nativeFiles = await this.deps.db.runtimeAuditReader?.supportsManagedStorage();
+      if (!nativeFiles && this.deps.db.runtimeAuditReader?.supervised) throw new Error("蓝图存储未获 Rust Core 确认");
       if (nativeFiles) {
         instance.storage = {
           workspaceInstancesRoot: resolve(this.deps.workspaceInstancesRoot),

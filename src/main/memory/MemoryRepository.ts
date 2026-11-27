@@ -43,31 +43,39 @@ interface MemoryRow {
 const normalizedConnections = new WeakSet<object>();
 
 export class MemoryRepository {
-  private readonly findRecord: Database.Statement<[string], MemoryRow>;
-  private readonly findScopes: Database.Statement<[string]>;
-  private readonly findEvidence: Database.Statement<[string]>;
-  private readonly findRelations: Database.Statement<[string, string]>;
+  private readonly prepared?: {
+    record: Database.Statement<[string], MemoryRow>;
+    scopes: Database.Statement<[string]>;
+    evidence: Database.Statement<[string]>;
+    relations: Database.Statement<[string, string]>;
+  };
   private writeTail: Promise<void> = Promise.resolve();
   private pendingWriteCount = 0;
   private readonly pendingRecords = new Map<string, MemoryRecordDto | null>();
   private readonly pendingCandidates = new Map<string, MemoryCandidateDto | null>();
 
   constructor(private readonly db: AppDatabase) {
-    this.findRecord = this.conn.prepare("SELECT * FROM memory_records WHERE id = ?");
-    this.findScopes = this.conn.prepare(
-      "SELECT memory_id,scope_type,scope_id,binding,created_at FROM memory_scopes WHERE memory_id=? ORDER BY created_at");
-    this.findEvidence = this.conn.prepare(
-      "SELECT id,memory_id,evidence_kind,ref_id,ref_title,excerpt,created_at FROM memory_evidence WHERE memory_id=? ORDER BY created_at");
-    this.findRelations = this.conn.prepare(
-      "SELECT id,from_memory_id,relation,to_memory_id,created_at FROM memory_relations WHERE from_memory_id=? OR to_memory_id=? ORDER BY created_at");
-    if (!normalizedConnections.has(db.connection)) {
-      db.connection.function("memory_search_normalize", { deterministic: true },
+    const fixture = db.fixtureConnection;
+    if (!fixture) return;
+    this.prepared = {
+      record: fixture.prepare("SELECT * FROM memory_records WHERE id = ?"),
+      scopes: fixture.prepare("SELECT memory_id,scope_type,scope_id,binding,created_at FROM memory_scopes WHERE memory_id=? ORDER BY created_at"),
+      evidence: fixture.prepare("SELECT id,memory_id,evidence_kind,ref_id,ref_title,excerpt,created_at FROM memory_evidence WHERE memory_id=? ORDER BY created_at"),
+      relations: fixture.prepare("SELECT id,from_memory_id,relation,to_memory_id,created_at FROM memory_relations WHERE from_memory_id=? OR to_memory_id=? ORDER BY created_at"),
+    };
+    if (!normalizedConnections.has(fixture)) {
+      fixture.function("memory_search_normalize", { deterministic: true },
         (value: unknown) => typeof value === "string" ? normalizeSearchText(value) : "");
-      normalizedConnections.add(db.connection);
+      normalizedConnections.add(fixture);
     }
   }
 
   private get conn() { return this.db.connection; }
+
+  private get fixtureQueries() {
+    if (!this.prepared) throw new Error("记忆记录需要通过 Rust Core 读取");
+    return this.prepared;
+  }
 
   private get requiresRustWrites(): boolean {
     return Boolean(this.db.readonly || this.db.runtimeAuditReader?.supervised);
@@ -178,7 +186,7 @@ export class MemoryRepository {
     if (this.pendingRecords.has(id)) {
       return this.pendingRecords.get(id) ?? undefined;
     }
-    const row = this.findRecord.get(id);
+    const row = this.fixtureQueries.record.get(id);
     return row ? this.hydrate(row) : undefined;
   }
 
@@ -870,6 +878,15 @@ export class MemoryRepository {
     return Number(result.changes ?? 0);
   }
 
+  async recoverPendingCandidates(olderThan: number): Promise<number> {
+    if (!this.requiresRustWrites) return this.reapStalePendingCandidates(olderThan);
+    const result = await this.db.runtimeAuditReader?.batch3Write<{ changes: number }>({
+      kind: "memoryReapStaleCandidates", olderThan, now: Date.now(),
+    });
+    if (!result) throw new Error("候选记忆启动恢复未获 Rust Core 确认");
+    return result.changes;
+  }
+
   listCandidates(status?: MemoryCandidateDto["status"], limit = 200): MemoryCandidateDto[] {
     const rows = (status
       ? this.conn.prepare("SELECT * FROM memory_candidates WHERE status=? ORDER BY created_at DESC LIMIT ?").all(status, limit)
@@ -878,7 +895,7 @@ export class MemoryRepository {
   }
 
   async readCandidates(status?: MemoryCandidateDto["status"], limit = 200): Promise<MemoryCandidateDto[]> {
-    if (!this.conn.inTransaction && Number.isSafeInteger(limit)) {
+    if (!this.db.inTransaction && Number.isSafeInteger(limit)) {
       const data = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "candidateList", status, limit });
       if (data?.kind === "candidateList") return data.candidates.map(row => this.mapCandidate(row));
     }
@@ -935,14 +952,14 @@ export class MemoryRepository {
   }
 
   private hydrate(row: MemoryRow): MemoryRecordDto {
-    const scopes = (this.findScopes.all(row.id) as Array<{ memory_id: string; scope_type: MemoryScopeType; scope_id: string | null; binding: "owned" | "promoted"; created_at: number }>).map((s) => ({
+    const scopes = (this.fixtureQueries.scopes.all(row.id) as Array<{ memory_id: string; scope_type: MemoryScopeType; scope_id: string | null; binding: "owned" | "promoted"; created_at: number }>).map((s) => ({
       memoryId: s.memory_id,
       scopeType: s.scope_type,
       scopeId: s.scope_id ?? undefined,
       binding: s.binding,
       createdAt: s.created_at,
     }));
-    const evidence = (this.findEvidence.all(row.id) as Array<{ id: string; memory_id: string; evidence_kind: MemoryEvidenceDto["evidenceKind"]; ref_id: string; ref_title: string | null; excerpt: string | null; created_at: number }>).map((e) => ({
+    const evidence = (this.fixtureQueries.evidence.all(row.id) as Array<{ id: string; memory_id: string; evidence_kind: MemoryEvidenceDto["evidenceKind"]; ref_id: string; ref_title: string | null; excerpt: string | null; created_at: number }>).map((e) => ({
       id: e.id,
       memoryId: e.memory_id,
       evidenceKind: e.evidence_kind,
@@ -951,7 +968,7 @@ export class MemoryRepository {
       excerpt: e.excerpt ?? undefined,
       createdAt: e.created_at,
     }));
-    const relations = (this.findRelations.all(row.id, row.id) as Array<{ id: string; from_memory_id: string; relation: MemoryRelationDto["relation"]; to_memory_id: string; created_at: number }>).map((r) => ({
+    const relations = (this.fixtureQueries.relations.all(row.id, row.id) as Array<{ id: string; from_memory_id: string; relation: MemoryRelationDto["relation"]; to_memory_id: string; created_at: number }>).map((r) => ({
       id: r.id,
       fromMemoryId: r.from_memory_id,
       relation: r.relation,

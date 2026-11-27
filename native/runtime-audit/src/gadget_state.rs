@@ -7,7 +7,7 @@ use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime};
 
 const FILE_NAME: &str = ".mybuddy-state.json";
@@ -228,7 +228,11 @@ struct RootState {
 }
 
 pub struct Store {
+    /// Cached per-root state entries subject to bounded LRU eviction (`trim_cache`).
     roots: Mutex<HashMap<PathBuf, Arc<Mutex<RootState>>>>,
+    /// Authoritative lock registry separated from cache eviction so a canonical root never
+    /// mints a second concurrent `Mutex` while any caller still holds the existing `Arc`.
+    root_locks: Mutex<HashMap<PathBuf, Weak<Mutex<RootState>>>>,
     use_seq: AtomicU64,
     control: Arc<Control>,
 }
@@ -236,6 +240,7 @@ impl Default for Store {
     fn default() -> Self {
         Self {
             roots: Mutex::new(HashMap::new()),
+            root_locks: Mutex::new(HashMap::new()),
             use_seq: AtomicU64::new(1),
             control: crate::request_control::shared()
                 .cloned()
@@ -257,6 +262,7 @@ impl Store {
     pub fn with_control(control: Arc<Control>) -> Self {
         Self {
             roots: Mutex::new(HashMap::new()),
+            root_locks: Mutex::new(HashMap::new()),
             use_seq: AtomicU64::new(1),
             control,
         }
@@ -273,11 +279,20 @@ impl Store {
     }
 
     fn root_lock(&self, canonical_path: &Path) -> Arc<Mutex<RootState>> {
-        let mut map = self.roots.lock().unwrap_or_else(|e| e.into_inner());
-        Arc::clone(
-            map.entry(canonical_path.to_path_buf())
-                .or_insert_with(|| Arc::new(Mutex::new(RootState::default()))),
-        )
+        let key = canonical_path.to_path_buf();
+        let lock = {
+            let mut lock_map = self.root_locks.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = lock_map.get(&key).and_then(Weak::upgrade) {
+                existing
+            } else {
+                let created = Arc::new(Mutex::new(RootState::default()));
+                lock_map.insert(key.clone(), Arc::downgrade(&created));
+                created
+            }
+        };
+        let mut cache_map = self.roots.lock().unwrap_or_else(|e| e.into_inner());
+        cache_map.entry(key).or_insert_with(|| Arc::clone(&lock));
+        lock
     }
 
     fn write_allowed(
@@ -428,6 +443,10 @@ impl Store {
             for path in evict {
                 map.remove(&path);
             }
+        }
+        // Only reap Weak lock entries after EVERY active holder & cache entry dropped its Arc.
+        if let Ok(mut lock_map) = self.root_locks.try_lock() {
+            lock_map.retain(|_, weak| weak.strong_count() > 0);
         }
     }
 }
@@ -948,5 +967,45 @@ mod tests {
         drop(guard_a);
         assert!(matches!(reply_b, Reply::Value { .. }));
         assert!(can_b.join(FILE_NAME).exists());
+    }
+
+    #[test]
+    fn cache_eviction_never_breaks_per_root_lock_identity_during_concurrent_access() {
+        let fix = fixture();
+        let store = Arc::new(Store::default());
+        let mut dirs = Vec::new();
+        let mut cans = Vec::new();
+        for i in 0..12 {
+            let d = fix.0.join(format!("g-{i}"));
+            fs::create_dir_all(&d).unwrap();
+            let can = match store.run(Request::Open { path: d.clone() }) {
+                Reply::Opened { canonical_path } => canonical_path,
+                _ => panic!("open {i}"),
+            };
+            dirs.push(d);
+            cans.push(can);
+        }
+
+        // Hold lock for root 0 while evicting cache entries across other roots.
+        let target_can = cans[0].clone();
+        let lock_first = store.root_lock(&target_can);
+        let guard_first = lock_first.lock().unwrap();
+        for i in 1..12 {
+            let _ = store.run(Request::Open { path: dirs[i].clone() });
+        }
+        // Cache map may have evicted target_can, yet root_lock MUST still return the identical Mutex!
+        let lock_second = store.root_lock(&target_can);
+        assert!(
+            Arc::ptr_eq(&lock_first, &lock_second),
+            "cache eviction must never create a second concurrent Mutex for an active root"
+        );
+        drop(guard_first);
+
+        // Once all strong holders & cache entries drop, weak entry can be pruned safely.
+        drop(lock_first);
+        drop(lock_second);
+        let _ = store.run(Request::Open { path: dirs[11].clone() });
+        let map_guard = store.roots.lock().unwrap();
+        assert!(map_guard.len() <= 10);
     }
 }

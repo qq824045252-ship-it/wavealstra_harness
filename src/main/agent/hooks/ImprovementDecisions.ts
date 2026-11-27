@@ -42,9 +42,13 @@ export function rankImprovementCandidate(
   return 3 * Math.log2(1 + Math.max(count, 0)) + 2 * Math.log2(1 + observedCost / 10_000) + reach + certainty;
 }
 
+export function canonicalImprovementJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+    v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a],[b]) => a.localeCompare(b))) : v);
+}
+
 export function fingerprint(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value, (_key, v: unknown) =>
-    v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a],[b]) => a.localeCompare(b))) : v)).digest("hex");
+  return createHash("sha256").update(canonicalImprovementJson(value)).digest("hex");
 }
 export function messageText(content: Message["content"]): string {
   return typeof content === "string" ? content : content.flatMap(p => p.type === "text" ? [p.text] : []).join("\n");

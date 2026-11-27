@@ -7,6 +7,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { AppDatabase } from "../db/AppDatabase";
+import type { ExternalAgentHistoryCursor, ExternalAgentHistoryRow } from "./ExternalAgentHistoryData";
 import { snapshotWorkspace } from "../workspace/WorkspaceService";
 import type { AgentUiPatch, ChatToolCallDto } from "../../shared/agent-ipc";
 import type {
@@ -270,7 +271,7 @@ export class ExternalAgentRuntime {
   }
 
   private get requiresRustWrites(): boolean {
-    return Boolean(this.db.connection.readonly || this.db.runtimeAuditReader?.supervised);
+    return this.db.readonly || this.db.runtimeAuditReader?.supervised === true;
   }
 
   async flush(): Promise<void> {
@@ -1523,14 +1524,42 @@ export class ExternalAgentRuntime {
   }
 
   history(taskId: string): ExternalAgentHistoryDto {
-    const rows = this.db.connection.prepare(`
-      SELECT id, task_id, agent_id, agent_name, protocol, status, cwd, session_id,
+    const fixture = this.db.fixtureConnection;
+    if (!fixture) throw new Error("ACP 历史需要 Core 异步读取");
+    const rows = fixture.prepare(`
+      SELECT id, task_id, agent_id, agent_name, status, cwd, session_id,
              user_message_id, assistant_message_id, prompt, display_text, attachments_json,
              final_text, thinking_text, tools_json, started_at, completed_at, error,
              continued_from_run_id, continuation_mode, output_cursor, artifact_refs_json,
              resume_supported, cancel_supported, cancellation_evidence, verification_status, recovery_state, recovery_message
-        FROM external_agent_runs WHERE task_id=? ORDER BY started_at ASC
-    `).all(taskId) as Array<Record<string, unknown>>;
+        FROM external_agent_runs WHERE task_id=? ORDER BY started_at,id
+    `).all(taskId) as ExternalAgentHistoryRow[];
+    return this.projectHistory(rows);
+  }
+
+  async readHistory(taskId: string): Promise<ExternalAgentHistoryDto> {
+    if (this.db.fixtureConnection) return this.history(taskId);
+    const reader = this.db.runtimeAuditReader;
+    if (!reader?.supervised) throw new Error("ACP 历史读取核心未就绪");
+    if (this.hasLiveTaskRun(taskId)) await this.flush();
+    const rows: ExternalAgentHistoryRow[] = [];
+    let after: ExternalAgentHistoryCursor | undefined;
+    for (;;) {
+      const page = await reader.externalAgentHistoryPage(taskId, after);
+      if (!page || !Array.isArray(page.rows)) throw new Error("Core 未确认 ACP 历史读取");
+      rows.push(...page.rows);
+      if (page.nextCursor === null) return this.projectHistory(rows);
+      const last = page.rows.at(-1);
+      const next = page.nextCursor;
+      if (!next || !last || next.runId !== last.id || next.startedAt !== last.started_at
+          || (after && (next.startedAt < after.startedAt || (next.startedAt === after.startedAt && next.runId <= after.runId)))) {
+        throw new Error("Core 返回无效的 ACP 历史页游标");
+      }
+      after = next;
+    }
+  }
+
+  private projectHistory(rows: ExternalAgentHistoryRow[]): ExternalAgentHistoryDto {
     const runs: ExternalAgentRunDto[] = [];
     const messages: ExternalAgentHistoryDto["messages"] = [];
     for (const row of rows) {

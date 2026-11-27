@@ -1270,7 +1270,7 @@ mod tests {
         fs::write(src.join(".env"), "SECRET=1").unwrap();
 
         let db_path = root.join("app.db");
-        let _ = rusqlite::Connection::open(&db_path).unwrap();
+        let _ = duckdb::Connection::open(&db_path).unwrap();
         let control = Control::open(&db_path).unwrap();
         let store = Arc::new(Store::with_control(control.clone()));
 
@@ -1375,7 +1375,7 @@ mod tests {
         fs::write(src.join("index.html"), "<html><head></head><body>ok</body></html>").unwrap();
 
         let db_path = root.join("app.db");
-        let _ = rusqlite::Connection::open(&db_path).unwrap();
+        let _ = duckdb::Connection::open(&db_path).unwrap();
         let control = Control::open(&db_path).unwrap();
         let store = Arc::new(Store::with_control(control.clone()));
 

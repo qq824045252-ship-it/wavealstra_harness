@@ -8,7 +8,7 @@
 import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { ArtifactRepository } from "../src/main/artifact/ArtifactRepository";
 import { AppDatabase } from "../src/main/db/AppDatabase";
-import { TaskBoardRepository } from "../src/main/task/TaskBoardRepository";
+import { fixtureTaskBoard } from "./fixtures/legacy-task-board-store";
 
 const dbPath = process.argv[2];
 if (!dbPath) throw new Error("usage: task-status-dot-seed.cjs <app.db>");
@@ -16,7 +16,7 @@ if (!dbPath) throw new Error("usage: task-status-dot-seed.cjs <app.db>");
 const db = new AppDatabase(dbPath);
 new ArtifactRepository(db.connection);
 new BotConversationRepository(db.connection);
-const board = new TaskBoardRepository(db.connection);
+const board = fixtureTaskBoard(db.connection);
 const now = Date.now();
 db.upsertTask({
   id: "dot-board-unread",
@@ -38,6 +38,7 @@ db.upsertTask({
   status: "in_progress",
   updatedAt: now - 5_000,
 });
-db.close();
-
-console.log(JSON.stringify({ dbPath, seeded: ["dot-done-unread", "dot-board-unread", "dot-running"] }));
+void board.flush().then(() => {
+  db.close();
+  console.log(JSON.stringify({ dbPath, seeded: ["dot-done-unread", "dot-board-unread", "dot-running"] }));
+});

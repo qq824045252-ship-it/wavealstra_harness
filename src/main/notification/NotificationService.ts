@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { AppDatabase } from "../db/AppDatabase";
-import { AppSettingsStore } from "../AppSettingsStore";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
+import { AppSettingsStore, type AppSettings } from "../AppSettingsStore";
 import {
   normalizeNotificationPreferences,
   notificationPreferenceEnabled,
   notificationTarget,
+  parseNotificationTarget,
   type NotificationChangedEvent,
   type NotificationActivationTarget,
   type NotificationDto,
@@ -13,7 +15,8 @@ import {
   type NotificationSourceType,
   type NotificationType,
 } from "../../shared/notification";
-import { clipNotificationText, NotificationRepository, type RuntimeNotificationMutation } from "./NotificationRepository";
+import { clipNotificationText, mapNotificationRow, normalizeNotificationList,
+  NotificationRepository, type RuntimeNotificationMutation } from "./NotificationRepository";
 
 export interface PublishNotificationInput {
   target?: NotificationActivationTarget;
@@ -36,13 +39,12 @@ type ForegroundProbe = () => boolean;
 
 /**
  * MyBuddy 通知唯一业务入口。
- * - Main Process 为真源；Renderer 只读/标记。
- * - SQLite 持久化 + dedupe；桌面通知是 delivery，不是第二套通知真源。
+ * Core owns persistence and deduplication. The desktop host applies display preferences.
  * - 通知策略来自 AppSettingsStore，任何 source adapter 都不能绕过这里自行弹窗。
  */
 export class NotificationService {
-  private readonly repository: NotificationRepository;
-  private readonly settingsStore: AppSettingsStore;
+  private readonly legacy?: { connection: AppDatabase["connection"]; repository: NotificationRepository };
+  private readonly native?: RuntimeAuditReader;
   private changedListener: ChangedListener | null = null;
   private desktopPresenter: DesktopPresenter | null = null;
   private foregroundProbe: ForegroundProbe | null = null;
@@ -50,14 +52,30 @@ export class NotificationService {
   /** in-app 关闭时没有 DB dedupe，仍需挡住同一 lifecycle event 的重复 desktop delivery。 */
   private readonly transientDedupe = new Map<string, number>();
 
-  constructor(private readonly db: AppDatabase, settingsStore = new AppSettingsStore()) {
-    this.repository = new NotificationRepository(db.connection, db.runtimeAuditReader);
-    this.settingsStore = settingsStore;
-    this.repository.cleanup();
+  constructor(source: AppDatabase | { core: RuntimeAuditReader },
+    private readonly settingsStore: { read(): Pick<AppSettings, "notificationPreferences"> } = new AppSettingsStore()) {
+    if ("core" in source) {
+      this.native = source.core;
+    } else {
+      this.native = source.runtimeAuditReader;
+      const connection = source.connection;
+      const repository = new NotificationRepository(connection, this.native);
+      this.legacy = { connection, repository };
+      repository.cleanup();
+    }
+  }
+
+  private get repository(): NotificationRepository {
+    if (!this.legacy) throw new Error("Core 通知必须使用异步接口");
+    return this.legacy.repository;
+  }
+
+  cleanupStored(): Promise<void> {
+    return this.writeMark({ kind: "cleanup", now: Date.now() }, () => this.repository.cleanup());
   }
 
   async catchupFromCore(afterCreatedAtMs = 0): Promise<{ unreadCount: number; notifications: NotificationDto[] } | undefined> {
-    const native = this.db.runtimeAuditReader;
+    const native = this.native;
     if (!native?.remoteControl) return undefined;
     const reply = await native.remoteControl<{
       status?: string;
@@ -69,10 +87,9 @@ export class NotificationService {
       limit: 100,
     });
     if (!reply || reply.status !== "ok") return undefined;
-    const unread = typeof reply.unreadCount === "number" ? reply.unreadCount : this.repository.unreadCount();
+    const unread = typeof reply.unreadCount === "number" ? reply.unreadCount : await this.readUnreadCount();
     const rows = Array.isArray(reply.notifications) ? reply.notifications : [];
-    const latest = rows[0];
-    if (latest || unread > 0) this.emitChanged(latest, unread);
+    this.emitChanged(rows[0], unread);
     return { unreadCount: unread, notifications: rows };
   }
 
@@ -91,6 +108,7 @@ export class NotificationService {
           sourceId: typeof p.sourceId === "string" ? p.sourceId : undefined,
           taskId: typeof p.taskId === "string" ? p.taskId : undefined,
           projectId: typeof p.projectId === "string" ? p.projectId : undefined,
+          workspaceId: typeof p.workspaceId === "string" ? p.workspaceId : undefined,
           dedupeKey: typeof p.dedupeKey === "string" ? p.dedupeKey : undefined,
           createdAt: typeof p.createdAt === "number" ? p.createdAt : Date.now(),
         }
@@ -117,12 +135,22 @@ export class NotificationService {
     this.foregroundProbe = foregroundProbe ?? null;
   }
 
+  async readActivation(id: string): Promise<NotificationActivationTarget | null> {
+    await this.flushWrites();
+    if (this.legacy && !this.requiresRustWrites) return this.resolveActivation(id);
+    const result = await this.native?.notificationActivation(id, Date.now());
+    if (!result) throw new Error("通知打开目标未获 Rust Core 确认");
+    return parseNotificationTarget(result.target);
+  }
+
   resolveActivation(id: string): NotificationActivationTarget | null {
-    const target = this.repository.resolveActivation(id);
+    const legacy = this.legacy;
+    if (!legacy) throw new Error("Core 通知必须使用异步接口");
+    const target = legacy.repository.resolveActivation(id);
     if (!target) return null;
     // Existence is rechecked at click time; Bot history/getWork enforce user scope
     // again at the renderer-facing API boundary before displaying any data.
-    const db = this.db.connection;
+    const db = legacy.connection;
     try {
       switch (target.kind) {
         case "task": return db.prepare("SELECT 1 FROM tasks WHERE id = ?").get(target.taskId) ? target : null;
@@ -145,22 +173,28 @@ export class NotificationService {
   }
 
   private get requiresRustWrites(): boolean {
-    return this.db.connection.readonly || Boolean(this.db.runtimeAuditReader?.supervised);
+    return !this.legacy || this.legacy.connection.readonly || Boolean(this.native?.supervised);
   }
 
   async readList(request: NotificationListRequest = {}): Promise<NotificationDto[]> {
     await this.flushWrites();
-    return this.repository.readList(request);
+    if (!this.requiresRustWrites) return this.repository.readList(request);
+    const result = await this.native?.notificationData(normalizeNotificationList(request));
+    if (!Array.isArray(result)) throw new Error("通知列表未获 Rust Core 确认");
+    return result.map(mapNotificationRow);
   }
 
   async readUnreadCount(): Promise<number> {
     await this.flushWrites();
-    return this.repository.readUnreadCount();
+    if (!this.requiresRustWrites) return this.repository.readUnreadCount();
+    const result = await this.native?.notificationData({ kind: "unreadCount" });
+    if (typeof result !== "number") throw new Error("未读通知数未获 Rust Core 确认");
+    return result;
   }
 
   async flushWrites(): Promise<void> {
     await this.writeTail;
-    await this.repository.flush();
+    await this.legacy?.repository.flush();
   }
 
   markRead(id: string): void {
@@ -241,8 +275,8 @@ export class NotificationService {
 
   private writeMark(mutation: RuntimeNotificationMutation, onHost: () => void): Promise<void> {
     return this.enqueue(async () => {
-      await this.repository.flush();
-      const native = this.db.runtimeAuditReader;
+      await this.legacy?.repository.flush();
+      const native = this.native;
       if (!native) {
         if (this.requiresRustWrites) throw new Error("只读模式下缺少通知 Rust 写入通道");
         return onHost();
@@ -290,8 +324,8 @@ export class NotificationService {
   publishPersisted(input: PublishNotificationInput): Promise<NotificationDto | null> {
     const notice = { ...input, createdAt: input.createdAt ?? Date.now() };
     return this.enqueue(async () => {
-      await this.repository.flush();
-      const native = this.db.runtimeAuditReader;
+      await this.legacy?.repository.flush();
+      const native = this.native;
       if (!native) {
         if (this.requiresRustWrites) throw new Error("只读模式下缺少通知 Rust 写入通道");
         return this.publish(notice);
@@ -300,12 +334,12 @@ export class NotificationService {
       if (!prepared) return null;
       const { preferences, record } = prepared;
       const inApp = preferences.inAppEnabled;
-      const desktop = !inApp && preferences.desktopEnabled && this.shouldDeliverDesktop(record, preferences.desktopBackgroundOnly);
-      if (inApp || desktop) {
+      const desktopOnly = !inApp && preferences.desktopEnabled && this.shouldDeliverDesktop(record, preferences.desktopBackgroundOnly);
+      if (inApp || desktopOnly) {
         const target = notificationTarget(record);
         const { target: _target, group: _group, ...stored } = record;
         const result = await native.writeNotification({
-          kind: "publish", record: stored, targetJson: target ? JSON.stringify(target) : undefined, inApp, desktop,
+          kind: "publish", record: stored, targetJson: target ? JSON.stringify(target) : undefined, inApp, desktop: desktopOnly,
         });
         if (result?.status === "needsHost") {
           if (this.requiresRustWrites) throw new Error("只读模式下禁止通知发布回退宿主 SQLite 写入");
@@ -313,13 +347,10 @@ export class NotificationService {
         }
         if (result?.status === "rejected") throw new Error(result.message);
         if (!result) throw new Error("未收到通知保存确认");
-        if (inApp) {
-          if (!result.changed) return null;
-          this.emitChanged(record, result.unreadCount);
-        }
+        if (!result.changed) return null;
+        if (inApp) this.emitChanged(record, result.unreadCount);
       }
-      if (!inApp && record.dedupeKey) this.transientDedupe.set(record.dedupeKey, record.createdAt);
-      if ((inApp || desktop) && preferences.desktopEnabled && this.shouldDeliverDesktop(record, preferences.desktopBackgroundOnly)) {
+      if ((inApp || desktopOnly) && preferences.desktopEnabled && this.shouldDeliverDesktop(record, preferences.desktopBackgroundOnly)) {
         this.deliverDesktop(record);
       }
       return record;
@@ -376,8 +407,15 @@ export class NotificationService {
   }
 
   private emitChanged(latest?: NotificationDto, unreadCount?: number): void {
+    if (!this.changedListener) return;
+    if (unreadCount === undefined && this.requiresRustWrites) {
+      void this.readUnreadCount().then(count => this.emitChanged(latest, count), error => {
+        console.warn("[NotificationService] read unread count failed", error);
+      });
+      return;
+    }
     try {
-      this.changedListener?.({ unreadCount: unreadCount ?? this.repository.unreadCount(), latest });
+      this.changedListener({ unreadCount: unreadCount ?? this.repository.unreadCount(), latest });
     } catch (error) {
       console.warn("[NotificationService] changed listener failed", error);
     }

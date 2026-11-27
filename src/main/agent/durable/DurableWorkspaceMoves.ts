@@ -18,7 +18,7 @@ export type RuntimeDurableWorkspaceMoveReply =
 const CONFLICT = "任务工作目录搬迁记录已变化";
 const PROTECTED = "任务已删除或在回收站中";
 
-/** app.db intent and projection around the separate Pi workspace transaction. */
+/** Core intent and projection around the separate Pi workspace transaction. */
 export class DurableWorkspaceMoves {
   constructor(private readonly db: AppDatabase) {}
 
@@ -30,7 +30,7 @@ export class DurableWorkspaceMoves {
 
   async write(request: RuntimeDurableWorkspaceMoveRequest): Promise<void> {
     const worker = this.db.runtimeAuditReader;
-    const rustRequired = Boolean(this.db.connection.readonly || worker?.supervised);
+    const rustRequired = this.db.readonly || worker?.supervised === true;
     if (worker) {
       const reply = await worker.writeDurableWorkspaceMove(request);
       if (reply?.status === "applied") return;

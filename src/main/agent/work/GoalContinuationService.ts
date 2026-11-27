@@ -10,6 +10,7 @@ import type {
 import type { DurableBotSnapshot } from "../../../shared/durable-bot";
 import type { WorkDto } from "../../../shared/bot-work";
 import type { ConversationGoalService } from "../ConversationGoalService";
+import { GOAL_CONTINUATION_STALL_LIMIT as STALL_LIMIT, normalizeGoalContinuationAttempts } from "../ConversationRuntimeData";
 import type { WorkService } from "./WorkService";
 import { GoalContinuationStore, type GoalContinuationRow } from "./GoalContinuationStore";
 
@@ -44,7 +45,6 @@ export interface GoalContinuationServiceOptions {
   tokenBudget: () => number | null;
 }
 
-const STALL_LIMIT = 2;
 const LOG = "[GoalContinuation]";
 type CheckTrigger = NonNullable<ConversationGoalContinuationDto["lastCheck"]>["trigger"];
 
@@ -367,7 +367,7 @@ export class GoalContinuationService {
       const accepted = await this.options.submit(this.buildRequest({
         taskId, work, attempt: attempt.attempt, serial: attempt.serial, maxAttempts, budget, tokensUsed: row.tokensUsed,
       }), {
-        goalContinuation: { workId: work.workId, intentRevision: work.intentRevision, attempt: attempt.attempt },
+        goalContinuation: { workId: work.workId, intentRevision: work.intentRevision, ownerEpoch: work.ownerEpoch, attempt: attempt.attempt },
       });
       if (!accepted.receipt) throw new Error(accepted.error?.message ?? "自动续跑未被接受");
     } catch (error) {
@@ -464,8 +464,7 @@ export class GoalContinuationService {
   }
 
   private maxAttempts(): number {
-    const configured = this.options.maxAttempts();
-    return Number.isFinite(configured) ? Math.min(10, Math.max(1, Math.round(configured))) : 3;
+    return normalizeGoalContinuationAttempts(this.options.maxAttempts());
   }
 
   private emitGoal(taskId: string, workId: string): void {

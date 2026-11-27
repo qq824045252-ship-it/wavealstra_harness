@@ -115,8 +115,8 @@ function verifyFiles(taskId: string, s: Spec) {
 }
 const hex = (value: string) => createHash("sha256").update(value).digest("hex");
 const main = "weekly-contract";
-function alreadyReleased(taskId = main): ImprovementPackage {
-  const p = fixture.agent.nativeImprovement.report().packages.find(p => p.scope.id === taskId);
+async function alreadyReleased(taskId = main): Promise<ImprovementPackage> {
+  const p = (await fixture.agent.nativeImprovement.report()).packages.find(p => p.scope.id === taskId);
   assert(p, `no published package for ${taskId}`);
   return p;
 }
@@ -202,8 +202,8 @@ async function nativeWrites(taskId: string, conversation: string, document: stri
   } finally { await storage.close(ctx); }
   return [...writes].filter(([id]) => committed.has(id));
 }
-function revised(id: string, addition: string) {
-  const draft = fixture.agent.nativeImprovement.packages.draft(id);
+async function revised(id: string, addition: string) {
+  const draft = await fixture.agent.nativeImprovement.packages.draft(id);
   assert(draft);
   return { ...draft, convention: draft.convention + "\n" + addition };
 }
@@ -211,7 +211,7 @@ async function runWorker() {
   await open();
   if (worker === "stage") {
     const id = process.argv[4]!;
-    const hash = await fixture.agent.nativeImprovement.packages.stage(revised(id, "发布中断样本"));
+    const hash = await fixture.agent.nativeImprovement.packages.stage(await revised(id, "发布中断样本"));
     writeFileSync(join(root, "staged"), hash, { flag: "wx" });
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   } else if (worker === "repair") {
@@ -259,7 +259,7 @@ async function suite() {
   const [scan, parallel] = await Promise.all([service.review(), service.review()]);
   assert.deepEqual(scan.packages, parallel.packages);
   assert.deepEqual(scan.runs[0].issues, []);
-  const initial = alreadyReleased();
+  const initial = await alreadyReleased();
   assert.equal(initial.source.taskId, main);
   const item = scan.items.find(i => i.sources.some(s => s.entry === initial.source.entry && s.taskId === main));
   assert(item, "the published change must link back to its original inputs");
@@ -290,17 +290,17 @@ async function suite() {
   await interact(spec);
   verifyFiles(main, spec);
   const uses = () => fixture.agent.nativeImprovement.packages.uses(initial.id, initial.revision);
-  const events = new Set(uses().filter(u => u.actor === "main").map(u => u.kind + "/" + u.event));
+  const events = new Set((await uses()).filter(u => u.actor === "main").map(u => u.kind + "/" + u.event));
   for (const expected of ["convention/applied", "skill/read", "memory/recalled", "tool/executed", "hook/feedback", "hook/passed"])
     assert(events.has(expected), `missing actual main use ${expected}: ${[...events]}`);
   passed(4, "原任务从缺章节和附件的草稿修复到独立核验通过，五类资产均有使用回执");
   await interact(variant);
   verifyFiles(main, variant);
-  const count = uses().length;
+  const count = (await uses()).length;
   respond = () => text("本次只答复问题。");
   await prompt(main, "如何生成 optional.md？不需要附件。");
   await prompt(outside, request(spec));
-  assert.equal(uses().length, count);
+  assert.equal((await uses()).length, count);
   passed(5, "文件名、章节和附件变体通过，问句和其他作用域没有触发");
 
   await child(childSpec);
@@ -315,7 +315,7 @@ async function suite() {
     assert(childWrites.some(([, value]) => hex(value) === hex(expected)));
     assert.deepEqual(await nativeWrites(main, mainConversation, name), [], "parent must not repair the child's files");
   }
-  const childUses = uses().filter(u => u.actor === "subagent" && String(u.conversation) === String(childRow.conversation));
+  const childUses = (await uses()).filter(u => u.actor === "subagent" && String(u.conversation) === String(childRow.conversation));
   assert.deepEqual([...new Set(childUses.map(u => u.kind))].sort(), requiredKinds);
   assert(childUses.every(u => u.task === main && u.run));
   // Give a second child a structurally complete file written by its parent in
@@ -337,20 +337,20 @@ async function suite() {
   assert(peer);
   verifyFiles(main, parentFiles);
   assert.deepEqual(await nativeWrites(main, String(peer.conversation), parentFiles.document), []);
-  const peerUses = uses().filter(u => u.actor === "subagent" && String(u.conversation) === String(peer.conversation));
+  const peerUses = (await uses()).filter(u => u.actor === "subagent" && String(u.conversation) === String(peer.conversation));
   assert(peerUses.some(u => u.kind === "tool" && u.event === "unknown"));
   assert(!peerUses.some(u => u.event === "passed" || u.event === "accepted"));
   passed(6, "子会话亲自写文件、读取技能并核验，父会话没有代写");
   const latestHistory = await fixture.agent.loadTaskHistory(main);
   assert.equal(String(latestHistory.durable!.conversationId), mainConversation);
-  assert(uses().some(u => u.actor === "main" && String(u.conversation) === mainConversation));
+  assert((await uses()).some(u => u.actor === "main" && String(u.conversation) === mainConversation));
   passed(7, "原已打开会话在下一次适用任务中使用新版本");
 
   // Do not share a live Durable writer with the two crash workers.
   await fixture.close();
   await killAt("stage", "staged", [initial.id]);
   await open();
-  assert.deepEqual(alreadyReleased(), initial);
+  assert.deepEqual(await alreadyReleased(), initial);
   assert(readFileSync(join(root, "staged"), "utf8") !== initial.hash);
   passed(8, "暂存完成后杀死发布进程，重开后五项仍为原版");
 
@@ -369,48 +369,49 @@ async function suite() {
   const activeService = fixture.agent.nativeImprovement;
   const releases = activeService.packages;
   const changes = ["图表须按文档中的顺序核对。", "附件须按当前明确清单核对。"];
-  const submitted = changes.map(change => releases.publish(revised(initial.id, change), initial.generation));
+  const submitted = changes.map(async change => releases.publish(await revised(initial.id, change), initial.generation));
   const raced = await Promise.allSettled(submitted);
   assert.equal(raced.filter(r => r.status === "fulfilled").length, 1);
   const refused = raced.find(r => r.status === "rejected");
   assert(refused?.status === "rejected" && /基础|过期|冲突|变化|stale|conflict/i.test(String(refused.reason)), String(refused));
-  const winning = alreadyReleased();
+  const winning = await alreadyReleased();
   assert.equal(winning.revision, initial.revision + 1);
   const losing = changes[raced.indexOf(refused)]!;
-  assert(!releases.draft(initial.id)!.convention.includes(losing));
-  await releases.publish(revised(initial.id, losing), winning.generation);
-  const stable = alreadyReleased();
-  assert(changes.every(change => releases.draft(initial.id)!.convention.includes(change)));
+  assert(!(await releases.draft(initial.id))!.convention.includes(losing));
+  await releases.publish(await revised(initial.id, losing), winning.generation);
+  const stable = await alreadyReleased();
+  const merged = await releases.draft(initial.id);
+  assert(changes.every(change => merged!.convention.includes(change)));
   await interact({ ...variant, document: "stable.md", attachment: "stable.csv" });
   verifyFiles(main, { ...variant, document: "stable.md", attachment: "stable.csv" });
   passed(11, "并发提交同一基础版本只接受一份，两项改动合并重验后生效");
 
-  const flawedDraft = revised(initial.id, "验证可回退的候选版本。");
+  const flawedDraft = await revised(initial.id, "验证可回退的候选版本。");
   const fragile = { ...variant, document: "regression.md", attachment: "variant-exception.csv" };
   // This flaw depends on a novel input absent from maintained replay cases.
   // Activation therefore passes the original, variant and negative controls.
   flawedDraft.hook = { ...flawedDraft.hook,
     script: 'if (JSON.stringify(event).includes("variant-exception.csv")) throw Error("variant-specific regression");\n' + flawedDraft.hook.script };
   await releases.publish(flawedDraft, stable.generation);
-  const withdrawn = alreadyReleased();
+  const withdrawn = await alreadyReleased();
   respond = writer(fragile, { decline: true });
   const regression = await fixture.agent.prompt({ taskId: main, modelId: "fixture/model", text: request(fragile),
     userMessageId: randomUUID(), assistantMessageId: randomUUID() });
   assert(regression.receipt);
   await fixture.agent.waitForSubmission(regression.receipt);
-  const failures = releases.uses(initial.id, withdrawn.revision).filter(r => r.kind === "hook" && r.event === "error");
+  const failures = (await releases.uses(initial.id, withdrawn.revision)).filter(r => r.kind === "hook" && r.event === "error");
   assert(failures.length, "the regressed version must actually execute and fail");
-  assert.equal(alreadyReleased().hash, stable.hash);
+  assert.equal((await alreadyReleased()).hash, stable.hash);
   await assert.rejects(releases.stage({...flawedDraft,convention:flawedDraft.convention+" 再版。"}),/variant-specific regression/);
-  const frozen = releases.uses(initial.id, withdrawn.revision);
+  const frozen = await releases.uses(initial.id, withdrawn.revision);
   const restoredMain = { ...variant, document: "restored.md", attachment: "restored.csv" };
   await interact(restoredMain);
   verifyFiles(main, restoredMain);
   const restoredChild = { ...childSpec, document: "restored-child.md", attachment: "restored-child.csv" };
   await child(restoredChild);
   verifyFiles(main, restoredChild);
-  assert.deepEqual(releases.uses(initial.id, withdrawn.revision), frozen);
-  const restoredUses = releases.uses(initial.id, stable.revision);
+  assert.deepEqual(await releases.uses(initial.id, withdrawn.revision), frozen);
+  const restoredUses = await releases.uses(initial.id, stable.revision);
   for (const actor of ["main", "subagent"]) assert(restoredUses.some(r => r.actor === actor && r.kind === "hook" && r.event === "passed"));
   passed(10, "具体变体触发新版故障，回退后主、子会话均使用上一可用版本");
 
@@ -425,11 +426,11 @@ async function suite() {
   await prompt(unsuccessful, request(variant) + "请在章节和附件中写入样本读数 7。");
   assert(!readFileSync(join(binding(unsuccessful).cwd, variant.attachment), "utf8").includes("7"));
   const observed = await activeService.review();
-  const unused = alreadyReleased(pending), corrected = alreadyReleased(unsuccessful);
+  const [unused, corrected] = await Promise.all([alreadyReleased(pending), alreadyReleased(unsuccessful)]);
   const weekStart = Date.parse(initial.week + "T00:00:00Z") + 7 * 86400000;
   const nextWeek = new Date(weekStart).toISOString().slice(0, 10);
   const weeklyReview = async (now: number) => {
-    const weekly = new NativeImprovementService(db, fixture.agent.nativeHooks, join(root, ".mybuddy", "native-improvement.sqlite"),
+    const weekly = new NativeImprovementService(db, fixture.agent.nativeHooks, join(root, ".mybuddy"),
       () => now, undefined, activeService.knowledge);
     try {
       const report = await weekly.review();

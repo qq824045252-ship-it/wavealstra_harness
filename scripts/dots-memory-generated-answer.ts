@@ -98,10 +98,11 @@ export async function realDotsAnswer(db: AppDatabase, question: string, question
     agent = new AgentService(db,new TaskExecutionWorkspace(join(isolated,"tasks")),{models:runtime});
     const { DotsDelegations } = await import("../src/main/dots/DotsDelegations");
     const { DotsActions } = await import("../src/main/dots/DotsActions");
+    const { fixtureTaskBoard } = await import("./fixtures/legacy-task-board-store");
     new (await import("../src/main/artifact/ArtifactRepository")).ArtifactRepository(db.connection);
     const active = agent;
     const journal = new DotsDelegations(db.connection,(...args)=>active.dotsSubmission(...args),()=>{});
-    active.setDotsActions(new DotsActions(db,active,{link:(...args)=>journal.link(...args),list:()=>journal.list(),failed:(...args)=>journal.failed(...args)}));
+    active.setDotsActions(new DotsActions(db,active,{link:(...args)=>journal.link(...args),list:()=>journal.list(),failed:(...args)=>journal.failed(...args)}, fixtureTaskBoard(db.connection)));
     await agent.init(); await agent.resumePersistedTasks();
     assert(questionDate?.trim(),"Missing annotated question time");
     const prompt = "Question time from the original conversation: "+questionDate+"\n"+question+"\nAnswer in English using only the original conversation evidence supplied by Dots. Return one JSON object with answer (short factual answer, or null when evidence is insufficient), abstain (boolean), and citations (array of the exact L1 memory ID@revision supporting your answer, including counterevidence if applicable). Do not use outside knowledge.";

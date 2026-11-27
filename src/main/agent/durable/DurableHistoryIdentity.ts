@@ -1,22 +1,15 @@
-import { createHash, randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { resolve } from "node:path";
 import type { Storage } from "@earendil-works/pi-durable";
-import { selectedDurableSqlite } from "./DurableStorageFormat";
+import { DuckDbStorage } from "./DuckDbStorage";
 
-const injectedIdentities = new WeakMap<Storage, string>();
-
-/** A SQLite incarnation and branch survive viewer/runtime reopening, but not store replacement. */
-export function durableHistoryIdentity(directory: string, conversationId: string, injectedStorage?: Storage): string {
-  let store: string;
-  if (injectedStorage) {
-    store = injectedIdentities.get(injectedStorage) ?? randomUUID();
-    injectedIdentities.set(injectedStorage, store);
-  } else {
-    const path = selectedDurableSqlite(directory);
-    if (!path) throw new Error("历史存储不存在");
-    const stat = statSync(path, { bigint: true });
-    if (stat.ino === 0n) throw new Error("文件系统未提供可信的历史存储身份");
-    store = `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
-  }
-  return createHash("sha256").update(JSON.stringify([store, conversationId])).digest("hex");
+/** Build a stable identity string for a logical store conversation in DuckDB. */
+export function durableHistoryIdentity(
+  directory: string,
+  conversationId: string,
+  storage?: Storage,
+): string {
+  const identity = storage instanceof DuckDbStorage ? storage.incarnationKey : undefined;
+  const storeKey = createHash("sha256").update(identity ?? resolve(directory)).digest("hex").slice(0, 16);
+  return `duckdb:${storeKey}:${conversationId}`;
 }

@@ -7,7 +7,7 @@ use crate::business_protocol::{
     current_core_generation, dispatch_waiting_executions, ensure_tables as ensure_protocol_tables,
 };
 use crate::work_scheduler::{now_ms, sha256_hex};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -108,45 +108,12 @@ impl Command {
     }
 }
 
-pub fn ensure_dots_scheduler_tables(db: &Connection) -> crate::Result<()> {
-    db.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS core_dots_control_config (
-            key TEXT PRIMARY KEY,
-            value_json TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS core_dots_control_cycles (
-            cycle_key TEXT PRIMARY KEY,
-            kind TEXT NOT NULL,
-            next_due_at_ms INTEGER,
-            last_dispatched_at_ms INTEGER,
-            last_completed_at_ms INTEGER,
-            in_flight INTEGER NOT NULL DEFAULT 0,
-            updated_at_ms INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS core_dots_causal_dedup (
-            dedup_key TEXT PRIMARY KEY,
-            kind TEXT NOT NULL,
-            source_id TEXT NOT NULL,
-            detail_json TEXT,
-            recorded_at_ms INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_core_dots_causal_time
-            ON core_dots_causal_dedup(recorded_at_ms);
-        ",
-    )?;
+pub fn ensure_dots_scheduler_tables(_db: &Connection) -> crate::Result<()> {
     Ok(())
 }
 
 fn table_exists(db: &Connection, name: &str) -> crate::Result<bool> {
-    Ok(db
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
-            [name],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
+    crate::database::table_exists(db, name)
 }
 
 fn load_config(db: &Connection) -> crate::Result<RuntimeDotsConfig> {
@@ -179,9 +146,9 @@ fn ensure_cycle_row(
     now: i64,
 ) -> crate::Result<()> {
     tx.execute(
-        "INSERT OR IGNORE INTO core_dots_control_cycles (
-            cycle_key, kind, next_due_at_ms, last_dispatched_at_ms, last_completed_at_ms, in_flight, updated_at_ms
-         ) VALUES (?1, ?2, ?3, NULL, NULL, 0, ?4)",
+        "INSERT INTO core_dots_control_cycles (
+           cycle_key, kind, next_due_at_ms, last_dispatched_at_ms, last_completed_at_ms, in_flight, updated_at_ms
+         ) VALUES (?1, ?2, ?3, NULL, NULL, 0, ?4) ON CONFLICT DO NOTHING",
         params![cycle_key, kind, default_due_ms, now],
     )?;
     Ok(())
@@ -193,6 +160,7 @@ fn seed_cycles(tx: &Connection, now: i64) -> crate::Result<()> {
     ensure_cycle_row(tx, "proactive_delivery", "proactive_delivery", now, now)?;
     ensure_cycle_row(tx, "file_watch", "file_watch", now, now)?;
     ensure_cycle_row(tx, "delegation_recover", "delegation_recover", now, now)?;
+    ensure_cycle_row(tx, "delegation_delivery", "delegation_delivery", now, now)?;
     Ok(())
 }
 
@@ -313,8 +281,8 @@ fn check_due_observations(
     for (op_id, task_id, status, at, tool, phase, due_at) in due {
         let dedup_key = format!("dots:obs:{op_id}:{due_at}");
         let claimed = tx.execute(
-            "INSERT OR IGNORE INTO core_dots_causal_dedup (dedup_key, kind, source_id, detail_json, recorded_at_ms)
-             VALUES (?1, 'observation', ?2, NULL, ?3)",
+            "INSERT INTO core_dots_causal_dedup (dedup_key, kind, source_id, detail_json, recorded_at_ms)
+             VALUES (?1, 'observation', ?2, NULL, ?3) ON CONFLICT DO NOTHING",
             params![dedup_key, op_id, now],
         )?;
         if claimed == 0 {
@@ -379,8 +347,8 @@ fn check_due_dependencies(
     for (op_id, task_id, deadline_at) in due {
         let dedup_key = format!("dots:dep_deadline:{op_id}:{deadline_at}");
         let claimed = tx.execute(
-            "INSERT OR IGNORE INTO core_dots_causal_dedup (dedup_key, kind, source_id, detail_json, recorded_at_ms)
-             VALUES (?1, 'dependency_deadline', ?2, NULL, ?3)",
+            "INSERT INTO core_dots_causal_dedup (dedup_key, kind, source_id, detail_json, recorded_at_ms)
+             VALUES (?1, 'dependency_deadline', ?2, NULL, ?3) ON CONFLICT DO NOTHING",
             params![dedup_key, op_id, now],
         )?;
         if claimed == 0 {
@@ -428,14 +396,23 @@ fn tick_tx(
     let mut dispatched = Vec::new();
     let has_pending_delegations = table_exists(tx, "dots_delegations")?
         && tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM dots_delegations WHERE status='pending' AND request_json IS NOT NULL)",
+            &format!("SELECT EXISTS(SELECT 1 FROM dots_delegations d WHERE status='pending' AND request_json IS NOT NULL
+                AND {} AND NOT EXISTS(SELECT 1 FROM dots_reply_events e WHERE e.operation_id=d.operation_id AND e.settled=1))",
+                crate::dots_delegation_data::NO_ACTIVE_RECOVERY),
             [],
-            |r| r.get::<_, i64>(0),
-        )? != 0;
+            |r| crate::database::row_bool(r, 0),
+        )?;
     if has_pending_delegations
         && dispatch_cycle_execution(tx, core_gen, client_gen, "delegation_recover", 10_000, now, false, events)?
     {
         dispatched.push("delegation_recover");
+    }
+    let has_prepared_replies: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM dots_reply_events WHERE settled=0 AND reply IS NOT NULL)",
+        [], |row| row.get(0))?;
+    if has_prepared_replies
+        && dispatch_cycle_execution(tx, core_gen, client_gen, "delegation_delivery", 2_000, now, false, events)?
+    {
+        dispatched.push("delegation_delivery");
     }
 
     let obs_due = check_due_observations(tx, core_gen, client_gen, now, events)?;
@@ -445,8 +422,8 @@ fn tick_tx(
         && tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM dots_file_watches WHERE state IN ('watching', 'sending'))",
             [],
-            |r| r.get::<_, i64>(0),
-        )? != 0;
+            |r| crate::database::row_bool(r, 0),
+        )?;
     if has_active_watches
         && dispatch_cycle_execution(tx, core_gen, client_gen, "file_watch", cfg.file_watch_poll_ms, now, false, events)?
     {
@@ -458,8 +435,8 @@ fn tick_tx(
             && tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM dots_proactive_delivery WHERE message_id IS NULL OR (workspace IS NOT NULL AND archived_at IS NULL AND coalesce(archive_retry_at, 0) <= ?1))",
                 [now],
-                |r| r.get::<_, i64>(0),
-            )? != 0;
+                |r| crate::database::row_bool(r, 0),
+            )?;
         if has_proactive
             && dispatch_cycle_execution(tx, core_gen, client_gen, "proactive_delivery", cfg.proactive_poll_ms, now, false, events)?
         {
@@ -596,7 +573,7 @@ pub fn execute_write(
     ensure_protocol_tables(db, &core_gen)?;
     ensure_dots_scheduler_tables(db)?;
 
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let mut events = Vec::new();
     let mut dispatches = Vec::new();
 
@@ -727,8 +704,8 @@ pub fn execute_write(
             let now = at.unwrap_or_else(now_ms);
             let detail_json = detail.as_ref().map(serde_json::to_string).transpose()?;
             let inserted = tx.execute(
-                "INSERT OR IGNORE INTO core_dots_causal_dedup (dedup_key, kind, source_id, detail_json, recorded_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO core_dots_causal_dedup (dedup_key, kind, source_id, detail_json, recorded_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT DO NOTHING",
                 params![dedup_key, kind, source_id, detail_json, now],
             )?;
             let accepted = inserted > 0;
@@ -753,6 +730,7 @@ pub fn execute_write(
     };
 
     crate::request_control::commit(tx)?;
+    crate::work_scheduler::apply_committed_promotion_dispatches(tracker, &dispatches);
     Ok(WriteSideEffects {
         data,
         events,
@@ -793,11 +771,11 @@ pub fn run_supervised_tick(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db_schema::CANONICAL_SCHEMA_SQL;
+    use crate::database::CANONICAL_DUCKDB_SCHEMA_SQL;
 
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().expect("open memory db");
-        conn.execute_batch(CANONICAL_SCHEMA_SQL).expect("schema");
+        conn.execute_batch(CANONICAL_DUCKDB_SCHEMA_SQL).expect("schema");
         let core_gen = current_core_generation();
         ensure_protocol_tables(&conn, &core_gen).expect("protocol tables");
         ensure_dots_scheduler_tables(&conn).expect("dots tables");
@@ -869,7 +847,7 @@ mod tests {
         assert!(disp_count <= 2);
         let run_count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM core_execution_runs WHERE kind = 'dots_control' AND json_extract(payload_json, '$.dotsControlCycle') = 'google'",
+                "SELECT COUNT(*) FROM core_execution_runs WHERE kind = 'dots_control' AND json_extract_string(payload_json, '$.dotsControlCycle') = 'google'",
                 [],
                 |r| r.get(0),
             )
@@ -880,13 +858,13 @@ mod tests {
         let mut settle_events = Vec::new();
         let failed_exec_id: String = conn
             .query_row(
-                "SELECT execution_id FROM core_execution_runs WHERE kind = 'dots_control' AND json_extract(payload_json, '$.dotsControlCycle') = 'google' ORDER BY created_at_ms DESC LIMIT 1",
+                "SELECT execution_id FROM core_execution_runs WHERE kind = 'dots_control' AND json_extract_string(payload_json, '$.dotsControlCycle') = 'google' ORDER BY created_at_ms DESC LIMIT 1",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         {
-            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+            let tx = conn.transaction().unwrap();
             on_core_execution_state_change(
                 &tx,
                 &ctx.generation,

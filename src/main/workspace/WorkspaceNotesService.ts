@@ -14,7 +14,7 @@ export class WorkspaceNotesService {
   private readonly persistence: ScopedNotePersistence;
 
   constructor(private readonly db: AppDatabase) {
-    this.persistence = new ScopedNotePersistence(db.runtimeAuditReader, "workspace", WORKSPACE_NOTE_MAX_CHARS, errors, db.connection?.readonly);
+    this.persistence = new ScopedNotePersistence(db.runtimeAuditReader, "workspace", WORKSPACE_NOTE_MAX_CHARS, errors, db.readonly);
   }
 
   read(workspaceId: string): Promise<WorkspaceNoteDto> {

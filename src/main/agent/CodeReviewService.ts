@@ -49,14 +49,21 @@ interface FileDetail {
   after: string | null;
 }
 
+type WireReview = Omit<StoredReview, "before_bytes" | "after_bytes"> & {
+  before_bytes: string | null;
+  after_bytes: string | null;
+};
+
 export type RuntimeCodeReviewQuery =
   | { kind: "list" | "pendingCount"; taskId: string }
-  | { kind: "detail"; taskId: string; id: string; maxPreviewBytes: number };
+  | { kind: "detail"; taskId: string; id: string; maxPreviewBytes: number }
+  | ({ kind: "record"; taskId: string } & ({ id: string } | { targetKey: string }));
 
 export type RuntimeCodeReviewData =
   | { kind: "list"; files: FileRow[] }
   | { kind: "pendingCount"; count: number }
-  | { kind: "detail"; detail: FileDetail | null };
+  | { kind: "detail"; detail: FileDetail | null }
+  | { kind: "record"; record: WireReview | null };
 
 function state(row: StoredReview, version: "before" | "after"): ReviewState {
   return {
@@ -88,10 +95,15 @@ async function countChanges(before: ReviewState, after: ReviewState) {
 /** Actual task writes supply observations while holding the same resource lease as review decisions. */
 export class CodeReviewService {
   constructor(
-    private readonly db: Database.Database,
+    private readonly fixture: Database.Database | undefined,
     private readonly onChanged?: (event: CodeReviewChangedEvent) => void,
     private readonly reader?: RuntimeAuditReader,
   ) {}
+
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("代码审查记录需要通过 Rust Core 读取或写入");
+    return this.fixture;
+  }
 
   pendingCount(taskId: string): number {
     const row = this.db.prepare("SELECT COUNT(*) AS count FROM task_code_review WHERE task_id = ? AND status = 'pending'")
@@ -104,8 +116,8 @@ export class CodeReviewService {
     return snapshot?.kind === "pendingCount" ? snapshot.count : this.pendingCount(taskId);
   }
 
-  private notifyChanged(taskId: string): void {
-    this.onChanged?.({ taskId, pendingCount: this.pendingCount(taskId) });
+  private async notifyChanged(taskId: string): Promise<void> {
+    if (this.onChanged) this.onChanged({ taskId, pendingCount: await this.readPendingCount(taskId) });
   }
 
   list(taskId: string): CodeReviewFile[] {
@@ -140,7 +152,7 @@ export class CodeReviewService {
 
   private read(query: RuntimeCodeReviewQuery): Promise<RuntimeCodeReviewData | undefined> | undefined {
     // An existing transaction may see writes that the resident connection cannot see yet.
-    if (!this.db.inTransaction) return this.reader?.codeReviewData(query);
+    if (!this.fixture?.inTransaction) return this.reader?.codeReviewData(query);
   }
 
   private async preview({ file, tooLarge, before, after }: FileDetail): Promise<CodeReviewDetail> {
@@ -173,18 +185,18 @@ export class CodeReviewService {
   }
 
   private get requiresRustWrites(): boolean {
-    return Boolean(this.db.readonly || this.reader?.supervised);
+    return !this.fixture || Boolean(this.fixture.readonly || this.reader?.supervised);
   }
 
   private async writeBatch2(request: Record<string, unknown>): Promise<void> {
     if (!this.reader) throw new Error("代码审查写入：Rust 写入核心未就绪");
-    const res = await this.reader.batch2Write(request);
-    if (res === undefined) throw new Error("代码审查写入：Rust 核心未响应");
+    const res = await this.reader.batch2Write<{ ok: boolean }>(request);
+    if (!res) throw new Error("代码审查写入：Rust 核心未响应");
+    if (!res.ok) throw new Error("审查内容已有新版本，请刷新后重试");
   }
 
   private async record(taskId: string, target: ReviewTarget, before: ReviewState, after: ReviewState): Promise<void> {
-    const old = this.db.prepare("SELECT * FROM task_code_review WHERE task_id = ? AND target_key = ?")
-      .get(taskId, target.key) as StoredReview | undefined;
+    const old = await this.readRecord(taskId, { targetKey: target.key });
     const continues = old?.status === "pending" && !old.restoring && old.root_entity === target.rootEntity &&
       sameReviewState(state(old, "after"), before);
     if (continues && sameReviewContent(before, after)) {
@@ -204,7 +216,7 @@ export class CodeReviewService {
         } else {
           this.db.prepare("DELETE FROM task_code_review WHERE id = ?").run(old.id);
         }
-        this.notifyChanged(taskId);
+        await this.notifyChanged(taskId);
       }
       return;
     }
@@ -216,6 +228,8 @@ export class CodeReviewService {
         kind: "codeReviewUpsert",
         taskId,
         targetKey: target.key,
+        expectedId: old?.id,
+        expectedStamp: old?.after_stamp,
         rootEntity: target.rootEntity,
         path: target.path,
         relativePath: target.relativePath,
@@ -245,37 +259,49 @@ export class CodeReviewService {
         additions, deletions, Number(available), captureReason,
       );
     }
-    this.notifyChanged(taskId);
+    await this.notifyChanged(taskId);
   }
 
-  async decide(request: CodeReviewDecisionRequest, workspace: () => string | undefined,
+  async decide(request: CodeReviewDecisionRequest, workspace: () => string | undefined | Promise<string | undefined>,
     withLease: <T>(path: string, operation: () => Promise<T> | T) => Promise<T>,
     onRestored?: (file: RestoredFile) => void): Promise<CodeReviewDecisionResult> {
     const results: Result[] = [];
-    const lookupPath = this.db.prepare("SELECT path FROM task_code_review WHERE task_id = ? AND id = ?");
     for (const id of new Set(request.ids)) {
-      const old = lookupPath.get(request.taskId, id) as Pick<StoredReview, "path"> | undefined;
-      if (!old) {
-        results.push({ id, status: "conflict", reason: "审查内容已有新版本，请刷新后重试" });
-        continue;
-      }
       try {
+        const old = await this.readRecord(request.taskId, { id });
+        if (!old) {
+          results.push({ id, status: "conflict", reason: "审查内容已有新版本，请刷新后重试" });
+          continue;
+        }
         results.push(await withLease(old.path, () => this.decideOne(request, id, workspace, onRestored)));
       } catch (error) {
         results.push({ id, status: "conflict", reason: error instanceof Error ? error.message : "文件暂时无法处理" });
       }
     }
-    if (results.length) this.notifyChanged(request.taskId);
-    return { files: this.list(request.taskId), results };
+    if (results.length) await this.notifyChanged(request.taskId);
+    return { files: await this.readList(request.taskId), results };
   }
 
   private find(taskId: string, id: string): StoredReview | undefined {
     return this.db.prepare("SELECT * FROM task_code_review WHERE task_id = ? AND id = ?").get(taskId, id) as StoredReview | undefined;
   }
 
-  private async decideOne(request: CodeReviewDecisionRequest, id: string, workspace: () => string | undefined,
+  private async readRecord(taskId: string, selector: { id: string } | { targetKey: string }): Promise<StoredReview | undefined> {
+    const data = await this.read({ kind: "record", taskId, ...selector });
+    if (data?.kind === "record") {
+      const row = data.record;
+      return row ? { ...row, before_bytes: row.before_bytes === null ? null : Buffer.from(row.before_bytes, "base64"),
+        after_bytes: row.after_bytes === null ? null : Buffer.from(row.after_bytes, "base64") } : undefined;
+    }
+    if (this.requiresRustWrites) throw new Error("未收到 Rust Core 的代码审查记录");
+    if ("id" in selector) return this.find(taskId, selector.id);
+    return this.db.prepare("SELECT * FROM task_code_review WHERE task_id=? AND target_key=?")
+      .get(taskId, selector.targetKey) as StoredReview | undefined;
+  }
+
+  private async decideOne(request: CodeReviewDecisionRequest, id: string, workspace: () => string | undefined | Promise<string | undefined>,
     onRestored?: (file: RestoredFile) => void): Promise<Result> {
-    const row = this.find(request.taskId, id);
+    const row = await this.readRecord(request.taskId, { id });
     if (!row) return { id, status: "conflict", reason: "审查内容已有新版本，请刷新后重试" };
     const status = request.action === "accept" ? "accepted" : "rejected";
     if (row.status === status) return { id, status };
@@ -287,7 +313,7 @@ export class CodeReviewService {
     let restored: RestoredFile | undefined;
     if (request.action === "reject" || row.restoring) {
       try {
-        const root = workspace();
+        const root = await workspace();
         if (!root) throw new Error("当前任务没有可用的工作区");
         const path = resolve(root, row.relative_path);
         const target = codeReviewTarget(root, path);

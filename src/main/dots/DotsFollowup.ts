@@ -15,6 +15,7 @@ import { dotsCompletionGaps, dotsCompletionInstruction, dotsCompletionRequiremen
 import { dotsDeliveryText, matchesDotsDeliveryFormat, onlyDeliveryFilename, readDotsWorkerOutcome } from "./DotsWorkerOutcome";
 import { DOTS_REPLY_STYLE } from "./DotsReplyStyle";
 import { dotsRetryQuestions } from "./DotsFollowUpInput";
+import { RuntimeAuditUnknownOperationError, type RuntimeAuditReader } from "../platform/runtime-audit";
 
 export type DotsFollowupDecision = {
   kind: "quiet" | "ask" | "deliver" | "progress" | "continued" | "deferred";
@@ -102,7 +103,7 @@ interface Hooks {
   allowed(task: string): boolean;
   proactive(task: string): boolean;
   goal(task: string, id: string): ConversationGoalDto | undefined;
-  link(request: AgentPromptRequest, source: string): void;
+  link(request: AgentPromptRequest, source: string): void | Promise<void>;
   version(task: string): Promise<string>;
   receipt(task: string, id: string): Promise<number | undefined>;
   prerequisite(taskId: string, operationId: string, prerequisiteId: string): {
@@ -115,8 +116,19 @@ type Row = { plan: string };
 type DependencyOperation = {
   operation_id: string; source_message_id: string; space_id: string | null; space_path: string | null;
   cwd: string | null; goal_id: string | null; status: DotsDelegation["status"]; text: string;
-  supersedes: number; current_scope: number; verified_commit: string | null;
+  supersedes: number; current_scope: boolean | number; verified_commit: string | null;
+  plan?: Plan | null; settled?: number | null; delivered?: string | null;
 };
+type FollowupNative = Pick<RuntimeAuditReader, "batch4aWrite" | "supervised" | "readDurableTaskBinding" | "readDotsFollowupData" | "writeDotsFollowupData">;
+type FollowupAccess = Pick<Hooks, "link" | "receipt" | "version" | "send"> & {
+  allowed(task: string): Promise<boolean>;
+  proactive(task: string): Promise<boolean>;
+  goal(task: string, id: string): Promise<ConversationGoalDto | undefined>;
+};
+type FollowupState = { current: boolean; held: boolean; exists: boolean; replaced: boolean; status: DotsDelegation["status"] | null };
+type FollowupLatest = { operationId: string; source: string; goalId: string | null; plan: Plan | null };
+type DependencyResult = { status: "ready"; operationId: string; text: string; verifiedCommit: string | null }
+  | { status: "waiting" } | { status: "blocked"; text: string };
 const quiet: DotsFollowupDecision = { kind: "quiet" };
 export class DotsFollowup {
   private writeTail = Promise.resolve();
@@ -124,10 +136,42 @@ export class DotsFollowup {
   private readonly pendingPlans = new Map<string, Plan>();
 
   constructor(
-    private db: Database.Database,
-    private hooks: Hooks & { native?: Pick<import("../platform/runtime-audit").RuntimeAuditReader, "batch4aWrite" | "supervised"> },
+    private readonly fixture: Database.Database | undefined,
+    private hooks: Hooks & { native?: FollowupNative; coreAccess?: Pick<FollowupAccess, "allowed" | "proactive" | "goal"> },
   ) {
-    if (!db.readonly) db.exec("CREATE TABLE IF NOT EXISTS dots_followup_plans(operation_id TEXT PRIMARY KEY,plan TEXT NOT NULL)");
+    if (fixture && !fixture.readonly) fixture.exec("CREATE TABLE IF NOT EXISTS dots_followup_plans(operation_id TEXT PRIMARY KEY,plan TEXT NOT NULL)");
+    if (!fixture && !hooks.native?.supervised) throw new Error("Dots 后续计划需要 Core");
+  }
+
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("Dots 的 SQLite 后续计划仓储仅用于夹具");
+    return this.fixture;
+  }
+
+  private get core() {
+    return this.fixture ? undefined : this.hooks.native;
+  }
+
+  private get access() {
+    if (!this.core) return this.hooks;
+    if (!this.hooks.coreAccess) throw new Error("Core Dots 后续权限尚未初始化");
+    return this.hooks.coreAccess;
+  }
+
+  private async readCore<T>(query: Record<string, unknown>): Promise<T> {
+    const result = await this.core!.readDotsFollowupData<T>(query);
+    if (result === undefined) throw new Error("Core 未确认 Dots 后续计划读取");
+    return result;
+  }
+
+  private async writeCore<T>(command: Record<string, unknown>): Promise<T> {
+    const write = () => this.core!.writeDotsFollowupData<T>(command);
+    const result = await write().catch(error => {
+      if (error instanceof RuntimeAuditUnknownOperationError) return write();
+      throw error;
+    });
+    if (result === undefined) throw new Error("Core 未确认 Dots 后续计划写入");
+    return result;
   }
   private get requiresRustWrites(): boolean {
     return this.db.readonly || Boolean(this.hooks.native?.supervised);
@@ -152,6 +196,19 @@ export class DotsFollowup {
     const row = this.db.prepare("SELECT plan FROM dots_followup_plans WHERE operation_id=?").get(id) as Row | undefined;
     return row ? (JSON.parse(row.plan) as Plan) : undefined;
   }
+
+  private async readPlan(operationId: string): Promise<Plan | undefined> {
+    if (!this.core) return this.get(operationId);
+    return (await this.readCore<Plan | null>({ kind: "plan", operationId })) ?? undefined;
+  }
+
+  private async storePlan(request: AgentPromptRequest, plan: Plan): Promise<Plan | undefined> {
+    if (this.core) {
+      return (await this.writeCore<Plan | null>({ kind: "putPlan", taskId: request.taskId, operationId: request.userMessageId, plan })) ?? undefined;
+    }
+    this.put(request, plan);
+    return this.get(request.userMessageId);
+  }
   private put(request: AgentPromptRequest, plan: Plan) {
     const json = JSON.stringify(plan);
     if (this.requiresRustWrites) {
@@ -173,8 +230,7 @@ export class DotsFollowup {
   remember(request: AgentPromptRequest, source: string, goal: string, steps: string[] = [],
     deliveryInstruction?: string, originalAssignment?: string, completionDeclarations?: DotsCompletionDeclaration[]) {
     const completionSource = originalAssignment?.trim() || goal;
-    if (!this.get(request.userMessageId))
-      this.put(request, {
+    const plan: Plan = {
         taskId: request.taskId,
         source,
         goal,
@@ -188,7 +244,9 @@ export class DotsFollowup {
         previous: [],
         retry: false,
         request,
-      });
+    };
+    if (this.core) return this.storePlan(request, plan).then(() => undefined);
+    if (!this.get(request.userMessageId)) this.put(request, plan);
   }
   latestPlan(taskId: string) {
     const row = this.db.prepare(`SELECT d.operation_id, p.plan FROM dots_delegations d
@@ -198,24 +256,38 @@ export class DotsFollowup {
     return this.pendingPlans.get(row.operation_id) ?? (row.plan ? JSON.parse(row.plan) as Plan : undefined);
   }
 
+  async readLatestPlan(taskId: string) {
+    if (!this.core) return this.latestPlan(taskId);
+    return (await this.readCore<FollowupLatest | null>({ kind: "latest", taskId }))?.plan ?? undefined;
+  }
+
   assignment(operationId: string) {
     return this.get(operationId)?.assignment;
   }
 
+  async readAssignment(operationId: string) {
+    return (await this.readPlan(operationId))?.assignment;
+  }
+
   requestedFilename(taskId: string, operationId: string) {
-    const plan = this.get(operationId);
+    return this.filenameForPlan(taskId, this.get(operationId));
+  }
+
+  async readRequestedFilename(taskId: string, operationId: string) {
+    return this.filenameForPlan(taskId, await this.readPlan(operationId));
+  }
+
+  private filenameForPlan(taskId: string, plan: Plan | undefined) {
     if (plan?.taskId !== taskId || plan.request.dotsGoalId) return;
     const filename = onlyDeliveryFilename(plan.deliveryInstruction);
     if (filename && this.requirements(plan).files.every(file => file === filename)) return filename;
   }
 
   anchorAssignment(operationId: string, quote: string, narrowCompletionScope = false) {
+    if (this.core) return this.anchorAssignmentInCore(operationId, quote, narrowCompletionScope);
     const existing = this.get(operationId);
-    if (!existing || existing.assignmentQuote && existing.assignmentQuote !== quote) return;
-    const declarations = existing.completionDeclarations?.filter(item => quote.includes(item.quote) || existing.deliveryInstruction?.includes(item.quote));
-    const narrowed = narrowCompletionScope ? { completionSource: quote, completionDeclarations: declarations,
-      completionRequirements: dotsCompletionRequirements(quote, existing.deliveryInstruction, declarations) } : {};
-    const nextPlan: Plan = { ...existing, ...narrowed, assignmentQuote: quote };
+    const nextPlan = this.withAnchoredAssignment(existing, quote, narrowCompletionScope);
+    if (!nextPlan) return;
     const planJson = JSON.stringify(nextPlan);
     if (this.requiresRustWrites) {
       this.pendingPlans.set(operationId, nextPlan);
@@ -231,6 +303,25 @@ export class DotsFollowup {
       .run(planJson, operationId);
   }
 
+  private withAnchoredAssignment(existing: Plan | undefined, quote: string, narrowCompletionScope: boolean): Plan | undefined {
+    if (!existing || existing.assignmentQuote && existing.assignmentQuote !== quote) return;
+    const declarations = existing.completionDeclarations?.filter(item => quote.includes(item.quote) || existing.deliveryInstruction?.includes(item.quote));
+    const narrowed = narrowCompletionScope ? { completionSource: quote, completionDeclarations: declarations,
+      completionRequirements: dotsCompletionRequirements(quote, existing.deliveryInstruction, declarations) } : {};
+    return { ...existing, ...narrowed, assignmentQuote: quote };
+  }
+
+  private async anchorAssignmentInCore(operationId: string, quote: string, narrowCompletionScope: boolean): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const expectedPlan = await this.readPlan(operationId);
+      const plan = this.withAnchoredAssignment(expectedPlan, quote, narrowCompletionScope);
+      if (!plan) return;
+      const committed = await this.writeCore<boolean>({ kind: "anchorAssignment", taskId: plan.taskId, operationId, expectedPlan, plan });
+      if (committed) return;
+    }
+    throw new Error("Dots 交办已变化，请重新确认原要求");
+  }
+
   private requirements(plan: Plan): DotsCompletionRequirements {
     if (plan.completionRequirements?.rulesVersion === dotsCompletionRulesVersion) return plan.completionRequirements;
     return dotsCompletionRequirements(plan.completionSource ?? plan.assignmentQuote ?? plan.goal, plan.deliveryInstruction,
@@ -238,15 +329,26 @@ export class DotsFollowup {
   }
 
   completionRequirements(taskId: string, operationId: string): DotsCompletionRequirements & { commitBase?: string } {
-    const plan = this.get(operationId);
+    return this.requirementsForPlan(taskId, this.get(operationId));
+  }
+
+  async readCompletionRequirements(taskId: string, operationId: string) {
+    return this.requirementsForPlan(taskId, await this.readPlan(operationId));
+  }
+
+  private requirementsForPlan(taskId: string, plan: Plan | undefined): DotsCompletionRequirements & { commitBase?: string } {
     return plan?.taskId === taskId && !plan.request.dotsGoalId && !plan.steps[plan.step + 1]
       ? { ...this.requirements(plan), commitBase: plan.commitBase } : { files: [], checks: [], requireCommit: false };
   }
 
   async captureCommitBase(taskId: string, operationId: string, readStart: () => Promise<ProjectCommitStart>) {
-    const plan = this.get(operationId);
+    const plan = await this.readPlan(operationId);
     if (plan?.taskId !== taskId || plan.request.dotsGoalId || plan.commitBase !== undefined || !this.requirements(plan).requireCommit) return;
     const start = await readStart();
+    if (this.core) {
+      await this.writeCore({ kind: "captureCommitBase", taskId, operationId, commitBase: start.head, commitStart: start });
+      return;
+    }
     if (this.requiresRustWrites) {
       const current = this.get(operationId);
       if (current && current.commitBase === undefined) {
@@ -269,6 +371,11 @@ export class DotsFollowup {
     return plan?.taskId === taskId && this.requirements(plan).requireCommit ? plan.commitStart : undefined;
   }
 
+  async readRecoveryCommitStart(taskId: string, operationId: string) {
+    const plan = await this.readPlan(operationId);
+    return plan?.taskId === taskId && this.requirements(plan).requireCommit ? plan.commitStart : undefined;
+  }
+
   private resumeCompletion(previous: Plan, addition: string | undefined, deliveryInstruction: string | undefined,
     completionItems: DotsCompletionDeclaration[] | undefined) {
     const completionSource = [previous.completionSource ?? previous.assignmentQuote ?? previous.goal, addition].filter(Boolean).join("\n");
@@ -286,12 +393,14 @@ export class DotsFollowup {
   rememberResume(request: AgentPromptRequest, source: string, previous: Plan, addition?: string,
     deliveryInstruction = previous.deliveryInstruction, keepEarlierDelivery = false, completionItems?: DotsCompletionDeclaration[],
     completionAddition = addition) {
-    this.put(request, { ...previous, parent: keepEarlierDelivery ? previous.request.userMessageId : undefined, dependencyWait: undefined, request, source,
+    const plan: Plan = { ...previous, parent: keepEarlierDelivery ? previous.request.userMessageId : undefined, dependencyWait: undefined, request, source,
       resumedFrom: previous.request.userMessageId,
       goal: [previous.goal, addition].filter(Boolean).join("\n"), deliveryInstruction,
       ...this.resumeCompletion(previous, completionAddition, deliveryInstruction, completionItems),
       dependencyResultOperationId: undefined, retry: false,
-      recoveryToolScope: undefined, retainedFailedFiles: undefined });
+      recoveryToolScope: undefined, retainedFailedFiles: undefined };
+    if (this.core) return this.storePlan(request, plan).then(() => undefined);
+    this.put(request, plan);
   }
   validate(request: AgentPromptRequest) {
     if (!request.userMessageId.startsWith("dots-input-auto-")) return;
@@ -309,8 +418,24 @@ export class DotsFollowup {
         throw new Error("依赖成果已失效或等待已到期，自动续办未开始");
     }
   }
+
+  async validateInCore(request: AgentPromptRequest): Promise<void> {
+    if (!this.core) return this.validate(request);
+    if (!request.userMessageId.startsWith("dots-input-auto-")) return;
+    const plan = await this.readPlan(request.userMessageId);
+    if (!plan?.parent || plan.taskId !== request.taskId || !await this.access.proactive(request.taskId)
+      || !await this.isCurrent(plan.parent, request.taskId, request.userMessageId)) {
+      throw new Error("自动续办的原意图已变化或已暂停");
+    }
+    if (plan.dependencyWait) {
+      const dependency = await this.inspectPrerequisite(plan.taskId, plan.parent, plan.dependencyWait);
+      if (dependency.status !== "ready" || dependency.operationId !== (plan.dependencyResultOperationId ?? plan.dependencyWait.operationId)) {
+        throw new Error("依赖成果已失效或等待已到期，自动续办未开始");
+      }
+    }
+  }
   async recoverGoalCompletionLink(taskId: string, id: string, workId: string, revision: number) {
-    if (this.get(id)) return;
+    if (await this.readPlan(id)) return;
     const prefix = `goal-continuation:${workId}:${revision}:`;
     if (!id.startsWith(prefix)) return;
     const attempt = Number(id.slice(prefix.length));
@@ -351,34 +476,55 @@ export class DotsFollowup {
         .get(id, taskId, child ?? null),
     );
   }
+
+  private readCoreState(taskId: string, operationId: string, childOperationId?: string) {
+    return this.readCore<FollowupState>({ kind: "state", taskId, operationId, childOperationId });
+  }
+
+  private async isCurrent(id: string, taskId: string, child?: string): Promise<boolean> {
+    if (!this.core) return this.current(id, taskId, child);
+    return await this.access.allowed(taskId) && (await this.readCoreState(taskId, id, child)).current;
+  }
   recoveryToolScope(taskId: string, operationId: string): DotsRecoveryToolScope | undefined {
     const plan = this.get(operationId);
     if (plan?.taskId === taskId && plan.request.userMessageId === operationId) return plan.recoveryToolScope;
   }
 
+  async readRecoveryToolScope(taskId: string, operationId: string): Promise<DotsRecoveryToolScope | undefined> {
+    const plan = await this.readPlan(operationId);
+    if (plan?.taskId === taskId && plan.request.userMessageId === operationId) return plan.recoveryToolScope;
+  }
+
+  private async readDirectory(taskId: string): Promise<string | undefined> {
+    if (!this.core) return (this.db.prepare("SELECT directory FROM durable_bot_bindings WHERE task_id=?").get(taskId) as { directory: string } | undefined)?.directory;
+    const binding = await this.core.readDurableTaskBinding(taskId);
+    if (binding === undefined) throw new Error("Core 未确认 Dots 原执行目录");
+    if (binding && !binding.trashed) return binding.directory;
+  }
+
+  private readConclusion(taskId: string, operationId: string) {
+    return this.core ? this.readCore<{ text: string; completion?: import("./DotsGoalConclusion").DotsGoalCompletion } | null>({ kind: "conclusion", taskId, operationId })
+      : dotsGoalConclusion(this.db, taskId, operationId);
+  }
+
   private async recoveryEvidence(taskId: string, operationId: string, version: string, namedFiles: readonly string[]): Promise<DotsRecoveryInspection> {
-    const binding = this.db.prepare("SELECT directory FROM durable_bot_bindings WHERE task_id=?").get(taskId) as
-      { directory: string } | undefined;
-    return binding ? inspectDotsRecovery(binding.directory, taskId, operationId, version, namedFiles) : { kind: "unavailable", retainedFiles: [] };
+    const directory = await this.readDirectory(taskId);
+    return directory ? inspectDotsRecovery(directory, taskId, operationId, version, namedFiles) : { kind: "unavailable", retainedFiles: [] };
   }
 
   /** Adopt only a Goal ignition that followed the same source's native task input. */
   async goalAccepted(request: AgentPromptRequest, origin: GoalContinuationOrigin) {
-    if (!this.hooks.allowed(request.taskId)) return;
-    const prior = this.db
-      .prepare(
-        "SELECT operation_id,source_message_id,goal_id FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1",
-      )
-      .get(request.taskId) as { operation_id: string; source_message_id: string; goal_id: string } | undefined;
-    if (!prior || prior.goal_id !== origin.workId || prior.operation_id === request.userMessageId) return;
-    const plan = this.get(prior.operation_id);
-    if (!plan || !this.current(prior.operation_id, request.taskId)) return;
-    const binding = this.db
-      .prepare("SELECT directory FROM durable_bot_bindings WHERE task_id=?")
-      .get(request.taskId) as { directory: string } | undefined;
-    if (!binding) return;
+    if (!await this.access.allowed(request.taskId)) return;
+    const prior = this.core ? await this.readCore<FollowupLatest | null>({ kind: "latest", taskId: request.taskId })
+      : this.db.prepare("SELECT operation_id AS operationId,source_message_id AS source,goal_id AS goalId FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1")
+        .get(request.taskId) as Omit<FollowupLatest, "plan"> | undefined;
+    if (!prior || prior.goalId !== origin.workId || prior.operationId === request.userMessageId) return;
+    const plan = this.core ? (prior as FollowupLatest).plan : await this.readPlan(prior.operationId);
+    if (!plan || !await this.isCurrent(prior.operationId, request.taskId)) return;
+    const directory = await this.readDirectory(request.taskId);
+    if (!directory) return;
     const [cid] = JSON.parse(await this.hooks.version(request.taskId)) as [ConversationId, number];
-    const storage = await openDurablePassiveStorage(binding.directory, ctx);
+    const storage = await openDurablePassiveStorage(directory, ctx);
     if (!storage) return;
     let found = false,
       previous: string | undefined,
@@ -401,33 +547,54 @@ export class DotsFollowup {
     } finally {
       await storage.close(ctx);
     }
-    if (previous !== prior.operation_id || !this.current(prior.operation_id, request.taskId)) return;
+    if (previous !== prior.operationId || !await this.isCurrent(prior.operationId, request.taskId)) return;
     if (plan.request.dotsGoalIntentRevision !== origin.intentRevision) return;
     const bound = { ...request, spaceId: plan.request.spaceId, dotsGoalId: origin.workId,
       dotsGoalIntentRevision: origin.intentRevision, dotsGoalUserAcceptance: plan.request.dotsGoalUserAcceptance };
+    if (this.core) {
+      await this.writeCore({ kind: "adoptGoal", taskId: bound.taskId, operationId: bound.userMessageId,
+        priorOperationId: prior.operationId, now: Date.now(), plan: { ...plan, parent: prior.operationId, request: bound } });
+      return;
+    }
     if (this.requiresRustWrites) {
-      const nextPlan = { ...plan, parent: prior.operation_id, request: bound };
+      const nextPlan = { ...plan, parent: prior.operationId, request: bound };
       this.pendingPlans.set(bound.userMessageId, nextPlan);
       this.enqueuePlanWrite({
         kind: "dotsFollowupGoalAccepted",
         operationId: bound.userMessageId,
         planJson: JSON.stringify(nextPlan),
         taskId: bound.taskId,
-        sourceMessageId: prior.source_message_id,
+        sourceMessageId: prior.source,
         now: Date.now(),
         requestJson: JSON.stringify(bound),
         goalId: bound.dotsGoalId ?? null,
       }, "goalAccepted");
-      this.hooks.link(bound, prior.source_message_id);
+      await this.hooks.link(bound, prior.source);
       return;
     }
     this.db.transaction(() => {
-      this.put(bound, { ...plan, parent: prior.operation_id, request: bound });
-      this.hooks.link(bound, prior.source_message_id);
+      this.put(bound, { ...plan, parent: prior.operationId, request: bound });
+      this.hooks.link(bound, prior.source);
     })();
   }
   /** Reconcile native admission that committed immediately before the prior desktop process exited. */
   async recoverGoals() {
+    if (this.core) {
+      let beforeSeq: number | null = null;
+      do {
+        const page: { rows: { taskId: string; operationId: string; workId: string; intentRevision: number; serial: number }[]; nextBeforeSeq: number | null } =
+          await this.readCore({ kind: "goalContinuations", beforeSeq });
+        for (const row of page.rows) {
+          const key = `goal-continuation:${row.workId}:${row.intentRevision}:${row.serial}`;
+          if (key === row.operationId || !await this.access.allowed(row.taskId) || (await this.hooks.receipt(row.taskId, key)) === undefined) continue;
+          await this.recoverGoalCompletionLink(row.taskId, key, row.workId, row.intentRevision);
+        }
+        if (page.nextBeforeSeq !== null && (!Number.isSafeInteger(page.nextBeforeSeq) || page.nextBeforeSeq < 1 || beforeSeq !== null && page.nextBeforeSeq >= beforeSeq))
+          throw new Error("Core 的 Dots 目标恢复分页位置无效");
+        beforeSeq = page.nextBeforeSeq;
+      } while (beforeSeq !== null);
+      return;
+    }
     const roots = this.db
       .prepare(
         `SELECT d.task_id,d.goal_id,d.operation_id FROM dots_delegations d
@@ -453,50 +620,52 @@ export class DotsFollowup {
       );
     }
   }
-  private retainedArtifacts(row: DotsDelegation) {
+  private async retainedArtifacts(row: DotsDelegation) {
     const versionKey = (f: DotsDelegation["artifacts"][number]) => JSON.stringify([f.id, f.version ?? null]);
     const files = new Map(row.artifacts.map((f) => [versionKey(f), f]));
     const names = new Set(row.artifacts.flatMap(file => file.saved ? [file.saved.name] : []));
-    let child = this.get(row.id);
+    let child = await this.readPlan(row.id);
     let parent = child?.parent;
     const seen = new Set<string>();
     while (parent && !seen.has(parent)) {
       seen.add(parent);
-      const receipt = this.db
+      const coreReceipt = this.core ? await this.readCore<{ status: string; files: DotsDelegation["artifacts"]; plan: Plan | null } | null>({
+        kind: "retained", taskId: row.taskId, operationId: parent, source: row.sourceMessageId, allowFailed: Boolean(child?.retainedFailedFiles?.length),
+      }) : undefined;
+      const fixtureReceipt = this.core ? undefined : this.db
         .prepare(
           `SELECT status,files FROM dots_delegations d WHERE operation_id=? AND task_id=? AND source_message_id=? AND
           (status IN ('completed','superseded') OR (? AND status='failed') OR EXISTS(SELECT 1 FROM dots_dependency_waits w WHERE w.operation_id=d.operation_id))`,
         )
         .get(parent, row.taskId, row.sourceMessageId, child?.retainedFailedFiles?.length ? 1 : 0) as { status: string; files: string } | undefined;
-      if (!receipt) break;
-      const restored: DotsDelegation["artifacts"] = JSON.parse(receipt.files);
-      const ancestors = receipt.status !== "failed" ? restored : restored.filter(file => file.saved &&
+      if (!coreReceipt && !fixtureReceipt) break;
+      const restored: DotsDelegation["artifacts"] = coreReceipt?.files ?? JSON.parse(fixtureReceipt!.files);
+      const ancestors = (coreReceipt?.status ?? fixtureReceipt?.status) !== "failed" ? restored : restored.filter(file => file.saved &&
         child?.retainedFailedFiles?.includes(dotsRecoveryFileKey(file.saved.name, file.saved.snapshotPath)));
       for (const file of ancestors) {
         if ((!file.saved || !names.has(file.saved.name)) && !files.has(versionKey(file))) files.set(versionKey(file), file);
       }
       for (const file of ancestors) if (file.saved) names.add(file.saved.name);
-      child = this.get(parent);
+      child = coreReceipt ? coreReceipt.plan ?? undefined : this.get(parent);
       parent = child?.parent;
     }
     return [...files.values()];
   }
 
   async handle(row: DotsDelegation, original?: AgentPromptRequest): Promise<DotsFollowupDecision> {
-    const files = this.retainedArtifacts(row);
+    const files = await this.retainedArtifacts(row);
     const decision = row.dependencyWait ? await this.resumeDependency(row, row.dependencyWait) : await this.decide(row, files, original);
     if (decision.completion) return decision;
-    if (!["ask", "deliver", "progress"].includes(decision.kind) || !this.hooks.allowed(row.taskId)) return decision;
+    if (!["ask", "deliver", "progress"].includes(decision.kind) || !await this.access.allowed(row.taskId)) return decision;
     if (decision.kind === "deliver" && !row.goalId) {
-      const filename = this.requestedFilename(row.taskId, row.id);
+      const filename = await this.readRequestedFilename(row.taskId, row.id);
       const file = files.find(file => file.saved?.name === filename);
       if (filename && file) return { ...decision, text: "", artifacts: [file] };
     }
     return files.length !== row.artifacts.length ? { ...decision, artifacts: files } : decision;
   }
 
-  private readPrerequisite(taskId: string, operationId: string, wait: DotsDependencyWait):
-    { status: "ready"; operationId: string; text: string; verifiedCommit: string | null } | { status: "waiting" } | { status: "blocked"; text: string } {
+  private readPrerequisite(taskId: string, operationId: string, wait: DotsDependencyWait): DependencyResult {
     if (Date.now() >= wait.deadlineAt) return { status: "blocked", text: `等待「${wait.title}」已到期。` };
     let upstream: ReturnType<Hooks["prerequisite"]>;
     try { upstream = this.hooks.prerequisite(taskId, operationId, wait.operationId); }
@@ -504,8 +673,6 @@ export class DotsFollowup {
       if (error instanceof Error && "code" in error) throw error;
       return { status: "blocked", text: `依赖「${wait.title}」已删除、移动或不可访问。` };
     }
-    const blocked = { status: "blocked", text: `依赖「${wait.title}」已停止、失败或改向。` } as const;
-    if (upstream.replaced || upstream.control === "stopped" || upstream.status === "superseded") return blocked;
     const chain = this.db.prepare(`SELECT d.operation_id,d.source_message_id,d.space_id,d.space_path,d.cwd,d.goal_id,d.status,d.text,
       d.supersedes,(${dotsDelegationScopeMatches}) AS current_scope,v.sha AS verified_commit
       FROM dots_delegations root JOIN dots_delegations d ON d.task_id=root.task_id AND d.seq>=root.seq
@@ -513,12 +680,37 @@ export class DotsFollowup {
       LEFT JOIN dots_verified_commits v ON v.operation_id=d.operation_id
       WHERE root.operation_id=? AND root.task_id=? ORDER BY d.seq`)
       .all(wait.operationId, upstream.taskId) as DependencyOperation[];
+    return this.evaluatePrerequisite(wait, upstream, chain, id => this.get(id), id => this.db.prepare(`SELECT settled,
+      CASE WHEN json_valid(snapshot) THEN json_extract(snapshot,'$.delivered') END AS delivered
+      FROM dots_reply_events WHERE operation_id=? AND task_id=? AND status='completed' ORDER BY rowid DESC LIMIT 1`)
+      .get(id, upstream.taskId) as { settled: number; delivered: string | null } | undefined);
+  }
+
+  private async inspectPrerequisite(taskId: string, operationId: string, wait: DotsDependencyWait): Promise<DependencyResult> {
+    if (!this.core) return this.readPrerequisite(taskId, operationId, wait);
+    if (Date.now() >= wait.deadlineAt) return { status: "blocked", text: `等待「${wait.title}」已到期。` };
+    const upstream = await this.readCore<ReturnType<Hooks["prerequisite"]> | null>({
+      kind: "prerequisite", taskId, operationId, prerequisiteId: wait.operationId,
+    });
+    if (!upstream || !await this.access.allowed(taskId) || !await this.access.allowed(upstream.taskId)) {
+      return { status: "blocked", text: `依赖「${wait.title}」已删除、移动或不可访问。` };
+    }
+    const chain = await this.readCore<DependencyOperation[]>({ kind: "dependencyChain", taskId: upstream.taskId, operationId: wait.operationId });
+    const byId = new Map(chain.map(operation => [operation.operation_id, operation]));
+    return this.evaluatePrerequisite(wait, upstream, chain, id => byId.get(id)?.plan ?? undefined, id => byId.get(id));
+  }
+
+  private evaluatePrerequisite(wait: DotsDependencyWait, upstream: ReturnType<Hooks["prerequisite"]>, chain: DependencyOperation[],
+    readPlan: (id: string) => Plan | undefined,
+    readDelivery: (id: string) => { settled?: number | null; delivered?: string | null } | undefined): DependencyResult {
+    const blocked = { status: "blocked", text: `依赖「${wait.title}」已停止、失败或改向。` } as const;
+    if (upstream.replaced || upstream.control === "stopped" || upstream.status === "superseded") return blocked;
     const [first, ...descendants] = chain;
-    if (!first) return blocked;
+    if (!first || !first.current_scope) return blocked;
     let result = first;
     for (const child of descendants) {
-      const plan = this.get(child.operation_id);
-      const parentPlan = this.get(result.operation_id);
+      const plan = readPlan(child.operation_id);
+      const parentPlan = readPlan(result.operation_id);
       // A manually resumed or replaced operation can also name its parent. Only a host-generated continuation inherits this wait.
       if (child.operation_id !== automaticContinuationId(upstream.taskId, result.operation_id) || plan?.parent !== result.operation_id ||
         !parentPlan || plan.goal !== parentPlan.goal || plan.completionSource !== parentPlan.completionSource ||
@@ -531,9 +723,7 @@ export class DotsFollowup {
     if (upstream.control === "paused") return { status: "waiting" };
     if (result.status === "failed") return blocked;
     if (result.status !== "completed") return { status: "waiting" };
-    const delivery = this.db.prepare(`SELECT settled,CASE WHEN json_valid(snapshot) THEN json_extract(snapshot,'$.delivered') END AS delivered
-      FROM dots_reply_events WHERE operation_id=? AND task_id=? AND status='completed' ORDER BY rowid DESC LIMIT 1`)
-      .get(result.operation_id, upstream.taskId) as { settled: number; delivered: string | null } | undefined;
+    const delivery = readDelivery(result.operation_id);
     if (delivery?.settled && delivery.delivered === "conclusion") {
       const outcome = readDotsWorkerOutcome(result.text);
       return { status: "ready", operationId: result.operation_id, verifiedCommit: result.verified_commit,
@@ -545,18 +735,18 @@ export class DotsFollowup {
 
   private async resumeDependency(row: DotsDelegation, wait: DotsDependencyWait): Promise<DotsFollowupDecision> {
     const nextId = automaticContinuationId(row.taskId, row.id);
-    if (!this.current(row.id, row.taskId, nextId)) return quiet;
-    const plan = this.get(row.id);
+    if (!await this.isCurrent(row.id, row.taskId, nextId)) return quiet;
+    const plan = await this.readPlan(row.id);
     if (!plan) return { kind: "ask", text: "原交办缺少可恢复的执行记录。" };
-    const child = this.get(nextId);
+    const child = await this.readPlan(nextId);
     if (child && (await this.hooks.receipt(row.taskId, nextId)) !== undefined) return { kind: "continued" };
-    if (child && this.db.prepare("SELECT 1 FROM dots_delegations WHERE operation_id=? AND status IN ('failed','superseded')").get(nextId)) return quiet;
-    const prerequisite = this.readPrerequisite(row.taskId, row.id, wait);
+    if (child && await this.childWasStopped(row.taskId, nextId)) return quiet;
+    const prerequisite = await this.inspectPrerequisite(row.taskId, row.id, wait);
     if (prerequisite.status === "blocked") return { kind: "ask", text: [row.text, prerequisite.text].filter(Boolean).join("\n") };
-    if (prerequisite.status === "waiting" || !this.hooks.proactive(row.taskId)) return { kind: "deferred" };
+    if (prerequisite.status === "waiting" || !await this.access.proactive(row.taskId)) return { kind: "deferred" };
     const receipt = await this.hooks.receipt(row.taskId, row.id);
     const version = await this.hooks.version(row.taskId);
-    if (receipt === undefined || JSON.parse(version)[1] !== receipt || !this.current(row.id, row.taskId, nextId)) return quiet;
+    if (receipt === undefined || JSON.parse(version)[1] !== receipt || !await this.isCurrent(row.id, row.taskId, nextId)) return quiet;
     const requirements = this.requirements(plan);
     const evidence = await this.recoveryEvidence(row.taskId, row.id, version, requirements.files);
     const { kind } = evidence;
@@ -565,10 +755,10 @@ export class DotsFollowup {
         : "无法确认等待前的操作是否已生效。请先核对原操作，再接续依赖结果。";
       return { kind: "ask", text: [row.text, question].filter(Boolean).join("\n") };
     }
-    if (!this.current(row.id, row.taskId, nextId)) return quiet;
-    const verified = this.readPrerequisite(row.taskId, row.id, wait);
+    if (!await this.isCurrent(row.id, row.taskId, nextId)) return quiet;
+    const verified = await this.inspectPrerequisite(row.taskId, row.id, wait);
     if (verified.status === "blocked") return { kind: "ask", text: [row.text, verified.text].filter(Boolean).join("\n") };
-    if (verified.status === "waiting" || !this.hooks.proactive(row.taskId)) return { kind: "deferred" };
+    if (verified.status === "waiting" || !await this.access.proactive(row.taskId)) return { kind: "deferred" };
     const request = child?.request ?? {
       taskId: row.taskId, spaceId: plan.request.spaceId, userMessageId: nextId, assistantMessageId: "dots-reply-" + nextId,
       dotsRequiredCapabilities: plan.request.dotsRequiredCapabilities,
@@ -581,9 +771,17 @@ export class DotsFollowup {
           ...(verified.verifiedCommit && { verifiedCommit: verified.verifiedCommit }) }),
         "继续原交办剩余部分。先核对交付成果，保留已做的工作和验证。若存在新的具体阻碍，如实回报。"].join("\n\n"),
     };
-    this.put(request, { ...plan, parent: row.id, dependencyWait: wait, dependencyResultOperationId: verified.operationId,
+    const saved = await this.storePlan(request, { ...plan, parent: row.id, dependencyWait: wait, dependencyResultOperationId: verified.operationId,
       request, lastProgress: row.text.slice(0, 1200) });
-    return (await this.hooks.send(request, plan.source)) ? { kind: "continued" } : quiet;
+    return saved && await this.hooks.send(saved.request, saved.source) ? { kind: "continued" } : quiet;
+  }
+
+  private async childWasStopped(taskId: string, operationId: string): Promise<boolean> {
+    if (this.core) {
+      const state = await this.readCoreState(taskId, operationId);
+      return state.status === "failed" || state.status === "superseded";
+    }
+    return Boolean(this.db.prepare("SELECT 1 FROM dots_delegations WHERE operation_id=? AND status IN ('failed','superseded')").get(operationId));
   }
 
   private async decide(row: DotsDelegation, files: DotsDelegation["artifacts"], original?: AgentPromptRequest): Promise<DotsFollowupDecision> {
@@ -591,23 +789,24 @@ export class DotsFollowup {
     if (row.status === "pending" || row.status === "superseded")
       return quiet;
     const nextId = automaticContinuationId(row.taskId, row.id);
-    if (!this.current(row.id, row.taskId, nextId)) {
+    if (!await this.isCurrent(row.id, row.taskId, nextId)) {
       if (row.status !== "failed") return quiet;
-      const held = this.db.prepare("SELECT 1 FROM dots_target_controls WHERE task_id=?").get(row.taskId);
-      const replaced = this.db
+      const coreState = this.core ? await this.readCoreState(row.taskId, row.id, nextId) : undefined;
+      const held = coreState?.held ?? this.db.prepare("SELECT 1 FROM dots_target_controls WHERE task_id=?").get(row.taskId);
+      const replaced = coreState?.replaced ?? this.db
         .prepare(
           `SELECT 1 FROM dots_delegations d JOIN dots_delegations n
         ON n.task_id=d.task_id AND n.seq>d.seq WHERE d.operation_id=? AND n.operation_id<>?`,
         )
         .get(row.id, nextId);
       if (held || replaced) return quiet;
-      const exists = this.db.prepare("SELECT 1 FROM tasks WHERE id=?").get(row.taskId);
+      const exists = coreState?.exists ?? this.db.prepare("SELECT 1 FROM tasks WHERE id=?").get(row.taskId);
       const why = exists ? "原任务或工作空间已经变化，本次无法按原授权继续。" : "原任务已删除，本次工作没有完成。";
       return { kind: "ask", text: why + (text ? "\n" + text : "") + "\n要在哪个工作空间接着办理？" };
     }
-    let plan = this.get(row.id);
+    let plan = await this.readPlan(row.id);
     if (row.goalId && (row.status === "completed" || row.status === "failed")) {
-      const accepted = dotsGoalConclusion(this.db, row.taskId, row.id);
+      const accepted = await this.readConclusion(row.taskId, row.id);
       if (accepted?.completion) return { kind: "deliver", text: accepted.text,
         artifacts: accepted.completion.artifacts, completion: accepted.completion };
     }
@@ -620,15 +819,15 @@ export class DotsFollowup {
     }
     if (row.status === "blocked") {
       if (!row.interactionId) return { kind: "ask", text };
-      const pending = this.db
+      const title = this.core ? await this.readCore<string | null>({ kind: "question", taskId: row.taskId, interactionId: row.interactionId }) : (this.db
         .prepare("SELECT title FROM conversation_interactions WHERE id=? AND task_id=? AND status='pending'")
-        .get(row.interactionId ?? "", row.taskId) as { title: string } | undefined;
-      if (!pending) return quiet;
-      return { kind: "ask", text: [plan?.lastProgress, text || pending.title].filter(Boolean).join("\n\n") };
+        .get(row.interactionId, row.taskId) as { title: string } | undefined)?.title;
+      if (title == null) return quiet;
+      return { kind: "ask", text: [plan?.lastProgress, text || title].filter(Boolean).join("\n\n") };
     }
     if (!plan && original?.userMessageId === row.id && original.taskId === row.taskId) {
-      this.remember(original, row.sourceMessageId, original.displayText ?? original.text);
-      plan = this.get(row.id);
+      await this.remember(original, row.sourceMessageId, original.displayText ?? original.text);
+      plan = await this.readPlan(row.id);
     }
     const outcome = row.status === "completed" ? readDotsWorkerOutcome(text) : undefined;
     const progress = outcome?.dotsState === "progress" ? outcome : undefined;
@@ -664,10 +863,10 @@ export class DotsFollowup {
       return stopped(reason + "无法确认重复执行是否会产生额外影响。", dotsRetryQuestions.interrupted, true);
     };
     if (row.goalId) {
-      const g = this.hooks.goal(row.taskId, row.goalId);
+      const g = await this.access.goal(row.taskId, row.goalId);
       if (!g || g.status === "cancelled" || g.status === "paused") return quiet;
       if (g.status === "achieved") {
-        const closed = dotsGoalConclusion(this.db, row.taskId, row.id);
+        const closed = await this.readConclusion(row.taskId, row.id);
         return closed && (closed.text || row.artifacts.length)
           ? { kind: "deliver", text: closed.text }
           : quiet;
@@ -708,14 +907,8 @@ export class DotsFollowup {
       if (incomplete) return { kind: "progress", text: "本次交办尚未完成，自动续办未能补齐：\n" + outstanding };
       return stopped("本次续办没有出现新的实质进展，或已用完续办次数。", "下一步应优先处理原交办的哪一项？");
     }
-    const child = this.get(nextId);
-    if (
-      child &&
-      this.db
-        .prepare("SELECT 1 FROM dots_delegations WHERE operation_id=? AND status IN ('failed','superseded')")
-        .get(nextId)
-    )
-      return quiet;
+    const child = await this.readPlan(nextId);
+    if (child && await this.childWasStopped(row.taskId, nextId)) return quiet;
     if (child && (await this.hooks.receipt(row.taskId, nextId)) !== undefined) return { kind: "continued" };
     const receipt = await this.hooks.receipt(row.taskId, row.id);
     if (receipt === undefined) {
@@ -730,7 +923,7 @@ export class DotsFollowup {
     }
     const version = await this.hooks.version(row.taskId);
     const [conversationId, latestReceipt] = JSON.parse(version);
-    if (latestReceipt !== receipt || !this.current(row.id, row.taskId, nextId)) return quiet;
+    if (latestReceipt !== receipt || !await this.isCurrent(row.id, row.taskId, nextId)) return quiet;
     if (row.status === "failed" && /cancel|abort|取消|停止|暂停|授权|permission|unauthori|forbidden/i.test(text))
       return unresolved();
     if (row.status === "failed" && !transientFailure(text)) return unresolved();
@@ -774,7 +967,7 @@ export class DotsFollowup {
     const allowedChecks = toolScope?.kind === "local-repair" ? toolScope.checks : [];
     const allowedEdits = toolScope?.kind === "local-repair" ? toolScope.edits : [];
     const allowsCommit = toolScope?.kind === "local-repair" && Boolean(toolScope.commitFiles?.length);
-    if (!this.hooks.proactive(row.taskId)) return deferred();
+    if (!await this.access.proactive(row.taskId)) return deferred();
     const nextStep = repair || incomplete ? plan.step : remaining ? plan.step + 1 : plan.step;
     const instruction = plan.steps[nextStep];
     const next = instruction ?? plan.goal;
@@ -820,9 +1013,9 @@ export class DotsFollowup {
         dotsCompletionInstruction(requirements) + "\n" +
         followupInstructions,
     };
-    if (!this.current(row.id, row.taskId, nextId)) return quiet;
-    if (!this.hooks.proactive(row.taskId)) return deferred();
-    this.put(persisted, {
+    if (!await this.isCurrent(row.id, row.taskId, nextId)) return quiet;
+    if (!await this.access.proactive(row.taskId)) return deferred();
+    const saved = await this.storePlan(persisted, {
       ...plan,
       parent: row.id,
       dependencyWait: undefined,
@@ -835,6 +1028,6 @@ export class DotsFollowup {
       recoveryToolScope: toolScope,
       retainedFailedFiles: row.status === "failed" ? evidence.retainedFiles : undefined,
     });
-    return (await this.hooks.send(persisted, plan.source)) ? { kind: "continued" } : quiet;
+    return saved && await this.hooks.send(saved.request, saved.source) ? { kind: "continued" } : quiet;
   }
 }

@@ -5,7 +5,7 @@ import type { Context } from "@earendil-works/chord";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message, Models } from "@earendil-works/pi-ai";
 import type { Conversation, Cursor, EntryId, EntryRecord } from "@earendil-works/pi-durable";
-import { EphemeralContextProjection, type EvidenceProjectionEntry } from "../EphemeralContextProjection";
+import { EphemeralContextProjection, type EvidenceProjectionEntry, type ProjectionScope } from "../EphemeralContextProjection";
 import type { AutomaticRecallReceipt } from "../../../shared/memory-kernel";
 
 export type DurableEvidenceOptions = Omit<ConstructorParameters<typeof EphemeralContextProjection>[0], "registerRequestGuard" | "execution"> & {
@@ -17,11 +17,12 @@ type MemoryBody = { id: string; revision: number; scopeType: string; fullInstruc
 /** Adapts Durable provenance to the existing evidence ledger and its access/revision checks. */
 export class DurableEvidenceProjection {
   private readonly projection: EphemeralContextProjection;
-  private requestRecall?: Pick<AutomaticRecallReceipt, "mode" | "semanticSources">;
   private readonly memoryBodies = new WeakMap<Message, { content: Message["content"]; bodies: MemoryBody[] }>();
   private readonly entries = new Map<number, EntryRecord>();
   private newest?: EntryId;
+  private projectionRun?: object;
   private projectedWithdrawal = 0;
+  private projectedPersonalScope = false;
   private dotsBoundary?: { anchor: number; through: number; withdrawal?: number };
 
   get hasDotsBoundary(): boolean { return Boolean(this.dotsBoundary); }
@@ -36,16 +37,28 @@ export class DurableEvidenceProjection {
       } });
   }
 
-  private usesDotsPersonalScope(): boolean {
-    const scope = this.options.scope();
+  private usesDotsPersonalScope(scope: ProjectionScope): boolean {
+    const memory = this.options.memory;
     return scope.taskId === DOTS_TASK_ID || Boolean(scope.taskId && isGatewayConversation(scope.taskId)
-      && this.options.memory?.resolveScopeChain(scope).some(item => item.scopeType === "task" && item.scopeId === DOTS_TASK_ID));
+      && (memory?.usesCoreRecall || memory?.resolveScopeChain(scope).some(item => item.scopeType === "task" && item.scopeId === DOTS_TASK_ID)));
   }
 
-  async project(messages: readonly Message[], context: Context): Promise<readonly Message[]> {
+  private readDotsWithdrawal(): number {
+    const memory = this.options.memory;
+    return memory && !memory.usesCoreRecall ? memory.latestWithdrawalAt(DOTS_TASK_ID) : 0;
+  }
+
+  async project(messages: readonly Message[], context: Context) {
+    const run = {};
+    this.projectionRun = run;
+    const assertCurrent = () => {
+      context.abortSignal?.throwIfAborted();
+      if (this.projectionRun !== run) throw new Error("本轮 Durable 证据投影已变化");
+    };
     let cursor: Cursor | undefined;
     do {
       const page = await this.conversation.entries({ ...(this.newest === undefined ? {} : { minEntryId: (this.newest + 1) as EntryId }), order: "ascending" }, 500, cursor, context);
+      assertCurrent();
       for (const entry of page.items) {
         this.entries.set(entry.id, entry);
         if (entry.kind === "mybuddy.dots-evidence-boundary") {
@@ -59,6 +72,7 @@ export class DurableEvidenceProjection {
       cursor = page.next;
     } while (cursor);
     const [agent, active] = await Promise.all([this.conversation.agent(context), this.conversation.context(context)]);
+    assertCurrent();
     const ordered = [...this.entries.values()].sort((a, b) => a.id - b.id);
     const retainedId = (id: number) => !this.dotsBoundary || id === this.dotsBoundary.anchor || id > this.dotsBoundary.through;
     const retained = (entry: EntryRecord) => retainedId(entry.id);
@@ -83,27 +97,33 @@ export class DurableEvidenceProjection {
         },
       },
     });
-    const isDots = this.options.scope().taskId === DOTS_TASK_ID;
-    const personalScope = this.usesDotsPersonalScope();
-    const withdrawal = personalScope ? this.options.memory?.latestWithdrawalAt(DOTS_TASK_ID) ?? 0 : 0;
+    const scope = await this.options.scope();
+    assertCurrent();
+    const isDots = scope.taskId === DOTS_TASK_ID;
+    const personalScope = this.usesDotsPersonalScope(scope);
+    const withdrawal = personalScope ? this.readDotsWithdrawal() : 0;
     this.projectedWithdrawal = withdrawal;
+    this.projectedPersonalScope = personalScope;
     const withdrawHistory = withdrawal > (this.dotsBoundary?.withdrawal ?? 0) && ordered.some(entry =>
       retained(entry) && entry.model?.some(message => message.role === "user" && message.timestamp <= withdrawal));
     const nativeUser = (entry: EntryRecord) => entry.kind === "mybuddy.user" || entry.kind === "pi.user";
-    const priorMemoryToolResult = isDots && !this.options.enabled() && ordered.some(entry =>
+    const cannotRecallPrivateHistory = this.options.memory?.usesCoreRecall || (isDots && !this.options.enabled());
+    const priorMemoryToolResult = personalScope && cannotRecallPrivateHistory && ordered.some(entry =>
       retained(entry) && entry.model?.some(message => message.role === "toolResult" && message.toolName.startsWith("memory_") && !message.isError));
     const origin = (entry: EntryRecord) =>
       (entry.data as { mybuddyInput?: import("./DurableHistoryProjection").DurableInputMetadata })?.mybuddyInput?.gatewayOrigin;
     // Replies and summaries from before the scope check could echo memories
     // the current Gateway task cannot access. Retain them in desktop history.
-    const firstIsolatedGatewayInput = !this.dotsBoundary && isGatewayConversation(this.options.scope().taskId ?? "")
+    const firstIsolatedGatewayInput = !this.dotsBoundary && isGatewayConversation(scope.taskId ?? "")
       ? ordered.find(entry => nativeUser(entry) && origin(entry)) : undefined;
     const legacyGatewayHistory = firstIsolatedGatewayInput && ordered.some(entry => entry.id < firstIsolatedGatewayInput.id && nativeUser(entry));
-    if (legacyGatewayHistory || personalScope && (withdrawHistory || priorMemoryToolResult || isDots && this.projection.requiresFreshDotsHistory())) {
+    if (legacyGatewayHistory || personalScope && (withdrawHistory || priorMemoryToolResult
+      || (isDots || cannotRecallPrivateHistory) && this.projection.requiresFreshDotsHistory(scope))) {
       const anchor = [...ordered].reverse().find(nativeUser);
       if (!anchor || !this.newest) throw new Error("Dots 无法确认重建上下文的原始输入");
       const boundary = { anchor: anchor.id, through: this.newest, withdrawal };
       const stored = await this.conversation.commit(tx => tx.appendEntry(this.conversation.id, { kind: "mybuddy.dots-evidence-boundary", data: boundary }), context);
+      assertCurrent();
       this.entries.set(stored.id, stored);
       this.dotsBoundary = boundary;
       this.projection.resetSelection();
@@ -125,17 +145,25 @@ export class DurableEvidenceProjection {
             ? [{ role: "user" as const, content: "宿主回执：本轮遗忘工具已成功移除所选记忆。", timestamp: 0 }] : [])] : [])];
     }
     const result = await this.projection.projectContext(messages);
-    this.requestRecall = result ? this.projection.currentRecall : undefined;
+    assertCurrent();
+    const guard = this.captureRequestGuard();
+    const validate = async () => {
+      assertCurrent();
+      await guard();
+      assertCurrent();
+    };
+    const recall = result ? this.projection.currentRecall : undefined;
     if (additions.length) {
       const stored = await this.conversation.commit(async tx => {
         const entries: EntryRecord[] = [];
         for (const addition of additions) entries.push(await tx.appendEntry(this.conversation.id, { kind: addition.kind, data: JSON.parse(JSON.stringify(addition.data)) }));
         return entries;
       }, context);
+      assertCurrent();
       for (const entry of stored) this.entries.set(entry.id, entry);
     }
-    this.captureRequestGuard()();
-    return result?.messages.map(message => {
+    await validate();
+    const projectedMessages = result?.messages.map(message => {
       const projected = toModelMessage(message);
       if (message.role === "custom" && message.customType === "mybuddy.context-capsule") {
         const details = message.details as { memoryBodies?: MemoryBody[] } | undefined;
@@ -143,6 +171,7 @@ export class DurableEvidenceProjection {
       }
       return projected;
     }) ?? messages;
+    return { messages: projectedMessages, validate, recordRecall: this.captureRecallReceipt(projectedMessages, recall) };
   }
 
   findRuleInstruction(messages: readonly Message[], instruction: string, sourceId: string | null) {
@@ -158,8 +187,7 @@ export class DurableEvidenceProjection {
   }
 
   /** Snapshot authentic capsule contents before hooks, then match them at provider dispatch. */
-  captureRecallReceipt(messages: readonly Message[]) {
-    const recall = this.requestRecall;
+  private captureRecallReceipt(messages: readonly Message[], recall?: Pick<AutomaticRecallReceipt, "mode" | "semanticSources">) {
     const report = this.options.onAutomaticRecall;
     if (!recall || !report) return;
     const selected = new Set(recall.semanticSources.map(source => source.id));
@@ -176,17 +204,18 @@ export class DurableEvidenceProjection {
     };
   }
 
-  captureRequestGuard(): () => void {
+  captureRequestGuard(): () => Promise<void> | void {
     const guard = this.projection.captureRequestGuard();
-    if (!this.usesDotsPersonalScope()) return guard;
+    if (!this.projectedPersonalScope) return guard;
     const withdrawal = this.projectedWithdrawal;
-    return () => {
-      guard();
-      if (!this.usesDotsPersonalScope() || (this.options.memory?.latestWithdrawalAt(DOTS_TASK_ID) ?? 0) !== withdrawal || this.projection.requiresFreshDotsHistory())
+    return async () => {
+      const scope = await this.options.scope();
+      await guard();
+      if (!this.usesDotsPersonalScope(scope) || this.readDotsWithdrawal() !== withdrawal || this.projection.requiresFreshDotsHistory(scope))
         throw new Error("Dots 的记忆在本次请求期间已变化，请重新发送");
     };
   }
-  dispose(): void { this.projection.dispose(); }
+  dispose(): void { this.projectionRun = undefined; this.projection.dispose(); }
 }
 
 function toProjectionEntry(entry: EntryRecord): EvidenceProjectionEntry[] {

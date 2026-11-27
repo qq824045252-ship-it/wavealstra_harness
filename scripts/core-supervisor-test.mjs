@@ -8,7 +8,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const platform = { win32: "win-x64", linux: "linux-x64" }[process.platform];
@@ -18,10 +17,9 @@ assert(existsSync(binary), `缺少原生 worker：${binary}`);
 mkdirSync(join(ROOT, "out", "tests"), { recursive: true });
 const sandbox = mkdtempSync(join(ROOT, "out", "tests", "core-supervisor-"));
 const dataDir = join(sandbox, "data"); mkdirSync(dataDir);
-const dbPath = join(sandbox, "app.db"); writeFileSync(dbPath, "");
-const historyPath = join(sandbox, "history.sqlite");
-const history = new Database(historyPath);
-history.exec("CREATE TABLE sample (value INTEGER); INSERT INTO sample VALUES (42)"); history.close();
+const dbPath = join(sandbox, "app.duckdb");
+const historyStore = "fixture-history";
+const historyText = "Durable history survives reconnect";
 const endpointFile = join(dataDir, "core.json");
 const leaseFile = join(dataDir, "core.lease");
 const children = [];
@@ -121,15 +119,29 @@ async function ping(client) {
 }
 
 async function openHistory(client, session) {
-  const reply = await client.ask({ operation: "historyRead", action: "open", session, path: historyPath });
+  const reply = await client.ask({ operation: "historyRead", action: "open", session, storeId: historyStore });
   assert.equal(reply.status, "ok", JSON.stringify(reply)); assert.equal(reply.data, true);
 }
 
+async function seedHistory(client) {
+  const opened = await client.ask({ operation: "piStorage", payload: { action: "openWriter", storeId: historyStore } });
+  assert.equal(opened.data?.ok, true);
+  const saved = await client.ask({ operation: "piStorage", payload: {
+    action: "commit", storeId: historyStore, writerEpoch: opened.data.data.writerEpoch,
+    batches: [[
+      { type: "conversation", value: { id: 1 } },
+      { type: "entry", value: { id: 2, conversationId: 1, kind: "pi.user", model: [{ role: "user", content: historyText }] } },
+    ]],
+  } });
+  assert.equal(saved.data?.data?.stored, 1);
+}
+
 try {
+  assert(!existsSync(dbPath));
   // A lease must be exclusive even before endpoint publication, including path aliases.
   const aliasDataDir = join(sandbox, "data-alias");
   symlinkSync(dataDir, aliasDataDir, process.platform === "win32" ? "junction" : "dir");
-  const aliasDbPath = process.platform === "win32" ? join(sandbox, "APP.DB") : dbPath;
+  const aliasDbPath = process.platform === "win32" ? join(sandbox, "APP.DUCKDB") : dbPath;
   const contenders = [startCore(dataDir, dbPath), startCore(aliasDataDir, aliasDbPath), startCore(dataDir, dbPath)];
   const a = await endpoint();
   const first = contenders.find(child => child.pid === a.pid); assert(first);
@@ -139,7 +151,8 @@ try {
   }
   assert.equal(JSON.parse(readFileSync(leaseFile, "utf8")).nonce, a.generation);
   assert.notEqual(a.workerPid, a.pid);
-  console.log("PASS concurrent startup has one OS-held owner and a ready worker");
+  assert(existsSync(dbPath));
+  console.log("PASS concurrent cold startup creates DuckDB with one OS-held owner and one ready worker");
 
   const half = connect(a.port, "127.0.0.1"); sockets.add(half);
   half.on("error", () => {}); half.on("close", () => sockets.delete(half));
@@ -160,11 +173,13 @@ try {
   await ping(client);
   console.log("PASS endpoint absence never steals a live lease");
 
+  await seedHistory(client);
   await openHistory(client, "reused-session");
   await client.close();
   client = await connectEventually(a);
   await openHistory(client, "reused-session");
-  assert.equal((await client.ask({ operation: "historyRead", action: "select", session: "reused-session", sql: "SELECT value FROM sample", parameters: [], first: true })).data.value, 42);
+  const head = await client.ask({ operation: "historyRead", action: "head", session: "reused-session", conversationId: 1, maxTokens: 100 });
+  assert.equal(head.data, `用户：${historyText}`);
   console.log("PASS disconnect releases the old client's Durable snapshot before reconnect");
 
   const gadgetPath = join(sandbox, "gadget"); mkdirSync(gadgetPath);
@@ -189,7 +204,7 @@ try {
   // drainable after this client stops consuming bytes.
   client.socket.pause();
   for (let i = 0; i < 4; i++) {
-    client.send({ operation: "historyRead", action: "select", session: "reused-session", sql: "SELECT hex(zeroblob(10000000)) AS payload", parameters: [], first: true });
+    client.send({ operation: "historyRead", action: "select", session: "reused-session", sql: "SELECT repeat('x', 20000000) AS payload", parameters: [], first: true });
   }
   const recovered = await connectEventually(a, 6_000);
   await ping(recovered);
@@ -231,6 +246,7 @@ try {
   assert.equal(await within(finalCore.exited, "explicit Core shutdown timeout"), 0);
   await client.close();
   assert(!existsSync(endpointFile));
+  assert.equal(readFileSync(dbPath).subarray(8, 12).toString("ascii"), "DUCK");
   assert(existsSync(join(dataDir, "core.lock")), "lock inodes stay stable across lifetimes");
   console.log("PASS explicit shutdown reaps the worker and removes discovery metadata");
 } finally {

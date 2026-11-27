@@ -326,7 +326,7 @@ export class RemoteAccessServer {
           return result ? replyJson(200, result) : replyJson(404, errorBody("not_found", "任务不存在"));
         }
         if (request.method === "GET" && action === "runtime") {
-          const result = this.options.service.runtime(taskId);
+          const result = await this.options.service.runtime(taskId);
           return result ? replyJson(200, result) : replyJson(404, errorBody("not_found", "任务不存在"));
         }
         if (request.method === "POST" && action === "prompt") {

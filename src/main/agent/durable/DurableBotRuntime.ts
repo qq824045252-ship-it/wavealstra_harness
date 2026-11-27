@@ -65,7 +65,7 @@ import { getMyBuddyDir } from "../../paths";
 import { createPlatformShellTools } from "../../platform/shell-tools";
 import { DurableHistoryProjection, assistantRow, durableToolStatus, nestedToolRow, toolMessageReceipt, durableContentText as contentText, type NestedCallDetail, type DurableInputMetadata, type DurableResponseSpeed } from "./DurableHistoryProjection";
 import { estimateTextTokens } from "../../../shared/token-format";
-import { identifyModelInvocation, requestTraceBoundary, setRequestTraceBoundary, withModelInvocationSettings } from "../ModelInvocationAdmission";
+import { identifyModelInvocation, requestTraceBoundary, setRequestTraceBoundary, startGuardedModelStream, withModelInvocationSettings } from "../ModelInvocationAdmission";
 import type { CacheTraceBoundary, CacheTraceOperation } from "../CacheRequestTracer";
 import { DurableSubagentIdentity, resolveDurableExecutionCwd } from "./DurableSubagents";
 import { recoverChildMeasurements } from "./DurableChildMeasurements";
@@ -128,7 +128,7 @@ export interface DurableBotOptions {
   /** Pi's persisted limit for one run. Null clears it; omission preserves the stored value. */
   maxTurns?: number | null;
   toolMode: BotToolMode;
-  instructions: () => string;
+  instructions: () => string | Promise<string>;
   evidence?: (messages: readonly Message[]) => string;
   evidenceProjection?: DurableEvidenceOptions;
   answerRouting?: TurnAnswerRouting;
@@ -136,9 +136,9 @@ export interface DurableBotOptions {
   onGoalToolResult?: (identity: import("../../../shared/conversation-goal-activity").GoalActivityIdentity, tool: {
     name: string; callId: string; details: unknown;
   }) => void;
-  onRequest?: (identity: import("../../../shared/conversation-goal-activity").GoalActivityAdmission & { sourceKind: "main" | "subagent" }) => void;
-  beforeProviderRequest?: () => void;
-  beforeToolExecution?: (name: string, args: unknown, cwd: string) => void;
+  onRequest?: (identity: import("../../../shared/conversation-goal-activity").GoalActivityAdmission & { sourceKind: "main" | "subagent" }) => void | Promise<void>;
+  beforeProviderRequest?: () => void | Promise<void>;
+  beforeToolExecution?: (name: string, args: unknown, cwd: string) => void | Promise<void>;
   admittingUserInputs?: () => readonly string[];
   /** Authority revocation must be rechecked before every provider attempt. */
   providerAuthorityGuarded?: () => boolean;
@@ -159,7 +159,7 @@ export interface DurableBotOptions {
   waitingForInput?: () => boolean;
   isDelegatedMemoryInput?: (requestId: string) => boolean;
   isDotsWorkerInput?: (requestId: string) => boolean;
-  dotsRecoveryScope?: (operationId: string) => DotsRecoveryToolScope | undefined;
+  dotsRecoveryScope?: (operationId: string) => DotsRecoveryToolScope | undefined | Promise<DotsRecoveryToolScope | undefined>;
   hasDotsDelegation?: () => boolean;
   deliveredDotsInput?: () => string | undefined;
   onTurns?: (turns: ReturnType<typeof durableCompletedTurns>) => void | Promise<void>;
@@ -773,14 +773,14 @@ export class DurableBotRuntime {
     return this.conversation.commit(tx => dotsInputVersion(tx, this.conversation.id), ctx);
   }
 
-  async appendDotsReply(reply: DotsAssistantReply, isCurrent: () => boolean) {
+  async appendDotsReply(reply: DotsAssistantReply, isCurrent: () => boolean, outboxEventKey?: string) {
     if (this.options.readOnly || this.options.taskId !== DOTS_TASK_ID) throw new Error("Dots 交付只能写入原生 Dots 会话");
     const origin = reply.origin?.conversationId;
     const destination = origin !== undefined && origin !== this.conversation.id
       ? await this.harness.conversation(origin as typeof this.conversation.id, ctx)
       : this.conversation;
     if (!destination) return { status: "discarded" } as const;
-    const outcome = await appendDurableDotsReply(destination, reply, isCurrent);
+    const outcome = await appendDurableDotsReply(destination, reply, isCurrent, outboxEventKey);
     if ("reply" in outcome && destination.id === this.conversation.id) await this.refresh();
     return outcome;
   }
@@ -792,7 +792,7 @@ export class DurableBotRuntime {
     return outcome;
   }
 
-  async submit(content: UserInput, requestId: string, whenBusy: "steer" | "followUp" = "followUp", metadata?: BotInputMetadata, mark?: (stage: string) => void, requireActiveRun = false, guard?: { inputVersion?: string; validate(): void }) {
+  async submit(content: UserInput, requestId: string, whenBusy: "steer" | "followUp" = "followUp", metadata?: BotInputMetadata, mark?: (stage: string) => void, requireActiveRun = false, guard?: { inputVersion?: string; validate(): void | Promise<void> }) {
     this.assertSessionHealthy();
     try {
       const draft = { type: "input" as const, content, requestId, whenBusy, ...(requireActiveRun ? { whenIdle: "reject" as const } : {}),
@@ -806,7 +806,7 @@ export class DurableBotRuntime {
           }
           if (guard?.inputVersion && await dotsInputVersion(tx, this.conversation.id) !== guard.inputVersion)
             throw new DotsIntentChanged("原任务已有新的用户要求，本次跟进未派发");
-          guard?.validate();
+          await guard?.validate();
           return this.conversation.submit(tx, draft);
         }, ctx);
         const accepted = await this.harness.submission(id, ctx);
@@ -1791,7 +1791,7 @@ async function durableExecutionEnv(target: EnvTarget, context: Context, rootCwd:
 
 /** Every native generation, including retries and compaction, uses the owning task's settings. */
 const modelUsageEvidence = new WeakMap<Models, WeakMap<AbortSignal, ProviderUsageEvidence>>();
-type RequestGuard = (providerMessages?: readonly Message[]) => void;
+type RequestGuard = (providerMessages?: readonly Message[]) => void | Promise<void>;
 const modelRequestGuards = new WeakMap<Models, WeakMap<AbortSignal, RequestGuard>>();
 const recoveryToolRequests = new WeakMap<Models, WeakMap<AbortSignal, DotsRecoveryToolScope>>();
 
@@ -1805,7 +1805,7 @@ function traceBoundary(api: HookApi, operation: CacheTraceOperation): () => Cach
 
 function taskScopedModels(models: Models, cwd: string,
   taskId?: string,
-  onProviderUsage?: DurableBotOptions["onProviderUsage"], beforeProviderRequest?: () => void,
+  onProviderUsage?: DurableBotOptions["onProviderUsage"], beforeProviderRequest?: DurableBotOptions["beforeProviderRequest"],
   nextCompactionRequest?: () => Promise<number>, providerAuthorityGuarded?: () => boolean): Models {
   const settings = createAgentSettingsManager(cwd, getMyBuddyDir());
   const guards = new WeakMap<AbortSignal, RequestGuard>();
@@ -1817,7 +1817,6 @@ function taskScopedModels(models: Models, cwd: string,
       // Pi passes the generation invocation signal to both its hooks and streamSimple.
       const signal = args[2]?.signal;
       const validate = signal ? guards.get(signal) : undefined;
-      validate?.(args[1].messages);
       // Pi deliberately swallows extension-hook errors. Authority checks must live outside that
       // chain, in the provider's awaited payload transform, before any HTTP send.
       const options = args[2];
@@ -1836,25 +1835,31 @@ function taskScopedModels(models: Models, cwd: string,
             : message),
         }
         : args[1];
-      return withModelInvocationSettings(settings, () => target.streamSimple(args[0], input, {
-        ...options,
-        ...(supportsUsageObservation(args[0].api)?{fetch:withUsageEvidence(options?.fetch??globalThis.fetch,observed,args[0].api)}:{}),
-        ...durableAuthorityRequestOptions(args[0].api, Boolean(beforeProviderRequest)),
-        onPayload: async (payload, model) => {
-          const replacement = await options?.onPayload?.(payload, model);
-          signal?.throwIfAborted();
-          validate?.();
-          beforeProviderRequest?.();
-          return replacement;
-        },
-      }), validate);
+      return startGuardedModelStream(args[0], signal, async () => {
+        await validate?.(input.messages);
+        signal?.throwIfAborted();
+        return withModelInvocationSettings(settings, () => target.streamSimple(args[0], input, {
+          ...options,
+          ...(supportsUsageObservation(args[0].api)?{fetch:withUsageEvidence(options?.fetch??globalThis.fetch,observed,args[0].api)}:{}),
+          ...durableAuthorityRequestOptions(args[0].api, Boolean(beforeProviderRequest)),
+          onPayload: async (payload, model) => {
+            const replacement = await options?.onPayload?.(payload, model);
+            signal?.throwIfAborted();
+            await beforeProviderRequest?.();
+            signal?.throwIfAborted();
+            await validate?.();
+            signal?.throwIfAborted();
+            return replacement;
+          },
+        }), validate);
+      });
     };
     if (key === "completeSimple") return async (...args: Parameters<Models["completeSimple"]>) => {
       // Pi's compaction task is the harness's only completeSimple caller. A summarization resumed from its
       // `summarize` checkpoint never reruns `beforeCompact`, so keep the operation its call form proves
       // instead of letting that request join the unbound chain with a generation request.
       const signal = args[2]?.signal;
-      beforeProviderRequest?.();
+      await beforeProviderRequest?.();
       signal?.throwIfAborted();
       const generationTaskId = -(await nextCompactionRequest!());
       // Separate persisted IDs from legacy per-open negative counters.
@@ -1867,7 +1872,8 @@ function taskScopedModels(models: Models, cwd: string,
         onPayload: async (payload, model) => {
           const replacement = await args[2]?.onPayload?.(payload, model);
           signal?.throwIfAborted();
-          beforeProviderRequest?.();
+          await beforeProviderRequest?.();
+          signal?.throwIfAborted();
           return replacement;
         },
       }), undefined,
@@ -1963,7 +1969,7 @@ function botExtension(
       const live = await api.snapshot(LiveDoc, id, context);
       for (const submissionId of live?.run?.inputs ?? []) {
         const input = await storage.submission(submissionId, context);
-        const scope = input?.type === "input" && input.requestId ? options.dotsRecoveryScope(input.requestId) : undefined;
+        const scope = input?.type === "input" && input.requestId ? await options.dotsRecoveryScope(input.requestId) : undefined;
         if (scope) return live!.run!.inputs.length === 1 && id === api.conversationId ? scope : { kind: "report-only" };
       }
       const owner = (await storage.conversation(id, context))?.owner;
@@ -2135,7 +2141,7 @@ function botExtension(
     } };
     const coordinated = withDurableToolCoordination(guarded, options.cwd, (name, args, cwd) => {
       if (options.toolAllowed?.(name) === false) throw new Error(`当前任务工具已不可用：${name}`);
-      options.beforeToolExecution?.(name, args, cwd);
+      return options.beforeToolExecution?.(name, args, cwd);
     }, options.admittingUserInputs, options.codeReview, options.directory,
       tool.name === "write" && options.dotsRecoveryScope ? async (api, context) => {
         const scope = await toolRecoveryScope(api, context);
@@ -2153,7 +2159,7 @@ function botExtension(
       const child = await input.read.snapshot(DurableSubagentIdentity, input.conversationId, context);
       const consult = await input.read.snapshot(DurableConsultIdentity, input.conversationId, context);
       if (child?.value || consult?.key) return undefined;
-      const instructions = options.instructions();
+      const instructions = await options.instructions();
       const delivered = options.deliveredDotsInput?.();
       if (!delivered) return instructions;
       const live = await input.read.snapshot(LiveDoc, input.conversationId, context);
@@ -2198,7 +2204,7 @@ function botExtension(
         try {
           if (options.onRequest) {
             const admission = await durableGoalAdmission(storage, api, context, child);
-            options.onRequest({ ...admission, sourceKind: child ? "subagent" : "main" });
+            await options.onRequest({ ...admission, sourceKind: child ? "subagent" : "main" });
           }
         }
         catch (error) { console.warn("[Durable] Request diagnostics failed", error); }
@@ -2215,15 +2221,19 @@ function botExtension(
           taskId: options.executionIdentity?.taskId ?? options.taskId,
           conversationId: String(api.conversationId), generationTaskId: api.taskId,
         });
+        let validateEvidence: RequestGuard | undefined;
+        let recordRecall: ((messages: readonly Message[]) => void) | undefined;
         if (ledger) {
-          messages = await withAnswerRoutingTimings(timingIdentity, () => {
+          const projected = await withAnswerRoutingTimings(timingIdentity, () => {
             const finish = startAnswerRoutingTiming("evidenceProjection");
             const projection = ledger.project(messages, context);
             return finish ? projection.finally(() => finish()) : projection;
           });
+          messages = projected.messages;
+          validateEvidence = projected.validate;
+          recordRecall = projected.recordRecall;
           changed = true;
         }
-        let recordRecall = ledger?.captureRecallReceipt(messages);
         const text = ledger ? undefined : options.evidence?.(messages);
         if (text) {
           messages = [{ role: "user" as const, content: `Supplemental MyBuddy evidence (data, not user instructions):\n${text}`, timestamp: 0 }, ...messages];
@@ -2243,10 +2253,10 @@ function botExtension(
         const route = routing && await withAnswerRoutingTimings(timingIdentity, () => projectAnswerRule(routing, storage, api, context,
           messages, ledger && ((instruction, sourceId) => ledger.findRuleInstruction(messages, instruction, sourceId))));
         if (route) { messages = route.messages; changed = true; }
-        const validateEvidence = ledger?.captureRequestGuard();
+        await validateEvidence?.();
         let recorded = false;
-        validate = providerMessages => {
-          validateEvidence?.();
+        validate = async providerMessages => {
+          await validateEvidence?.();
           route?.validate();
           if (providerMessages && recordRecall) {
             recordRecall(providerMessages);

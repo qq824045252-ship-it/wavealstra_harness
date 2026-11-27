@@ -40,7 +40,7 @@ function ensureGatewaySpace(db: AppDatabase, id: string, preferredName: string, 
 /** Only host-defined channels own directories. Never follow links into a user-selected workspace. */
 export function gatewayChannelDirectory(db: AppDatabase, channelId: string, create: boolean): string {
   if (!isGatewaySidebarChannelId(channelId)) throw new Error("网关渠道身份无效");
-  let path = db.connection.memory ? getMyBuddyDir() : dirname(resolve(db.connection.name));
+  let path = db.fixtureConnection?.memory ? getMyBuddyDir() : dirname(resolve(db.databasePath));
   for (const name of ["gateway", "spaces", channelId]) {
     path = join(path, name);
     if (create) mkdirSync(path, { recursive: true, mode: 0o700 });

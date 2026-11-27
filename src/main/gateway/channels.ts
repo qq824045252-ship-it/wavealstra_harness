@@ -21,6 +21,8 @@ export interface ChannelAdapter {
   isConnected(): boolean;
   statusText(): string;
   workConnectionKey?(): string | undefined;
+  /** Verified transport identity before the persisted configuration opens inbound delivery. */
+  gatewayPreparedConnectionKey?(): string | undefined;
   /** Opaque transport epoch. Never persisted or exposed to the model. */
   gatewayConnectionGeneration?(): unknown;
   /** Rebuild a reply with the current verified account, never old credentials. */
@@ -333,7 +335,11 @@ export class FeishuChannelAdapter implements ChannelAdapter {
   }
 
   workConnectionKey(): string | undefined {
-    return this.connected && this.activated && this.config.appId ? gatewayConnectionKey(this.type, [this.config.appId]) : undefined;
+    return this.activated ? this.gatewayPreparedConnectionKey() : undefined;
+  }
+
+  gatewayPreparedConnectionKey(): string | undefined {
+    return this.connected && this.config.appId ? gatewayConnectionKey(this.type, [this.config.appId]) : undefined;
   }
 
   async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {
@@ -588,8 +594,11 @@ export class WecomChannelAdapter implements ChannelAdapter {
   }
 
   workConnectionKey(): string | undefined {
-    if (!this.activated) return undefined;
-    if (this.smart) return this.smart.workConnectionKey();
+    return this.activated ? this.gatewayPreparedConnectionKey() : undefined;
+  }
+
+  gatewayPreparedConnectionKey(): string | undefined {
+    if (this.smart) return this.smart.gatewayPreparedConnectionKey();
     return this.connected && this.config.corpId && this.config.agentId
       ? gatewayConnectionKey(this.type, [this.config.corpId, this.config.agentId]) : undefined;
   }

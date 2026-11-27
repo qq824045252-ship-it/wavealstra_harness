@@ -56,7 +56,7 @@ try {
   await service.connect("discord-default", config);
   assert.equal(adapter.active, true);
   assert.equal((service as unknown as { webhookServer: unknown }).webhookServer, null);
-  assert.equal(service.getChannelConfig("discord-default").config.botToken, "••••••");
+  assert.equal((await service.getChannelConfig("discord-default")).config.botToken, "••••••");
   assert.equal(JSON.parse(db.listGatewayChannels().find(c => c.id === "discord-default")!.configJson).botToken, undefined);
   await adapter.handler!({ channelId: adapter.id, chatId: "456", sender: { id: "not-allowed" }, text: "ignored", reply: async () => {} });
   assert.equal(turns, 0);
@@ -66,7 +66,7 @@ try {
   assert.equal(adapter.active, true);
   assert.equal((service as unknown as { webhookServer: unknown }).webhookServer, null);
   await service.disconnect("discord-default");
-  assert.equal(service.getChannelConfig("discord-default").config.botToken, "••••••");
+  assert.equal((await service.getChannelConfig("discord-default")).config.botToken, "••••••");
   assert.equal(adapter.live, false);
   await assert.rejects(() => adapter.handler!({ channelId: adapter.id, chatId: "456", sender: { id: "789" }, text: "stale", reply: async () => {} }));
 } finally { await service.stop(); db.close(); rmSync(root, { recursive: true, force: true }); }
@@ -103,21 +103,32 @@ class TestWecom extends WecomChannelAdapter {
       [feishu, { appId: "app", appSecret: "lark-secret", transport: "websocket", allowUsers: ["owner"] }, "appSecret"],
       [wecom, { botId: "bot", secret: "wecom-secret", mode: "smart", allowUsers: ["owner"] }, "secret"],
     ] as const) {
-      const save = database.upsertGatewayChannel.bind(database);
-      database.upsertGatewayChannel = row => {
+      const save = database.writeGatewayChannel.bind(database);
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      database.writeGatewayChannel = async (row, expected) => {
+        entered.resolve();
+        await release.promise;
         assert.equal(adapter.active, false);
         assert.equal(JSON.parse(row.configJson)[secret], undefined);
-        save(row);
+        return save(row, expected);
       };
-      await gateway.connect(adapter.id, config);
-      database.upsertGatewayChannel = save;
+      const connected = gateway.connect(adapter.id, config);
+      try {
+        await Promise.race([entered.promise, connected]);
+        assert.equal(adapter.active, false);
+      } finally {
+        release.resolve();
+      }
+      await connected;
+      database.writeGatewayChannel = save;
       assert.equal(adapter.active, true);
-      assert.equal(gateway.getChannelConfig(adapter.id).config[secret], "••••••");
+      assert.equal((await gateway.getChannelConfig(adapter.id)).config[secret], "••••••");
       assert.equal((gateway as unknown as { webhookServer: unknown }).webhookServer, null);
       await gateway.disconnect(adapter.id);
-      database.upsertGatewayChannel = () => { throw new Error("disk full"); };
+      database.writeGatewayChannel = () => { throw new Error("disk full"); };
       await assert.rejects(() => gateway.connect(adapter.id, config), /安全配置保存失败/);
-      database.upsertGatewayChannel = save;
+      database.writeGatewayChannel = save;
       assert.equal(adapter.live, false); assert.equal(adapter.active, false);
     }
   } finally { await gateway.stop(); database.close(); rmSync(dir, { recursive: true, force: true }); }

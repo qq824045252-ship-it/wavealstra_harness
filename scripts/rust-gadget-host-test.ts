@@ -4,7 +4,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
-import { AppDatabase } from "../src/main/db/AppDatabase";
 import { GadgetRegistry } from "../src/main/gadget/GadgetRegistry";
 import { GadgetRepository } from "../src/main/gadget/GadgetRepository";
 import { GadgetRuntime } from "../src/main/gadget/GadgetRuntime";
@@ -13,7 +12,7 @@ import { GadgetStorage } from "../src/main/gadget/GadgetStorage";
 import type { GadgetClient } from "../src/shared/gadget-backend";
 import { CoreBusinessClient } from "../src/main/platform/core-business-client";
 import { shutdownCoreWorker } from "../src/main/platform/core-client";
-import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
+import { locateRuntimeAudit, RuntimeAuditReader } from "../src/main/platform/runtime-audit";
 
 function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -80,7 +79,7 @@ function ensureRustToolchainEnv(): void {
 }
 
 async function main(): Promise<void> {
-  const executable = locateRuntimeAudit(process.cwd());
+  const executable = process.env.RUNTIME_AUDIT_BINARY ?? locateRuntimeAudit(process.cwd());
   assert(executable && existsSync(executable), "Rust runtime-audit executable is required");
 
   ensureRustToolchainEnv();
@@ -89,20 +88,14 @@ async function main(): Promise<void> {
   process.env.USERPROFILE = root;
   const dataDir = join(root, ".mybuddy");
   mkdirSync(dataDir, { recursive: true });
-  const dbPath = join(dataDir, "app.db");
+  const dbPath = join(dataDir, "app.duckdb");
 
-  let db: AppDatabase | undefined;
+  const reader = new RuntimeAuditReader(executable, dbPath, { coreDataDirectory: dataDir, coreRole: "ui" });
   let runtime: GadgetRuntime | undefined;
   let coreClient: CoreBusinessClient | undefined;
 
   try {
-    db = await AppDatabase.open(dbPath, {
-      runtimeAuditExecutable: executable,
-      runtimeAuditSupervised: true,
-      readonly: true,
-    });
-    const reader = db.runtimeAuditReader!;
-    const repository = new GadgetRepository(db.connection, reader);
+    const repository = new GadgetRepository({ core: reader });
     const storage = new GadgetStorage(join(dataDir, "gadgets"), reader);
     const registry = new GadgetRegistry();
     runtime = new GadgetRuntime(storage, registry, undefined, reader, { idleTimeoutMs: 180 });
@@ -470,8 +463,7 @@ fn main() {
   } finally {
     await coreClient?.close().catch(() => undefined);
     await runtime?.disposeAll().catch(() => undefined);
-    await db?.runtimeAuditReader?.close().catch(() => undefined);
-    db?.close();
+    await reader.close().catch(() => undefined);
     await shutdownCoreWorker(dataDir, dbPath).catch(() => undefined);
     try { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); } catch { /* ignore */ }
   }

@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
-import { LOCAL_USER_ID } from "../../shared/bot-work";
-import { DOTS_TASK_ID } from "../../shared/dots";
-import { botWorkspaceSpaceId, teamWorkspaceSpaceId } from "../agent/work/BotWorkspaceNavigationService";
+import { LOCAL_USER_ID } from "../../src/shared/bot-work";
+import { DOTS_TASK_ID } from "../../src/shared/dots";
+import { botWorkspaceSpaceId, teamWorkspaceSpaceId } from "../../src/main/agent/work/BotWorkspaceNavigationService";
 
 // One observation per local day and kind. History can match an older day even after a newer visit.
 const localDay = (time: string) => `date((${time})/1000.0,'unixepoch','localtime')`;

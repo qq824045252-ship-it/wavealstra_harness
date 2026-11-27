@@ -1,7 +1,61 @@
 use crate::Result;
-use rusqlite::{Connection, Row};
-use serde::Serialize;
+use duckdb::{Connection, Row};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+#[derive(Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum Query {
+    ById {
+        id: String,
+    },
+    Receipt {
+        task_id: String,
+        operation_id: String,
+    },
+    MessageRefs {
+        task_id: String,
+        message_id: Option<String>,
+        artifact_id: Option<String>,
+    },
+    FileDependencies {
+        artifact_id: String,
+    },
+}
+
+pub fn read_data(db: &Connection, query: Query) -> Result<Value> {
+    match query {
+        Query::ById { id } => {
+            let mut stmt = db.prepare("SELECT * FROM artifacts WHERE id=?")?;
+            let mut rows = stmt.query([&id])?;
+            let descriptor = rows
+                .next()?
+                .map(|row| Descriptor::read(row, id, row.get_ref("task_id")?.as_str()?))
+                .transpose()?;
+            Ok(serde_json::to_value(descriptor)?)
+        }
+        Query::Receipt {
+            task_id,
+            operation_id,
+        } => Ok(
+            crate::artifact_write::read_receipt(db, &task_id, &operation_id)?
+                .unwrap_or(Value::Null),
+        ),
+        Query::MessageRefs { task_id, message_id, artifact_id } => Ok(crate::sqlite_rows::records(db,
+            "SELECT task_id AS taskId,message_id AS messageId,artifact_id AS artifactId,relation,
+             tool_call_id AS toolCallId,created_at AS createdAt FROM artifact_message_refs
+             WHERE task_id=?1 AND (?2 IS NULL OR message_id=?2) AND (?3 IS NULL OR artifact_id=?3)
+             ORDER BY created_at,rowid", duckdb::params![task_id, message_id, artifact_id])?.into()),
+        Query::FileDependencies { artifact_id } => Ok(crate::sqlite_rows::records(db,
+            "SELECT artifact_id AS artifactId,file_path AS filePath,dependency_kind AS dependencyKind,
+             created_at AS createdAt FROM artifact_file_dependencies WHERE artifact_id=? ORDER BY created_at,rowid",
+             [&artifact_id])?.into()),
+    }
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,16 +146,24 @@ impl Descriptor {
 }
 
 pub fn read(db: &Connection, task_ids: &[String]) -> Result<Vec<Snapshot>> {
-    let mut stmt = db.prepare_cached(
-        "SELECT q.value AS requested_task_id, coalesce(r.revision, 0) AS task_revision,
+    if task_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let values_clause = (0..task_ids.len())
+        .map(|i| format!("(CAST(? AS VARCHAR), {i})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut stmt = db.prepare(&format!(
+        "WITH q(value, key) AS (VALUES {values_clause})
+         SELECT q.value AS requested_task_id, coalesce(r.revision, 0) AS task_revision,
                 s.task_id IS NOT NULL AS legacy_migrated, a.*
-         FROM json_each(?1) q
+         FROM q
          LEFT JOIN artifact_task_revisions r ON r.task_id = q.value
          LEFT JOIN artifact_task_state s ON s.task_id = q.value
          LEFT JOIN artifacts a ON a.task_id = q.value
-         ORDER BY q.key, a.created_at, a.rowid",
-    )?;
-    let mut rows = stmt.query([serde_json::to_string(task_ids)?])?;
+         ORDER BY q.key, a.created_at, a.rowid"
+    ))?;
+    let mut rows = stmt.query(duckdb::params_from_iter(task_ids.iter()))?;
     let mut snapshots: Vec<Snapshot> = Vec::new();
     while let Some(row) = rows.next()? {
         let task_id: &str = row.get_ref("requested_task_id")?.as_str()?;

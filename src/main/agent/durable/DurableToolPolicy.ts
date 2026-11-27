@@ -12,10 +12,10 @@ import { DRAWIO_USE_TOOLS } from "../../../shared/drawio-use";
 import { isDangerousTool, isSideEffectTool, summarizeToolInput } from "../../../shared/pi-event-mapper";
 import { classifyMcpToolCall } from "../../security/McpSideEffectPolicy";
 import { isManagedToolProvider } from "../../../shared/professional-tools";
-import { TaskFileAccessPolicy } from "../../security/TaskFileAccessPolicy";
+import type { TaskFileAccessPolicy } from "../../security/TaskFileAccessPolicy";
 import type { ConversationInteractionService } from "../ConversationInteractionService";
 import type { ExecutionFailureRepository } from "../ExecutionFailureRepository";
-import type { ExecutionAttemptRepository } from "../ExecutionAttemptRepository";
+import type { ExecutionAttempt, ExecutionAttemptRepository } from "../ExecutionAttemptRepository";
 import type { SessionToolApprovalRequest } from "../SessionApprovalBridge";
 import { nativeExecutionOperationId, nativeExecutionReceiptSchema, nativeFileReadAttemptSchema, type NativeExecutionReceipt } from "../../../shared/native-execution-receipt";
 import { collectRuntimeMaterialEvidence } from "../RuntimeMaterialEvidence";
@@ -64,7 +64,7 @@ export interface DurableToolPolicyOptions {
   providerIds?: readonly string[];
   getPolicy?: () => TaskFileAccessPolicy;
   ensureRuntimeReady?: (providerId: string) => Promise<void>;
-  toolAllowed?: (name: string) => boolean;
+  toolAllowed?: (name: string) => boolean | Promise<boolean>;
   effectRecovery?: ExternalEffectRecovery;
   admitWorkAction?: (input: { operationId: string; actionKind: string; paths: string[] }) => string | undefined;
   settleWorkAction?: (receipt: NativeExecutionReceipt) => void;
@@ -95,13 +95,15 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
           const summary = summarizeToolInput(call.name, call.arguments);
           return { block: `${reason}${summary.summary ? `（${summary.summary}）` : ""}` };
         };
-        if (options.toolAllowed && !options.toolAllowed(call.name)) return refuse(`当前任务工具不可用：${call.name}`);
+        if (options.toolAllowed && !await options.toolAllowed(call.name)) return refuse(`当前任务工具不可用：${call.name}`);
         call = policyCall(call);
-        if (options.toolAllowed && !options.toolAllowed(call.name)) return refuse(`当前任务工具不可用：${call.name}`);
+        if (call.name !== originalCall.name && options.toolAllowed && !await options.toolAllowed(call.name)) {
+          return refuse(`当前任务工具不可用：${call.name}`);
+        }
         const executionIdentity = await identity(api, context, call);
         // Retire only the old approval identity for this exact native call. Normal
         // request_user_input questions (even with the same title) are untouched.
-        options.interactions.cancelDurable(executionIdentity, `approval:${call.id}`, "应用工具审批已退役，继续原执行");
+        await options.interactions.cancelDurableAsync(executionIdentity, `approval:${call.id}`, "应用工具审批已退役，继续原执行");
         // The built-in Code Mode VM has no ambient filesystem/network access. Its
         // executeTool leaves each enter this hook with their own exact identity.
         if (originalCall.name === "codemode") return undefined;
@@ -141,7 +143,7 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
             ? await options.effectRecovery.prepare(call.name, jsonArguments.parse(call.arguments), effectOperationId(execution.executionId, call.id), context, origin) : undefined;
           if (prepared) { intent = prepared.intent; call = { ...call, arguments: prepared.arguments }; }
           if (intent && priorIntent === undefined) await api.memo("mybuddy.effect-intent", intent, context);
-          options.attempts.beginDurable({ ...execution, toolCallId: call.id, toolName: call.name,
+          await options.attempts.beginDurableAsync({ ...execution, toolCallId: call.id, toolName: call.name,
             target: `durable-tool:${api.conversationId}:${api.taskId}`,
             verifierId: intent?.kind === "file" ? "durable-file-content" : intent?.kind === "receipt" ? "durable-business-receipt" : "durable-tool-result", verifierVersion: 1,
           });
@@ -167,7 +169,7 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
           || isNativeShell(originalCall.name) && item.code === "tool_error"
             && (item.message === BASH_INACTIVITY_MESSAGE || /^Command timed out after [\d.e+-]+ seconds$/iu.test(item.message)));
         const execution = await identity(api, context, call);
-        const attempt = options.attempts.findDurable(execution, call.id);
+        const attempt = await options.attempts.findDurableAsync(execution, call.id);
         const boundary = { ...execution, conversationId: api.conversationId, toolTaskId: api.taskId,
           callId: call.id, toolName: originalCall.name, ...(attempt ? { attemptId: attempt.id } : {}) };
         const savedReceipt = await api.memo(receiptMemo, context);
@@ -180,7 +182,7 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
           receipt.executionId !== boundary.executionId || receipt.assistantMessageId !== boundary.assistantMessageId ||
           receipt.attemptId !== boundary.attemptId) throw new Error("Durable execution receipt identity mismatch");
         if (attempt) {
-          options.attempts.settleDurable({ ...attempt, nativeReceipt: receipt, status: receipt.status, phase: "finished", finishedAt: receipt.checkedAt,
+          await options.attempts.settleDurableAsync({ ...attempt, nativeReceipt: receipt, status: receipt.status, phase: "finished", finishedAt: receipt.checkedAt,
             transportStatus: receipt.transport === "returned" ? "succeeded" : "failed", observedExitCode: receipt.exitCode,
             causeCode: receipt.causeCode, recovery: receipt.status === "inconclusive" ? "requires-user-action" : undefined,
             verifierId: receipt.verifierId, verifierVersion: receipt.verifierVersion,
@@ -188,15 +190,15 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
               target: attempt.target, ...checkpoint.verification, status: receipt.status, checkedAt: receipt.checkedAt,
               causeCode: receipt.causeCode },
           });
-          if (receipt.status !== "inconclusive") options.failures.resolveMatching(options.taskId, { target: attempt.target, causeCodes: ["application-restarted", "durable-tool-interrupted", "effect-unverified"] });
+          if (receipt.status !== "inconclusive") await options.failures.resolveMatchingAsync(options.taskId, { target: attempt.target, causeCodes: ["application-restarted", "durable-tool-interrupted", "effect-unverified"] });
         }
         if (!container) options.settleWorkAction?.(receipt);
         if (checkpoint.effectStatus === "inconclusive" && attempt)
-          options.failures.recordIfAbsent({ ...execution, causeCode: "effect-unverified", phase: "verify", recovery: "requires-user-action", sideEffects: "unknown",
+          await options.failures.recordIfAbsentAsync({ ...execution, causeCode: "effect-unverified", phase: "verify", recovery: "requires-user-action", sideEffects: "unknown",
             target: attempt.target, message: "工具结果尚未通过内容或业务回执核验", nextAction: "检查核验证据和实际外部状态，确认前不要重复提交原操作。" });
         if (interrupted && receipt.transport === "interrupted" && !checkpoint.effectStatus) {
-          options.interactions.cancelExecution(execution.executionId, "当前工具执行已结束");
-          if (receipt.settlement === "unknown" && attempt) options.failures.recordIfAbsent({ ...execution,
+          await options.interactions.cancelExecutionAsync(execution, "当前工具执行已结束");
+          if (receipt.settlement === "unknown" && attempt) await options.failures.recordIfAbsentAsync({ ...execution,
             causeCode: "durable-tool-interrupted", phase: "recover", recovery: "requires-user-action", sideEffects: "unknown",
             target: attempt.target, message: `${call.name} 已中断，外部操作结果尚未确认：${interrupted.message}`,
             nextAction: "先回读文件、业务回执或外部状态。确认结果前不要重复提交同一副作用操作。" });
@@ -208,7 +210,7 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
 }
 
 async function observeToolReceipt(call: ToolHookCall, originalCall: ToolHookCall, result: ToolExecutionResult, api: HookApi, context: Context,
-  attempt: ReturnType<ExecutionAttemptRepository["findDurable"]>,
+  attempt: ExecutionAttempt | undefined,
   boundary: Pick<NativeExecutionReceipt, "taskId" | "conversationId" | "toolTaskId" | "callId" | "toolName" | "executionId" | "assistantMessageId" | "attemptId">,
   interrupted: NonNullable<ToolExecutionResult["diagnostics"]>[number] | undefined, options: DurableToolPolicyOptions) {
   const mcp = mcpReadTools.has(call.name) ? null : classifyMcpToolCall(call.name, call.arguments, options.providerIds);
@@ -229,7 +231,7 @@ async function observeToolReceipt(call: ToolHookCall, originalCall: ToolHookCall
   if (savedIntent !== undefined) {
     const intent = readEffectIntent(savedIntent, originalCall);
     if (intent.kind === "file") evidence = await verifyFileEffect(intent, context.abortSignal);
-    else if (options.effectRecovery && options.toolAllowed?.(durableMcpToolName(intent.server, intent.contract.receiptTool)) !== false) evidence = await options.effectRecovery.verify(intent, context);
+    else if (options.effectRecovery && await options.toolAllowed?.(durableMcpToolName(intent.server, intent.contract.receiptTool)) !== false) evidence = await options.effectRecovery.verify(intent, context);
     else evidence = { status: "inconclusive", verifierId: "durable-business-receipt",
       canonicalTarget: `${intent.server}/${intent.tool}/${intent.operationId}`,
       expected: { operationId: intent.operationId, completed: intent.contract.completedValues },

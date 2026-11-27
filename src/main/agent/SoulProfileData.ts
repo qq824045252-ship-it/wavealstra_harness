@@ -12,14 +12,16 @@ const soulFields = ["name", "alias", "persona"] as const;
 
 export async function readSoulProfile(db: AppDatabase): Promise<SoulDto> {
   const result = await db.runtimeAuditReader?.soulProfile({ kind: "read" });
-  return result?.status === "applied" ? result.profile : db.getSoul();
+  if (result?.status === "applied") return result.profile;
+  if (db.coreIdentity) throw new Error("身份资料读取未获 Rust Core 确认");
+  return db.getSoul();
 }
 
 export async function writeSoulProfile(db: AppDatabase, partial: Partial<SoulDto>): Promise<SoulDto> {
   const reader = db.runtimeAuditReader;
-  const rustRequired = db.connection.readonly || reader?.supervised === true;
+  const rustRequired = db.readonly;
   if (!reader) {
-    if (db.connection.readonly) throw new Error("只读数据库模式下无法保存身份资料");
+    if (rustRequired) throw new Error("只读数据库模式下无法保存身份资料");
     return db.updateSoul(partial);
   }
   if (Object.entries(partial ?? {}).some(([field, value]) =>

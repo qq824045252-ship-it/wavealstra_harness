@@ -109,6 +109,7 @@ function baselineRequests(memory: MemoryService, input: MemorySearchRequest, wor
 }
 
 export async function readMemoryContextBaselines(memory: MemoryService, input: MemorySearchRequest): Promise<MemoryContextBaselines | undefined> {
+  if (memory.usesCoreRecall) return;
   const requests = baselineRequests(memory, input, memory.resolveScopeChain(input).some(scope => scope.scopeType === "work"));
   const kinds = BASELINE_KINDS.filter(kind => requests[kind] !== undefined);
   const candidates = await memory.searchBaselines(kinds.map(kind => requests[kind]!));

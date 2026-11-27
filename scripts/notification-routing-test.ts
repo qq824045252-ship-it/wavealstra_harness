@@ -112,8 +112,7 @@ assert.deepEqual((await notifications.readList({ grouped: true }))[1].group?.tar
 const task = { id: "child-run", title: "测试任务", updatedAt: today };
 db.prepare("INSERT INTO tasks VALUES (?)").run(task.id);
 publishTaskLifecycleNotification({ event: { kind: "action_required", taskId: task.id, assistantMessageId: "real-reply",
-  toolCallId: "real-tool", summary: "需要批准" }, task, goalId: "original-goal",
-  workRepo: { bindingForTask: () => undefined }, notifications });
+  toolCallId: "real-tool", summary: "需要批准" }, task, workId: "original-goal", hasWorkBinding: false, notifications });
 const listener = createTaskInteractionNotificationListener(() => task, notifications,
   (taskId, assistantMessageId) => taskId === task.id && assistantMessageId === "second-reply" ? "original-goal" : undefined);
 listener({ type: "conversation_interaction_snapshot", taskId: task.id, executionId: "execution",

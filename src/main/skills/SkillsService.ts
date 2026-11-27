@@ -540,17 +540,49 @@ export class SkillsService {
     include?: (skill: SkillDto) => boolean,
     context: { botId?: string } = {},
   ): RuntimeSkillSelection {
+    return this.selectRuntimeSkills(this.discoverRuntimeSkills(cwd, extraSkillPaths), extraSkillPaths, include, context);
+  }
+
+  async readRuntimeSkills(
+    cwd: string | undefined,
+    extraSkillPaths: string[],
+    include: (skill: SkillDto) => Promise<boolean>,
+    context: { botId?: string },
+  ): Promise<RuntimeSkillSelection> {
+    const sources = this.discoverRuntimeSkills(cwd, extraSkillPaths);
+    const candidates = new Map<string, Promise<boolean>>();
+    for (const { skills } of sources) for (const skill of skills) {
+      const dto = this.mapLoadedSkill(skill);
+      const pathKey = resolvedPathKey(skill.filePath);
+      if (dto.enabled && this.isLearnedSkillVisibleForBot(skill.filePath, context.botId) && !candidates.has(pathKey)) {
+        candidates.set(pathKey, include(dto));
+      }
+    }
+    const permitted = new Set((await Promise.all([...candidates].map(async ([path, allowed]) =>
+      [path, await allowed] as const))).filter(([, allowed]) => allowed).map(([path]) => path));
+    return this.selectRuntimeSkills(sources, extraSkillPaths, skill => Boolean(skill.filePath && permitted.has(resolvedPathKey(skill.filePath))), context);
+  }
+
+  private discoverRuntimeSkills(cwd: string | undefined, extraSkillPaths: string[]) {
     getSkillsDir();
     guardStrayRootSkillBeforeScan();
     const resolvedCwd = resolve(cwd?.trim() || process.cwd());
     const agentDir = getMyBuddyDir();
-    const sourceResults = [
+    return [
       loadSkillsFromDir({ dir: getSkillsDir(), source: "user" }),
       loadSkillsFromDir({ dir: join(resolvedCwd, ".pi", "skills"), source: "project" }),
       ...extraSkillPaths.map((skillPath) => loadSkills({
         cwd: resolvedCwd, agentDir, skillPaths: [skillPath], includeDefaults: false,
       })),
     ];
+  }
+
+  private selectRuntimeSkills(
+    sourceResults: ReturnType<SkillsService["discoverRuntimeSkills"]>,
+    extraSkillPaths: string[],
+    include: ((skill: SkillDto) => boolean) | undefined,
+    context: { botId?: string },
+  ): RuntimeSkillSelection {
     const extraRoots = extraSkillPaths.map((value) => resolve(value).toLowerCase());
     const underExtra = (filePath: string): boolean => {
       const candidate = resolve(filePath).toLowerCase();
@@ -604,10 +636,14 @@ export class SkillsService {
     cwd?: string,
     extraSkillPaths: string[] = [],
   ): SkillScriptOwner | null {
+    return this.skillScriptOwnerFromSelection(scriptPath, this.resolveRuntimeSkills(cwd, extraSkillPaths).skills);
+  }
+
+  skillScriptOwnerFromSelection(scriptPath: string, skills: readonly PiSkill[]): SkillScriptOwner | null {
     const lower = (value: string): string => pathKey(value);
     const target = lower(resolve(scriptPath));
     let best: SkillScriptOwner | null = null;
-    for (const skill of this.resolveRuntimeSkills(cwd, extraSkillPaths).skills) {
+    for (const skill of skills) {
       if (!skill.baseDir) continue;
       const base = resolve(skill.baseDir);
       const baseKey = lower(base);

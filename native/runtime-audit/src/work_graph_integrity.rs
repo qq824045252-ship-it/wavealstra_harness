@@ -1,8 +1,7 @@
 use crate::Result;
-use rusqlite::{Connection, TransactionBehavior, params};
+use duckdb::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize)]
@@ -96,20 +95,20 @@ pub fn repair(db: &mut Connection, preview: &RepairPreview) -> RepairReply {
     }
 }
 
-fn apply_repair(db: &mut Connection, preview: &RepairPreview) -> rusqlite::Result<(usize, usize)> {
-    let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+fn apply_repair(db: &mut Connection, preview: &RepairPreview) -> duckdb::Result<(usize, usize)> {
+    let transaction = db.transaction()?;
     let orphan = orphan_predicate(&transaction)?;
     let (workspace_exists, library_exists) = binding_predicates(&transaction)?;
     let mut deleted_edges = 0;
     let mut deleted_bindings = 0;
     {
-        let mut delete_edge = transaction.prepare_cached(&format!(
+        let mut delete_edge = transaction.prepare(&format!(
             "DELETE FROM work_graph_edges AS e WHERE e.id = ?1 AND {orphan}"
         ))?;
         for id in &preview.will_delete_edge_ids {
             deleted_edges += delete_edge.execute([id])?;
         }
-        let mut delete_binding = transaction.prepare_cached(&format!(
+        let mut delete_binding = transaction.prepare(&format!(
             "DELETE FROM workspace_library_links AS b
              WHERE b.workspace_id = ?1 AND b.library_space_id = ?2
                AND NOT ({workspace_exists} AND {library_exists})"
@@ -123,13 +122,12 @@ fn apply_repair(db: &mut Connection, preview: &RepairPreview) -> rusqlite::Resul
     Ok((deleted_edges, deleted_bindings))
 }
 
-pub fn scan(path: &Path) -> Result<Report> {
-    let mut db = crate::read_connection(path)?;
+pub fn scan(db: &mut Connection) -> Result<Report> {
     let snapshot = db.transaction()?;
     let mut findings = Vec::new();
     scan_edges(&snapshot, &mut findings)?;
     scan_bindings(&snapshot, &mut findings)?;
-    let mut cwd = snapshot.prepare_cached(
+    let mut cwd = snapshot.prepare(
         "SELECT t.id, t.space_id FROM tasks t WHERE t.space_id <> ''
          AND NOT EXISTS(SELECT 1 FROM spaces WHERE id = t.space_id) ORDER BY t.rowid",
     )?;
@@ -150,27 +148,27 @@ pub fn scan(path: &Path) -> Result<Report> {
     })
 }
 
-fn has_table(db: &Connection, table: &str) -> rusqlite::Result<bool> {
+fn has_table(db: &Connection, table: &str) -> duckdb::Result<bool> {
     db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema = 'main' AND table_name = ?1)",
         [table],
         |row| row.get(0),
     )
 }
 
-fn orphan_predicate(db: &Connection) -> rusqlite::Result<String> {
+fn orphan_predicate(db: &Connection) -> duckdb::Result<String> {
     let has_artifacts = has_table(db, "artifacts")?;
     let has_library = has_table(db, "library_items")?;
     let exists = |side: &str| {
         let artifact = if has_artifacts {
             format!("EXISTS(SELECT 1 FROM artifacts WHERE id = e.{side}_id)")
         } else {
-            "1".to_owned()
+            "TRUE".to_owned()
         };
         let library = if has_library {
             format!("EXISTS(SELECT 1 FROM library_items WHERE id = e.{side}_id)")
         } else {
-            "1".to_owned()
+            "TRUE".to_owned()
         };
         format!(
             "CASE e.{side}_type
@@ -180,7 +178,7 @@ fn orphan_predicate(db: &Connection) -> rusqlite::Result<String> {
                WHEN 'plan' THEN EXISTS(SELECT 1 FROM project_todos WHERE id = e.{side}_id)
                WHEN 'artifact' THEN {artifact}
                WHEN 'library_item' THEN {library}
-               WHEN 'agent_run' THEN 1 ELSE 0 END"
+               WHEN 'agent_run' THEN TRUE ELSE FALSE END"
         )
     };
     Ok(format!("NOT (({}) AND ({}))", exists("from"), exists("to")))
@@ -188,7 +186,7 @@ fn orphan_predicate(db: &Connection) -> rusqlite::Result<String> {
 
 fn scan_edges(db: &Connection, findings: &mut Vec<Finding>) -> Result<()> {
     let orphan = orphan_predicate(db)?;
-    let mut query = db.prepare_cached(&format!(
+    let mut query = db.prepare(&format!(
         "SELECT e.id, e.relation, e.from_type, e.from_id, e.to_type, e.to_id,
            {orphan} AS orphan FROM work_graph_edges e
          ORDER BY e.created_at, e.id"
@@ -291,19 +289,19 @@ impl Dag {
     }
 }
 
-fn binding_predicates(db: &Connection) -> rusqlite::Result<(&'static str, &'static str)> {
+fn binding_predicates(db: &Connection) -> duckdb::Result<(&'static str, &'static str)> {
     let workspace_exists = "EXISTS(SELECT 1 FROM spaces WHERE id = b.workspace_id)";
     let library_exists = if has_table(db, "library_spaces")? {
         "EXISTS(SELECT 1 FROM library_spaces WHERE id = b.library_space_id)"
     } else {
-        "1"
+        "TRUE"
     };
     Ok((workspace_exists, library_exists))
 }
 
 fn scan_bindings(db: &Connection, findings: &mut Vec<Finding>) -> Result<()> {
     let (workspace_exists, library_exists) = binding_predicates(db)?;
-    let mut query = db.prepare_cached(&format!(
+    let mut query = db.prepare(&format!(
         "SELECT * FROM (
            SELECT b.workspace_id, b.library_space_id,
              {workspace_exists} AS workspace_exists,

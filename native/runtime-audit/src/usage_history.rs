@@ -1,11 +1,10 @@
-use crate::{Result, javascript_whitespace, usage_live, write_connection};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use crate::{Result, javascript_whitespace, usage_live};
+use duckdb::{Connection, OptionalExt, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     fs::{File, Metadata},
     io::{BufRead, BufReader, Read},
-    path::Path,
     time::UNIX_EPOCH,
 };
 
@@ -258,7 +257,7 @@ fn overhead_time(db: &Connection, input: Option<Value>, captured: i64) -> Result
         }
     };
     let millis: Option<f64> = db
-        .prepare_cached("SELECT round(unixepoch(?1,'subsec')*1000)")?
+        .prepare("SELECT round(unixepoch(?1,'subsec')*1000)")?
         .query_row([time], |row| row.get(0))?;
     millis.ok_or_else(|| "usage timestamp needs JavaScript parsing".into())
 }
@@ -350,9 +349,9 @@ pub(super) fn model_from_id(id: &str) -> Option<(&str, &str)> {
     (!provider.is_empty() && !model.is_empty()).then_some((provider, model))
 }
 
-fn has_tasks(db: &Connection) -> rusqlite::Result<bool> {
+fn has_tasks(db: &Connection) -> duckdb::Result<bool> {
     db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks')",
+        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='main' AND table_name='tasks')",
         [],
         |row| row.get(0),
     )
@@ -360,8 +359,8 @@ fn has_tasks(db: &Connection) -> rusqlite::Result<bool> {
 
 type Watermark = (Option<String>, Option<u64>, Option<f64>);
 
-fn watermark(db: &Connection, file: &str) -> rusqlite::Result<Option<Watermark>> {
-    db.prepare_cached(
+fn watermark(db: &Connection, file: &str) -> duckdb::Result<Option<Watermark>> {
+    db.prepare(
         "SELECT last_entry_id,file_size,file_mtime FROM usage_backfill_state WHERE session_file=?1",
     )?
     .query_row([file], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
@@ -385,7 +384,7 @@ fn reconcile(
     captured: i64,
 ) -> Result<usize> {
     let model_id: Option<String> = if has_tasks(db)? {
-        db.prepare_cached(
+        db.prepare(
             "SELECT model_id FROM tasks WHERE session_file=?1 AND model_id IS NOT NULL LIMIT 1",
         )?
         .query_row([file], |row| row.get(0))
@@ -398,16 +397,16 @@ fn reconcile(
         .and_then(|(last, _, _)| last)
         .and_then(|id| session.assistants.iter().position(|entry| entry.id == id))
         .map_or(0, |index| index + 1);
-    let mut live = db.prepare_cached(
+    let mut live = db.prepare(
         "SELECT entry_id FROM usage_events WHERE session_file=?1 AND entry_id LIKE 'live:%'
          AND (response_id IS NULL OR response_id='') ORDER BY COALESCE(turn_index,0),ts ASC",
     )?;
     let live = live
         .query_map([file], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .collect::<duckdb::Result<Vec<_>>>()?;
     let mut handled = 0;
     let mut claimed = std::collections::HashSet::new();
-    let mut claim = db.prepare_cached(
+    let mut claim = db.prepare(
         "UPDATE usage_events SET entry_id=?1,backfilled=1,user_turn=?2
          WHERE session_file=?3 AND response_id=?4 AND entry_id LIKE 'live:%' AND source_kind='main'",
     )?;
@@ -422,7 +421,7 @@ fn reconcile(
         }
     }
     let entries = &session.assistants[from..];
-    let mut order = db.prepare_cached(
+    let mut order = db.prepare(
         "UPDATE usage_events SET entry_id=?1,backfilled=1,user_turn=?2 WHERE entry_id=?3",
     )?;
     for (old, entry) in live.iter().zip(
@@ -436,7 +435,7 @@ fn reconcile(
             claimed.insert(entry.id.as_str());
         }
     }
-    let mut insert = db.prepare_cached(
+    let mut insert = db.prepare(
         "INSERT INTO usage_events(entry_id,task_id,session_file,source_kind,provider,model,response_model,ts,
            input_tokens,output_tokens,cache_read,cache_write,cache_write_1h,reasoning_tokens,total_tokens,
            cost_total,cost_input,cost_output,cost_cache_read,cost_cache_write,stop_reason,error_message,response_id,turn_index,user_turn,backfilled)
@@ -478,10 +477,11 @@ fn reconcile(
             entry.turn
         ])?;
     }
-    let mut overhead = db.prepare_cached(
-        "INSERT OR IGNORE INTO usage_events(entry_id,session_file,source_kind,provider,model,ts,
+    let mut overhead = db.prepare(
+        "INSERT INTO usage_events(entry_id,session_file,source_kind,provider,model,ts,
            input_tokens,output_tokens,cache_read,cache_write,total_tokens,cost_total,cost_input,cost_output,cost_cache_read,cost_cache_write,backfilled)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,1)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,1)
+         ON CONFLICT DO NOTHING",
     )?;
     for entry in session.overhead {
         let u = entry.usage;
@@ -537,14 +537,15 @@ struct ArchiveUsage {
 }
 
 fn subagent_rows(db: &Connection, entries: Vec<ArchiveEntry>, coverage: bool) -> Result<usize> {
-    let mut insert = db.prepare_cached(
-        "INSERT OR IGNORE INTO usage_events(entry_id,task_id,source_kind,source_detail,model,ts,
+    let mut insert = db.prepare(
+        "INSERT INTO usage_events(entry_id,task_id,source_kind,source_detail,model,ts,
            input_tokens,output_tokens,cache_read,cache_write,total_tokens,cost_total,backfilled)
-         VALUES (?1,?2,'subagent',?3,?4,?5,?6,?7,?8,?9,?10,?11,1)",
+         VALUES (?1,?2,'subagent',?3,?4,?5,?6,?7,?8,?9,?10,?11,1)
+         ON CONFLICT DO NOTHING",
     )?;
     let mut flags = if coverage {
-        Some(db.prepare_cached(
-            "INSERT OR IGNORE INTO usage_event_coverage VALUES (?1,?2,?3,?4,?5,?6)",
+        Some(db.prepare(
+            "INSERT INTO usage_event_coverage VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING",
         )?)
     } else {
         None
@@ -612,8 +613,8 @@ fn reattribute(db: &Connection) -> Result<usize> {
                 row.get::<_, String>(3)?,
             ))
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut update = db.prepare_cached("UPDATE usage_events SET provider=?1,model=?2,response_model=COALESCE(response_model,?3) WHERE entry_id=?4")?;
+        .collect::<duckdb::Result<Vec<_>>>()?;
+    let mut update = db.prepare("UPDATE usage_events SET provider=?1,model=?2,response_model=COALESCE(response_model,?3) WHERE entry_id=?4")?;
     let mut changed = 0;
     for (id, old_provider, old_model, id_attributed) in rows {
         if let Some((provider, model)) = model_from_id(&id_attributed)
@@ -625,13 +626,12 @@ fn reattribute(db: &Connection) -> Result<usize> {
     Ok(changed)
 }
 
-pub fn run(connection: &mut Option<Connection>, path: &Path, job: Job) -> Result<Value> {
+pub fn run(db: &mut Connection, job: Job) -> Result<Value> {
     let saved = match job {
         Job::Session { file, captured_at } => {
             let Some((input, stamp)) = open_input(&file)? else {
                 return Ok(json!(0));
             };
-            let db = write_connection(connection, path)?;
             if already_scanned(watermark(db, &file)?.as_ref(), stamp) {
                 return Ok(json!(0));
             }
@@ -639,7 +639,7 @@ pub fn run(connection: &mut Option<Connection>, path: &Path, job: Job) -> Result
             if session.assistants.is_empty() && session.overhead.is_empty() {
                 return Ok(json!(0));
             }
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             if !unchanged(&file, stamp) {
                 return Ok(json!("changed"));
             }
@@ -665,8 +665,7 @@ pub fn run(connection: &mut Option<Connection>, path: &Path, job: Job) -> Result
                 }
                 Ok(())
             })?;
-            let db = write_connection(connection, path)?;
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             if !unchanged(&file, stamp) {
                 return Ok(json!("changed"));
             }
@@ -675,8 +674,7 @@ pub fn run(connection: &mut Option<Connection>, path: &Path, job: Job) -> Result
             count
         }
         Job::Reattribute => {
-            let db = write_connection(connection, path)?;
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let count = reattribute(&tx)?;
             tx.commit()?;
             count
@@ -686,22 +684,19 @@ pub fn run(connection: &mut Option<Connection>, path: &Path, job: Job) -> Result
             captured_at,
             coverage,
         } => {
-            let tx = write_connection(connection, path)?
-                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let count = usage_live::record(&tx, *input, captured_at, coverage)?;
             tx.commit()?;
             count
         }
         Job::RepairCoverage => {
-            let tx = write_connection(connection, path)?
-                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let count = usage_live::repair_coverage(&tx)?;
             tx.commit()?;
             count
         }
         Job::SubagentBatch { entries, coverage } => {
-            let tx = write_connection(connection, path)?
-                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let count = subagent_rows(&tx, entries, coverage)?;
             tx.commit()?;
             count
@@ -712,8 +707,7 @@ pub fn run(connection: &mut Option<Connection>, path: &Path, job: Job) -> Result
             file_size,
             updated_at,
         } => {
-            let tx = write_connection(connection, path)?
-                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = db.transaction()?;
             let updated = tx.execute(
                 "UPDATE usage_backfill_state
                  SET last_entry_id = ?1, file_size = ?2, file_mtime = 0, updated_at = ?3

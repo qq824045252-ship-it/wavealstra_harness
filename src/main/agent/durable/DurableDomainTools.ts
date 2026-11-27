@@ -8,7 +8,7 @@ import { defineEntry, LiveDoc, type ToolRegistration, type Cursor, type EntryRec
 import type { Message } from "@earendil-works/pi-ai";
 import { bindNativeSummaryRuntime } from "../../capabilities/web-access/summary-model-scope";
 import { storeResult, type StoredSearchData } from "../../capabilities/web-access/storage";
-import { currentDurableInvocation, durableExecutionContext, withDurableExecution } from "./DurableExecutionContext";
+import { currentDurableInvocation, durableExecutionContext, withDurableExecution, type DurableToolTaskScope } from "./DurableExecutionContext";
 import { durableForegroundInputs, durableSourceInput } from "./DurableInputProvenance";
 import { checkCurrentToolInput } from "./DurableToolInputScope";
 import { withModelInvocationSettings } from "../ModelInvocationAdmission";
@@ -19,7 +19,7 @@ import { browserStructuredOutputSchema } from "../../capabilities/BrowserToolCon
 
 type NativeApi = Parameters<ToolRegistration["execute"]>[1];
 type NativeContext = Parameters<ToolRegistration["execute"]>[2];
-interface CapabilityContext { cwd: string; models: ModelRuntime; taskId?: string }
+interface CapabilityContext { cwd: string; models: ModelRuntime; taskId?: string; readTaskScope?: () => Promise<DurableToolTaskScope> }
 
 /** 扩展的 context 钩子（改写每次请求的模型上下文），由 Durable 的 beforeRequest 钩子执行。 */
 export type DurableContextHook = (messages: readonly Message[]) => Promise<{ messages: readonly Message[] } | undefined> | { messages: readonly Message[] } | undefined;
@@ -101,7 +101,10 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
             && "action" in args && (args.action === "follow_up" || args.action === "task");
           const foregroundInputs = dotsForegroundTool
             ? await durableForegroundInputs(native, context, conversationId, live?.run?.inputs ?? [], live?.run?.first, includeAttachments) : undefined;
-          return withDurableExecution({ execution, cwd, runId, native, context, foregroundInputs, sourceUserMessageId: source?.id, sourceDisplayText: source?.text, sourceCreatedAt: source?.createdAt, presentationConversationId: conversationId,
+          context.abortSignal?.throwIfAborted();
+          const taskScope = await capabilities.readTaskScope?.();
+          if (taskScope && taskScope.id !== execution.taskId) throw new Error("Core 任务范围不匹配");
+          return withDurableExecution({ execution, cwd, runId, native, context, taskScope, foregroundInputs, sourceUserMessageId: source?.id, sourceDisplayText: source?.text, sourceCreatedAt: source?.createdAt, presentationConversationId: conversationId,
             sourceOrigin: source && capabilities.taskId === DOTS_TASK_ID ? { conversationId, entryId: source.entryId } : undefined,
             memorySource: tool.name.startsWith("memory_") && source?.createdAt !== undefined ? { text: source.text, createdAt: source.createdAt,
               messageId: `durable:${capabilities.taskId}:${conversationId}:${source.entryId}` } : undefined }, execute);

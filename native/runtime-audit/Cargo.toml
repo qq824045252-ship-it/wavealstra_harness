@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 base64 = "=0.22.1"
+duckdb = { version = "=1.20001.0", features = ["bundled", "json"] }
 flate2 = "=1.1.10"
 icu_casemap = "=2.3.0"
 icu_locale_core = "=2.3.0"
@@ -14,7 +15,6 @@ icu_properties = "=2.3.0"
 notify = { version = "=8.2.2", default-features = false }
 regex-lite = "=0.1.9"
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["load-dynamic", "api-24"] }
-rusqlite = { version = "=0.32.1", features = ["blob", "bundled", "functions"] }
 same-file = "=1.0.6"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["float_roundtrip", "raw_value"] }

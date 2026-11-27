@@ -195,7 +195,7 @@ const gateway = new GatewayService(db, { runGatewayTurn: async () => {
 try {
   await gateway.connect(adapter.id, { botToken: token, allowUsers: ["owner"] });
   assert.equal(JSON.parse(db.listGatewayChannels()[0].configJson).botToken, undefined);
-  assert.equal(gateway.getChannelConfig(adapter.id).config.botToken, "••••••");
+  assert.equal((await gateway.getChannelConfig(adapter.id)).config.botToken, "••••••");
   const replies: string[] = [];
   await adapter.handler!({ channelId: adapter.id, chatId: "123", messageId: "first", sender: { id: "owner" },
     text: "hello", reply: async text => { replies.push(text); } });
@@ -210,7 +210,7 @@ try {
   assert.equal(adapter.workText, "work [凭据已隐藏]");
   assert(!JSON.stringify(await gateway.listMessages({})).includes(token), "history/UI never persist leaked outgoing secrets");
   await gateway.disconnect(adapter.id);
-  assert.equal(gateway.getChannelConfig(adapter.id).config.botToken, "••••••", "disconnect keeps encrypted configuration");
+  assert.equal((await gateway.getChannelConfig(adapter.id)).config.botToken, "••••••", "disconnect keeps encrypted configuration");
   await gateway.connect(adapter.id, { botToken: "••••••", allowUsers: ["owner"] });
   assert.equal(adapter.receivedConfig.botToken, token);
   await gateway.stop();

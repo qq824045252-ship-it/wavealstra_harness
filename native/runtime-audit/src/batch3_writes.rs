@@ -3,7 +3,7 @@
 
 use crate::Result;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, named_params, params};
+use duckdb::{Connection, OptionalExt, Transaction, named_params, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -178,7 +178,7 @@ pub enum Request {
         has_title: bool,
         mime_type: Option<String>,
         has_mime_type: bool,
-        capabilities_json: String,
+        capabilities_json: Option<String>,
         updated_at: i64,
     },
     ArtifactAddMessageRef {
@@ -198,9 +198,6 @@ pub enum Request {
     ArtifactMarkLegacyMigrated {
         task_id: String,
         at: i64,
-    },
-    ArtifactClearWriteReceipt {
-        task_id: Option<String>,
     },
 
     // ---------- Library ----------
@@ -732,6 +729,27 @@ pub enum Request {
     },
 }
 
+impl Request {
+    pub fn artifact_tasks(&self) -> Option<Vec<&str>> {
+        match self {
+            Self::ArtifactRelocateFolders { changes } => Some(changes.iter().map(|c| c.task_id.as_str()).collect()),
+            Self::ArtifactUpdateMetadata { task_id, .. }
+            | Self::ArtifactAddMessageRef { task_id, .. }
+            | Self::ArtifactSetFileDependencies { task_id, .. }
+            | Self::ArtifactMarkLegacyMigrated { task_id, .. } => Some(vec![task_id.as_str()]),
+            _ => None,
+        }
+    }
+}
+
+fn require_artifact(db: &Connection, task_id: &str, id: &str) -> Result<()> {
+    if !db.query_row("SELECT EXISTS(SELECT 1 FROM artifacts WHERE id=?1 AND task_id=?2)",
+        params![id, task_id], |r| r.get::<_, bool>(0))? {
+        return Err("成果不属于该任务".into());
+    }
+    Ok(())
+}
+
 fn bump_artifact_revision_tx(tx: &Transaction<'_>, task_id: &str) -> Result<i64> {
     let rev: i64 = tx.query_row(
         "INSERT INTO artifact_task_revisions (task_id, revision) VALUES (?1, 1)
@@ -790,8 +808,8 @@ fn insert_memory_within_tx(
         }
         let sid_pk = s.id.clone().unwrap_or_else(|| uuid_like_id(&s.memory_id, &s.scope_type, s.scope_id.as_deref(), s.created_at));
         tx.execute(
-            "INSERT OR IGNORE INTO memory_scopes (id, memory_id, scope_type, scope_id, binding, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO memory_scopes (id, memory_id, scope_type, scope_id, binding, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT DO NOTHING",
             params![sid_pk, s.memory_id, s.scope_type, s.scope_id, s.binding, s.created_at],
         )?;
     }
@@ -805,8 +823,8 @@ fn insert_memory_within_tx(
     }
     for rel in &r.relations {
         tx.execute(
-            "INSERT OR IGNORE INTO memory_relations (id, from_memory_id, relation, to_memory_id, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO memory_relations (id, from_memory_id, relation, to_memory_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT DO NOTHING",
             params![rel.id, rel.from_memory_id, rel.relation, rel.to_memory_id, rel.created_at],
         )?;
     }
@@ -862,82 +880,71 @@ fn uuid_like_id(a: &str, b: &str, c: Option<&str>, ts: i64) -> String {
 }
 
 pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
-    // Handle stage ATTACH/DETACH outside normal immediate tx or manage cleanly via raw SQL:
     if let Request::LibraryMergeChunkStage {
         file,
         item_id,
-        title,
-        filename,
+        title: _title,
+        filename: _filename,
         chunk_count,
         updated_at,
         fts_available,
     } = request
     {
-        db.execute("ATTACH DATABASE ?1 AS library_index_stage", [&file])?;
-        let res = (|| -> Result<Value> {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            if fts_available {
-                tx.execute("DELETE FROM library_fts WHERE item_id = ?1", [&item_id])?;
-                tx.execute(
-                    "INSERT INTO library_fts (item_id, title, filename, body) VALUES (?1, ?2, ?3, '')",
-                    params![item_id, title, filename],
-                )?;
-            }
-            let has_chunks: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_chunks')",
-                [],
-                |r| r.get(0),
+        let staged = crate::library_text::read_staged_chunks(&file)?;
+        let tx = db.transaction()?;
+        if fts_available {
+            let joined: String = staged
+                .iter()
+                .map(|c| c.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            crate::library_index::refresh_item_fts(&tx, &item_id, Some(&joined))?;
+        }
+        let has_chunks = crate::database::table_exists(&tx, "library_chunks")?;
+        if has_chunks {
+            let mut ins = tx.prepare(
+                "INSERT INTO library_chunks(id,item_id,chunk_index,content,char_offset,hash,updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(id) DO UPDATE SET chunk_index=excluded.chunk_index,content=excluded.content,
+                   char_offset=excluded.char_offset,hash=excluded.hash,updated_at=excluded.updated_at",
             )?;
-            if has_chunks {
-                let prefix = format!("{item_id}#");
-                tx.execute(
-                    "INSERT INTO library_chunks(id,item_id,chunk_index,content,char_offset,hash,updated_at)
-                     SELECT ?1 || chunk_index, ?2, chunk_index, content, char_offset, hash, ?3
-                     FROM library_index_stage.chunks WHERE 1 ORDER BY chunk_index
-                     ON CONFLICT(id) DO UPDATE SET chunk_index=excluded.chunk_index,content=excluded.content,
-                       char_offset=excluded.char_offset,hash=excluded.hash,updated_at=excluded.updated_at",
-                    params![prefix, item_id, updated_at],
-                )?;
-                let has_chunks_fts: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_chunks_fts')",
-                    [],
-                    |r| r.get(0),
-                )?;
-                if has_chunks_fts {
-                    tx.execute("DELETE FROM library_chunks_fts WHERE item_id=?1", [&item_id])?;
-                    tx.execute(
-                        "INSERT INTO library_chunks_fts(item_id,chunk_id,content)
-                         SELECT ?1,?2 || chunk_index,content FROM library_index_stage.chunks ORDER BY chunk_index",
-                        params![item_id, prefix],
-                    )?;
-                }
-                tx.execute(
-                    "DELETE FROM library_chunk_embeddings
-                     WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id = ?1)
-                       AND NOT EXISTS (
-                         SELECT 1 FROM library_chunks c WHERE c.id = library_chunk_embeddings.chunk_id
-                           AND c.chunk_index < ?2 AND c.hash = library_chunk_embeddings.chunk_hash
-                       )",
-                    params![item_id, chunk_count],
-                )?;
-                tx.execute(
-                    "DELETE FROM library_chunks WHERE item_id = ?1 AND chunk_index >= ?2",
-                    params![item_id, chunk_count],
-                )?;
+            for chunk in &staged {
+                let cid = format!("{item_id}#{}", chunk.chunk_index);
+                ins.execute(params![
+                    cid,
+                    item_id,
+                    chunk.chunk_index,
+                    chunk.content,
+                    chunk.char_offset,
+                    chunk.hash,
+                    updated_at
+                ])?;
             }
-            tx.commit()?;
-            Ok(json!({ "ok": true }))
-        })();
-        let _ = db.execute("DETACH DATABASE library_index_stage", []);
-        return res;
+            tx.execute(
+                "DELETE FROM library_chunk_embeddings
+                 WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id = ?1)
+                   AND NOT EXISTS (
+                     SELECT 1 FROM library_chunks c WHERE c.id = library_chunk_embeddings.chunk_id
+                       AND c.chunk_index < ?2 AND c.hash = library_chunk_embeddings.chunk_hash
+                   )",
+                params![item_id, chunk_count],
+            )?;
+            tx.execute(
+                "DELETE FROM library_chunks WHERE item_id = ?1 AND chunk_index >= ?2",
+                params![item_id, chunk_count],
+            )?;
+        }
+        tx.commit()?;
+        return Ok(json!({ "ok": true }));
     }
 
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let out = match request {
         Request::LibraryMergeChunkStage { .. } => unreachable!(),
         Request::ArtifactRelocateFolders { changes } => {
             let mut results = Vec::with_capacity(changes.len());
             for c in changes {
+                require_artifact(&tx, &c.task_id, &c.id)?;
                 tx.execute(
                     "UPDATE artifacts
                      SET source_type = ?1, entry_file = ?2, root_dir = ?3, storage_path = ?4,
@@ -996,23 +1003,13 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             capabilities_json,
             updated_at,
         } => {
-            let cur: Option<(Option<String>, Option<String>, Option<String>)> = tx
-                .query_row(
-                    "SELECT space_id, title, mime_type FROM artifacts WHERE id = ?1",
-                    [&id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .optional()?;
-            let Some((cur_space, cur_title, cur_mime)) = cur else {
-                return Err("Artifact 不存在".into());
-            };
-            let next_space = if has_space_id { space_id } else { cur_space };
-            let next_title = if has_title { title } else { cur_title };
-            let next_mime = if has_mime_type { mime_type } else { cur_mime };
-            tx.execute(
-                "UPDATE artifacts SET space_id = ?1, capabilities_json = ?2, title = ?3, mime_type = ?4, updated_at = ?5 WHERE id = ?6",
-                params![next_space, capabilities_json, next_title, next_mime, updated_at, id],
+            let changed = tx.execute(
+                "UPDATE artifacts SET space_id=CASE WHEN ?1 THEN ?2 ELSE space_id END,
+                    title=CASE WHEN ?3 THEN ?4 ELSE title END, mime_type=CASE WHEN ?5 THEN ?6 ELSE mime_type END,
+                    capabilities_json=coalesce(?7,capabilities_json), updated_at=?8 WHERE id=?9 AND task_id=?10",
+                params![has_space_id, space_id, has_title, title, has_mime_type, mime_type, capabilities_json, updated_at, id, task_id],
             )?;
+            if changed == 0 { return Err("成果不属于该任务".into()); }
             let revision = bump_artifact_revision_tx(&tx, &task_id)?;
             json!({ "revision": revision })
         }
@@ -1024,6 +1021,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             tool_call_id,
             created_at,
         } => {
+            require_artifact(&tx, &task_id, &artifact_id)?;
             tx.execute(
                 "INSERT INTO artifact_message_refs (task_id, message_id, artifact_id, relation, tool_call_id, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -1038,6 +1036,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             dependencies,
             created_at,
         } => {
+            require_artifact(&tx, &task_id, &artifact_id)?;
             tx.execute(
                 "DELETE FROM artifact_file_dependencies WHERE artifact_id = ?1",
                 [&artifact_id],
@@ -1063,14 +1062,6 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                  ON CONFLICT(task_id) DO UPDATE SET legacy_migrated_at = excluded.legacy_migrated_at",
                 params![task_id, at],
             )?;
-            json!({ "ok": true })
-        }
-        Request::ArtifactClearWriteReceipt { task_id } => {
-            if let Some(tid) = task_id {
-                tx.execute("DELETE FROM artifact_write_receipts WHERE task_id = ?1", [tid])?;
-            } else {
-                tx.execute("DELETE FROM artifact_write_receipts", [])?;
-            }
             json!({ "ok": true })
         }
         Request::LibrarySetIndexState { key, value, updated_at } => {
@@ -1229,68 +1220,62 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
         } => {
             tx.execute(
                 "UPDATE library_items SET
-                   collection_id = CASE WHEN :collectionId IS :previousCollection THEN collection_id ELSE :collectionId END,
-                   title = CASE WHEN :title = :previousTitle THEN title ELSE :title END,
-                   filename = CASE WHEN :filename = :previousFilename THEN filename ELSE :filename END,
-                   mime_type = :mimeType,
-                   size_bytes = CASE WHEN :sizeBytes = :previousSize THEN size_bytes ELSE :sizeBytes END,
-                   owner = :owner, favorite = :favorite, url = :url,
-                   source_type = :sourceType, source_task_id = :sourceTaskId,
-                   source_artifact_id = :sourceArtifactId, original_path = :originalPath,
-                   content_hash = CASE WHEN :contentHash IS :previousHash THEN content_hash ELSE :contentHash END,
-                   extract_status = :extractStatus,
-                   updated_at = CASE WHEN updated_at = :previousUpdatedAt THEN :updatedAt ELSE max(updated_at, :updatedAt) END,
-                   last_visited_at = :lastVisitedAt,
-                   trashed_at = CASE WHEN :trashedAt IS :previousTrash THEN trashed_at ELSE :trashedAt END,
-                   note_metadata = CASE WHEN :noteMetadata = :previousMetadata THEN note_metadata ELSE :noteMetadata END
-                 WHERE id = :id",
+                   collection_id = CASE WHEN $collectionId IS NOT DISTINCT FROM $previousCollection THEN collection_id ELSE $collectionId END,
+                   title = CASE WHEN $title = $previousTitle THEN title ELSE $title END,
+                   filename = CASE WHEN $filename = $previousFilename THEN filename ELSE $filename END,
+                   mime_type = $mimeType,
+                   size_bytes = CASE WHEN $sizeBytes = $previousSize THEN size_bytes ELSE $sizeBytes END,
+                   owner = $owner, favorite = $favorite, url = $url,
+                   source_type = $sourceType, source_task_id = $sourceTaskId,
+                   source_artifact_id = $sourceArtifactId, original_path = $originalPath,
+                   content_hash = CASE WHEN $contentHash IS NOT DISTINCT FROM $previousHash THEN content_hash ELSE $contentHash END,
+                   extract_status = $extractStatus,
+                   updated_at = CASE WHEN updated_at = $previousUpdatedAt THEN $updatedAt ELSE GREATEST(updated_at, $updatedAt) END,
+                   last_visited_at = $lastVisitedAt,
+                   trashed_at = CASE WHEN $trashedAt IS NOT DISTINCT FROM $previousTrash THEN trashed_at ELSE $trashedAt END,
+                   note_metadata = CASE WHEN $noteMetadata = $previousMetadata THEN note_metadata ELSE $noteMetadata END
+                 WHERE id = $id",
                 named_params! {
-                    ":id": id,
-                    ":collectionId": collection_id,
-                    ":title": title,
-                    ":filename": filename,
-                    ":mimeType": mime_type,
-                    ":sizeBytes": size_bytes,
-                    ":owner": owner,
-                    ":favorite": favorite,
-                    ":url": url,
-                    ":sourceType": source_type,
-                    ":sourceTaskId": source_task_id,
-                    ":sourceArtifactId": source_artifact_id,
-                    ":originalPath": original_path,
-                    ":contentHash": content_hash,
-                    ":extractStatus": extract_status,
-                    ":updatedAt": updated_at,
-                    ":lastVisitedAt": last_visited_at,
-                    ":trashedAt": trashed_at,
-                    ":noteMetadata": note_metadata,
-                    ":previousCollection": prev_collection,
-                    ":previousTitle": prev_title,
-                    ":previousFilename": prev_filename,
-                    ":previousSize": prev_size,
-                    ":previousHash": prev_hash,
-                    ":previousTrash": prev_trash,
-                    ":previousMetadata": prev_metadata,
-                    ":previousUpdatedAt": prev_updated_at,
+                    "id": id,
+                    "collectionId": collection_id,
+                    "title": title,
+                    "filename": filename,
+                    "mimeType": mime_type,
+                    "sizeBytes": size_bytes,
+                    "owner": owner,
+                    "favorite": favorite,
+                    "url": url,
+                    "sourceType": source_type,
+                    "sourceTaskId": source_task_id,
+                    "sourceArtifactId": source_artifact_id,
+                    "originalPath": original_path,
+                    "contentHash": content_hash,
+                    "extractStatus": extract_status,
+                    "updatedAt": updated_at,
+                    "lastVisitedAt": last_visited_at,
+                    "trashedAt": trashed_at,
+                    "noteMetadata": note_metadata,
+                    "previousCollection": prev_collection,
+                    "previousTitle": prev_title,
+                    "previousFilename": prev_filename,
+                    "previousSize": prev_size,
+                    "previousHash": prev_hash,
+                    "previousTrash": prev_trash,
+                    "previousMetadata": prev_metadata,
+                    "previousUpdatedAt": prev_updated_at,
                 },
             )?;
             json!({ "ok": true })
         }
         Request::LibraryDeleteItem { id } => {
-            let has_fts: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_fts')",
-                [],
-                |r| r.get(0),
-            )?;
-            if has_fts {
-                tx.execute("DELETE FROM library_fts WHERE item_id = ?1", [&id])?;
-            }
+            crate::search_postings::delete_document_postings_in_tx(&tx, &format!("library:{id}"))?;
             tx.execute(
                 "DELETE FROM library_chunk_embeddings WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id=?1)",
                 [&id],
             )?;
-            tx.execute("DELETE FROM library_chunks_fts WHERE item_id = ?1", [&id])?;
             tx.execute("DELETE FROM library_chunks WHERE item_id = ?1", [&id])?;
+            tx.execute("DELETE FROM library_versions WHERE item_id = ?1", [&id])?;
+            tx.execute("DELETE FROM library_text_saves WHERE item_id = ?1", [&id])?;
             tx.execute("DELETE FROM library_items WHERE id = ?1", [&id])?;
             json!({ "ok": true })
         }
@@ -1319,23 +1304,20 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
         }
         Request::LibraryUpsertFts {
             item_id,
-            title,
-            filename,
+            title: _title,
+            filename: _filename,
             body,
             clear_only,
         } => {
-            tx.execute("DELETE FROM library_fts WHERE item_id = ?1", [&item_id])?;
-            if !clear_only {
-                tx.execute(
-                    "INSERT INTO library_fts (item_id, title, filename, body) VALUES (?1, ?2, ?3, ?4)",
-                    params![
-                        item_id,
-                        title.unwrap_or_default(),
-                        filename.unwrap_or_default(),
-                        body.unwrap_or_default()
-                    ],
-                )?;
-            }
+            crate::library_index::refresh_item_fts(
+                &tx,
+                &item_id,
+                if clear_only {
+                    None
+                } else {
+                    Some(body.as_deref().unwrap_or(""))
+                },
+            )?;
             json!({ "ok": true })
         }
         Request::LibraryReplaceChunks {
@@ -1345,12 +1327,21 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             chunks,
         } => {
             if !reuse_embeddings {
+                tx.execute(
+                    "DELETE FROM library_chunk_embeddings WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id = ?1)",
+                    [&item_id],
+                )?;
                 tx.execute("DELETE FROM library_chunks WHERE item_id = ?1", [&item_id])?;
             }
-            if fts_available {
-                tx.execute("DELETE FROM library_chunks_fts WHERE item_id = ?1", [&item_id])?;
-            }
             let count = chunks.len() as i64;
+            if fts_available {
+                let joined: String = chunks
+                    .iter()
+                    .map(|c| c.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                crate::library_index::refresh_item_fts(&tx, &item_id, Some(&joined))?;
+            }
             for c in chunks {
                 tx.execute(
                     "INSERT INTO library_chunks (id, item_id, chunk_index, content, char_offset, hash, updated_at)
@@ -1359,12 +1350,6 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                        char_offset = excluded.char_offset, hash = excluded.hash, updated_at = excluded.updated_at",
                     params![c.id, item_id, c.chunk_index, c.content, c.char_offset, c.hash, c.updated_at],
                 )?;
-                if fts_available {
-                    tx.execute(
-                        "INSERT INTO library_chunks_fts (item_id, chunk_id, content) VALUES (?1, ?2, ?3)",
-                        params![item_id, c.id, c.content],
-                    )?;
-                }
             }
             if reuse_embeddings {
                 tx.execute(
@@ -1387,9 +1372,13 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             item_id,
             fts_available,
         } => {
+            tx.execute(
+                "DELETE FROM library_chunk_embeddings WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id = ?1)",
+                [&item_id],
+            )?;
             tx.execute("DELETE FROM library_chunks WHERE item_id = ?1", [&item_id])?;
             if fts_available {
-                tx.execute("DELETE FROM library_chunks_fts WHERE item_id = ?1", [&item_id])?;
+                crate::search_postings::delete_document_postings_in_tx(&tx, &format!("library:{item_id}"))?;
             }
             json!({ "ok": true })
         }
@@ -1421,28 +1410,35 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             }
             let mut succeeded: i64 = 0;
             for u in upsert {
+                if u.eligible_space_ids.is_empty() {
+                    continue;
+                }
                 let bytes = STANDARD
                     .decode(u.embedding_base64.as_bytes())
                     .map_err(|e| format!("invalid embedding base64: {e}"))?;
-                let spaces_json = serde_json::to_string(&u.eligible_space_ids)?;
-                let changes = tx.execute(
-                    "INSERT OR REPLACE INTO library_chunk_embeddings
+                let space_slots = crate::database::anon_placeholders(u.eligible_space_ids.len());
+                let sql = format!(
+                    "INSERT INTO library_chunk_embeddings
                        (chunk_id, model_id, model_version, chunk_hash, dimension, embedding, created_at)
-                     SELECT c.id, ?1, ?2, c.hash, ?3, ?4, ?5
+                     SELECT c.id, ?, ?, c.hash, ?, ?, ?
                      FROM library_chunks c JOIN library_items i ON i.id = c.item_id
-                     WHERE c.id = ?6 AND c.hash = ?7 AND i.trashed_at IS NULL
-                       AND i.space_id IN (SELECT value FROM json_each(?8))",
-                    params![
-                        u.model_id,
-                        u.model_version,
-                        u.dimension,
-                        bytes,
-                        u.created_at,
-                        u.chunk_id,
-                        u.chunk_hash,
-                        spaces_json,
-                    ],
-                )?;
+                     WHERE c.id = ? AND c.hash = ? AND i.trashed_at IS NULL
+                       AND i.space_id IN ({space_slots})
+                     ON CONFLICT(chunk_id, model_id, model_version) DO UPDATE SET
+                       chunk_hash=excluded.chunk_hash, dimension=excluded.dimension,
+                       embedding=excluded.embedding, created_at=excluded.created_at"
+                );
+                let mut p: Vec<duckdb::types::Value> = vec![
+                    duckdb::types::Value::Text(u.model_id),
+                    duckdb::types::Value::Text(u.model_version),
+                    duckdb::types::Value::BigInt(u.dimension),
+                    duckdb::types::Value::Blob(bytes),
+                    duckdb::types::Value::BigInt(u.created_at),
+                    duckdb::types::Value::Text(u.chunk_id),
+                    duckdb::types::Value::Text(u.chunk_hash),
+                ];
+                p.extend(u.eligible_space_ids.into_iter().map(duckdb::types::Value::Text));
+                let changes = tx.execute(&sql, duckdb::params_from_iter(p))?;
                 succeeded += i64::from(changes > 0);
             }
             json!({ "succeeded": succeeded })
@@ -1488,8 +1484,8 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             match action.as_str() {
                 "add" => {
                     tx.execute(
-                        "INSERT OR IGNORE INTO task_library_references (task_id, item_id, project_id, added_at, added_by)
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        "INSERT INTO task_library_references (task_id, item_id, project_id, added_at, added_by)
+                         VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT DO NOTHING",
                         params![
                             task_id,
                             item_id.unwrap_or_default(),
@@ -1715,8 +1711,8 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                 ],
             )?;
             tx.execute(
-                "INSERT OR IGNORE INTO memory_relations (id, from_memory_id, relation, to_memory_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO memory_relations (id, from_memory_id, relation, to_memory_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT DO NOTHING",
                 params![
                     relation.id,
                     relation.from_memory_id,
@@ -1746,8 +1742,8 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                 }
             }
             tx.execute(
-                "INSERT OR IGNORE INTO memory_scopes (id, memory_id, scope_type, scope_id, binding, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO memory_scopes (id, memory_id, scope_type, scope_id, binding, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT DO NOTHING",
                 params![id, memory_id, scope_type, scope_id, binding, created_at],
             )?;
             json!({ "ok": true })
@@ -1799,8 +1795,8 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
         }
         Request::MemoryAddRelation { relation } => {
             tx.execute(
-                "INSERT OR IGNORE INTO memory_relations (id, from_memory_id, relation, to_memory_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO memory_relations (id, from_memory_id, relation, to_memory_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT DO NOTHING",
                 params![
                     relation.id,
                     relation.from_memory_id,
@@ -1816,11 +1812,16 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             json!({ "ok": true })
         }
         Request::MemoryHardDelete { id } => {
+            crate::search_postings::delete_document_postings_in_tx(&tx, &format!("memory:{id}"))?;
+            tx.execute("UPDATE answer_rules SET source_id = NULL WHERE source_id = ?1", [&id])?;
             tx.execute(
                 "DELETE FROM memory_relations WHERE from_memory_id = ?1 OR to_memory_id = ?1",
                 [&id],
             )?;
             tx.execute("DELETE FROM memory_embeddings WHERE memory_id = ?1", [&id])?;
+            tx.execute("DELETE FROM memory_evidence WHERE memory_id = ?1", [&id])?;
+            tx.execute("DELETE FROM memory_revisions WHERE memory_id = ?1", [&id])?;
+            tx.execute("DELETE FROM memory_scopes WHERE memory_id = ?1", [&id])?;
             tx.execute("DELETE FROM memory_candidates WHERE resolved_memory_id = ?1", [&id])?;
             tx.execute("DELETE FROM memory_records WHERE id = ?1", [&id])?;
             json!({ "ok": true })
@@ -1982,62 +1983,32 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             state_action,
             ids,
             now,
-            error,
             task_id,
-            remaining_pending,
+            ..
         } => {
             match state_action.as_str() {
-                "processing" => {
-                    for id in ids {
-                        tx.execute(
-                            "UPDATE memory_turns SET extraction_state='processing',attempt_count=attempt_count+1,last_error=NULL WHERE id=?1",
-                            [id],
-                        )?;
-                    }
-                }
-                "requeue" => {
-                    for id in ids {
-                        tx.execute(
-                            "UPDATE memory_turns SET extraction_state='pending',attempt_count=MAX(0,attempt_count-1),last_error=NULL
-                             WHERE id=?1 AND extraction_state='processing'",
-                            [id],
-                        )?;
-                    }
-                }
-                "completed" => {
-                    for id in ids {
-                        tx.execute(
-                            "UPDATE memory_turns SET extraction_state='completed',extracted_at=?1,last_error=NULL WHERE id=?2",
-                            params![now, id],
-                        )?;
-                    }
-                    if let Some(tid) = task_id {
-                        let rem = remaining_pending.unwrap_or(0).max(0);
-                        tx.execute(
-                            "INSERT INTO memory_pipeline_state (
-                               task_id,captured_turns,turns_since_l1,last_l1_at,last_l2_at,last_l3_at,l1_run_count,l2_run_count,l3_run_count,updated_at
-                             ) VALUES (?1,0,?2,?3,NULL,NULL,1,0,0,?3)
-                             ON CONFLICT(task_id) DO UPDATE SET
-                               turns_since_l1=excluded.turns_since_l1,last_l1_at=excluded.last_l1_at,l1_run_count=l1_run_count+1,updated_at=excluded.updated_at",
-                            params![tid, rem, now],
-                        )?;
-                    }
-                }
-                "failed" => {
-                    let msg = error.unwrap_or_default();
-                    for id in ids {
-                        tx.execute(
-                            "UPDATE memory_turns SET extraction_state='failed',last_error=?1 WHERE id=?2",
-                            params![msg, id],
-                        )?;
-                    }
+                "processing" | "requeue" | "completed" | "failed" | "noteL1Completed" => {
+                    return Err("记忆提炼状态必须通过持有者认领接口更新".into());
                 }
                 "skillDistilled" => {
                     for id in ids {
-                        tx.execute(
-                            "UPDATE memory_turns SET metadata_json=json_set(metadata_json,'$.skillDistilled',1) WHERE id=?1",
-                            [id],
-                        )?;
+                        let raw: Option<String> = tx
+                            .query_row(
+                                "SELECT metadata_json FROM memory_turns WHERE id=?1",
+                                [&id],
+                                |r| r.get(0),
+                            )
+                            .optional()?;
+                        if let Some(raw) = raw {
+                            let patched = crate::database::patch_json_fields(
+                                &raw,
+                                &[("skillDistilled", json!(1))],
+                            );
+                            tx.execute(
+                                "UPDATE memory_turns SET metadata_json=?1 WHERE id=?2",
+                                params![patched, id],
+                            )?;
+                        }
                     }
                 }
                 "noteCaptured" => {
@@ -2054,19 +2025,6 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                         )?;
                     }
                 }
-                "noteL1Completed" => {
-                    if let Some(tid) = task_id {
-                        let rem = remaining_pending.unwrap_or(0).max(0);
-                        tx.execute(
-                            "INSERT INTO memory_pipeline_state (
-                               task_id,captured_turns,turns_since_l1,last_l1_at,last_l2_at,last_l3_at,l1_run_count,l2_run_count,l3_run_count,updated_at
-                             ) VALUES (?1,0,?2,?3,NULL,NULL,1,0,0,?3)
-                             ON CONFLICT(task_id) DO UPDATE SET
-                               turns_since_l1=excluded.turns_since_l1,last_l1_at=excluded.last_l1_at,l1_run_count=l1_run_count+1,updated_at=excluded.updated_at",
-                            params![tid, rem, now],
-                        )?;
-                    }
-                }
                 other => return Err(format!("unknown MemoryTurnUpdateState action: {other}").into()),
             }
             json!({ "ok": true })
@@ -2080,7 +2038,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                 tx.execute(
                     "UPDATE memory_evidence
                      SET excerpt = COALESCE(NULLIF(excerpt,''), (
-                       SELECT substr('用户：' || t.user_text || char(10) || '助手：' || t.assistant_text, 1, 1200)
+                       SELECT substr('用户：' || t.user_text || chr(10) || '助手：' || t.assistant_text, 1, 1200)
                        FROM memory_turns t WHERE t.id=memory_evidence.ref_id
                      ))
                      WHERE evidence_kind='conversation' AND ref_id IN (SELECT id FROM memory_turns)",
@@ -2102,7 +2060,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                     tx.execute(
                         "UPDATE memory_evidence
                          SET excerpt = COALESCE(NULLIF(excerpt,''), (
-                           SELECT substr('用户：' || t.user_text || char(10) || '助手：' || t.assistant_text, 1, 1200)
+                           SELECT substr('用户：' || t.user_text || chr(10) || '助手：' || t.assistant_text, 1, 1200)
                            FROM memory_turns t WHERE t.id=memory_evidence.ref_id
                          )) WHERE evidence_kind='conversation' AND ref_id=?1",
                         [&id],
@@ -2192,8 +2150,8 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             request_fingerprint,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO memory_forget_receipts(scope_type,scope_id,source_message_id,request_fingerprint)
-                 VALUES (?1,?2,?3,?4)",
+                "INSERT INTO memory_forget_receipts(scope_type,scope_id,source_message_id,request_fingerprint)
+                 VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",
                 params![scope_type, scope_id, source_message_id, request_fingerprint],
             )?;
             json!({ "ok": true })
@@ -2237,14 +2195,41 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             assistant_id,
             lineage_json,
         } => {
-            tx.execute(
-                "UPDATE bot_request_runs SET context_json=json_set(context_json,'$.memoryRecallDependencies',json(?1)) WHERE message_id=?2",
-                params![lineage_json, assistant_id],
-            )?;
-            tx.execute(
-                "UPDATE memory_turns SET metadata_json=json_set(metadata_json,'$.memoryRecallDependencies',json(?1)) WHERE assistant_message_id=?2",
-                params![lineage_json, assistant_id],
-            )?;
+            let lineage_val: Value = serde_json::from_str(&lineage_json).unwrap_or(Value::Null);
+            let run_rows: Vec<(String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT message_id, context_json FROM bot_request_runs WHERE message_id=?1",
+                )?;
+                stmt.query_map([&assistant_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<duckdb::Result<_>>()?
+            };
+            for (mid, raw) in run_rows {
+                let patched = crate::database::patch_json_fields(
+                    &raw,
+                    &[("memoryRecallDependencies", lineage_val.clone())],
+                );
+                tx.execute(
+                    "UPDATE bot_request_runs SET context_json=?1 WHERE message_id=?2",
+                    params![patched, mid],
+                )?;
+            }
+            let turn_rows: Vec<(String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id, metadata_json FROM memory_turns WHERE assistant_message_id=?1",
+                )?;
+                stmt.query_map([&assistant_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<duckdb::Result<_>>()?
+            };
+            for (tid, raw) in turn_rows {
+                let patched = crate::database::patch_json_fields(
+                    &raw,
+                    &[("memoryRecallDependencies", lineage_val.clone())],
+                );
+                tx.execute(
+                    "UPDATE memory_turns SET metadata_json=?1 WHERE id=?2",
+                    params![patched, tid],
+                )?;
+            }
             json!({ "ok": true })
         }
         Request::WorkMemoryUpsertReceipt {
@@ -2288,7 +2273,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
         Request::MemoryTouchProjectScopes { project_ids, now } => {
             for pid in project_ids {
                 tx.execute(
-                    "UPDATE projects SET updated_at = MAX(updated_at + 1, ?1) WHERE id = ?2",
+                    "UPDATE projects SET updated_at = GREATEST(updated_at + 1, ?1) WHERE id = ?2",
                     params![now, pid],
                 )?;
             }
@@ -2346,12 +2331,25 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             json!({ "deleted": deleted })
         }
         Request::MemoryOrganizationRecover { now, error } => {
-            tx.execute(
-                "UPDATE memory_organization_runs SET updated_at=?1,
-                   state_json=json_set(state_json,'$.run.status','paused','$.run.updatedAt',?1,'$.run.error',?2)
-                 WHERE json_extract(state_json,'$.run.status')='scanning'",
-                params![now, error],
-            )?;
+            let matching: Vec<(String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id, state_json FROM memory_organization_runs WHERE json_extract_string(state_json,'$.run.status')='scanning'",
+                )?;
+                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<duckdb::Result<_>>()?
+            };
+            for (rid, raw) in matching {
+                let mut doc: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
+                if let Some(run) = doc.get_mut("run").and_then(Value::as_object_mut) {
+                    run.insert("status".into(), json!("paused"));
+                    run.insert("updatedAt".into(), json!(now));
+                    run.insert("error".into(), json!(error));
+                }
+                tx.execute(
+                    "UPDATE memory_organization_runs SET updated_at=?1, state_json=?2 WHERE id=?3",
+                    params![now, serde_json::to_string(&doc)?, rid],
+                )?;
+            }
             json!({ "ok": true })
         }
         Request::MemoryOrganizationSaveRun {
@@ -2368,16 +2366,29 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             json!({ "ok": true })
         }
         Request::MemoryOrganizationPauseRun { id, at } => {
-            let run_json: Option<String> = tx
+            let raw: Option<String> = tx
                 .query_row(
-                    "UPDATE memory_organization_runs SET updated_at=?1,
-                       state_json=json_set(state_json,'$.run.status','paused','$.run.updatedAt',?1)
-                     WHERE id=?2 AND json_extract(state_json,'$.run.status') IN ('scanning','paused')
-                     RETURNING json_extract(state_json,'$.run')",
-                    params![at, id],
+                    "SELECT state_json FROM memory_organization_runs
+                     WHERE id=?1 AND json_extract_string(state_json,'$.run.status') IN ('scanning','paused')",
+                    [&id],
                     |r| r.get(0),
                 )
                 .optional()?;
+            let run_json = if let Some(raw) = raw {
+                let mut doc: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
+                if let Some(run) = doc.get_mut("run").and_then(Value::as_object_mut) {
+                    run.insert("status".into(), json!("paused"));
+                    run.insert("updatedAt".into(), json!(at));
+                }
+                let updated = serde_json::to_string(&doc)?;
+                tx.execute(
+                    "UPDATE memory_organization_runs SET updated_at=?1, state_json=?2 WHERE id=?3",
+                    params![at, updated, id],
+                )?;
+                doc.get("run").map(serde_json::to_string).transpose()?
+            } else {
+                None
+            };
             json!({ "runJson": run_json })
         }
         Request::MemoryOrganizationMarkApplied {
@@ -2550,11 +2561,30 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             let mut changes = 0usize;
             match proj_action.as_str() {
                 "scenarioByMemory" => {
-                    for mid in source_memory_ids {
+                    let needle: std::collections::HashSet<&str> =
+                        source_memory_ids.iter().map(String::as_str).collect();
+                    let sids: Vec<String> = {
+                        let mut stmt = tx.prepare(
+                            "SELECT id, source_memory_ids_json FROM memory_scenarios WHERE status='active'",
+                        )?;
+                        let mut rows = stmt.query([])?;
+                        let mut out = Vec::new();
+                        while let Some(r) = rows.next()? {
+                            let sid: String = r.get(0)?;
+                            let raw: String = r.get(1)?;
+                            if serde_json::from_str::<Vec<String>>(&raw)
+                                .map(|v| v.iter().any(|x| needle.contains(x.as_str())))
+                                .unwrap_or(false)
+                            {
+                                out.push(sid);
+                            }
+                        }
+                        out
+                    };
+                    for sid in sids {
                         changes += tx.execute(
-                            "UPDATE memory_scenarios SET status='stale',updated_at=?1
-                             WHERE status='active' AND EXISTS (SELECT 1 FROM json_each(source_memory_ids_json) j WHERE j.value=?2)",
-                            params![now, mid],
+                            "UPDATE memory_scenarios SET status='stale',updated_at=?1 WHERE id=?2",
+                            params![now, sid],
                         )?;
                     }
                 }
@@ -2634,14 +2664,24 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             )?;
             if proj_kind == "scenario" {
                 tx.execute("DELETE FROM memory_scenarios WHERE id=?1", [&id])?;
-                let mut stmt = tx.prepare(
-                    "SELECT id FROM memory_core_profiles
-                     WHERE status='active' AND EXISTS (SELECT 1 FROM json_each(source_scenario_ids_json) j WHERE j.value=?1)",
-                )?;
-                let pids: Vec<String> = stmt
-                    .query_map([&id], |r| r.get(0))?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                drop(stmt);
+                let pids: Vec<String> = {
+                    let mut stmt = tx.prepare(
+                        "SELECT id, source_scenario_ids_json FROM memory_core_profiles WHERE status='active'",
+                    )?;
+                    let mut rows = stmt.query([])?;
+                    let mut out = Vec::new();
+                    while let Some(r) = rows.next()? {
+                        let pid: String = r.get(0)?;
+                        let raw: String = r.get(1)?;
+                        if serde_json::from_str::<Vec<String>>(&raw)
+                            .map(|v| v.iter().any(|x| x == &id))
+                            .unwrap_or(false)
+                        {
+                            out.push(pid);
+                        }
+                    }
+                    out
+                };
                 for pid in pids {
                     tx.execute(
                         "UPDATE memory_core_profiles SET status='stale',updated_at=?1 WHERE id=?2 AND status='active'",
@@ -2668,17 +2708,34 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             };
             if scope == "all" {
                 if proj_kind == "scenario" {
-                    let deleted_ids: Vec<String> = {
+                    let deleted_ids: std::collections::HashSet<String> = {
                         let mut stmt = tx.prepare("SELECT id FROM memory_scenarios")?;
                         stmt.query_map([], |r| r.get(0))?
-                            .collect::<std::result::Result<Vec<_>, _>>()?
+                            .collect::<std::result::Result<_, _>>()?
                     };
                     if !deleted_ids.is_empty() {
-                        for did in &deleted_ids {
+                        let prop_ids: Vec<String> = {
+                            let mut stmt = tx.prepare(
+                                "SELECT id, source_ids_json FROM memory_projection_proposals WHERE kind='profile'",
+                            )?;
+                            let mut rows = stmt.query([])?;
+                            let mut out = Vec::new();
+                            while let Some(r) = rows.next()? {
+                                let pid: String = r.get(0)?;
+                                let raw: String = r.get(1)?;
+                                if serde_json::from_str::<Vec<String>>(&raw)
+                                    .map(|v| v.iter().any(|x| deleted_ids.contains(x)))
+                                    .unwrap_or(false)
+                                {
+                                    out.push(pid);
+                                }
+                            }
+                            out
+                        };
+                        for pid in prop_ids {
                             tx.execute(
-                                "DELETE FROM memory_projection_proposals
-                                 WHERE kind='profile' AND EXISTS (SELECT 1 FROM json_each(source_ids_json) j WHERE j.value=?1)",
-                                [did],
+                                "DELETE FROM memory_projection_proposals WHERE id=?1",
+                                [pid],
                             )?;
                         }
                     }
@@ -2688,11 +2745,30 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                 proposals = tx.execute("DELETE FROM memory_projection_proposals WHERE kind=?1", [&proj_kind])?;
             } else if let Some(target) = id {
                 if proj_kind == "scenario" {
-                    tx.execute(
-                        "DELETE FROM memory_projection_proposals
-                         WHERE kind='profile' AND EXISTS (SELECT 1 FROM json_each(source_ids_json) j WHERE j.value=?1)",
-                        [&target],
-                    )?;
+                    let prop_ids: Vec<String> = {
+                        let mut stmt = tx.prepare(
+                            "SELECT id, source_ids_json FROM memory_projection_proposals WHERE kind='profile'",
+                        )?;
+                        let mut rows = stmt.query([])?;
+                        let mut out = Vec::new();
+                        while let Some(r) = rows.next()? {
+                            let pid: String = r.get(0)?;
+                            let raw: String = r.get(1)?;
+                            if serde_json::from_str::<Vec<String>>(&raw)
+                                .map(|v| v.iter().any(|x| x == &target))
+                                .unwrap_or(false)
+                            {
+                                out.push(pid);
+                            }
+                        }
+                        out
+                    };
+                    for pid in prop_ids {
+                        tx.execute(
+                            "DELETE FROM memory_projection_proposals WHERE id=?1",
+                            [pid],
+                        )?;
+                    }
                 }
                 projections = tx.execute(&format!("DELETE FROM {table} WHERE id=?1"), [&target])?;
                 dismissals = tx.execute(
@@ -2906,12 +2982,31 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                     }
                 }
                 "invalidateByMemoryIds" => {
-                    for mid in ids {
+                    let needle: std::collections::HashSet<&str> =
+                        ids.iter().map(String::as_str).collect();
+                    let cand_ids: Vec<String> = {
+                        let mut stmt = tx.prepare(
+                            "SELECT id, source_memory_ids_json FROM memory_skill_candidates
+                             WHERE status IN ('draft','ready','materialized')",
+                        )?;
+                        let mut rows = stmt.query([])?;
+                        let mut out = Vec::new();
+                        while let Some(r) = rows.next()? {
+                            let cid: String = r.get(0)?;
+                            let raw: String = r.get(1)?;
+                            if serde_json::from_str::<Vec<String>>(&raw)
+                                .map(|v| v.iter().any(|x| needle.contains(x.as_str())))
+                                .unwrap_or(false)
+                            {
+                                out.push(cid);
+                            }
+                        }
+                        out
+                    };
+                    for cid in cand_ids {
                         changes += tx.execute(
-                            "UPDATE memory_skill_candidates SET status='stale',updated_at=?1
-                             WHERE status IN ('draft','ready','materialized')
-                               AND EXISTS (SELECT 1 FROM json_each(source_memory_ids_json) j WHERE j.value=?2)",
-                            params![now, mid],
+                            "UPDATE memory_skill_candidates SET status='stale',updated_at=?1 WHERE id=?2",
+                            params![now, cid],
                         )?;
                     }
                 }
@@ -3105,7 +3200,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                                  WHEN memory_skill_effectiveness.source_memory_ids_json='[]' THEN excluded.source_memory_ids_json
                                  ELSE memory_skill_effectiveness.source_memory_ids_json
                                END,
-                               updated_at=MAX(memory_skill_effectiveness.updated_at,excluded.updated_at)",
+                               updated_at=GREATEST(memory_skill_effectiveness.updated_at, excluded.updated_at)",
                             params![
                                 exp.id,
                                 tid,
@@ -3134,7 +3229,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                                  WHEN memory_skill_effectiveness.source_memory_ids_json='[]' THEN excluded.source_memory_ids_json
                                  ELSE memory_skill_effectiveness.source_memory_ids_json
                                END,
-                               updated_at=MAX(memory_skill_effectiveness.updated_at,excluded.updated_at)",
+                               updated_at=GREATEST(memory_skill_effectiveness.updated_at, excluded.updated_at)",
                             params![
                                 exp.id,
                                 tid,

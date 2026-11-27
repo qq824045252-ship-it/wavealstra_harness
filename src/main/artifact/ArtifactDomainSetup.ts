@@ -1,15 +1,5 @@
 /**
- * Artifact Domain 装配 — V3.5 Wave 2 收口（W2.6/W2.7）
- *
- * 双系统施工态：
- *   - 新 Artifact Domain 已可独立运行（Storage → Repository → Registry → Service +
- *     Domain IPC + preload bridge），旧 consumer 未迁移、仍服务产品。
- *   - RefreshCoordinator 保持独立（W2.8：暂不接 AgentService.emitChangedArtifacts，
- *     等 Artifact consumer/source 迁移后再接入）。
- *
- * 启动动作（§7/§14）：
- *   - Registry 随任务读取增量加载
- *   - orphanGC()：非阻塞清理，不阻塞应用启动
+ * 装配成果服务、文件刷新和窗口事件。受管文件的孤儿清理在后台执行。
  */
 import { BrowserWindow } from "electron";
 import type Database from "better-sqlite3";
@@ -66,8 +56,10 @@ export async function ensureTaskLegacyMigrated(
   }
   const existing = pending.get(taskId);
   if (existing) return existing;
-  if (service.isLegacyMigrated(taskId)) return;
   const migration = (async () => {
+    const [snapshot] = await service.readTaskSnapshots([taskId]);
+    if (!snapshot || snapshot.legacyMigrated) return;
+    if (snapshot.state === "error") throw new Error(snapshot.error);
     const legacy = await source.loadLegacyArtifacts(taskId);
     await service.registerLegacy(taskId, legacy?.artifacts ?? [], legacy?.cwd);
   })();
@@ -128,17 +120,16 @@ function broadcastSink(): ArtifactEventSink {
 }
 
 /**
- * 装配完整 Artifact Domain（共享 AppDatabase 的 SQLite 连接）。
- * extraSink：装配处附加事件消费者（4D SelectionStore 订阅 updated/removed）。
+ * 装配 Core 成果服务。同步调用方暂时由传入的 SQLite 仓储提供数据。
  */
 export function createArtifactDomain(
-  db: Database.Database,
+  sqlite: Database.Database | undefined,
   extraSink?: ArtifactEventSink,
   runtimeAuditReader?: RuntimeAuditReader,
   artifactsDir?: string,
 ): ArtifactDomain {
   const storage = new ArtifactStorage(artifactsDir ?? join(getMyBuddyDir(), "artifacts"));
-  const repository = new ArtifactRepository(db);
+  const repository = sqlite ? new ArtifactRepository(sqlite) : undefined;
   const registry = new ArtifactRegistry();
   const broadcast = broadcastSink();
   const service = new ArtifactService(storage, repository, registry, {
@@ -156,15 +147,6 @@ export function createArtifactDomain(
     },
   }, runtimeAuditReader);
   const coordinator = new ArtifactRefreshCoordinator(service);
-
-  // A previous process's write IDs cannot be retried by this host.
-  if (db.readonly || runtimeAuditReader?.supervised) {
-    void runtimeAuditReader
-      ?.batch3Write({ kind: "artifactClearWriteReceipt" })
-      .catch((e) => console.warn("[ArtifactDomain] startup clearWriteReceipt 失败:", e));
-  } else {
-    repository.clearWriteReceipt();
-  }
 
   // 启动：orphan GC 非阻塞（§14，失败 log，下次启动重试）
   void service

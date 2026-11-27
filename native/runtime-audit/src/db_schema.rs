@@ -1,16 +1,21 @@
-//! Rust-owned application database initialization, schema verification, incompatible
-//! reset, seed materialization, and startup maintenance (`Step 4`, `RC-09`).
+//! Rust-owned DuckDB application database initialization, schema verification, incompatible
+//! reset, seed materialization, and startup maintenance (`Step 4`, `DB-01`, `DB-05`, `DB-06`).
 
-use crate::{business_protocol, core_lease};
-use rusqlite::{Connection, OpenFlags, TransactionBehavior};
+use crate::core_lease;
+use crate::database::{
+    CANONICAL_DUCKDB_SCHEMA_SQL, DUCKDB_FORMAT_VERSION, DUCKDB_SCHEMA_VERSION,
+    DuckDbEngine, DuckDbPoolConfig, patch_json_fields, table_exists,
+};
+use duckdb::Connection;
 use serde::Serialize;
+use serde_json::json;
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const CANONICAL_SCHEMA_SQL: &str = include_str!("canonical_schema.sql");
+pub const DEFAULT_DOTS_RULE_CONFIG: &str = r#"{"title":"默认调度策略","include":[],"exclude":[],"instruction":"按本轮请求和已知任务状态选择直答或委派。","evidenceFile":"","enabled":true,"projectId":null,"sourceMemoryId":null,"policy":{"version":1,"routeMode":"auto","foregroundReadLimits":{"characters":24000,"sources":4,"calls":6},"trackingPolicy":{"milestones":true,"heartbeatMs":null,"silenceMs":120000}}}"#;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,31 +33,9 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn sidecar_and_main_paths(db_path: &Path) -> [PathBuf; 4] {
-    let raw = db_path.as_os_str();
-    let suffix = |ext: &str| {
-        let mut s = raw.to_os_string();
-        s.push(ext);
-        PathBuf::from(s)
-    };
-    [
-        suffix("-wal"),
-        suffix("-shm"),
-        suffix("-journal"),
-        db_path.to_path_buf(),
-    ]
-}
-
-fn probe_user_version(db_path: &Path) -> crate::Result<u32> {
-    let db = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    db.busy_timeout(Duration::from_millis(500))?;
-    let version: u32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    Ok(version)
-}
-
-/// Validates current schema (`expected_version`) under Core's OS guards (`core.lock` +
-/// `core-worker.lock`), deletes confirmed incompatible files without backup, never treats
-/// unreadable I/O errors as old schema, and materializes canonical schema + startup seeds.
+/// Validates current DuckDB schema (`expected_version`) under Core's OS guards (`core.lock` +
+/// `core-worker.lock`), resets only confirmed schema mismatch (never I/O, permission, or corrupt files),
+/// and materializes canonical DuckDB schema + startup seeds/repairs.
 pub fn initialize_database(
     data_dir: &Path,
     db_path: &Path,
@@ -65,181 +48,185 @@ pub fn initialize_database(
 
 pub fn initialize_database_unguarded(
     db_path: &Path,
-    expected_version: u32,
+    _expected_version: u32,
 ) -> crate::Result<InitDatabaseReport> {
     if let Some(parent) = db_path.parent()
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent)?;
     }
-
-    let targets = sidecar_and_main_paths(db_path);
-    let any_exists = targets.iter().any(|p| p.exists());
-    let db_exists = db_path.exists();
-    let mut rebuilt = false;
-    let mut deleted_files = Vec::new();
-    let mut start_version = 0u32;
-
-    if any_exists {
-        let needs_reset = if db_exists {
-            let version = probe_user_version(db_path)?;
-            start_version = version;
-            version != expected_version
-        } else {
-            true
-        };
-        if needs_reset {
-            for target in &targets {
-                if !target.exists() {
-                    continue;
-                }
-                fs::remove_file(target).map_err(|e| {
-                    format!("无法删除不兼容数据库 {}，未重建: {e}", db_path.display())
-                })?;
-                deleted_files.push(target.display().to_string());
-            }
-            if targets.iter().any(|p| p.exists()) {
-                return Err(format!("无法重建不兼容数据库：旧数据库文件仍存在 {}", db_path.display()).into());
-            }
-            rebuilt = true;
-            start_version = 0;
-        }
-    }
-
-    let mut conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-    )?;
-    conn.busy_timeout(Duration::from_millis(5000))?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-
-    let materialized = if start_version != expected_version || needs_materialization(&conn)? {
-        materialize_schema(&mut conn, expected_version)?;
-        true
-    } else {
-        // Still apply idempotent startup recovery/cleanups inside an IMMEDIATE transaction.
-        run_startup_repairs(&mut conn)?;
-        false
+    let cfg = DuckDbPoolConfig {
+        allow_reset_on_mismatch: true,
+        ..Default::default()
     };
-
-    conn.pragma_update(None, "foreign_keys", "ON")?;
+    let (engine, open_report) = DuckDbEngine::open_or_initialize(db_path, cfg)?;
+    let mut writer = engine.checkout_writer(std::time::Duration::from_secs(10))?;
+    materialize_seeds_and_repairs(writer.conn_mut())?;
+    drop(writer);
+    drop(engine);
     Ok(InitDatabaseReport {
-        schema_version: expected_version,
-        rebuilt,
-        deleted_files,
-        materialized,
+        schema_version: DUCKDB_SCHEMA_VERSION as u32,
+        rebuilt: open_report.rebuilt,
+        deleted_files: open_report.deleted_files,
+        materialized: open_report.rebuilt,
     })
 }
 
-fn needs_materialization(conn: &Connection) -> crate::Result<bool> {
-    for required in ["spaces", "tasks", "soul", "projects", "works", "notifications"] {
-        let found: Option<i64> = conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-                [required],
-                |row| row.get(0),
-            )
-            .ok();
-        if found.is_none() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-pub fn materialize_schema(conn: &mut Connection, expected_version: u32) -> crate::Result<()> {
-    conn.pragma_update(None, "foreign_keys", "OFF")?;
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    tx.execute_batch(CANONICAL_SCHEMA_SQL)?;
+pub fn materialize_seeds_and_repairs(conn: &mut Connection) -> crate::Result<()> {
+    let tx = conn.transaction()?;
     tx.execute(
-        "INSERT OR IGNORE INTO runtime_snapshot_writer VALUES (1, 0, '', 0)",
+        "INSERT INTO soul (id, name, alias, persona) VALUES (1, 'MyBuddy', '老板', '你是本地桌面助理，简洁、可靠、会动手。') ON CONFLICT (id) DO NOTHING",
         [],
     )?;
+    let core_gen = crate::business_protocol::current_core_generation();
     tx.execute(
-        "INSERT OR IGNORE INTO runtime_diagnostic_writer VALUES (1, 0, 0)",
-        [],
+        "INSERT INTO core_event_meta (id, core_generation, min_available_seq, retention_limit) VALUES (1, ?1, 1, 4096)
+         ON CONFLICT (id) DO UPDATE SET core_generation = excluded.core_generation",
+        [&core_gen],
     )?;
-    tx.execute(
-        "INSERT OR IGNORE INTO soul (id, name, alias, persona) VALUES (1, 'MyBuddy', '老板', '你是本地桌面助理，简洁、可靠、会动手。')",
-        [],
-    )?;
-    tx.pragma_update(None, "user_version", expected_version)?;
     tx.commit()?;
-    business_protocol::ensure_tables(conn, &business_protocol::current_core_generation())?;
     run_startup_repairs(conn)?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
     Ok(())
 }
 
+pub fn materialize_schema(conn: &mut Connection, _expected_version: u32) -> crate::Result<()> {
+    conn.execute_batch(CANONICAL_DUCKDB_SCHEMA_SQL)?;
+    materialize_seeds_and_repairs(conn)
+}
+
 pub fn run_startup_repairs(conn: &mut Connection) -> crate::Result<()> {
+    if !table_exists(conn, "tasks")? {
+        return Ok(());
+    }
     let now = now_ms();
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    // Legacy welcome_mode normalization ('bot' -> 'general').
-    let _ = tx.execute("UPDATE tasks SET welcome_mode = 'general' WHERE welcome_mode = 'bot'", []);
-    let _ = tx.execute("UPDATE cron_jobs SET welcome_mode = 'general' WHERE welcome_mode = 'bot'", []);
-    let _ = tx.execute(
+    let tx = conn.transaction()?;
+    tx.execute("UPDATE tasks SET welcome_mode = 'general' WHERE welcome_mode = 'bot'", [])?;
+    tx.execute("UPDATE cron_jobs SET welcome_mode = 'general' WHERE welcome_mode = 'bot'", [])?;
+    tx.execute(
         "UPDATE task_runtime_context_snapshots SET welcome_mode = 'general' WHERE welcome_mode = 'bot'",
         [],
-    );
-    let _ = tx.execute(
-        "UPDATE agent_loadout_observations SET context_json = json_set(context_json, '$.mode', 'general') WHERE json_valid(context_json) AND json_extract(context_json, '$.mode') = 'bot'",
+    )?;
+    {
+        let mut stmt = tx.prepare(
+            "SELECT id, context_json FROM agent_loadout_observations
+             WHERE json_valid(context_json) AND json_extract_string(context_json, '$.mode') = 'bot'",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut updates = Vec::new();
+        while let Some(r) = rows.next()? {
+            let id: String = r.get(0)?;
+            let raw: String = r.get(1)?;
+            updates.push((id, patch_json_fields(&raw, &[("$.mode", json!("general"))])));
+        }
+        drop(rows);
+        drop(stmt);
+        for (id, updated_json) in updates {
+            tx.execute(
+                "UPDATE agent_loadout_observations SET context_json = ?1 WHERE id = ?2",
+                duckdb::params![updated_json, id],
+            )?;
+        }
+    }
+    tx.execute(
+        "UPDATE cron_runs SET status = 'error', finished_at = ?1, error = '应用退出中断执行，未自动重放' WHERE status = 'running'",
+        [now],
+    )?;
+    tx.execute(
+        "UPDATE memory_turns SET extraction_state = 'failed' WHERE extraction_state = 'processing'",
         [],
-    );
-    // Recover cron runs left running after unexpected shutdown without auto-replaying.
-    let _ = tx.execute(
-        "UPDATE cron_runs SET status = 'error', finished_at = ?, error = '应用退出中断执行，未自动重放' WHERE status = 'running'",
+    )?;
+    {
+        let mut stmt = tx.prepare(
+            "SELECT id, state_json FROM memory_organization_runs
+             WHERE json_valid(state_json) AND json_extract_string(state_json, '$.run.status') = 'scanning'",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut updates = Vec::new();
+        while let Some(r) = rows.next()? {
+            let id: String = r.get(0)?;
+            let raw: String = r.get(1)?;
+            updates.push((id, patch_json_fields(&raw, &[("$.run.status", json!("paused"))])));
+        }
+        drop(rows);
+        drop(stmt);
+        for (id, state_json) in updates {
+            tx.execute(
+                "UPDATE memory_organization_runs SET state_json = ?1, updated_at = ?2 WHERE id = ?3",
+                duckdb::params![state_json, now, id],
+            )?;
+        }
+    }
+    tx.execute(
+        "UPDATE conversation_interactions SET status = 'expired', version = version + 1, resolved_at = ?1 WHERE status = 'pending'",
         [now],
-    );
-    // Reset interrupted memory extraction / organization runs safely.
-    let _ = tx.execute(
-        "UPDATE memory_turns SET extraction_state = 'failed', updated_at = ? WHERE extraction_state = 'processing'",
+    )?;
+    tx.execute(
+        "INSERT INTO answer_rules(id, revision, enabled, config) VALUES ('dots-default-policy', 1, 1, ?1) ON CONFLICT (id) DO NOTHING",
+        [DEFAULT_DOTS_RULE_CONFIG],
+    )?;
+    tx.execute(
+        "INSERT INTO answer_rule_versions(rule_id, revision, \"at\", source, title, config)
+         SELECT id, revision, ?1, 'baseline', COALESCE(json_extract_string(config, '$.title'), ''), config
+         FROM answer_rules r WHERE NOT EXISTS (SELECT 1 FROM answer_rule_versions v WHERE v.rule_id = r.id)
+         ON CONFLICT (rule_id, revision) DO NOTHING",
         [now],
-    );
-    let _ = tx.execute(
-        "UPDATE memory_organization_runs SET status = 'paused', updated_at = ? WHERE status = 'scanning'",
-        [now],
-    );
-    // Recover pending interaction prompts left active across crash.
-    let _ = tx.execute(
-        "UPDATE conversation_interactions SET status = 'expired', version = version + 1, resolved_at = ? WHERE status = 'pending'",
-        [now],
-    );
-    // Seed default Dots answer routing policy and initial version baseline if missing.
-    let default_rule_config = r#"{"title":"默认调度策略","include":[],"exclude":[],"instruction":"按本轮请求和已知任务状态选择直答或委派。","evidenceFile":"","enabled":true,"projectId":null,"sourceMemoryId":null,"policy":{"version":1,"routeMode":"auto","foregroundReadLimits":{"characters":24000,"sources":4,"calls":6},"trackingPolicy":{"milestones":true,"heartbeatMs":null,"silenceMs":120000}}}"#;
-    let _ = tx.execute(
-        "INSERT OR IGNORE INTO answer_rules(id, revision, enabled, config) VALUES ('dots-default-policy', 1, 1, ?1)",
-        [default_rule_config],
-    );
-    let _ = tx.execute(
-        "INSERT OR IGNORE INTO answer_rule_versions(rule_id, revision, at, source, title, config)
-         SELECT id, revision, ?1, 'baseline', COALESCE(json_extract(config, '$.title'), ''), config
-         FROM answer_rules r WHERE NOT EXISTS (SELECT 1 FROM answer_rule_versions v WHERE v.rule_id = r.id)",
-        [now],
-    );
-    // Hide legacy nonzero shell/code exit failures that are not pending recovery items.
-    let _ = tx.execute(
+    )?;
+    tx.execute(
         "UPDATE execution_failures SET dismissed_at = COALESCE(dismissed_at, ?1)
          WHERE cause_code IN ('shell-exit-nonzero', 'code-execution-exit-nonzero') AND resolved_at IS NULL AND dismissed_at IS NULL",
         [now],
-    );
-    // Fence any running diagnostic spans from a previous host session.
-    let _ = tx.execute(
-        "UPDATE task_request_diagnostics SET record_json = json_set(record_json, '$.status', 'interrupted')
-         WHERE json_extract(record_json, '$.status') = 'running'",
-        [],
-    );
-    let _ = tx.execute(
-        "UPDATE task_tool_diagnostics SET record_json = json_set(record_json, '$.status', 'interrupted', '$.complete', json('false'), '$.segmentStartedAt', NULL)
-         WHERE json_extract(record_json, '$.status') = 'running'",
-        [],
-    );
-    let _ = tx.execute(
-        "UPDATE scope_tool_diagnostics SET record_json = json_set(record_json, '$.status', 'interrupted', '$.complete', json('false'), '$.segmentStartedAt', NULL)
-         WHERE json_extract(record_json, '$.status') = 'running'",
-        [],
-    );
-    // Mark external agent runs orphaned by previous exit as failed recovery candidates.
-    let _ = tx.execute(
+    )?;
+    {
+        let mut stmt = tx.prepare(
+            "SELECT request_id, record_json FROM task_request_diagnostics
+             WHERE json_extract_string(record_json, '$.status') = 'running'",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut patches = Vec::new();
+        while let Some(r) = rows.next()? {
+            let id: String = r.get(0)?;
+            let raw: String = r.get(1)?;
+            patches.push((id, patch_json_fields(&raw, &[("$.status", json!("interrupted"))])));
+        }
+        drop(rows);
+        drop(stmt);
+        for (id, raw) in patches {
+            tx.execute(
+                "UPDATE task_request_diagnostics SET record_json = ?1 WHERE request_id = ?2",
+                duckdb::params![raw, id],
+            )?;
+        }
+    }
+    for table in ["task_tool_diagnostics", "scope_tool_diagnostics"] {
+        let sql = format!(
+            "SELECT id, record_json FROM {table} WHERE json_extract_string(record_json, '$.status') = 'running'"
+        );
+        let mut stmt = tx.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        let mut patches = Vec::new();
+        while let Some(r) = rows.next()? {
+            let id: String = r.get(0)?;
+            let raw: String = r.get(1)?;
+            patches.push((
+                id,
+                patch_json_fields(
+                    &raw,
+                    &[
+                        ("$.status", json!("interrupted")),
+                        ("$.complete", json!(false)),
+                        ("$.segmentStartedAt", serde_json::Value::Null),
+                    ],
+                ),
+            ));
+        }
+        drop(rows);
+        drop(stmt);
+        let upd_sql = format!("UPDATE {table} SET record_json = ?1 WHERE id = ?2");
+        for (id, raw) in patches {
+            tx.execute(&upd_sql, duckdb::params![raw, id])?;
+        }
+    }
+    tx.execute(
         "UPDATE external_agent_runs
             SET status='failed',
                 completed_at=COALESCE(completed_at, ?1),
@@ -255,11 +242,11 @@ pub fn run_startup_repairs(conn: &mut Connection) -> crate::Result<()> {
                 END
           WHERE status IN ('starting','working','blocked')",
         [now],
-    );
-    let _ = tx.execute(
+    )?;
+    tx.execute(
         "UPDATE external_agent_runs SET cancellation_evidence='unconfirmed' WHERE cancellation_evidence='requested'",
         [],
-    );
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -293,47 +280,52 @@ mod tests {
     fn initializes_fresh_database_with_expected_schema_and_is_idempotent() {
         let s = Sandbox::new("fresh");
         let data_dir = s.0.join("data");
-        let db_path = data_dir.join("app.db");
-        let first = initialize_database(&data_dir, &db_path, 36).unwrap();
-        assert_eq!(first.materialized, true);
-        assert_eq!(first.rebuilt, false);
-        assert_eq!(probe_user_version(&db_path).unwrap(), 36);
+        let db_path = data_dir.join("app.duckdb");
+        let first = initialize_database(&data_dir, &db_path, DUCKDB_SCHEMA_VERSION as u32).unwrap();
+        assert!(!first.rebuilt);
 
-        let conn = Connection::open(&db_path).unwrap();
-        let soul_name: String = conn
-            .query_row("SELECT name FROM soul WHERE id = 1", [], |r| r.get(0))
+        let (eng, _) = DuckDbEngine::open_or_initialize(&db_path, DuckDbPoolConfig::default()).unwrap();
+        let r = eng.checkout_reader(std::time::Duration::from_secs(2)).unwrap();
+        let soul_name: String = r
+            .conn()
+            .query_row("SELECT name FROM soul WHERE id = 1", [], |row| row.get(0))
             .unwrap();
         assert_eq!(soul_name, "MyBuddy");
-        drop(conn);
+        let fmt: String = r
+            .conn()
+            .query_row("SELECT format FROM database_meta WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(fmt, DUCKDB_FORMAT_VERSION);
+        drop(r);
+        drop(eng);
 
-        let second = initialize_database(&data_dir, &db_path, 36).unwrap();
-        assert_eq!(second.materialized, false);
-        assert_eq!(second.rebuilt, false);
+        let second = initialize_database(&data_dir, &db_path, DUCKDB_SCHEMA_VERSION as u32).unwrap();
+        assert!(!second.rebuilt);
     }
 
     #[test]
     fn discards_incompatible_schema_and_sidecars_without_backup_and_preserves_unreadable_bytes() {
         let s = Sandbox::new("discard");
         let data_dir = s.0.join("data");
-        let db_path = data_dir.join("old.db");
+        let db_path = data_dir.join("old.duckdb");
         fs::create_dir_all(&data_dir).unwrap();
-        let old = Connection::open(&db_path).unwrap();
-        old.pragma_update(None, "user_version", 35u32).unwrap();
-        old.execute_batch("CREATE TABLE legacy(x INT); INSERT INTO legacy VALUES (1);").unwrap();
-        drop(old);
-        fs::write(format!("{}-wal", db_path.display()), b"stale-wal").unwrap();
-        fs::write(format!("{}-shm", db_path.display()), b"stale-shm").unwrap();
+        {
+            let old = Connection::open(&db_path).unwrap();
+            old.execute_batch(
+                "CREATE TABLE database_meta (id BIGINT PRIMARY KEY, format VARCHAR, schema_version BIGINT, database_generation VARCHAR, initialized BOOLEAN, created_at_ms BIGINT, updated_at_ms BIGINT);
+                 INSERT INTO database_meta VALUES (1, 'legacy-v0', 0, 'old-gen', TRUE, 1, 1);",
+            ).unwrap();
+        }
+        fs::write(format!("{}.wal", db_path.display()), b"stale-wal").unwrap();
 
-        let report = initialize_database(&data_dir, &db_path, 36).unwrap();
-        assert_eq!(report.rebuilt, true);
-        assert_eq!(report.materialized, true);
-        assert!(!data_dir.join("old.db-wal").exists());
-        assert_eq!(probe_user_version(&db_path).unwrap(), 36);
+        let report = initialize_database(&data_dir, &db_path, DUCKDB_SCHEMA_VERSION as u32).unwrap();
+        assert!(report.rebuilt);
+        assert!(!data_dir.join("old.duckdb.wal").exists());
 
         // Corrupt bytes must fail without deleting or pretending to be an old schema.
-        let bad_path = data_dir.join("corrupt.db");
-        fs::write(&bad_path, b"not-a-sqlite-file").unwrap();
-        assert!(initialize_database(&data_dir, &bad_path, 36).is_err());
-        assert_eq!(fs::read(&bad_path).unwrap(), b"not-a-sqlite-file");
+        let bad_path = data_dir.join("corrupt.duckdb");
+        fs::write(&bad_path, b"not-a-duckdb-file").unwrap();
+        assert!(initialize_database(&data_dir, &bad_path, DUCKDB_SCHEMA_VERSION as u32).is_err());
+        assert_eq!(fs::read(&bad_path).unwrap(), b"not-a-duckdb-file");
     }
 }

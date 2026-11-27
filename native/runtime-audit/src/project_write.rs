@@ -1,6 +1,6 @@
 use crate::{Result, scoped_notes::library_owner_writable};
 use crate::{project_memory_forget, project_memory_write};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -163,7 +163,7 @@ pub enum Status {
 }
 
 pub fn write(db: &mut Connection, operation_id: &str, mutation: Mutation) -> Result<Status> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     if has_receipt(&tx, operation_id)? {
         return Ok(Status::Changed);
     }
@@ -175,7 +175,7 @@ pub fn write(db: &mut Connection, operation_id: &str, mutation: Mutation) -> Res
     Ok(status)
 }
 
-pub(crate) fn has_receipt(db: &Connection, operation_id: &str) -> rusqlite::Result<bool> {
+pub(crate) fn has_receipt(db: &Connection, operation_id: &str) -> duckdb::Result<bool> {
     db.query_row(
         "SELECT EXISTS(SELECT 1 FROM project_write_receipts WHERE operation_id=?1)",
         [operation_id],
@@ -183,22 +183,22 @@ pub(crate) fn has_receipt(db: &Connection, operation_id: &str) -> rusqlite::Resu
     )
 }
 
-pub(crate) fn record_receipt(db: &Connection, operation_id: &str) -> rusqlite::Result<()> {
+pub(crate) fn record_receipt(db: &Connection, operation_id: &str) -> duckdb::Result<()> {
     let inserted = db.execute(
         "INSERT INTO project_write_receipts(operation_id) VALUES (?1)",
         [operation_id],
     )?;
     if inserted != 1 {
-        return Err(rusqlite::Error::StatementChangedRows(inserted));
+        return Err(duckdb::Error::StatementChangedRows(inserted));
     }
     db.execute(
-        "DELETE FROM project_write_receipts WHERE rowid <= last_insert_rowid()-2048",
+        "DELETE FROM project_write_receipts WHERE rowid <= (SELECT COALESCE(MAX(rowid), 0) - 2048 FROM project_write_receipts)",
         [],
     )?;
     Ok(())
 }
 
-fn apply(db: &Connection, mutation: Mutation) -> rusqlite::Result<Status> {
+fn apply(db: &Connection, mutation: Mutation) -> duckdb::Result<Status> {
     match mutation {
         Mutation::Create {
             project,
@@ -261,7 +261,7 @@ fn apply(db: &Connection, mutation: Mutation) -> rusqlite::Result<Status> {
             updated_at,
         } => {
             if db.execute(
-                "UPDATE projects SET archived=?2, updated_at=max(updated_at+1,?3) WHERE id=?1",
+                "UPDATE projects SET archived=?2, updated_at=GREATEST(updated_at+1, ?3) WHERE id=?1",
                 params![id, archived, updated_at],
             )? == 0
             {
@@ -388,13 +388,13 @@ fn apply(db: &Connection, mutation: Mutation) -> rusqlite::Result<Status> {
                 return Ok(Status::ExistingPromotion);
             }
             if insert_todo(db, &todo)? != 1 {
-                return Err(rusqlite::Error::StatementChangedRows(0));
+                return Err(duckdb::Error::StatementChangedRows(0));
             }
             let inserted = db.execute("INSERT INTO project_event_promotions(id,project_id,event_id,event_title,target_kind,target_id,target_title,promoted_by,created_at)
                 VALUES (?1,?2,?3,?4,'todo',?5,?6,?7,?8)",
                 params![promotion_id,todo.project_id,event_id,title,todo.id,todo.title,promoted_by,created_at])?;
             if inserted != 1 {
-                return Err(rusqlite::Error::StatementChangedRows(inserted));
+                return Err(duckdb::Error::StatementChangedRows(inserted));
             }
             touch(db, &todo.project_id, todo.updated_at)?;
         }
@@ -411,7 +411,7 @@ fn apply(db: &Connection, mutation: Mutation) -> rusqlite::Result<Status> {
                 params![review.id, review.project_id, review.reviewed_at, review.note, review.created_by],
             )?;
             if inserted != 1 {
-                return Err(rusqlite::Error::StatementChangedRows(inserted));
+                return Err(duckdb::Error::StatementChangedRows(inserted));
             }
         }
         Mutation::CreateMemory {
@@ -450,7 +450,7 @@ pub(crate) fn writable_project_scope(
     db: &Connection,
     project_id: &str,
     source_task_id: Option<&str>,
-) -> rusqlite::Result<Status> {
+) -> duckdb::Result<Status> {
     if let Some(task_id) = source_task_id
         && !db.query_row(
             "SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND project_id=?2)",
@@ -463,35 +463,35 @@ pub(crate) fn writable_project_scope(
     writable_project(db, project_id, None)
 }
 
-fn insert_todo(db: &Connection, todo: &Todo) -> rusqlite::Result<usize> {
+fn insert_todo(db: &Connection, todo: &Todo) -> duckdb::Result<usize> {
     db.execute("INSERT INTO project_todos(id,project_id,title,description,status,assignee,priority,tags_json,start_at,due_at,created_at,updated_at)
         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         params![todo.id,todo.project_id,todo.title,todo.description,todo.status,todo.assignee,todo.priority,
             todo.tags_json,todo.start_at,todo.due_at,todo.created_at,todo.updated_at])
 }
 
-fn name_taken(db: &Connection, project: &Project) -> rusqlite::Result<bool> {
+fn name_taken(db: &Connection, project: &Project) -> duckdb::Result<bool> {
     db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM projects WHERE name=?1 COLLATE NOCASE AND id<>?2)",
+        "SELECT EXISTS(SELECT 1 FROM projects WHERE lower(name)=lower(?1) AND id<>?2)",
         params![project.name, project.id],
         |row| row.get(0),
     )
 }
 
-fn project_version(db: &Connection, id: &str) -> rusqlite::Result<Option<(i64, bool)>> {
+fn project_version(db: &Connection, id: &str) -> duckdb::Result<Option<(i64, bool)>> {
     db.query_row(
         "SELECT updated_at,archived FROM projects WHERE id=?1",
         [id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, crate::database::row_bool(row, 1)?)),
     )
     .optional()
 }
 
-fn writable_version(db: &Connection, id: &str, expected: i64) -> rusqlite::Result<Status> {
+fn writable_version(db: &Connection, id: &str, expected: i64) -> duckdb::Result<Status> {
     writable_project(db, id, Some(expected))
 }
 
-fn writable_project(db: &Connection, id: &str, expected: Option<i64>) -> rusqlite::Result<Status> {
+fn writable_project(db: &Connection, id: &str, expected: Option<i64>) -> duckdb::Result<Status> {
     Ok(match project_version(db, id)? {
         None => Status::Missing,
         Some((_, true)) => Status::Archived,
@@ -502,15 +502,15 @@ fn writable_project(db: &Connection, id: &str, expected: Option<i64>) -> rusqlit
     })
 }
 
-pub(crate) fn touch(db: &Connection, id: &str, now: i64) -> rusqlite::Result<()> {
+pub(crate) fn touch(db: &Connection, id: &str, now: i64) -> duckdb::Result<()> {
     db.execute(
-        "UPDATE projects SET updated_at=max(updated_at+1,?2) WHERE id=?1",
+        "UPDATE projects SET updated_at=GREATEST(updated_at+1, ?2) WHERE id=?1",
         params![id, now],
     )?;
     Ok(())
 }
 
-fn valid_parent(db: &Connection, resource: &Resource) -> rusqlite::Result<bool> {
+fn valid_parent(db: &Connection, resource: &Resource) -> duckdb::Result<bool> {
     let Some(parent) = &resource.parent_id else {
         return Ok(true);
     };
@@ -521,7 +521,7 @@ fn valid_parent(db: &Connection, resource: &Resource) -> rusqlite::Result<bool> 
         params![parent,resource.project_id,resource.id], |row| row.get(0))
 }
 
-fn insert_resource(db: &Connection, resource: &Resource) -> rusqlite::Result<()> {
+fn insert_resource(db: &Connection, resource: &Resource) -> duckdb::Result<()> {
     db.execute("INSERT INTO project_resources(id,project_id,kind,title,value,enabled,sort_order,parent_id,created_at,updated_at)
         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
         params![resource.id,resource.project_id,resource.kind,resource.title,resource.value,resource.enabled,
@@ -529,18 +529,39 @@ fn insert_resource(db: &Connection, resource: &Resource) -> rusqlite::Result<()>
     Ok(())
 }
 
-fn write_policies(db: &Connection, id: &str, json: &str) -> rusqlite::Result<()> {
-    db.execute("INSERT INTO project_expert_policy(project_id,allow_json,deny_json,recommended_json)
-        VALUES (?1,json_extract(?2,'$.expert.allow'),json_extract(?2,'$.expert.deny'),json_extract(?2,'$.expert.recommended'))
-        ON CONFLICT(project_id) DO UPDATE SET allow_json=excluded.allow_json,deny_json=excluded.deny_json,recommended_json=excluded.recommended_json", params![id,json])?;
-    db.execute("INSERT INTO project_skill_policy(project_id,prefer_json,demote_json,hide_json,allow_json)
-        VALUES (?1,json_extract(?2,'$.skill.prefer'),json_extract(?2,'$.skill.demote'),json_extract(?2,'$.skill.hide'),json_extract(?2,'$.skill.allow'))
-        ON CONFLICT(project_id) DO UPDATE SET prefer_json=excluded.prefer_json,demote_json=excluded.demote_json,hide_json=excluded.hide_json,allow_json=excluded.allow_json", params![id,json])?;
-    db.execute("INSERT INTO project_connector_policy(project_id,allow_json,deny_json,recommended_json)
-        VALUES (?1,json_extract(?2,'$.connector.allow'),json_extract(?2,'$.connector.deny'),json_extract(?2,'$.connector.recommended'))
-        ON CONFLICT(project_id) DO UPDATE SET allow_json=excluded.allow_json,deny_json=excluded.deny_json,recommended_json=excluded.recommended_json", params![id,json])?;
-    db.execute("INSERT INTO project_mcp_policy(project_id,mode,allow_json,deny_json)
-        VALUES (?1,json_extract(?2,'$.mcp.mode'),json_extract(?2,'$.mcp.allow'),json_extract(?2,'$.mcp.deny'))
-        ON CONFLICT(project_id) DO UPDATE SET mode=excluded.mode,allow_json=excluded.allow_json,deny_json=excluded.deny_json", params![id,json])?;
+fn write_policies(db: &Connection, id: &str, json: &str) -> duckdb::Result<()> {
+    let parsed: serde_json::Value = serde_json::from_str(json).unwrap_or(serde_json::Value::Null);
+    let ser = |v: &serde_json::Value| -> Option<String> {
+        if v.is_null() {
+            None
+        } else {
+            serde_json::to_string(v).ok()
+        }
+    };
+    db.execute(
+        "INSERT INTO project_expert_policy(project_id,allow_json,deny_json,recommended_json)
+         VALUES (?1,?2,?3,?4)
+         ON CONFLICT(project_id) DO UPDATE SET allow_json=excluded.allow_json,deny_json=excluded.deny_json,recommended_json=excluded.recommended_json",
+        params![id, ser(&parsed["expert"]["allow"]), ser(&parsed["expert"]["deny"]), ser(&parsed["expert"]["recommended"])],
+    )?;
+    db.execute(
+        "INSERT INTO project_skill_policy(project_id,prefer_json,demote_json,hide_json,allow_json)
+         VALUES (?1,?2,?3,?4,?5)
+         ON CONFLICT(project_id) DO UPDATE SET prefer_json=excluded.prefer_json,demote_json=excluded.demote_json,hide_json=excluded.hide_json,allow_json=excluded.allow_json",
+        params![id, ser(&parsed["skill"]["prefer"]), ser(&parsed["skill"]["demote"]), ser(&parsed["skill"]["hide"]), ser(&parsed["skill"]["allow"])],
+    )?;
+    db.execute(
+        "INSERT INTO project_connector_policy(project_id,allow_json,deny_json,recommended_json)
+         VALUES (?1,?2,?3,?4)
+         ON CONFLICT(project_id) DO UPDATE SET allow_json=excluded.allow_json,deny_json=excluded.deny_json,recommended_json=excluded.recommended_json",
+        params![id, ser(&parsed["connector"]["allow"]), ser(&parsed["connector"]["deny"]), ser(&parsed["connector"]["recommended"])],
+    )?;
+    let mcp_mode = parsed["mcp"]["mode"].as_str().map(str::to_owned);
+    db.execute(
+        "INSERT INTO project_mcp_policy(project_id,mode,allow_json,deny_json)
+         VALUES (?1,?2,?3,?4)
+         ON CONFLICT(project_id) DO UPDATE SET mode=excluded.mode,allow_json=excluded.allow_json,deny_json=excluded.deny_json",
+        params![id, mcp_mode, ser(&parsed["mcp"]["allow"]), ser(&parsed["mcp"]["deny"])],
+    )?;
     Ok(())
 }

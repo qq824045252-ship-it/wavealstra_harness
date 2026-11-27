@@ -5,8 +5,10 @@ import type Database from "better-sqlite3";
 import type { AgentUiPatch, AgentPromptRequest } from "../../shared/agent-ipc";
 import type { DotsAssistantReply, DotsDelegation, DotsDependencyWait, DotsReplyOrigin, DotsTaskOutput, DotsWorkerObservation } from "../../shared/dots";
 import type { ReplyCitation } from "../../shared/chat-reply-content";
+import { RuntimeAuditUnknownOperationError, type RuntimeAuditReader, type RuntimeDotsActiveDelegation } from "../platform/runtime-audit";
 import { DOTS_TASK_ID } from "../../shared/dots";
 import { DotsReplyOutbox, type AppendDotsReply, type DotsFollowup } from "./DotsReplyOutbox";
+import type { DeferredReservation } from "./DotsDeferredRequirements";
 import { readDotsWorkerOutcome } from "./DotsWorkerOutcome";
 
 export const dotsDelegationScopeMatches = `t.space_id IS d.space_id AND s.path IS d.space_path
@@ -48,7 +50,7 @@ export class DotsDelegations {
   private observationTimer?: ReturnType<typeof setTimeout>;
   private dependencyTimer?: ReturnType<typeof setTimeout>;
   private readonly recoverable: Row[];
-  private readonly outbox: DotsReplyOutbox;
+  private readonly fixtureOutbox?: DotsReplyOutbox;
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly recoveryTimers = new Set<ReturnType<typeof setTimeout>>();
   private readonly recoveryFlights = new Set<Promise<void>>();
@@ -63,9 +65,15 @@ export class DotsDelegations {
   private readonly pendingCwds = new Map<string, string>();
   private readonly pendingDepWaits = new Map<string, DotsDependencyWait>();
 
-  constructor(private db: Database.Database, private inspect: (taskId: string, operationId: string) => Promise<Result | undefined>,
+  constructor(private readonly fixture: Database.Database | undefined, private inspect: (taskId: string, operationId: string) => Promise<Result | undefined>,
     private notify: () => void, private readonly sampleIntervalMs?: () => number,
-    private readonly native?: Pick<import("../platform/runtime-audit").RuntimeAuditReader, "batch4aWrite" | "supervised">) {
+    private readonly native?: RuntimeAuditReader) {
+    const db = fixture;
+    if (!db) {
+      if (!native?.supervised) throw new Error("Dots 委派需要 Core");
+      this.recoverable = [];
+      return;
+    }
     if (!db.readonly) {
       db.exec(`CREATE TABLE IF NOT EXISTS dots_delegations(
         seq INTEGER PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE, task_id TEXT NOT NULL, source_message_id TEXT NOT NULL,
@@ -92,10 +100,35 @@ export class DotsDelegations {
         CREATE INDEX IF NOT EXISTS dots_delegations_source ON dots_delegations(source_message_id);`);
     }
     this.recoverable = db.prepare("SELECT * FROM dots_delegations WHERE status='pending' AND request_json IS NOT NULL ORDER BY seq").all() as Row[];
-    this.outbox = new DotsReplyOutbox(db, operationId => {
+    this.fixtureOutbox = new DotsReplyOutbox(db, operationId => {
       this.notify();
       if (!this.disposed) this.refreshDependentTasks(operationId);
     }, sampleIntervalMs, native);
+  }
+
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("Dots 委派的 SQLite 仓储仅用于夹具");
+    return this.fixture;
+  }
+
+  private get outbox(): DotsReplyOutbox {
+    if (!this.fixtureOutbox) throw new Error("Dots 的 SQLite 回传队列仅用于夹具");
+    return this.fixtureOutbox;
+  }
+
+  private get core(): RuntimeAuditReader | undefined {
+    return this.fixture ? undefined : this.native;
+  }
+
+  private async writeCore<T = object>(request: Record<string, unknown>): Promise<T> {
+    const core = this.core!;
+    const write = () => core.batch4aWrite<T>(request);
+    const reply = await write().catch(error => {
+      if (error instanceof RuntimeAuditUnknownOperationError) return write();
+      throw error;
+    });
+    if (reply === undefined) throw new Error("Core 未确认 Dots 委派写入");
+    return reply;
   }
 
   private get requiresRustWrites(): boolean {
@@ -104,7 +137,7 @@ export class DotsDelegations {
 
   async flushWrites(): Promise<void> {
     await this.writeTail;
-    await this.outbox.flushWrites();
+    await this.fixtureOutbox?.flushWrites();
   }
 
   private enqueueWrite(request: Record<string, unknown>, label: string): void {
@@ -137,6 +170,7 @@ export class DotsDelegations {
   }
 
   latestTaskDelivery(taskId: string) {
+    if (this.core) return this.core.readLatestDotsReply(taskId, null);
     return this.outbox.latestTaskDelivery(taskId);
   }
 
@@ -179,6 +213,12 @@ export class DotsDelegations {
   handleCoreEvent(event: { domain: string; kind: string; payload: unknown }): void {
     if (event.domain !== "dots" || this.disposed) return;
     const payload = (event.payload && typeof event.payload === "object" ? event.payload : {}) as Record<string, unknown>;
+    if (this.core) {
+      if ((event.kind === "dots.observationDue" || event.kind === "dots.dependencyDue") && typeof payload.taskId === "string") {
+        this.refresh(payload.taskId);
+      }
+      return;
+    }
     if (event.kind === "dots.observationDue") {
       this.observeDue();
       return;
@@ -219,8 +259,30 @@ export class DotsDelegations {
     return defaultDotsSchedulingPolicy().trackingPolicy;
   }
 
+  private async observeCoreTool(event: ToolDiagnosticEvent & { taskId: string; operationId: string }): Promise<void> {
+    for await (const row of this.core!.readActiveDotsDelegations(event.taskId)) {
+      if (row.id !== event.operationId || row.status === "blocked") continue;
+      const tracking = row.trackingRevoked ? undefined : row.trackingPolicy ?? defaultDotsSchedulingPolicy().trackingPolicy;
+      const reply = await this.writeCore<{ changed: boolean }>({ kind: "dotsDelegationObserveTool", operationId: row.id,
+        taskId: row.taskId, conversation: event.conversationId, toolTask: event.toolTaskId, phase: event.phase,
+        at: event.at, tool: event.name, nextAt: tracking?.heartbeatMs ? event.at + tracking.heartbeatMs : null });
+      if (reply.changed && !this.disposed) {
+        this.notify();
+        if (row.status === "pending") this.refresh(row.taskId);
+      }
+      return;
+    }
+  }
+
   observeTool(event: ToolDiagnosticEvent): void {
     if (this.disposed || event.sourceKind !== "main" || !event.taskId || !event.dotsOperationId) return;
+    if (this.core) {
+      const observed = { ...event, taskId: event.taskId, operationId: event.dotsOperationId };
+      this.writeTail = this.writeTail.then(() => this.observeCoreTool(observed)).catch(error => {
+        console.warn("[DotsDelegations] 记录工具状态失败", error);
+      });
+      return;
+    }
     const row = this.pendingDelegations.get(event.dotsOperationId)
       ?? (this.db.prepare(`SELECT * FROM dots_delegations WHERE task_id=? AND operation_id=?
       AND status IN ('pending','running')`).get(event.taskId, event.dotsOperationId) as Row | undefined);
@@ -236,6 +298,7 @@ export class DotsDelegations {
       this.pendingNextAt.set(row.operation_id, nextAt);
       this.enqueueWrite({
         kind: "dotsDelegationObserveTool",
+        taskId: row.task_id,
         operationId: row.operation_id,
         conversation: event.conversationId,
         toolTask: event.toolTaskId,
@@ -264,6 +327,13 @@ export class DotsDelegations {
 
   observeProgress(taskId: string, operationId: string, identity: string, at: number): void {
     if (this.disposed) return;
+    if (this.core) {
+      this.writeTail = this.writeTail.then(async () => {
+        const reply = await this.writeCore<{ changed: boolean }>({ kind: "dotsDelegationObserveProgress", taskId, operationId, identity, at });
+        if (reply.changed && !this.disposed) this.notify();
+      }).catch(error => console.warn("[DotsDelegations] 记录任务进展失败", error));
+      return;
+    }
     if (this.requiresRustWrites) {
       const pending = this.pendingDelegations.get(operationId);
       const eligible = pending
@@ -390,12 +460,24 @@ export class DotsDelegations {
     this.flights.set(task, flight);
   }
 
-  rememberOrigin(source: string, origin: DotsReplyOrigin) { this.outbox.rememberOrigin(source, origin); }
+  rememberOrigin(source: string, origin: DotsReplyOrigin): void | Promise<void> {
+    if (this.core) {
+      return this.writeCore({ kind: "dotsReplyRememberOrigin", source, ...origin }).then(() => undefined);
+    }
+    this.outbox.rememberOrigin(source, origin);
+  }
 
-  link(taskId: string, operationId: string, sourceMessageId: string, supersedes = false, request?: AgentPromptRequest): void {
+  link(taskId: string, operationId: string, sourceMessageId: string, supersedes = false, request?: AgentPromptRequest,
+    deferred?: DeferredReservation): void | Promise<void> {
     if (!taskId || taskId === DOTS_TASK_ID || !operationId || !sourceMessageId) throw new Error("Dots 委派缺少有效来源或目标");
     if (request && (request.taskId !== taskId || request.userMessageId !== operationId)) throw new Error("委派请求身份不符");
     const now = Date.now();
+    if (this.core) {
+      return this.writeCore<{ inserted: boolean }>({ kind: "dotsDelegationLink", operationId, taskId, sourceMessageId, now,
+        supersedes, requestJson: request ? JSON.stringify(request) : null, goalId: request?.dotsGoalId ?? null, deferred }).then(result => {
+        if (result.inserted && !this.disposed) this.notify();
+      });
+    }
     if (this.requiresRustWrites) {
       const requestJson = request ? JSON.stringify(request) : null;
       const goalId = request?.dotsGoalId ?? null;
@@ -638,6 +720,17 @@ export class DotsDelegations {
   }
 
   failed(taskId: string, operationId: string, reason: string): void {
+    if (this.core) {
+      this.writeTail = this.writeTail.then(async () => {
+        for await (const row of this.core!.readActiveDotsDelegations(taskId)) {
+          if (row.id !== operationId || row.status !== "pending") continue;
+          const written = await this.reconcileCoreResult(row, { status: "failed", text: reason, artifacts: [] });
+          if (written.changed && !this.disposed) this.notify();
+          return;
+        }
+      }).catch(error => console.warn("[DotsDelegations] 记录派发失败状态失败", error));
+      return;
+    }
     const now = Date.now();
     if (this.requiresRustWrites) {
       const pending = this.pendingDelegations.get(operationId);
@@ -721,6 +814,10 @@ export class DotsDelegations {
 
   refresh(taskId?: string): void {
     if (this.disposed) return;
+    if (this.core) {
+      if (taskId !== DOTS_TASK_ID) this.refreshInCore(taskId);
+      return;
+    }
     if (taskId === DOTS_TASK_ID) {
       for (const target of this.outbox.targets()) this.refresh(target);
       return;
@@ -759,6 +856,53 @@ export class DotsDelegations {
     }, Math.min(2_000, this.outbox.nextSampleDelay(taskId) ?? 2_000));
     timer.unref();
     this.retries.set(taskId, timer);
+  }
+
+  private refreshInCore(taskId?: string): void {
+    const key = taskId ?? DOTS_TASK_ID;
+    if (this.flights.has(key)) { this.dirty.add(key); return; }
+    const flight = (async () => {
+      for await (const row of this.core!.readActiveDotsDelegations(taskId)) {
+        if (this.disposed) return;
+        if (row.status === "blocked" && row.waitingOnPrerequisite) continue;
+        const result = await this.inspect(row.taskId, row.id);
+        if (this.disposed) return;
+        if (!result) continue;
+        if (this.sampleIntervalMs && result.status === "running" && result.observation) {
+          this.showOutput(row.id, result.observation.generationId, result.observation.preview, false);
+        }
+        if (result.status !== "running") this.liveOutput.delete(row.id);
+        const written = await this.reconcileCoreResult(row, result);
+        if (written.changed && !this.disposed) this.notify();
+        if (written.staleSnapshot) this.dirty.add(key);
+      }
+    })().catch(error => {
+      console.warn("[DotsDelegations] Core 对账失败", taskId, error);
+      if (taskId) this.retryLater(taskId);
+    }).finally(() => {
+      this.flights.delete(key);
+      if (this.dirty.delete(key)) this.refresh(taskId);
+    });
+    this.flights.set(key, flight);
+  }
+
+  private reconcileCoreResult(row: RuntimeDotsActiveDelegation, result: Result) {
+    const now = Math.max(Date.now(), row.updatedAt + 1);
+    const { status, text, interactionId, artifacts, dependencyWait, verifiedCommit, citations, acceptedGoalReceiptId } = result;
+    const tracking = row.trackingRevoked ? undefined : row.trackingPolicy ?? defaultDotsSchedulingPolicy().trackingPolicy;
+    const snapshot = { id: row.id, taskId: row.taskId, sourceMessageId: row.sourceMessageId, title: row.title, status,
+      goalId: row.goalId ?? undefined, createdAt: row.createdAt, updatedAt: now, text, artifacts, interactionId, dependencyWait,
+      citations, acceptedGoalReceiptId };
+    const observation = status !== "running" || (tracking?.milestones && text.trim()) ? {
+      eventKey: createHash("sha256").update(JSON.stringify([row.id, status, interactionId ?? "", status === "running" ? text : ""])).digest("hex"),
+      operationId: row.id, taskId: row.taskId, status, interactionId: interactionId ?? null,
+      snapshot: JSON.stringify(snapshot), restoreSilentlySettled: false,
+    } : null;
+    return this.writeCore<{ changed: boolean; staleSnapshot: boolean }>({ kind: "dotsDelegationReconcile", seq: row.sequence,
+      taskId: row.taskId, operationId: row.id, expectedUpdatedAt: row.updatedAt, status, text, interactionId: interactionId ?? null,
+      files: JSON.stringify(artifacts), updatedAt: now, verifiedCommit: status === "completed" ? verifiedCommit ?? null : null,
+      clearObsNextAt: status !== "running", observation, dependencyWait: dependencyWait ? { operationId: row.id,
+        prerequisiteId: dependencyWait.operationId, title: dependencyWait.title, deadlineAt: dependencyWait.deadlineAt } : null });
   }
 
   private async reconcile(taskId: string): Promise<void> {
@@ -861,21 +1005,23 @@ export class DotsDelegations {
             seq: row.seq,
             taskId,
             operationId: row.operation_id,
+            expectedUpdatedAt: current.updated_at,
             status: result.status,
             text: result.text,
             interactionId: result.interactionId ?? null,
             files,
             updatedAt: now,
             dependencyWait: result.dependencyWait ? {
+              operationId: row.operation_id,
               prerequisiteId: result.dependencyWait.operationId,
               title: result.dependencyWait.title,
               deadlineAt: result.dependencyWait.deadlineAt,
             } : null,
             verifiedCommit: result.status === "completed" ? (result.verifiedCommit ?? null) : null,
             clearObsNextAt: result.status !== "running",
-            supersedeBeforeCreatedAt: row.supersedes ? row.created_at : null,
             observation,
-          }) as { changed?: boolean } | undefined;
+          }) as { changed?: boolean; staleSnapshot?: boolean } | undefined;
+          if (opRes?.staleSnapshot) this.dirty.add(taskId);
           changed = Boolean(opRes?.changed);
         }
       } else {

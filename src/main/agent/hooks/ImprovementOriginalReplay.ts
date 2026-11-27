@@ -3,7 +3,6 @@ import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { ConversationId, Cursor, EntryId } from "@earendil-works/pi-durable";
-import type { AppDatabase } from "../../db/AppDatabase";
 import { durableRegisteredArtifact } from "../durable/DurableArtifactRegistration";
 import { DurableSubagentIdentity } from "../durable/DurableSubagentIdentity";
 import { openDurablePassiveStorage } from "../durable/DurableStorage";
@@ -14,11 +13,9 @@ import type { ReleaseDraft } from "./ImprovementPackages";
 export class UnverifiedOriginalDelivery extends Error {}
 
 /** Replay the immutable output that existed before the user corrected the assistant. */
-export async function replayOriginalDelivery(app:AppDatabase,draft:ReleaseDraft,target:string) {
+export async function replayOriginalDelivery(directory: string,draft:ReleaseDraft,target:string) {
   const {source,contract}=draft;
-  const binding=app.connection.prepare("SELECT directory,cwd FROM durable_bot_bindings WHERE task_id=?").get(source.taskId) as {directory:string;cwd:string}|undefined;
-  if(!binding)throw new UnverifiedOriginalDelivery("原始任务绑定已不可用");
-  const storage=await openDurablePassiveStorage(binding.directory,ctx);
+  const storage=await openDurablePassiveStorage(directory,ctx);
   if(!storage)throw new UnverifiedOriginalDelivery("原始产物记录已不可用");
   try {
     const actor=Number(source.conversationId) as ConversationId;
@@ -61,7 +58,7 @@ export async function replayOriginalDelivery(app:AppDatabase,draft:ReleaseDraft,
         if(e.kind!=="mybuddy.artifact-registered")continue;
         const inputId=inputIds.find(id=>(e.data as {inputIds?:number[]}).inputIds?.includes(id));
         if(inputId===undefined)continue;
-        const artifact=durableRegisteredArtifact(e,inputId,undefined,binding.directory);
+        const artifact=durableRegisteredArtifact(e,inputId,undefined,directory);
         if(!artifact)continue;
         let executor=artifact.toolConversationId as ConversationId;
         const visited=new Set<number>();

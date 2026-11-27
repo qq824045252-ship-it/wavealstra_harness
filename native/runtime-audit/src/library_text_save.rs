@@ -1,5 +1,5 @@
 use crate::{Result, library_index, library_text, scoped_notes};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -126,7 +126,7 @@ pub fn write(db: &mut Connection, save: Save) -> Result<Value> {
         return Ok(json!("needsHost"));
     }
     let chunks = library_index::document_chunks(&save.content, save.chunk_size, save.overlap)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     let Some(item) = current_item(&tx, &save)? else {
         return Ok(json!("conflict"));
     };
@@ -175,7 +175,7 @@ pub fn write(db: &mut Connection, save: Save) -> Result<Value> {
     tx.commit()?;
 
     // The committed receipt, version and index now share one SQLite commit.
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = db.transaction()?;
     if current_item(&tx, &save)?.as_ref() != Some(&item) || read_managed(&save)? != old_content {
         return Ok(json!("conflict"));
     }
@@ -189,7 +189,7 @@ pub fn write(db: &mut Connection, save: Save) -> Result<Value> {
         }
     }
     tx.execute(
-        "UPDATE library_items SET title=?1,filename=?2,size_bytes=?3,content_hash=?4,updated_at=max(updated_at,?5) WHERE id=?6",
+        "UPDATE library_items SET title=?1,filename=?2,size_bytes=?3,content_hash=?4,updated_at=GREATEST(updated_at, ?5) WHERE id=?6",
         params![title, save.next_filename.as_deref().unwrap_or(&save.filename), save.content.len(), new_hash, save.updated_at, save.id],
     )?;
     library_index::index_saved_text(&tx, &save.id, &save.content, &chunks, save.updated_at)?;

@@ -29,6 +29,7 @@ export type GoalContinuationDeferReason =
 export type GoalContinuationOrigin = {
   workId: string;
   intentRevision: number;
+  ownerEpoch?: number;
   attempt: number;
 };
 

@@ -1,11 +1,11 @@
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, params};
+use duckdb::{Connection, OptionalExt, params};
 use serde::Deserialize;
 
 pub fn latest(db: &Connection) -> Result<Option<String>> {
     let run = db
-        .prepare_cached(
-            "SELECT json_extract(state_json,'$.run')
+        .prepare(
+            "SELECT CAST(json_extract(state_json,'$.run') AS VARCHAR)
              FROM memory_organization_runs ORDER BY created_at DESC,rowid DESC LIMIT 1",
         )?
         .query_row([], |row| row.get(0))
@@ -23,20 +23,31 @@ pub struct Progress {
 }
 
 pub fn write_progress(db: &Connection, progress: Progress) -> Result<bool> {
-    // Keeping the scanned inputs in SQLite avoids shipping the full checkpoint every batch.
-    // UPDATE can neither recreate a forgotten preview nor overwrite a paused or resumed scan.
+    let Some(existing_json): Option<String> = db
+        .prepare(
+            "SELECT state_json FROM memory_organization_runs
+             WHERE id=?1 AND json_extract_string(state_json,'$.scanId')=?2
+               AND json_extract_string(state_json,'$.run.status')='scanning'",
+        )?
+        .query_row(params![progress.id, progress.scan_id], |row| row.get(0))
+        .optional()?
+    else {
+        return Ok(false);
+    };
+    let run_val: serde_json::Value = serde_json::from_str(&progress.run_json)?;
+    let patched = crate::database::patch_json_fields(&existing_json, &[("run", run_val)]);
     let changes = db
-        .prepare_cached(
+        .prepare(
             "UPDATE memory_organization_runs
-             SET updated_at=?3,state_json=json_set(state_json,'$.run',json(?4))
-             WHERE id=?1 AND json_extract(state_json,'$.scanId')=?2
-               AND json_extract(state_json,'$.run.status')='scanning'",
+             SET updated_at=?3,state_json=?4
+             WHERE id=?1 AND json_extract_string(state_json,'$.scanId')=?2
+               AND json_extract_string(state_json,'$.run.status')='scanning'",
         )?
         .execute(params![
             progress.id,
             progress.scan_id,
             progress.updated_at,
-            progress.run_json,
+            patched,
         ])?;
     Ok(changes != 0)
 }

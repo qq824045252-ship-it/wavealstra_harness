@@ -48,12 +48,13 @@ export interface GatewayPlatformRegistryOptions {
   retryDelayMs?: (attempt: number) => number;
   /** Current policy is rechecked on every replay and outbox attempt. */
   authorize?: (message: GatewayInboundMessage) => boolean;
-  onReplySent?: (deliveryId: string) => void;
-  replyCurrent?: (deliveryId: string) => boolean;
+  onReplySent?: (deliveryId: string, continuationOperation?: string) => void;
+  replyCurrent?: (deliveryId: string, continuationOperation?: string) => boolean;
   coreControlled?: boolean;
   onScheduleRecover?: (channelId: string, delayMs: number) => void;
   onOutboundUnknown?: (info: {
     deliveryId: string;
+    attempt: number;
     channelId: string;
     channelType: GatewayChannelType;
     accountKey: string;
@@ -72,18 +73,22 @@ export class GatewayPlatformRegistry {
     const journal = this.options.journal;
     if (!journal) throw new Error("原渠道持久回复队列不可用");
     const entry = journal.continueReply(origin, operationId, text);
-    if (journal.outbox(entry.delivery_id)?.status === "sent") return;
+    if ((await journal.readOutbox(entry.delivery_id))?.status === "sent") return;
     const adapter = this.entries.get(origin.channelId);
     if (!adapter || !adapter.isConnected() || adapter.workConnectionKey?.() !== origin.connectionKey)
       throw new Error("原渠道连接暂不可用，协作回传已持久等待恢复");
     await this.dispatchStored(adapter, entry);
-    if (journal.outbox(entry.delivery_id)?.status !== "sent") throw new Error("原渠道协作回传尚无发送回执");
+    if ((await journal.readOutbox(entry.delivery_id))?.status !== "sent") throw new Error("原渠道协作回传尚无发送回执");
   }
   private readonly entries = new Map<string, RegisteredGatewayAdapter>();
   private readonly handlers = new Map<string, (event: GatewayMessageEvent) => Promise<void>>();
   // Serialize only execution in the existing native session; never create a bot
   // runtime, new task identity or prompt context. Other chats remain concurrent.
   private readonly tails = new Map<string, Promise<void>>();
+  private readonly admissions = new Map<string, Promise<void>>();
+  private readonly coreRecoveries = new Map<string, { epoch: number; channelEpoch: number; accountKey?: string;
+    generation: unknown; ready: Promise<boolean> }>();
+  private readonly coreDeliveryCounts = new Map<string, Record<string, number>>();
   private readonly depths = new Map<string, number>();
   private pending = 0;
   private epoch = 0;
@@ -118,19 +123,50 @@ export class GatewayPlatformRegistry {
         const key = gatewaySessionQueueKey(adapter, event.source.accountKey, message);
         // Slack already has a pre-ACK journal and chunk-aware outbox. Keep one
         // transport owner, rather than acknowledging two conflicting journals.
-        if (!this.options.journal || adapter.type === "slack") {
+        const journal = this.options.journal;
+        if (!journal || adapter.type === "slack") {
           return this.delivery(this.enqueue(adapter, event, key, () => handler(event)));
         }
         // Internal socket reconnects do not necessarily call Service.connect().
         // Schedule older accepted inputs before a fresh event can overtake them.
-        this.recover(adapter.id, false);
+        if (!journal.usesCoreAdmission) this.recover(adapter.id, false);
         this.assertCapacity(key);
-        const { entry } = this.options.journal.accept({ platform: adapter.type, accountKey: event.source.accountKey,
-          sessionKey: key, message: event.message, replayNativeReceipts: Boolean(this.options.replayNativeReceipts),
-          reserveConversation: (messageId, acceptedAt) => this.options.reserveConversation?.(event.message, event.source.accountKey, messageId, { acceptedAt }) });
-        this.liveReplies.set(entry.delivery_id, { channelId: adapter.id, accountKey: entry.account_key,
-          generation: adapter.gatewayConnectionGeneration?.(), reply: event.message.reply });
-        return this.dispatchStored(adapter, entry);
+        const generation = adapter.gatewayConnectionGeneration?.();
+        const dispatch = ({ entry }: { entry: GatewayInboxEntry }) => {
+          this.liveReplies.set(entry.delivery_id, { channelId: adapter.id, accountKey: entry.account_key,
+            generation, reply: event.message.reply });
+          return this.dispatchStored(adapter, entry);
+        };
+        const draft = { platform: adapter.type, accountKey: event.source.accountKey,
+          sessionKey: key, message: event.message, replayNativeReceipts: Boolean(this.options.replayNativeReceipts) };
+        if (journal.usesCoreAdmission) {
+          const epoch = this.epoch;
+          const channelEpoch = this.channelEpochs.get(adapter.id) ?? 0;
+          const isCurrent = () => !this.suspended && !this.pausedChannels.has(adapter.id) && this.epoch === epoch
+            && (this.channelEpochs.get(adapter.id) ?? 0) === channelEpoch && adapter.isConnected()
+            && adapter.workConnectionKey?.() === event.source.accountKey && adapter.gatewayConnectionGeneration?.() === generation
+            && this.isAuthorized(event.message);
+          const assertCurrent = () => {
+            if (!isCurrent()) {
+              throw new Error("Gateway 收件时连接或授权已变化");
+            }
+          };
+          const previous = this.admissions.get(key) ?? Promise.resolve();
+          const receipt = previous.then(async () => {
+            assertCurrent();
+            const truncated = await this.recoverCore(adapter.id, false, key);
+            assertCurrent();
+            if (truncated) throw new Error("Gateway 当前会话仍有待恢复消息，请稍后重试");
+            this.assertCapacity(key);
+            return journal.admit(draft);
+          });
+          const admitted = receipt.then(() => undefined, () => undefined);
+          this.admissions.set(key, admitted);
+          void admitted.then(() => { if (this.admissions.get(key) === admitted) this.admissions.delete(key); });
+          return this.delivery(receipt.then(value => isCurrent() ? dispatch(value) : undefined), receipt.then(() => undefined));
+        }
+        return dispatch(journal.accept({ ...draft,
+          reserveConversation: (messageId, acceptedAt) => this.options.reserveConversation?.(event.message, event.source.accountKey, messageId, { acceptedAt }) }));
       } catch (error) {
         return this.delivery(Promise.reject(error), Promise.reject(error));
       }
@@ -187,7 +223,7 @@ export class GatewayPlatformRegistry {
     try {
       // Outbox-only retry never reloads files or invokes a model. An already
       // saved answer remains deliverable if its old input cache was removed.
-      const payload = journal.decode(entry, !journal.outbox(entry.delivery_id));
+      const payload = journal.decode(entry, !journal.usesCoreAdmission && !journal.outbox(entry.delivery_id));
       const live = this.liveReplies.get(entry.delivery_id);
       const reply = live?.accountKey === entry.account_key && live.generation === adapter.gatewayConnectionGeneration?.()
         ? live.reply : async (text: string) => {
@@ -201,43 +237,52 @@ export class GatewayPlatformRegistry {
         reply });
       if (event.source.accountKey !== entry.account_key || entry.platform !== adapter.type
         || gatewaySessionQueueKey(adapter, entry.account_key, event.message) !== entry.session_key) throw new Error("Gateway 恢复消息的账号或会话身份已改变");
-      if (this.isAuthorized(event.message) && !journal.outbox(entry.delivery_id))
+      if (!journal.usesCoreAdmission && this.isAuthorized(event.message) && !journal.outbox(entry.delivery_id))
         this.options.reserveConversation?.(event.message, entry.account_key, entry.message_id, { acceptedAt: entry.created_at, recovered: true });
     } catch {
-      journal.block(entry.delivery_id, "payload_or_route_invalid");
-      this.report(adapter.id, "Gateway 恢复消息校验失败，已保留记录；未执行缺失或改变的输入");
       this.liveReplies.delete(entry.delivery_id);
-      return this.delivery(Promise.reject(new Error("Gateway 恢复消息或附件校验失败，未执行")));
+      return this.delivery(journal.rejectUnclaimed(entry.delivery_id, "payload_or_route_invalid").then(() => {
+        this.report(adapter.id, "Gateway 恢复消息校验失败，已保留记录；未执行缺失或改变的输入");
+        throw new Error("Gateway 恢复消息或附件校验失败，未执行");
+      }));
     }
     const run = this.enqueue(adapter, event, entry.session_key, async () => {
-      const outbox = journal.outbox(entry.delivery_id);
+      const outbox = await journal.readOutbox(entry.delivery_id);
       if (outbox) { await this.sendStoredReply(adapter, entry, event.message); return; }
-      if (!this.isAuthorized(event.message)) {
-        journal.block(entry.delivery_id, "authorization_revoked");
+      if (!this.isAuthorized(event.message) || !await journal.assignmentCurrent(entry, event.message.sender?.id)) {
+        await journal.rejectUnclaimed(entry.delivery_id, "authorization_revoked");
         throw new Error("Gateway 恢复消息的授权已撤回，未执行");
       }
-      const previous = journal.begin(entry.delivery_id);
+      if (journal.usesCoreAdmission) {
+        try { journal.decode(entry, true); }
+        catch (error) {
+          await journal.rejectUnclaimed(entry.delivery_id, "payload_or_route_invalid");
+          throw error;
+        }
+      }
+      const attempt = await journal.claimExecution(entry.delivery_id);
+      if (attempt === undefined) throw new Error("Gateway 消息已被认领或不可再次执行");
+      const connected = () => !this.suspended && !this.pausedChannels.has(adapter.id)
+        && adapter.isConnected() && adapter.workConnectionKey?.() === entry.account_key;
       const message: GatewayInboundMessage = { ...event.message,
-        gatewayDelivery: { id: entry.delivery_id, replay: previous.retry_count > 0 },
+        gatewayDelivery: { id: entry.delivery_id, replay: attempt > 1 },
         reply: async text => {
-          journal.queueReply(entry.delivery_id, text);
+          await journal.queueOwnedReply(entry.delivery_id, attempt, text);
           await this.sendStoredReply(adapter, entry, event.message);
         } };
       try {
+        if (!connected() || !this.isAuthorized(message)) throw new Error("Gateway 执行连接或授权在认领后改变");
         await this.handlers.get(adapter.id)!({ ...event, message,
           capabilities: Object.freeze({ ...event.capabilities, durableInbound: true }) });
-        journal.complete(entry.delivery_id);
       } catch (error) {
-        if (!journal.outbox(entry.delivery_id)) {
-          if (this.suspended || this.pausedChannels.has(adapter.id) || !adapter.isConnected() || adapter.workConnectionKey?.() !== entry.account_key) journal.defer(entry.delivery_id);
-          else journal.block(entry.delivery_id, "execution_failed");
-        }
+        await journal.finishOwnedExecution(entry.delivery_id, attempt, connected() ? "failed" : "interrupted");
         throw error;
       }
+      await journal.finishOwnedExecution(entry.delivery_id, attempt, "completed");
     });
-    const completion = this.delivery(run.finally(() => {
+    const completion = this.delivery(run.finally(async () => {
+      const outbox = await journal.readOutbox(entry.delivery_id).catch(() => undefined);
       this.activeDeliveries.delete(entry.delivery_id);
-      const outbox = journal.outbox(entry.delivery_id);
       if (!outbox || outbox.status !== "pending") this.liveReplies.delete(entry.delivery_id);
       if (!this.suspended) this.scheduleResume(adapter.id, 0);
     }));
@@ -247,30 +292,34 @@ export class GatewayPlatformRegistry {
 
   private async sendStoredReply(adapter: RegisteredGatewayAdapter, entry: GatewayInboxEntry, message: GatewayInboundMessage): Promise<void> {
     const journal = this.options.journal!;
-    const current = journal.outbox(entry.delivery_id)!;
-    if (current.status === "sent") return;
-    if (["unknown", "failed", "sending"].includes(current.status)) throw new Error("Gateway 回复结果未确认或重试已停止，未再次发送");
-    if (current.next_attempt_at > this.now()) {
-      this.scheduleResume(adapter.id, current.next_attempt_at - this.now());
+    const claim = await journal.claimReply(entry.delivery_id, this.maxReplyAttempts);
+    if (claim.status === "sent") return;
+    if (claim.status === "waiting") {
+      this.scheduleResume(adapter.id, claim.nextAttemptAt - this.now());
       throw new Error("Gateway 回复等待已安排的重试");
     }
-    if (current.retry_count >= this.maxReplyAttempts) {
-      journal.sendFailed(entry.delivery_id, { status: "failed", reason: "retry_exhausted" });
+    if (claim.status === "exhausted") {
       throw new Error("Gateway 回复达到重试上限，已保留未送达结果");
     }
-    let sending: ReturnType<GatewayDeliveryJournal["beginSend"]>;
-    try { sending = journal.beginSend(entry.delivery_id); }
-    catch {
-      journal.sendFailed(entry.delivery_id, { status: "failed", reason: "reply_integrity_invalid" });
+    if (claim.status === "integrity") {
       this.report(adapter.id, "Gateway 已保存回复校验失败，未发送；请检查原始任务结果");
       throw new Error("Gateway 回复校验失败，已停止重试");
     }
+    if (claim.status !== "sending") throw new Error("Gateway 回复结果未确认或已被认领，未再次发送");
+    const sending = claim.entry;
+    let continuation: string | undefined;
     try {
       if (this.suspended || this.pausedChannels.has(adapter.id) || !adapter.isConnected() || adapter.workConnectionKey?.() !== entry.account_key) {
         throw new GatewayReplyNotSentError("Gateway 回复连接不可用，未发送");
       }
-      if (!this.isAuthorized(message)) throw new GatewayReplyNotSentError("Gateway 回复授权已撤回，未发送");
-      if (this.options.replyCurrent?.(entry.delivery_id) === false) throw new GatewayReplyNotSentError("原协作回传已取消，未发送");
+      continuation = entry.message_id.startsWith("bot-reply:") ? await journal.readContinuationOperation(entry.delivery_id) : undefined;
+      if (!this.isAuthorized(message) || (!continuation && !await journal.assignmentCurrent(entry, message.sender?.id))) {
+        throw new GatewayReplyNotSentError("Gateway 回复授权已撤回，未发送");
+      }
+      if (this.suspended || this.pausedChannels.has(adapter.id) || !adapter.isConnected() || adapter.workConnectionKey?.() !== entry.account_key) {
+        throw new GatewayReplyNotSentError("Gateway 回复授权复核后连接已变化，未发送");
+      }
+      if (this.options.replyCurrent?.(entry.delivery_id, continuation) === false) throw new GatewayReplyNotSentError("原协作回传已取消，未发送");
       // A native turn may outlive a same-account reconnect. Rebuild only from
       // the original accepted route and current verified credentials, so an old
       // closure is never the reason a recoverable answer remains stranded.
@@ -279,44 +328,52 @@ export class GatewayPlatformRegistry {
         messageId: payload.messageId, sender: payload.sender, route: payload.replyRoute }) : undefined;
       const live = this.liveReplies.get(entry.delivery_id);
       const currentReply = live?.accountKey === entry.account_key && live.generation === adapter.gatewayConnectionGeneration?.() ? live.reply : undefined;
-      if (adapter.type === "slack" && journal.continuationOperation(entry.delivery_id)) {
+      if (adapter.type === "slack" && continuation) {
         if (!payload.workTarget || payload.workTarget.channelType !== "slack" || !adapter.sendWorkNotification)
           throw new GatewayReplyNotSentError("原 Slack 私人回传目标不可用");
         const result = await adapter.sendWorkNotification({ target: payload.workTarget, text: sending.reply_text, effectKey: entry.delivery_id,
-          assertCurrent: () => { if (!this.isAuthorized(message) || this.options.replyCurrent?.(entry.delivery_id) === false)
+           assertCurrent: () => { if (!this.isAuthorized(message) || this.options.replyCurrent?.(entry.delivery_id, continuation) === false)
             throw new GatewayReplyNotSentError("原协作回传已取消或失去授权"); } });
         if (!result.ok) {
           if (result.responseLost) throw new Error("Slack 协作回传回执未知");
           throw new GatewayReplyNotSentError(result.error, result.retryable);
         }
       } else await (restored ?? currentReply ?? message.reply)(sending.reply_text);
-      journal.sent(entry.delivery_id);
-      try { this.options.onReplySent?.(entry.delivery_id); }
-      catch (error) { console.warn("[Gateway] 回复回执投影等待恢复", error); }
     } catch (error) {
       if (error instanceof GatewayReplyNotSentError) {
         const retryable = error.retryable && sending.retry_count < this.maxReplyAttempts;
         const delay = Math.max(1, Math.min(5 * 60_000, error.retryAfterMs ?? this.options.retryDelayMs?.(sending.retry_count)
           ?? [1_000, 5_000, 15_000, 60_000][Math.min(sending.retry_count - 1, 3)]));
-        journal.sendFailed(entry.delivery_id, { status: retryable ? "pending" : error.retryable ? "failed" : "blocked",
-          reason: retryable ? "provider_not_sent" : error.retryable ? "retry_exhausted" : "reply_unavailable",
-          nextAttemptAt: retryable ? this.now() + delay : 0 });
-        this.report(adapter.id, retryable ? "Gateway 回复尚未发送，已安排有限重试" : "Gateway 回复未送达，已保留待处理结果");
-        if (retryable) this.scheduleResume(adapter.id, delay);
+        const recorded = await journal.finishOwnedReply(entry.delivery_id, sending.retry_count,
+          retryable ? "pending" : error.retryable ? "failed" : "blocked",
+          retryable ? "provider_not_sent" : error.retryable ? "retry_exhausted" : "reply_unavailable",
+          retryable ? this.now() + delay : 0);
+        if (recorded) {
+          this.report(adapter.id, retryable ? "Gateway 回复尚未发送，已安排有限重试" : "Gateway 回复未送达，已保留待处理结果");
+          if (retryable) this.scheduleResume(adapter.id, delay);
+        }
       } else {
-        journal.sendFailed(entry.delivery_id, { status: "unknown", reason: "provider_receipt_unknown" });
-        this.report(adapter.id, "Gateway 回复回执未确认，已保留记录；为避免重复发送已停止自动重试");
-        const queryable = typeof (adapter as RegisteredGatewayAdapter & { lookupOutboundDelivery?: unknown }).lookupOutboundDelivery === "function";
-        this.options.onOutboundUnknown?.({
-          deliveryId: entry.delivery_id,
-          channelId: adapter.id,
-          channelType: adapter.type,
-          accountKey: entry.account_key,
-          queryable,
-        });
+        const recorded = await journal.finishOwnedReply(entry.delivery_id, sending.retry_count, "unknown", "provider_receipt_unknown");
+        if (recorded) {
+          this.report(adapter.id, "Gateway 回复回执未确认，已保留记录；为避免重复发送已停止自动重试");
+          const queryable = typeof (adapter as RegisteredGatewayAdapter & { lookupOutboundDelivery?: unknown }).lookupOutboundDelivery === "function";
+          this.options.onOutboundUnknown?.({
+            deliveryId: entry.delivery_id,
+            attempt: sending.retry_count,
+            channelId: adapter.id,
+            channelType: adapter.type,
+            accountKey: entry.account_key,
+            queryable,
+          });
+        }
       }
       throw new Error(error instanceof GatewayReplyNotSentError ? "Gateway 回复尚未发送，结果已保存" : "Gateway 回复回执未确认，未自动重发");
     }
+    if (!await journal.finishOwnedReply(entry.delivery_id, sending.retry_count, "sent")) {
+      throw new Error("Gateway 发送结果等待 Core 确认");
+    }
+    try { this.options.onReplySent?.(entry.delivery_id, continuation); }
+    catch (error) { console.warn("[Gateway] 回复回执投影等待恢复", error); }
   }
 
   /** Enqueue recovery without making connect() wait for long-running Agent turns. */
@@ -324,7 +381,55 @@ export class GatewayPlatformRegistry {
     this.suspended = false;
     this.pausedChannels.delete(channelId);
     this.offlineChecks.delete(channelId);
-    this.recover(channelId, retryBlocked);
+    this.startRecovery(channelId, retryBlocked);
+  }
+
+  recoverScheduled(channelId: string): void {
+    this.startRecovery(channelId, false);
+  }
+
+  private startRecovery(channelId: string, retryBlocked: boolean): void {
+    if (!this.options.journal?.usesCoreAdmission) {
+      this.recover(channelId, retryBlocked);
+      return;
+    }
+    void this.recoverCore(channelId, retryBlocked).catch(() => {
+      this.report(channelId, "Gateway 恢复暂时不可用，已保留待处理记录");
+      this.scheduleResume(channelId, 1_000);
+    });
+  }
+
+  private recoverCore(channelId: string, retryBlocked: boolean, sessionKey?: string): Promise<boolean> {
+    const adapter = this.entries.get(channelId), journal = this.options.journal;
+    if (!adapter || !journal || this.suspended || this.pausedChannels.has(channelId)) return Promise.resolve(false);
+    const epoch = this.epoch, channelEpoch = this.channelEpochs.get(channelId) ?? 0;
+    const accountKey = adapter.isConnected() ? adapter.workConnectionKey?.() : undefined;
+    const generation = adapter.gatewayConnectionGeneration?.();
+    const recoveryKey = JSON.stringify([channelId, sessionKey, retryBlocked]);
+    const pending = this.coreRecoveries.get(recoveryKey);
+    if (pending?.epoch === epoch && pending.channelEpoch === channelEpoch && pending.accountKey === accountKey
+        && pending.generation === generation) return pending.ready;
+    const cutoff = this.now();
+    const ready = journal.readRecovery({ channelId, accountKey, sessionKey, retryBlocked, cutoff,
+      limit: sessionKey === undefined ? 1024 : 64, continuationsOnly: adapter.type === "slack" }).then(state => {
+      if (this.suspended || this.pausedChannels.has(channelId) || this.epoch !== epoch
+        || (this.channelEpochs.get(channelId) ?? 0) !== channelEpoch || this.entries.get(channelId) !== adapter
+        || (adapter.isConnected() ? adapter.workConnectionKey?.() : undefined) !== accountKey
+        || adapter.gatewayConnectionGeneration?.() !== generation) return false;
+      this.coreDeliveryCounts.set(channelId, state.counts);
+      if (!accountKey) {
+        this.scheduleOfflineRecovery(channelId, state.counts);
+        return false;
+      }
+      this.offlineChecks.delete(channelId);
+      this.scheduleStored(adapter, state.pending);
+      if (state.nextRetryAt !== null) this.scheduleResume(channelId, Math.max(1, state.nextRetryAt - this.now()));
+      return state.truncated;
+    }).finally(() => {
+      if (this.coreRecoveries.get(recoveryKey)?.ready === ready) this.coreRecoveries.delete(recoveryKey);
+    });
+    this.coreRecoveries.set(recoveryKey, { epoch, channelEpoch, accountKey, generation, ready });
+    return ready;
   }
 
   private recover(channelId: string, retryBlocked: boolean): void {
@@ -333,30 +438,35 @@ export class GatewayPlatformRegistry {
     const key = adapter?.workConnectionKey?.();
     if (!adapter || !journal) return;
     if (!adapter.isConnected() || !key) {
-      const counts = journal.counts(channelId);
-      // One unref'ed timer per affected channel observes transport recovery; it
-      // does not send, count a retry, query the provider or grow a message queue.
-      if (counts.pending || counts.reply_pending) {
-        const attempts = this.offlineChecks.get(channelId) ?? 0;
-        this.offlineChecks.set(channelId, Math.min(attempts + 1, 4));
-        this.scheduleResume(channelId, [1_000, 2_000, 5_000, 10_000, 30_000][Math.min(attempts, 4)]);
-      }
+      this.scheduleOfflineRecovery(channelId, journal.counts(channelId));
       return;
     }
     this.offlineChecks.delete(channelId);
     // Partition due and future retries at one instant. A deadline crossed between
     // the two queries must still schedule a wake, not fall into neither result.
     const cutoff = this.now();
-    for (const entry of journal.recoverable(channelId, key, 1024, retryBlocked, cutoff)) {
-      if (adapter.type === "slack" && (!journal.continuationOperation(entry.delivery_id) || !journal.outbox(entry.delivery_id))) continue;
+    const entries = journal.recoverable(channelId, key, 1024, retryBlocked, cutoff);
+    this.scheduleStored(adapter, adapter.type === "slack" ? entries.filter(entry =>
+      journal.continuationOperation(entry.delivery_id) && journal.outbox(entry.delivery_id)) : entries);
+    const next = journal.nextRetryAt(channelId, key, cutoff);
+    if (next !== undefined) this.scheduleResume(channelId, Math.max(1, next - this.now()));
+  }
+
+  private scheduleStored(adapter: RegisteredGatewayAdapter, entries: GatewayInboxEntry[]): void {
+    for (const entry of entries) {
       if (this.activeDeliveries.has(entry.delivery_id)) continue;
       if (this.pending >= 1024) break;
       if ((this.depths.get(entry.session_key) ?? 0) >= 64) continue;
       try { void this.dispatchStored(adapter, entry).catch(() => {}); }
-      catch { this.report(channelId, "Gateway 恢复暂时不可用，未删除待处理记录"); }
+      catch { this.report(adapter.id, "Gateway 恢复暂时不可用，已保留待处理记录"); }
     }
-    const next = journal.nextRetryAt(channelId, key, cutoff);
-    if (next !== undefined) this.scheduleResume(channelId, Math.max(1, next - this.now()));
+  }
+
+  private scheduleOfflineRecovery(channelId: string, counts: Record<string, number>): void {
+    if (!counts.pending && !counts.reply_pending) return;
+    const attempts = this.offlineChecks.get(channelId) ?? 0;
+    this.offlineChecks.set(channelId, Math.min(attempts + 1, 4));
+    this.scheduleResume(channelId, [1_000, 2_000, 5_000, 10_000, 30_000][Math.min(attempts, 4)]);
   }
 
   /** User disconnect pauses only this channel; queued data remains durable. */
@@ -379,7 +489,9 @@ export class GatewayPlatformRegistry {
     this.liveReplies.clear();
   }
 
-  deliveryStatus(channelId: string): Record<string, number> { return this.options.journal?.counts(channelId) ?? {}; }
+  deliveryStatus(channelId: string): Record<string, number> {
+    return (this.options.journal?.usesCoreAdmission ? this.coreDeliveryCounts.get(channelId) : this.options.journal?.counts(channelId)) ?? {};
+  }
 
   private scheduleResume(channelId: string, delay: number): void {
     if (this.suspended || this.pausedChannels.has(channelId)) return;
@@ -394,7 +506,7 @@ export class GatewayPlatformRegistry {
     const timer = setTimeout(() => {
       this.recoveryTimers.delete(channelId);
       if (!this.suspended && !this.pausedChannels.has(channelId)) {
-        try { this.recover(channelId, false); }
+        try { this.startRecovery(channelId, false); }
         catch { this.report(channelId, "Gateway 恢复暂时不可用，未删除待处理记录"); }
       }
     }, delay);

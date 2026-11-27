@@ -12,7 +12,7 @@ import type {
 export const AGENT_LOADOUT_MAX_RECORDS_PER_TASK = 200;
 export const AGENT_LOADOUT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 
-interface LoadoutObservationRow {
+export interface RuntimeLoadoutObservationRow {
   id: string;
   task_id: string;
   user_message_id: string;
@@ -29,6 +29,14 @@ interface LoadoutObservationRow {
   created_at: number;
   updated_at: number;
   completed_at: number | null;
+}
+
+interface AcceptedTurn {
+  taskId: string;
+  userMessageId: string;
+  assistantMessageId: string;
+  recommendation: Pick<AgentLoadoutRecommendationDto, "query" | "mode" | "projectId" | "workspaceId" | "tagId" | "context" | "capabilities">;
+  at?: number;
 }
 
 function parseArray<T>(value: string): T[] {
@@ -58,7 +66,7 @@ function parseContext(value: string): AgentLoadoutObservationContextDto {
   }
 }
 
-function mapRow(row: LoadoutObservationRow): AgentLoadoutObservationDto {
+function mapRow(row: RuntimeLoadoutObservationRow): AgentLoadoutObservationDto {
   return {
     id: row.id,
     taskId: row.task_id,
@@ -85,40 +93,44 @@ function key(kind: AgentLoadoutCapabilityKind, id: string): string {
 
 /** Observational only. Never changes Expert/Skill/Connector/MCP configuration. */
 export class AgentLoadoutObservationService {
-  private writeTail: Promise<unknown> = Promise.resolve();
+  private writeTail = Promise.resolve();
 
   constructor(private readonly db: AppDatabase) {}
 
   private get conn() { return this.db.connection; }
 
   flush(): Promise<void> {
-    return this.writeTail.then(() => undefined, () => undefined);
+    return this.writeTail;
   }
 
   private get rustRequired(): boolean {
-    return Boolean(this.conn.readonly || this.db.runtimeAuditReader?.supervised);
+    return this.db.readonly || Boolean(this.db.runtimeAuditReader?.supervised);
   }
 
-  private enqueueRustWrite(request: Record<string, unknown>): void {
+  private enqueueRustWrite<T>(request: Record<string, unknown>): Promise<T> {
     const reader = this.db.runtimeAuditReader;
     if (!reader) throw new Error("AgentLoadoutObservationService 缺少 Rust 写入通道");
     const next = this.writeTail.then(async () => {
-      const reply = await reader.batch1Write(request);
+      const reply = await reader.batch1Write<T>(request);
       if (reply === undefined) throw new Error(`装配观测写入未获 Rust 确认: ${String(request.kind)}`);
       return reply;
     });
-    this.writeTail = next.catch(error => {
+    this.writeTail = next.then(() => undefined, error => {
       console.warn(`[LoadoutObservations] Rust write failed: ${error instanceof Error ? error.message : String(error)}`);
     });
+    return next;
   }
 
-  recordAcceptedTurn(input: {
-    taskId: string;
-    userMessageId: string;
-    assistantMessageId: string;
-    recommendation: Pick<AgentLoadoutRecommendationDto, "query" | "mode" | "projectId" | "workspaceId" | "tagId" | "context" | "capabilities">;
-    at?: number;
-  }): AgentLoadoutObservationDto {
+  ensureAcceptedTurn(input: AcceptedTurn): void {
+    if (!this.rustRequired && this.getByTurn(input.taskId, input.assistantMessageId)) return;
+    this.recordTurn(input, true);
+  }
+
+  recordAcceptedTurn(input: AcceptedTurn): AgentLoadoutObservationDto {
+    return this.recordTurn(input, false);
+  }
+
+  private recordTurn(input: AcceptedTurn, ifAbsent: boolean): AgentLoadoutObservationDto {
     const at = input.at ?? Date.now();
     const actual = input.recommendation.capabilities
       .filter((item) => item.actual)
@@ -154,8 +166,8 @@ export class AgentLoadoutObservationService {
     const matchedActualJson = JSON.stringify(matchedActual);
     const notSelectedJson = JSON.stringify(notSelected);
     const blockedJson = JSON.stringify(blocked);
-    if (this.db.runtimeAuditReader && this.rustRequired) {
-      this.enqueueRustWrite({
+    if (this.rustRequired) {
+      void this.enqueueRustWrite({
         kind: "loadoutRecordTurn",
         id,
         taskId: input.taskId,
@@ -171,6 +183,7 @@ export class AgentLoadoutObservationService {
         at,
         cutoff: at - AGENT_LOADOUT_MAX_AGE_MS,
         maxRecords: AGENT_LOADOUT_MAX_RECORDS_PER_TASK,
+        ifAbsent,
       });
       return {
         id,
@@ -190,7 +203,6 @@ export class AgentLoadoutObservationService {
         updatedAt: at,
       };
     }
-    if (this.conn.readonly) throw new Error("只读数据库模式下无法写入 agent_loadout_observations");
     this.conn.prepare(
       `INSERT INTO agent_loadout_observations (
         id,task_id,user_message_id,assistant_message_id,query_hash,context_json,
@@ -234,12 +246,11 @@ export class AgentLoadoutObservationService {
   }
 
   markSkillUsed(taskId: string, assistantMessageId: string, skillId: string, at = Date.now()): void {
-    if (this.db.runtimeAuditReader && this.rustRequired) {
+    if (this.rustRequired) {
       if (!skillId) return;
-      this.enqueueRustWrite({ kind: "loadoutMarkSkillUsed", taskId, assistantMessageId, skillId, at });
+      void this.enqueueRustWrite({ kind: "loadoutMarkSkillUsed", taskId, assistantMessageId, skillId, at });
       return;
     }
-    if (this.conn.readonly) throw new Error("只读数据库模式下无法更新 agent_loadout_observations");
     const current = this.getByTurn(taskId, assistantMessageId);
     if (!current) return;
     const next = [...new Set([...current.usedSkillIds, skillId].filter(Boolean))];
@@ -254,11 +265,10 @@ export class AgentLoadoutObservationService {
     outcome: Exclude<AgentLoadoutObservationOutcome, "pending">,
     at = Date.now(),
   ): void {
-    if (this.db.runtimeAuditReader && this.rustRequired) {
-      this.enqueueRustWrite({ kind: "loadoutMarkOutcome", taskId, assistantMessageId, outcome, at });
+    if (this.rustRequired) {
+      void this.enqueueRustWrite({ kind: "loadoutMarkOutcome", taskId, assistantMessageId, outcome, at });
       return;
     }
-    if (this.conn.readonly) throw new Error("只读数据库模式下无法更新 agent_loadout_observations");
     this.conn.prepare(
       `UPDATE agent_loadout_observations SET outcome=?,completed_at=?,updated_at=?
        WHERE task_id=? AND assistant_message_id=? AND outcome='pending'`,
@@ -266,11 +276,10 @@ export class AgentLoadoutObservationService {
   }
 
   abortPendingForTask(taskId: string, at = Date.now()): void {
-    if (this.db.runtimeAuditReader && this.rustRequired) {
-      this.enqueueRustWrite({ kind: "loadoutAbortPending", taskId, at });
+    if (this.rustRequired) {
+      void this.enqueueRustWrite({ kind: "loadoutAbortPending", taskId, at });
       return;
     }
-    if (this.conn.readonly) throw new Error("只读数据库模式下无法更新 agent_loadout_observations");
     this.conn.prepare(
       `UPDATE agent_loadout_observations SET outcome='aborted',completed_at=?,updated_at=?
        WHERE task_id=? AND outcome='pending'`,
@@ -280,31 +289,42 @@ export class AgentLoadoutObservationService {
   getByTurn(taskId: string, assistantMessageId: string): AgentLoadoutObservationDto | undefined {
     const row = this.conn.prepare(
       "SELECT * FROM agent_loadout_observations WHERE task_id=? AND assistant_message_id=?",
-    ).get(taskId, assistantMessageId) as LoadoutObservationRow | undefined;
+    ).get(taskId, assistantMessageId) as RuntimeLoadoutObservationRow | undefined;
     return row ? mapRow(row) : undefined;
   }
 
   list(taskId: string, limit = 50): AgentLoadoutObservationDto[] {
-    const capped = Math.max(1, Math.min(AGENT_LOADOUT_MAX_RECORDS_PER_TASK, limit));
     const rows = this.conn.prepare(
       "SELECT * FROM agent_loadout_observations WHERE task_id=? ORDER BY created_at DESC,rowid DESC LIMIT ?",
-    ).all(taskId, capped) as LoadoutObservationRow[];
+    ).all(taskId, this.listLimit(limit)) as RuntimeLoadoutObservationRow[];
     return rows.map(mapRow);
   }
 
+  async readList(taskId: string, limit = 50): Promise<AgentLoadoutObservationDto[]> {
+    if (!this.rustRequired) return this.list(taskId, limit);
+    await this.flush();
+    const rows = await this.db.runtimeAuditReader?.readLoadoutObservations(taskId, this.listLimit(limit));
+    if (!rows) throw new Error("装配观测读取未获 Rust 确认");
+    return rows.map(mapRow);
+  }
+
+  private listLimit(limit: number): number {
+    return Number.isFinite(limit) ? Math.max(1, Math.min(AGENT_LOADOUT_MAX_RECORDS_PER_TASK, Math.trunc(limit))) : 50;
+  }
+
   clear(taskId?: string): number {
-    const count = (taskId
-      ? this.conn.prepare("SELECT COUNT(*) AS n FROM agent_loadout_observations WHERE task_id=?").get(taskId)
-      : this.conn.prepare("SELECT COUNT(*) AS n FROM agent_loadout_observations").get()) as { n: number };
-    if (this.db.runtimeAuditReader && this.rustRequired) {
-      this.enqueueRustWrite({ kind: "loadoutClear", taskId: taskId ?? null });
-      return count.n;
-    }
     if (this.conn.readonly) throw new Error("只读数据库模式下无法清理 agent_loadout_observations");
     const result = taskId
       ? this.conn.prepare("DELETE FROM agent_loadout_observations WHERE task_id=?").run(taskId)
       : this.conn.prepare("DELETE FROM agent_loadout_observations").run();
     return result.changes;
+  }
+
+  async clearSaved(taskId?: string): Promise<number> {
+    if (!this.rustRequired) return this.clear(taskId);
+    const { changes } = await this.enqueueRustWrite<{ changes: number }>({ kind: "loadoutClear", taskId: taskId ?? null });
+    if (!Number.isSafeInteger(changes) || changes < 0) throw new Error("Core 未返回有效的装配观测清理数量");
+    return changes;
   }
 
   private prune(taskId: string, now = Date.now()): void {

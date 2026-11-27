@@ -37,7 +37,7 @@ export interface ResumeAdmissionOptions {
   concurrency: number;
   run: (taskId: string) => Promise<void>;
   /** Re-checked when the item leaves the queue: authority, Work lifecycle, binding and回收区 can change while queued. */
-  shouldSkip: (taskId: string) => string | undefined;
+  shouldSkip: (taskId: string) => string | undefined | Promise<string | undefined>;
 }
 
 /** Provisional width; the app-level baseline in Issue #17 A decides the final value. */
@@ -111,23 +111,27 @@ export class ResumeAdmission {
         this.skipped.push({ taskId, reason: "cancelled" });
         continue;
       }
-      const skip = this.options.shouldSkip(taskId);
-      if (skip) {
-        this.skipped.push({ taskId, reason: skip });
-        continue;
-      }
       this.running.add(taskId);
-      this.active += 1;
-      this.maxConcurrent = Math.max(this.maxConcurrent, this.active);
       try {
-        await this.options.run(taskId);
-        this.delivered.push(taskId);
+        const policySkip = await this.options.shouldSkip(taskId);
+        const reason = this.cancelled ? "cancelled" : policySkip;
+        if (reason) {
+          this.skipped.push({ taskId, reason });
+          continue;
+        }
+        this.active += 1;
+        this.maxConcurrent = Math.max(this.maxConcurrent, this.active);
+        try {
+          await this.options.run(taskId);
+          this.delivered.push(taskId);
+        } finally {
+          this.active -= 1;
+        }
       } catch (error) {
         // One failed session must never hold a slot or stop the rest of the queue.
         this.failed.push({ taskId, reason: error instanceof Error ? error.message : String(error) });
       } finally {
         this.running.delete(taskId);
-        this.active -= 1;
       }
     }
   }

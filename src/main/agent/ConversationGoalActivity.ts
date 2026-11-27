@@ -1,9 +1,13 @@
+import { createHash } from "node:crypto";
+import { createReadStream, readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
+import { LOCAL_USER_ID } from "../../shared/bot-work";
+import { TaskWriteQueue } from "../db/TaskWriteQueue";
 import type { GoalActivityAdmission, GoalActivityCost, GoalActivityDto, GoalActivityIdentity, GoalActivityOwner, GoalActivityRun, GoalActivitySkill } from "../../shared/conversation-goal-activity";
 import type { ModelRequestDiagnostic, ReportedTokenUsage } from "../../shared/task-diagnostics";
 
 type Identity = GoalActivityIdentity & { taskId: string };
-type OwnedRun = Omit<GoalActivityRun, "requestCount" | "retryCount"> & { goalId: string; assistantMessageIds: string[] };
+export type OwnedGoalRun = Omit<GoalActivityRun, "requestCount" | "retryCount"> & GoalActivityOwner & { assistantMessageIds: string[] };
 
 function useId(value: GoalActivityIdentity & { taskId: string }): string {
   return JSON.stringify([value.taskId, value.conversationId, value.generationTaskId]);
@@ -18,13 +22,14 @@ const fields = ["input", "output", "cacheRead", "cacheWrite"] as const;
 /** Goal ownership is frozen at native admission. Reads never infer it from clocks,
  * mutable task state, or matching text. Repeated native requests share one generation. */
 export class ConversationGoalActivity {
-  private writeTail: Promise<unknown> = Promise.resolve();
+  private readonly writes = new TaskWriteQueue();
 
   constructor(
-    private readonly db: Database.Database,
+    private readonly fixture: Database.Database | undefined,
     private readonly reader?: import("../platform/runtime-audit").RuntimeAuditReader,
   ) {
-    if (db.readonly) return;
+    const db = fixture;
+    if (!db || db.readonly) return;
     db.exec(`CREATE TABLE IF NOT EXISTS conversation_goal_generations (
       task_id TEXT NOT NULL, conversation_id TEXT NOT NULL, generation_id INTEGER NOT NULL,
       work_id TEXT NOT NULL REFERENCES works(work_id) ON DELETE CASCADE,
@@ -45,37 +50,53 @@ export class ConversationGoalActivity {
     );`);
   }
 
-  flush(): Promise<void> {
-    return this.writeTail.then(() => undefined, () => undefined);
+  private get db(): Database.Database {
+    if (!this.fixture) throw new Error("目标执行记录需要通过 Rust Core 读取或写入");
+    return this.fixture;
+  }
+
+  flush(taskId?: string): Promise<void> {
+    return this.writes.flush(taskId);
   }
 
   private get rustRequired(): boolean {
-    return Boolean(this.db.readonly || this.reader?.supervised);
+    return !this.fixture || Boolean(this.fixture.readonly || this.reader?.supervised);
   }
 
-  private enqueueRustWrite(request: Record<string, unknown>): void {
+  private enqueueRustWrite(request: Record<string, unknown> | (() => Promise<Record<string, unknown> | undefined>),
+    taskId = typeof request !== "function" && typeof request.taskId === "string" ? request.taskId : undefined): void {
     const reader = this.reader;
     if (!reader) throw new Error("ConversationGoalActivity 缺少 Rust 写入通道");
-    const next = this.writeTail.then(async () => {
-      const reply = await reader.batch1Write(request);
-      if (reply === undefined) throw new Error(`Goal 活动写入未获 Rust 确认: ${String(request.kind)}`);
+    const send = async () => {
+      const write = typeof request === "function" ? await request() : request;
+      if (!write) return;
+      const reply = await reader.batch1Write(write);
+      if (reply === undefined) throw new Error(`Goal 活动写入未获 Rust 确认: ${String(write.kind)}`);
       return reply;
-    });
-    this.writeTail = next.catch(error => {
+    };
+    const pending = taskId ? this.writes.run([taskId], send) : this.writes.runExclusive(send);
+    void pending.catch(error => {
       console.warn(`[ConversationGoalActivity] Rust write failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }
 
   admit(taskId: string, admission: GoalActivityAdmission): void {
+    if (!this.fixture && admission.parent) {
+      this.enqueueRustWrite({ kind: "goalActivityAdmit", userId: LOCAL_USER_ID, taskId,
+        conversationId: admission.conversationId, generationId: admission.generationTaskId, parent: admission.parent,
+        metadataJson: JSON.stringify({ child: admission.child }) });
+      return;
+    }
     const parent = admission.parent && this.generation({ taskId, ...admission.parent });
     const owner = admission.inputs?.[0]?.owner;
     const direct = Boolean(owner && admission.inputs?.every(input =>
-      input.owner.goalId === owner.goalId && input.owner.intentRevision === owner.intentRevision));
+      input.owner.goalId === owner.goalId && input.owner.intentRevision === owner.intentRevision && input.owner.ownerEpoch === owner.ownerEpoch));
     const goalId = parent?.goalId ?? (direct ? owner?.goalId : undefined);
     const intentRevision = parent?.intentRevision ?? (direct ? owner?.intentRevision : undefined);
     if (!goalId || intentRevision === undefined) return;
     const metadata = {
       intentRevision,
+      ownerEpoch: parent?.ownerEpoch ?? (direct ? owner?.ownerEpoch : undefined),
       parent: parent ? admission.parent : undefined,
       child: parent ? admission.child : undefined,
       assistantMessageIds: direct ? [...new Set(admission.inputs!.map(input => input.assistantMessageId))] : [],
@@ -84,6 +105,7 @@ export class ConversationGoalActivity {
     if (this.reader && this.rustRequired) {
       this.enqueueRustWrite({
         kind: "goalActivityAdmit",
+        userId: LOCAL_USER_ID,
         taskId,
         conversationId: admission.conversationId,
         generationId: admission.generationTaskId,
@@ -99,12 +121,20 @@ export class ConversationGoalActivity {
       .run(taskId, admission.conversationId, admission.generationTaskId, goalId, metadataJson);
   }
 
-  generation(identity: Identity): OwnedRun | undefined {
+  generation(identity: Identity): OwnedGoalRun | undefined {
     const row = this.db.prepare(`SELECT work_id,metadata,outcome FROM conversation_goal_generations
       WHERE task_id=? AND conversation_id=? AND generation_id=?`).get(identity.taskId, identity.conversationId, identity.generationTaskId) as
       { work_id: string; metadata: string; outcome: GoalActivityRun["status"] | null } | undefined;
     if (!row) return undefined;
     return { ...identity, goalId: row.work_id, ...JSON.parse(row.metadata), status: row.outcome ?? undefined };
+  }
+
+  async readGeneration(identity: Identity): Promise<OwnedGoalRun | undefined> {
+    if (this.fixture) return this.generation(identity);
+    await this.flush(identity.taskId);
+    const row = await this.reader?.readConversationGoalGeneration(identity.taskId, LOCAL_USER_ID, identity.conversationId, identity.generationTaskId);
+    if (row === undefined) throw new Error("Core 未确认 Goal 执行记录读取");
+    return row ?? undefined;
   }
 
   generationsForRevision(taskId: string, goalId: string, intentRevision: number): GoalActivityIdentity[] {
@@ -131,25 +161,26 @@ export class ConversationGoalActivity {
   }
 
   settle(identity: Identity, outcome: Exclude<GoalActivityRun["status"], undefined>, messageId?: string): GoalActivityOwner | undefined {
-    const run = this.generation(identity);
-    if (!run) return undefined;
-    if (this.reader && this.rustRequired) {
+    const run = this.fixture ? this.generation(identity) : undefined;
+    if (this.fixture && !run) return undefined;
+    if (this.rustRequired) {
       this.enqueueRustWrite({
         kind: "goalActivitySettle",
+        userId: LOCAL_USER_ID,
         taskId: identity.taskId,
         conversationId: identity.conversationId,
         generationId: identity.generationTaskId,
         outcome,
         messageId: messageId ?? null,
       });
-      return { goalId: run.goalId, intentRevision: run.intentRevision };
+      return run ? { goalId: run.goalId, intentRevision: run.intentRevision } : undefined;
     }
-    if (this.db.readonly) throw new Error("只读数据库模式下无法更新 conversation_goal_generations");
+    if (!run) return undefined;
     if (messageId && !run.assistantMessageIds.includes(messageId)) run.assistantMessageIds.push(messageId);
-    const { intentRevision, parent, child, assistantMessageIds, goalId, returned } = run;
+    const { intentRevision, ownerEpoch, parent, child, assistantMessageIds, goalId, returned } = run;
     this.db.prepare(`UPDATE conversation_goal_generations SET outcome=COALESCE(outcome,?), metadata=?
       WHERE task_id=? AND conversation_id=? AND generation_id=?`).run(outcome,
-      JSON.stringify({ intentRevision, parent, child, assistantMessageIds, returned }),
+      JSON.stringify({ intentRevision, ownerEpoch, parent, child, assistantMessageIds, returned }),
       identity.taskId, identity.conversationId, identity.generationTaskId);
     return { goalId, intentRevision };
   }
@@ -230,6 +261,23 @@ export class ConversationGoalActivity {
       WHERE json_extract(evidence_json,'$.pathKey')=? LIMIT 1`).get(pathKey));
   }
 
+  recordAuthoredSkillReadFromPath(taskId: string, path: string, pathKey: string, at: number): void {
+    if (this.fixture) {
+      if (this.authoredSkillAtPath(pathKey)) {
+        this.recordAuthoredSkillRead(pathKey, createHash("sha256").update(readFileSync(path)).digest("hex"), at);
+      }
+      return;
+    }
+    this.enqueueRustWrite(async () => {
+      const authored = await this.reader?.hasAuthoredGoalSkillAtPath(pathKey);
+      if (authored === undefined) throw new Error("Core 未确认 Goal Skill 来源读取");
+      if (!authored) return;
+      const hash = createHash("sha256");
+      for await (const chunk of createReadStream(path)) hash.update(chunk);
+      return { kind: "goalActivityRecordAuthoredSkillRead", pathKey, fingerprint: hash.digest("hex"), at };
+    }, taskId);
+  }
+
   recordAuthoredSkillRead(pathKey: string, fingerprint: string, at: number): void {
     if (this.reader && this.rustRequired) {
       this.enqueueRustWrite({
@@ -255,7 +303,7 @@ export class ConversationGoalActivity {
     const rows = this.db.prepare(`SELECT task_id, conversation_id, generation_id, metadata, outcome
       FROM conversation_goal_generations WHERE work_id=? ORDER BY rowid`).all(goalId) as
       Array<{ task_id: string; conversation_id: string; generation_id: number; metadata: string; outcome: GoalActivityRun["status"] | null }>;
-    const owned: OwnedRun[] = rows.map(row => ({ taskId: row.task_id, conversationId: row.conversation_id,
+    const owned: OwnedGoalRun[] = rows.map(row => ({ taskId: row.task_id, conversationId: row.conversation_id,
       generationTaskId: row.generation_id, ...JSON.parse(row.metadata), goalId, status: row.outcome ?? undefined }));
     const identified = new Set(owned.map(useId));
     const requests = new Map<string, ModelRequestDiagnostic[]>();

@@ -1,4 +1,3 @@
-import type Database from "better-sqlite3";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -6,9 +5,10 @@ import type { HookDraft } from "../../../shared/native-hooks";
 import type { ImprovementAssetKind, ImprovementOutcome, ImprovementPackage, ImprovementScope, ImprovementVersionEvidence, ImprovementWeeklyMetrics, ObservationSource } from "../../../shared/native-improvement";
 import { parseDeliveryContract, verifyDeliveryContract, type DeliveryContract } from "./DeliveryContract";
 import { deliveryTool, executeDeliveryTool } from "./DeliveryTool";
-import { fingerprint } from "./ImprovementDecisions";
+import { canonicalImprovementJson, fingerprint } from "./ImprovementDecisions";
 import type { ImprovementKnowledge, ImprovementKnowledgeTask, PreparedImprovementKnowledge } from "./ImprovementKnowledge";
 import type { NativeHookStore } from "./NativeHookStore";
+import type { NativePersistenceReply, RuntimeAuditReader } from "../../platform/runtime-audit";
 
 export interface ReleaseDraft {
   id:string; week:string; scope:ImprovementScope; source:ObservationSource; contract:DeliveryContract;
@@ -19,9 +19,40 @@ export interface ImprovementUse {
   event:string; generation?:number|string; detail?:string; at?:number;
 }
 type Replay = {name:string;expected:unknown;observed:unknown;passed:boolean};
-type VersionRow = {id:string;revision:number;generation:number;enabled:number;previous:number|null;hash:string;draft:string};
-const catalogJoin = " FROM improvement_heads h JOIN improvement_versions v ON v.id=h.id JOIN improvement_staged s ON s.hash=v.hash ";
-const columns = "SELECT v.id,v.revision,h.generation,(h.enabled AND v.retired=0) enabled,v.previous,v.hash,s.draft ";
+type VersionRow = { id: string; revision: number; generation: number; enabled: boolean; previous: number | null; hash: string; draft: string };
+type StoredUse = ImprovementUse & { id: string; revision: number };
+type Run = Pick<ImprovementUse, "task" | "conversation" | "run">;
+type ReportVersion = Pick<VersionRow, "id" | "revision" | "previous" | "hash" | "draft"> & {
+  active: boolean; retired: number; replays: string; useCount: number; uses: string;
+};
+type IndexedInput = { entry: number; at: number; eligible: boolean; project?: string; workspace?: string };
+
+export type ImprovementPackageQuery =
+  | { kind: "current" | "regressionInputs"; id: string }
+  | { kind: "version" | "uses"; id: string; revision: number }
+  | { kind: "select"; task: string; project?: string | null; workspace?: string | null }
+  | { kind: "rollbackCandidates"; id: string; beforeRevision: number }
+  | { kind: "pendingAcceptance"; task: string }
+  | { kind: "sourceUses"; run: Run }
+  | { kind: "staged"; hash: string }
+  | { kind: "replays"; week: string }
+  | { kind: "list" | "report" }
+  | { kind: "metrics"; start: number; end: number }
+  | { kind: "dirtyWeeks"; through: string };
+
+export type ImprovementPackageMutation =
+  | { kind: "stage"; id: string; hash: string; draft: string; replays: string; regressionSeq: number }
+  | { kind: "activate"; id: string; hash: string; generation: number; at: number }
+  | { kind: "disable"; id: string; generation: number; at: number }
+  | { kind: "revert"; id: string; generation: number; fallback: number[]; at: number }
+  | { kind: "record"; id: string; revision: number; usage: ImprovementUse & { generation: string; detail: string; at: number };
+      regression?: { hash: string; input: string }; fallback: number[]; decisionAt: number }
+  | { kind: "correction"; run: Run; actor: ImprovementUse["actor"]; generation: string; at: number }
+  | { kind: "indexInputs"; task: string; conversation: string; actor: ImprovementUse["actor"]; inputs: IndexedInput[] }
+  | { kind: "followup"; week: string; start: number; end: number; now: number }
+  | { kind: "acknowledgeWeek"; week: string; tokens: number[] };
+
+const weekMs = 7 * 86400000;
 const reminder = "交付检查还缺少：";
 const unknown = "交付检查无法核实本轮产物。请检查文件和本轮生成凭据。";
 function assets(d:ReleaseDraft): ImprovementPackage["assets"] {
@@ -40,21 +71,24 @@ function sourceTask(d:ReleaseDraft): ImprovementKnowledgeTask {
     workspaceId:d.scope.kind==="workspace"?d.scope.id:undefined,canUseSkill:()=>true};
 }
 export class ImprovementPackages {
-  constructor(private readonly db:Database.Database,private readonly hooks:NativeHookStore,private readonly now:()=>number,
+  constructor(private readonly core: Pick<RuntimeAuditReader, "readImprovementPackages" | "writeImprovementPackages"> | undefined,
+    private readonly hooks: NativeHookStore, private readonly now: () => number,
     readonly knowledge:()=>ImprovementKnowledge|undefined,
     private readonly original:(d:ReleaseDraft,directory:string)=>Promise<Awaited<ReturnType<typeof verifyDeliveryContract>> & {expectedEvidence:Record<string,string>}>) {
-    db.exec([
-      "CREATE TABLE IF NOT EXISTS improvement_staged(hash TEXT PRIMARY KEY,draft TEXT NOT NULL,replays TEXT NOT NULL)",
-      "CREATE TABLE IF NOT EXISTS improvement_versions(id TEXT,revision INTEGER,hash TEXT,previous INTEGER,at INTEGER,retired INTEGER DEFAULT 0,PRIMARY KEY(id,revision),UNIQUE(id,hash))",
-      "CREATE TABLE IF NOT EXISTS improvement_heads(id TEXT PRIMARY KEY,revision INTEGER,generation INTEGER,enabled INTEGER,scopeKind TEXT,scopeId TEXT)",
-      "CREATE INDEX IF NOT EXISTS improvement_scope ON improvement_heads(scopeKind,scopeId,enabled)",
-      "CREATE TABLE IF NOT EXISTS improvement_switches(id TEXT,generation INTEGER,revision INTEGER,at INTEGER,enabled INTEGER,PRIMARY KEY(id,generation))",
-      "CREATE TABLE IF NOT EXISTS improvement_uses(id TEXT,revision INTEGER,task TEXT,conversation TEXT,actor TEXT,run TEXT,kind TEXT,event TEXT,generation TEXT,detail TEXT,at INTEGER,PRIMARY KEY(id,revision,task,conversation,run,kind,event,generation))",
-      "CREATE INDEX IF NOT EXISTS improvement_use_run ON improvement_uses(task,conversation,run)",
-      "CREATE TABLE IF NOT EXISTS improvement_dirty_weeks(week TEXT PRIMARY KEY)",
-      "CREATE TABLE IF NOT EXISTS improvement_regressions(id TEXT,hash TEXT,input TEXT,revision INTEGER,PRIMARY KEY(id,hash))",
-      "CREATE TABLE IF NOT EXISTS improvement_results(week TEXT,id TEXT,revision INTEGER,result TEXT,PRIMARY KEY(week,id,revision))",
-    ].join(";"));
+  }
+
+  private data<T>(reply: NativePersistenceReply<T> | undefined): T {
+    if (!reply) throw new Error("Core 改进版本账本不可用");
+    if (reply.status === "rejected") throw new Error(reply.message);
+    return reply.data;
+  }
+
+  private async read<T>(query: ImprovementPackageQuery): Promise<T> {
+    return this.data(await this.core?.readImprovementPackages<T>(query));
+  }
+
+  private async write<T>(mutation: ImprovementPackageMutation): Promise<T> {
+    return this.data(await this.core?.writeImprovementPackages<T>(mutation));
   }
   async createDraft(id:string,scope:ImprovementScope,source:ObservationSource,contract:DeliveryContract,week:string):Promise<ReleaseDraft> {
     const knowledge = this.knowledge();
@@ -66,7 +100,7 @@ export class ImprovementPackages {
         cases:[{input:{status:"passed",missing:[]},expected:true},{input:{status:"missing",missing:["附件"]},expected:reminder+"附件"},
           {input:{status:"unknown",missing:[]},expected:unknown}]}};
   }
-  private async validate(d:ReleaseDraft):Promise<Replay[]> {
+  private async validate(d:ReleaseDraft, past: readonly string[]):Promise<Replay[]> {
     const knowledge = this.knowledge(), t = sourceTask(d);
     if (!knowledge || !d.id || fingerprint(d.tool)!==fingerprint(deliveryTool) || !d.convention.trim() || d.convention.length>2000 ||
       d.hook.event!=="beforeFinish" || d.hook.actor!=="all" || d.hook.tool || fingerprint(d.hook.scope)!==fingerprint(d.scope) ||
@@ -84,7 +118,6 @@ export class ImprovementPackages {
     };
     const controls=[...d.hook.cases,{input:{status:"unknown",missing:[]},expected:unknown}];
     for (const test of controls) observe("检查脚本",test.expected,await this.hooks.check(d.hook,test.input));
-    const past=this.db.prepare("SELECT input FROM improvement_regressions WHERE id=? ORDER BY rowid").pluck().all(d.id) as string[];
     for(const raw of past){
       const input=JSON.parse(raw) as Awaited<ReturnType<typeof verifyDeliveryContract>>;
       const expected=input.status==="passed"?true:input.status==="missing"?reminder+input.missing.join("、"):unknown;
@@ -119,151 +152,161 @@ export class ImprovementPackages {
       return cases;
     } finally {await rm(root,{recursive:true,force:true});}
   }
-  async stage(input:ReleaseDraft):Promise<string> {
-    const d=structuredClone(input), hash=fingerprint(d), replays=await this.validate(d);
-    this.db.prepare("INSERT OR IGNORE INTO improvement_staged VALUES(?,?,?)").run(hash,JSON.stringify(d),JSON.stringify(replays));
-    return hash;
+  async stage(input: ReleaseDraft): Promise<string> {
+    const draft = structuredClone(input);
+    const { seq, inputs } = await this.read<{ seq: number; inputs: string[] }>({ kind: "regressionInputs", id: draft.id });
+    const replays = await this.validate(draft, inputs);
+    return this.write({
+      kind: "stage", id: draft.id, hash: fingerprint(draft),
+      draft: canonicalImprovementJson(draft), replays: JSON.stringify(replays), regressionSeq: seq,
+    });
   }
-  activate(hash:string,expectedGeneration:number):ImprovementPackage {
-    return this.db.transaction(()=>{
-      const raw=this.db.prepare("SELECT draft FROM improvement_staged WHERE hash=?").pluck().get(hash);
-      if(typeof raw!=="string") throw new Error("没有已验证的暂存版本");
-      const d=JSON.parse(raw) as ReleaseDraft,k=this.knowledge();
-      if(hash!==fingerprint(d) || !k || !d.knowledge.every(a=>k.isCurrent(a,sourceTask(d)))) throw new Error("发布依赖已改变");
-      const head=this.db.prepare("SELECT revision,generation FROM improvement_heads WHERE id=?").get(d.id) as {revision:number;generation:number}|undefined;
-      if((head?.generation??0)!==expectedGeneration) throw new Error("基础版本已变化，请重新验证");
-      const existing=this.db.prepare("SELECT revision,retired FROM improvement_versions WHERE id=? AND hash=?").get(d.id,hash) as {revision:number;retired:number}|undefined;
-      if(existing && (!head || existing.retired || existing.revision!==head.revision)) throw new Error("该改进版本已撤回");
-      if(!existing){
-        const revision=1+Number(this.db.prepare("SELECT max(revision) FROM improvement_versions WHERE id=?").pluck().get(d.id));
-        this.db.prepare("INSERT INTO improvement_versions(id,revision,hash,previous,at) VALUES(?,?,?,?,?)").run(d.id,revision,hash,head?.revision??null,this.now());
-        this.db.prepare("INSERT INTO improvement_heads VALUES(?,?,?,1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,generation=excluded.generation,enabled=1,scopeKind=excluded.scopeKind,scopeId=excluded.scopeId")
-          .run(d.id,revision,expectedGeneration+1,d.scope.kind,d.scope.id);
-        this.db.prepare("INSERT INTO improvement_switches VALUES(?,?,?,?,1)").run(d.id,expectedGeneration+1,revision,this.now());
-      }
-      return this.current(d.id)!.release;
-    }).immediate();
-  }
-  async publish(d:ReleaseDraft,expectedGeneration:number) {return this.activate(await this.stage(d),expectedGeneration);}
-  current(id:string) {
-    const r=this.db.prepare(columns+catalogJoin+"WHERE h.id=? AND h.revision=v.revision").get(id) as VersionRow|undefined;
-    return r&&decode(r);
-  }
-  draft(id:string) {return this.current(id)?.draft;}
-  version(id:string,revision:number) {
-    const r=this.db.prepare(columns+catalogJoin+"WHERE v.id=? AND v.revision=?").get(id,revision) as VersionRow|undefined;
-    return r&&decode(r);
-  }
-  list() {return (this.db.prepare(columns+catalogJoin+"WHERE v.revision=h.revision ORDER BY v.at DESC").all() as VersionRow[]).map(r=>decode(r).release);}
-  select(task:{taskId:string;projectId?:string|null;workspaceId?:string|null}) {
-    const r=this.db.prepare(columns+catalogJoin+"WHERE v.revision=h.revision AND h.enabled=1 AND ((scopeKind='task' AND scopeId=?) OR (scopeKind='project' AND scopeId=?) OR (scopeKind='workspace' AND scopeId=?)) ORDER BY CASE scopeKind WHEN 'task' THEN 0 WHEN 'project' THEN 1 ELSE 2 END,v.at DESC LIMIT 1")
-      .get(task.taskId,task.projectId??null,task.workspaceId??null) as VersionRow|undefined;
-    return r&&decode(r);
-  }
-  revert(id:string,generation:number) {
-    return this.db.transaction(()=>{
-      const r=this.current(id)?.release;
-      if(!r?.enabled || r.generation!==generation) throw new Error("基础版本已变化，请刷新");
-      this.db.prepare("UPDATE improvement_versions SET retired=1 WHERE id=? AND revision=?").run(id,r.revision);
-      const candidates=this.db.prepare("SELECT revision FROM improvement_versions WHERE id=? AND revision<? AND retired=0 ORDER BY revision DESC").pluck().all(id,r.revision) as number[];
-      const previous=candidates.find(n=>{
-        const draft=this.version(id,n)?.draft,k=this.knowledge();
-        return draft && k && draft.knowledge.every(a=>k.isCurrent(a,sourceTask(draft)));
-      });
-      this.db.prepare("UPDATE improvement_heads SET revision=?,enabled=?,generation=generation+1 WHERE id=?").run(previous??r.revision,Number(previous!==undefined),id);
-      this.db.prepare("INSERT INTO improvement_switches VALUES(?,?,?,?,?)").run(id,generation+1,previous??r.revision,this.now(),Number(previous!==undefined));
-      return this.current(id)!.release;
-    }).immediate();
-  }
-  disable(id:string,generation:number) {
-    this.db.transaction(()=>{
-      const r=this.current(id)?.release;
-      if(!r?.enabled || r.generation!==generation) throw new Error("基础版本已变化，请刷新");
-      this.db.prepare("UPDATE improvement_heads SET enabled=0,generation=generation+1 WHERE id=?").run(id);
-      this.db.prepare("INSERT INTO improvement_switches VALUES(?,?,?,?,0)").run(id,generation+1,r.revision,this.now());
-    }).immediate();
-  }
-  regression(id:string,revision:number,input:Awaited<ReturnType<typeof verifyDeliveryContract>>,usage:ImprovementUse) {
-    this.db.transaction(()=>{
-      this.db.prepare("INSERT OR IGNORE INTO improvement_regressions VALUES(?,?,?,?)").run(id,fingerprint(input),JSON.stringify(input),revision);
-      this.record(id,revision,usage);
-    }).immediate();
-  }
-  async runHook(d:ReleaseDraft,fields:Record<string,unknown>) {
-    const result=await this.hooks.check(d.hook,fields);return result===true?"":result;
-  }
-  record(id:string,revision:number,u:ImprovementUse) {
-    const added=this.db.prepare("INSERT OR IGNORE INTO improvement_uses VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-      .run(id,revision,u.task,u.conversation,u.actor,String(u.run),u.kind,u.event,String(u.generation??""),u.detail?.slice(0,1500)??"",u.at??this.now());
-    if(added.changes && ["accepted","correction","error","falseTrigger"].includes(u.event)){
-      // A result arriving late belongs to the original input's cohort.
-      this.db.prepare("INSERT OR IGNORE INTO improvement_dirty_weeks SELECT r.week FROM improvement_results r WHERE r.id=? AND r.revision=? AND EXISTS (SELECT 1 FROM improvement_uses WHERE id=r.id AND revision=r.revision AND task=? AND conversation=? AND run=? GROUP BY task HAVING min(at)>=unixepoch(r.week,'-7 days')*1000 AND min(at)<unixepoch(r.week)*1000)").run(id,revision,u.task,u.conversation,String(u.run));
+
+  async activate(hash: string, expectedGeneration: number): Promise<ImprovementPackage> {
+    const raw = await this.read<string | null>({ kind: "staged", hash });
+    if (raw === null) throw new Error("没有已验证的暂存版本");
+    const draft = JSON.parse(raw) as ReleaseDraft;
+    const knowledge = this.knowledge();
+    if (fingerprint(draft) !== hash || !knowledge || !draft.knowledge.every(asset => knowledge.isCurrent(asset, sourceTask(draft)))) {
+      throw new Error("发布依赖已改变");
     }
-    if(u.event==="error" || u.event==="falseTrigger"){
-      const r=this.current(id)?.release;
-      if(r?.enabled && r.revision===revision) this.revert(id,r.generation);
-    }
+    const row = await this.write<VersionRow>({ kind: "activate", id: draft.id, hash, generation: expectedGeneration, at: this.now() });
+    return decode(row).release;
   }
-  uses(id:string,revision:number) {
-    return this.db.prepare("SELECT * FROM improvement_uses WHERE id=? AND revision=? ORDER BY at,rowid").all(id,revision) as ImprovementUse[];
+
+  async publish(draft: ReleaseDraft, expectedGeneration: number): Promise<ImprovementPackage> {
+    return this.activate(await this.stage(draft), expectedGeneration);
   }
-  correction(s:ObservationSource) {
-    const used=this.db.prepare("SELECT DISTINCT id,revision FROM improvement_uses WHERE task=? AND conversation=? AND run=?").all(s.taskId,s.conversationId,String(s.input)) as {id:string;revision:number}[];
-    for(const r of used) this.record(r.id,r.revision,{task:s.taskId,conversation:s.conversationId,actor:s.actor,run:String(s.input),kind:"hook",event:"correction",at:s.at,generation:s.entry});
+
+  async current(id: string) {
+    const row = await this.read<VersionRow | null>({ kind: "current", id });
+    return row ? decode(row) : undefined;
   }
-  sourceUses(source:ObservationSource) {
-    return this.db.prepare("SELECT id,revision,kind,event,generation FROM improvement_uses WHERE task=? AND conversation=? AND run=? ORDER BY at,rowid LIMIT 80").all(source.taskId,source.conversationId,String(source.input));
+
+  async draft(id: string) {
+    return (await this.current(id))?.draft;
   }
-  replays(week:string) {
-    return (this.db.prepare("SELECT v.id,v.revision,v.hash,s.draft,s.replays FROM improvement_versions v JOIN improvement_staged s ON s.hash=v.hash WHERE json_extract(s.draft,'$.week')=?").all(week) as {id:string;revision:number;hash:string;draft:string;replays:string}[]).map(r=>({packageId:r.id,revision:r.revision,hash:r.hash,source:(JSON.parse(r.draft) as ReleaseDraft).source,cases:JSON.parse(r.replays) as Replay[]}));
+
+  async version(id: string, revision: number) {
+    const row = await this.read<VersionRow | null>({ kind: "version", id, revision });
+    return row ? decode(row) : undefined;
   }
-  versionEvidence():ImprovementVersionEvidence[] {
-    const versions=this.db.prepare("SELECT v.id,v.revision,v.previous,v.retired,v.hash,(h.revision=v.revision AND h.enabled) active,s.draft,s.replays FROM improvement_versions v JOIN improvement_heads h ON h.id=v.id JOIN improvement_staged s ON s.hash=v.hash ORDER BY v.at DESC,v.revision DESC")
-      .all() as {id:string;revision:number;previous:number|null;retired:number;hash:string;active:number;draft:string;replays:string}[];
-    const receipts=this.db.prepare("SELECT task,conversation,actor,run,kind,event,at FROM improvement_uses WHERE id=? AND revision=? ORDER BY at DESC,rowid DESC LIMIT 32");
-    const count=this.db.prepare("SELECT count(*) FROM improvement_uses WHERE id=? AND revision=?");
-    return versions.map(v=>{const draft=JSON.parse(v.draft) as ReleaseDraft;
-      return {packageId:v.id,revision:v.revision,previous:v.previous,active:Boolean(v.active),retired:Boolean(v.retired),week:draft.week,
-      source:draft.source,hash:v.hash,scope:draft.scope,assets:assets(draft),
-      cases:(JSON.parse(v.replays) as Replay[]).map(r=>({name:r.name,passed:r.passed})),
-      useCount:Number(count.pluck().get(v.id,v.revision)),uses:receipts.all(v.id,v.revision) as ImprovementVersionEvidence["uses"]};});
+
+  async list(): Promise<ImprovementPackage[]> {
+    return (await this.read<VersionRow[]>({ kind: "list" })).map(row => decode(row).release);
   }
-  followup(week:string,now=this.now()) {
-    const versions=this.db.prepare("SELECT v.id,v.revision,v.at,s.draft FROM improvement_versions v JOIN improvement_staged s ON s.hash=v.hash WHERE json_extract(s.draft,'$.week')<?").all(week) as {id:string;revision:number;at:number;draft:string}[];
-    for(const v of versions){
-      const start=Date.parse(week+"T00:00:00Z")-7*86400000;
-      // Group by the original opportunity, including its later terminal answer and corrections.
-      const rows=this.db.prepare("SELECT max(event='accepted') accepted,max(event='correction') corrected,max(event IN ('error','falseTrigger')) error,max(kind='tool' AND event='executed') tool,max(kind='hook' AND event IN ('passed','feedback','unknown','error','falseTrigger')) hook,max(kind='convention' AND event='applied') convention,max(kind='memory' AND event='recalled') memory,max(kind='skill' AND event='read') skill FROM improvement_uses WHERE id=? AND revision=? AND at<=? GROUP BY task,conversation,run HAVING min(at)>=? AND min(at)<?")
-        .all(v.id,v.revision,now,Math.max(start,v.at),start+7*86400000) as (Record<ImprovementAssetKind,number>&{accepted:number;corrected:number;error:number})[];
-      const accepted=rows.filter(r=>r.accepted&&!r.corrected&&!r.error).length, corrections=rows.filter(r=>r.corrected).length, errors=rows.filter(r=>r.error).length;
-      const scope=(JSON.parse(v.draft) as ReleaseDraft).scope;
-      const missed=Number(this.db.prepare("SELECT count(*) FROM improvement_inputs i LEFT JOIN improvement_input_scopes t USING(task,conversation,entry) WHERE i.eligible=1 AND i.at>=@start AND i.at<@end AND ((@kind='task' AND i.task=@scope) OR (@kind='project' AND t.project=@scope) OR (@kind='workspace' AND t.workspace=@scope)) AND @revision=(SELECT CASE WHEN x.enabled THEN x.revision END FROM improvement_switches x WHERE x.id=@id AND x.at<=i.at ORDER BY x.generation DESC LIMIT 1) AND NOT EXISTS (SELECT 1 FROM improvement_uses u WHERE u.task=i.task AND u.conversation=i.conversation AND u.run=CAST(i.entry AS TEXT))")
-        .pluck().get({start,end:Math.min(start+7*86400000,now+1),kind:scope.kind,scope:scope.id,revision:v.revision,id:v.id}));
-      const opportunities=rows.length+missed;
-      const state=errors?"regressed":corrections?"ineffective":accepted?"effective":"pending";
-      const byAsset=assets(JSON.parse(v.draft) as ReleaseDraft).map(({kind})=>{
-        const used=rows.filter(r=>r[kind]),bad=used.filter(r=>r.error).length,again=used.filter(r=>r.corrected).length,ok=used.filter(r=>r.accepted&&!r.corrected&&!r.error).length;
-        const verdict:ImprovementOutcome["state"]=bad?"regressed":again?"ineffective":ok?"effective":"pending";
-        return {kind,state:verdict,opportunities,used:used.length,accepted:ok,corrections:again,errors:bad};
-      });
-      const result:ImprovementOutcome={week,packageId:v.id,revision:v.revision,state,accepted,opportunities,corrections,errors,assets:byAsset};
-      const changed=this.db.prepare("INSERT INTO improvement_results VALUES(?,?,?,?) ON CONFLICT(week,id,revision) DO UPDATE SET result=excluded.result WHERE result<>excluded.result").run(week,v.id,v.revision,JSON.stringify(result));
-      if(changed.changes)this.db.prepare("INSERT OR IGNORE INTO improvement_dirty_weeks VALUES(?)").run(week);
-    }
-    return this.outcomes();
+
+  async select(task: { taskId: string; projectId?: string | null; workspaceId?: string | null }) {
+    const row = await this.read<VersionRow | null>({
+      kind: "select", task: task.taskId, project: task.projectId, workspace: task.workspaceId,
+    });
+    return row ? decode(row) : undefined;
   }
-  outcomes():ImprovementOutcome[] {return (this.db.prepare("SELECT result FROM improvement_results ORDER BY week DESC,id,revision DESC").pluck().all() as string[]).map(s=>JSON.parse(s));}
-  metrics(week:string):ImprovementWeeklyMetrics {
-    const start=Date.parse(week+"T00:00:00Z");
-    const rows=this.db.prepare(`SELECT max(event='accepted') accepted,max(event='correction') corrected,
-      max(event IN ('error','falseTrigger')) error,max(event='falseTrigger') falseTrigger,max(event='executed') used,
-      max(kind='tool' AND event IN ('passed','missing')) checked
-      FROM improvement_uses GROUP BY task,conversation,run HAVING min(at)>=? AND min(at)<?`)
-      .all(start,start+7*86400000) as {accepted:number;corrected:number;error:number;falseTrigger:number;used:number;checked:number}[];
-    return {week,opportunities:rows.length,accepted:rows.filter(r=>r.accepted).length,corrections:rows.filter(r=>r.corrected).length,
-      unassisted:rows.filter(r=>r.accepted&&!r.corrected&&!r.error).length,recurrences:rows.filter(r=>r.corrected).length,
-      exposed:rows.length,used:rows.filter(r=>r.used).length,errors:rows.filter(r=>r.error).length,
-      falseTriggers:rows.some(r=>r.checked||r.falseTrigger)?rows.filter(r=>r.falseTrigger).length:null,
-      durationMs:0,modelRequests:0,toolCalls:0,userInputs:0};
+
+  private async rollbackCandidates(id: string, revision: number): Promise<number[]> {
+    const candidates = await this.read<VersionRow[]>({ kind: "rollbackCandidates", id, beforeRevision: revision });
+    const knowledge = this.knowledge();
+    if (!knowledge) return [];
+    return candidates.flatMap(row => {
+      const { draft } = decode(row);
+      return draft.knowledge.every(asset => knowledge.isCurrent(asset, sourceTask(draft))) ? [row.revision] : [];
+    });
+  }
+
+  async revert(id: string, generation: number): Promise<ImprovementPackage> {
+    const current = (await this.current(id))?.release;
+    if (!current?.enabled || current.generation !== generation) throw new Error("基础版本已变化，请刷新");
+    const fallback = await this.rollbackCandidates(id, current.revision);
+    return decode(await this.write<VersionRow>({ kind: "revert", id, generation, fallback, at: this.now() })).release;
+  }
+
+  async disable(id: string, generation: number): Promise<void> {
+    await this.write({ kind: "disable", id, generation, at: this.now() });
+  }
+
+  async regression(id: string, revision: number, input: Awaited<ReturnType<typeof verifyDeliveryContract>>, usage: ImprovementUse): Promise<void> {
+    await this.record(id, revision, usage, { hash: fingerprint(input), input: canonicalImprovementJson(input) });
+  }
+
+  async runHook(draft: ReleaseDraft, fields: Record<string, unknown>) {
+    const result = await this.hooks.check(draft.hook, fields);
+    return result === true ? "" : result;
+  }
+
+  async record(id: string, revision: number, use: ImprovementUse, regression?: { hash: string; input: string }): Promise<void> {
+    const fallback = use.event === "error" || use.event === "falseTrigger" ? await this.rollbackCandidates(id, revision) : [];
+    await this.write({
+      kind: "record", id, revision, fallback, regression, decisionAt: this.now(),
+      usage: { ...use, run: String(use.run), generation: String(use.generation ?? ""), detail: use.detail?.slice(0, 1500) ?? "",
+        at: use.at ?? this.now() },
+    });
+  }
+
+  uses(id: string, revision: number): Promise<StoredUse[]> {
+    return this.read({ kind: "uses", id, revision });
+  }
+
+  pendingAcceptance(task: string): Promise<StoredUse[]> {
+    return this.read({ kind: "pendingAcceptance", task });
+  }
+
+  async correction(source: ObservationSource): Promise<void> {
+    await this.write({
+      kind: "correction", run: { task: source.taskId, conversation: source.conversationId, run: String(source.input) },
+      actor: source.actor, at: source.at, generation: String(source.entry),
+    });
+  }
+
+  sourceUses(source: ObservationSource): Promise<Pick<StoredUse, "id" | "revision" | "kind" | "event" | "generation">[]> {
+    return this.read({ kind: "sourceUses", run: { task: source.taskId, conversation: source.conversationId, run: String(source.input) } });
+  }
+
+  async indexInputs(task: string, conversation: string, actor: ImprovementUse["actor"], inputs: IndexedInput[]): Promise<void> {
+    await this.write({ kind: "indexInputs", task, conversation, actor, inputs });
+  }
+
+  async replays(week: string) {
+    const rows = await this.read<{ id: string; revision: number; hash: string; draft: string; replays: string }[]>({ kind: "replays", week });
+    return rows.map(row => ({ packageId: row.id, revision: row.revision, hash: row.hash,
+      source: (JSON.parse(row.draft) as ReleaseDraft).source, cases: JSON.parse(row.replays) as Replay[] }));
+  }
+
+  async report(): Promise<{ packages: ImprovementPackage[]; versions: ImprovementVersionEvidence[]; outcomes: ImprovementOutcome[] }> {
+    const rows = await this.read<{ packages: VersionRow[]; versions: ReportVersion[]; outcomes: { result: string }[] }>({ kind: "report" });
+    const versions = rows.versions.map(row => {
+      const draft = JSON.parse(row.draft) as ReleaseDraft;
+      return { packageId: row.id, revision: row.revision, previous: row.previous, active: row.active, retired: Boolean(row.retired),
+        week: draft.week, source: draft.source, hash: row.hash, scope: draft.scope, assets: assets(draft),
+        cases: (JSON.parse(row.replays) as Replay[]).map(({ name, passed }) => ({ name, passed })),
+        useCount: row.useCount, uses: JSON.parse(row.uses) as ImprovementVersionEvidence["uses"] };
+    });
+    return { packages: rows.packages.map(row => decode(row).release), versions,
+      outcomes: rows.outcomes.map(row => JSON.parse(row.result) as ImprovementOutcome) };
+  }
+
+  followup(week: string, now = this.now()): Promise<number[]> {
+    const end = Date.parse(week + "T00:00:00Z");
+    return this.write({ kind: "followup", week, start: end - weekMs, end, now });
+  }
+
+  async dirtyWeeks(through: string): Promise<string[]> {
+    return (await this.read<{ week: string }[]>({ kind: "dirtyWeeks", through })).map(row => row.week);
+  }
+
+  async acknowledgeWeek(week: string, tokens: number[]): Promise<void> {
+    if (tokens.length) await this.write({ kind: "acknowledgeWeek", week, tokens });
+  }
+
+  async metrics(week: string): Promise<ImprovementWeeklyMetrics & { eligibleInputs: number }> {
+    const start = Date.parse(week + "T00:00:00Z");
+    const { rows, executions, inputs, eligibleInputs } = await this.read<{
+      rows: { accepted: boolean; corrected: boolean; error: boolean; falseTrigger: boolean; used: boolean; checked: boolean }[];
+      executions: number; inputs: number; eligibleInputs: number;
+    }>({ kind: "metrics", start, end: start + weekMs });
+    return { week, opportunities: rows.length, accepted: rows.filter(r => r.accepted).length, corrections: rows.filter(r => r.corrected).length,
+      unassisted: rows.filter(r => r.accepted && !r.corrected && !r.error).length, recurrences: rows.filter(r => r.corrected).length,
+      exposed: rows.length, used: rows.filter(r => r.used).length, errors: rows.filter(r => r.error).length,
+      falseTriggers: rows.some(r => r.checked || r.falseTrigger) ? rows.filter(r => r.falseTrigger).length : null,
+      durationMs: 0, modelRequests: 0, toolCalls: executions, userInputs: inputs, eligibleInputs };
   }
 }

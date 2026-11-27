@@ -1,5 +1,5 @@
 use crate::Result;
-use rusqlite::{Connection, params};
+use duckdb::Connection;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -23,15 +23,32 @@ pub fn read(
     task_ids: &[String],
     space_ids: &[String],
 ) -> Result<Vec<ArchiveTaskCandidate>> {
-    let task_ids = serde_json::to_string(task_ids)?;
-    let space_ids = serde_json::to_string(space_ids)?;
-    let mut statement = db.prepare_cached(
+    if task_ids.is_empty() && space_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut clauses = Vec::new();
+    let mut params_vec: Vec<duckdb::types::Value> = vec![duckdb::types::Value::Text(dots_task_id.to_owned())];
+    let mut idx = 2;
+    if !task_ids.is_empty() {
+        let ph = crate::database::placeholders(task_ids.len(), idx);
+        idx += task_ids.len();
+        clauses.push(format!("id IN ({ph})"));
+        params_vec.extend(task_ids.iter().cloned().map(duckdb::types::Value::Text));
+    }
+    if !space_ids.is_empty() {
+        let ph = crate::database::placeholders(space_ids.len(), idx);
+        clauses.push(format!("space_id IN ({ph})"));
+        params_vec.extend(space_ids.iter().cloned().map(duckdb::types::Value::Text));
+    }
+    let sql = format!(
         "SELECT id,space_id,project_id,archived,cwd,session_file FROM tasks
-         WHERE id != ?1 AND (id IN (SELECT value FROM json_each(?2))
-            OR space_id IN (SELECT value FROM json_each(?3)))
-         ORDER BY updated_at DESC,rowid",
-    )?;
-    let rows = statement.query_map(params![dots_task_id, task_ids, space_ids], |row| {
+         WHERE id != ?1 AND ({})
+         ORDER BY updated_at DESC, id",
+        clauses.join(" OR ")
+    );
+    let refs: Vec<&dyn duckdb::ToSql> = params_vec.iter().map(|v| v as &dyn duckdb::ToSql).collect();
+    let mut statement = db.prepare(&sql)?;
+    let rows = statement.query_map(duckdb::params_from_iter(refs), |row| {
         Ok(ArchiveTaskCandidate {
             id: row.get(0)?,
             space_id: row.get(1)?,
@@ -41,5 +58,5 @@ pub fn read(
             session_file: row.get(5)?,
         })
     })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    Ok(rows.collect::<duckdb::Result<_>>()?)
 }

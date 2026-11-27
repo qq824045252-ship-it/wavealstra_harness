@@ -119,19 +119,27 @@ try {
 
   await check("admission is committed before execution/ACK and completed retries do not call the handler", async () => {
     const f = fixture(); const registry = f.registry();
-    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
     const calls: string[] = [];
-    registry.register(f.adapter, async event => { calls.push(event.message.messageId!); if (calls.length === 1) await gate; await event.message.reply("answer:" + event.text); });
+    registry.register(f.adapter, async event => {
+      calls.push(event.message.messageId!);
+      if (calls.length === 1) { entered.resolve(); await release.promise; }
+      await event.message.reply("answer:" + event.text);
+    });
     const first = f.adapter.inbound(f.adapter.message("1", "first"));
     const second = f.adapter.inbound(f.adapter.message("2", "second"));
     await Promise.all([first.accepted, second.accepted]);
     const read = new Database(f.path, { readonly: true });
     try {
-      const states = read.prepare("SELECT status FROM gateway_inbox ORDER BY rowid").all() as Array<{ status: string }>;
-      assert.deepEqual(states.map(row => row.status), ["running", "pending"]);
-    } finally { read.close(); }
-    assert.deepEqual(calls, ["1"]);
-    release(); await Promise.all([first, second]);
+      const delivered = read.prepare("SELECT message_id FROM gateway_inbox ORDER BY rowid").pluck().all();
+      assert.deepEqual(delivered, ["1", "2"]);
+      await Promise.race([entered.promise, first]);
+      assert.deepEqual(calls, ["1"]);
+      const states = read.prepare("SELECT status FROM gateway_inbox ORDER BY rowid").pluck().all();
+      assert.deepEqual(states, ["running", "pending"]);
+    } finally { read.close(); release.resolve(); }
+    await Promise.all([first, second]);
     await f.adapter.inbound(f.adapter.message("1", "first"));
     assert.deepEqual(calls, ["1", "2"]); assert.deepEqual(f.adapter.sent, ["answer:first", "answer:second"]);
     registry.suspend();
@@ -146,6 +154,54 @@ try {
     assert.equal(received?.messageId, "1"); assert.equal(received?.gatewayDelivery?.replay, false);
     assert.equal(f.journal.get(unsafe.delivery_id)?.status, "unknown");
     assert.deepEqual(f.adapter.sent, ["saved"]); registry.suspend();
+  });
+
+  await check("two registries sharing a journal cannot execute or send the same delivery twice", async () => {
+    const f = fixture();
+    const otherDb = new Database(f.path);
+    databases.push(otherDb);
+    const otherJournal = new GatewayDeliveryJournal(otherDb, { mediaDirectory: f.media });
+    const otherAdapter = new Adapter();
+    const primary = f.registry();
+    const secondary = f.registry({ journal: otherJournal });
+    const inModel = Promise.withResolvers<void>();
+    const continueModel = Promise.withResolvers<void>();
+    const inSend = Promise.withResolvers<void>();
+    const continueSend = Promise.withResolvers<void>();
+    const executions: string[] = [];
+    primary.register(f.adapter, async e => {
+      executions.push(e.message.messageId!);
+      inModel.resolve();
+      await continueModel.promise;
+      await e.message.reply("one persisted answer");
+    });
+    f.adapter.send = async text => {
+      inSend.resolve();
+      await continueSend.promise;
+      f.adapter.sent.push(text);
+    };
+    secondary.register(otherAdapter, async () => { executions.push("second execution"); });
+    const original = f.adapter.inbound(f.adapter.message("1"));
+    try {
+      await Promise.race([inModel.promise, original]);
+      const alsoExecuting = otherAdapter.inbound(otherAdapter.message("1"));
+      await alsoExecuting.accepted;
+      await assert.rejects(alsoExecuting, /已被认领/);
+      continueModel.resolve();
+      await Promise.race([inSend.promise, original]);
+      const alsoSending = otherAdapter.inbound(otherAdapter.message("1"));
+      await alsoSending.accepted;
+      await assert.rejects(alsoSending, /未再次发送/);
+    } finally {
+      continueModel.resolve();
+      continueSend.resolve();
+      await original;
+      primary.suspend();
+      secondary.suspend();
+    }
+    assert.deepEqual(executions, ["1"]);
+    assert.deepEqual(f.adapter.sent, ["one persisted answer"]);
+    assert.deepEqual(otherAdapter.sent, []);
   });
 
   await check("native receipt replay marks an interrupted input and does not replace its content", async () => {
@@ -183,6 +239,28 @@ try {
     const reopened = f.registry(); reopened.register(f.adapter, async () => { assert.fail("uncertain reply cannot rerun the Agent"); });
     reopened.resume(f.adapter.id);
     assert.equal(f.journal.outbox(sending.delivery_id)?.status, "unknown"); assert.equal(sends, 1); reopened.suspend();
+  });
+
+  await check("a lost storage acknowledgement after a confirmed send does not repeat the provider call", async () => {
+    const f = fixture();
+    const registry = f.registry();
+    const finish = f.journal.finishOwnedReply.bind(f.journal);
+    f.journal.finishOwnedReply = async (...args) => {
+      const stored = await finish(...args);
+      if (args[2] === "sent") throw new Error("storage acknowledgement lost");
+      return stored;
+    };
+    const executions: string[] = [];
+    registry.register(f.adapter, async event => {
+      executions.push(event.message.messageId!);
+      await event.message.reply("provider confirmed once");
+    });
+    await assert.rejects(f.adapter.inbound(f.adapter.message("1")), /storage acknowledgement lost/);
+    await f.adapter.inbound(f.adapter.message("1"));
+    assert.deepEqual(executions, ["1"]);
+    assert.deepEqual(f.adapter.sent, ["provider confirmed once"]);
+    assert.equal(f.journal.outbox(f.accept().delivery_id)?.status, "sent");
+    registry.suspend();
   });
 
   await check("reply retry exhaustion is bounded and retains the unsent answer", async () => {
