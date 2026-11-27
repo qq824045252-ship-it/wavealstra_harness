@@ -5,6 +5,12 @@ import ConfirmDialog from "@/components/common/ConfirmDialog";
 const STATE_LABEL: Record<MemoryTurnExtractionState, string> = {
   pending: "待提炼", processing: "提炼中", completed: "已提炼", failed: "失败", skipped: "已跳过",
 };
+const SKIP_REASON: Record<string, string> = {
+  withdrawnSourceRequiresRedaction: "这条来源已撤回。",
+  sensitiveSourceRequiresRedaction: "这条来源包含敏感内容。",
+  unsupportedSourceAuthority: "这条来源的授权范围未开放自动提炼。",
+  emptyUserSource: "这条来源没有用户原文。",
+};
 function fmt(ts?: number): string {
   return ts ? new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(ts) : "—";
 }
@@ -157,8 +163,9 @@ export default function MemoryL0Explorer({ focusTurnId, refreshVersion = 0, busy
       <div className="memory-turn-detail" aria-busy={detailLoading}>
         {detailError ? <div role="alert">{detailError}</div> : detailLoading ? <div className="memory-empty">正在读取原文和关联记忆…</div> : !selected ? <div className="memory-empty">选择左侧对话，查看原文及其产生的记忆。</div> : <>
           <div className="memory-toolbar"><strong>{title(selected)}</strong><span className="memory-source">{STATE_LABEL[selected.extractionState]}</span></div>
-          <div className="settings-row-desc">{fmt(selected.capturedAt)} · 尝试 {selected.attemptCount} 次 · 提炼完成 {fmt(selected.extractedAt)}</div>
-          {selected.lastError && <p className="memory-status" role="alert">{selected.lastError}</p>}
+          <div className="settings-row-desc">{fmt(selected.capturedAt)} · 尝试 {selected.attemptCount} 次{selected.extractedAt ? ` · ${selected.extractionState === "skipped" ? "已过滤" : "提炼完成"} ${fmt(selected.extractedAt)}` : ""}</div>
+          {selected.extractionState === "skipped" ? <p className="settings-row-desc">{SKIP_REASON[selected.lastError ?? ""] ?? "这条来源已按提炼规则跳过。"}</p>
+            : selected.lastError && <p className="memory-status" role="alert">{selected.lastError}</p>}
           <h4>用户原文</h4><div className="memory-original">{selected.userText || (selected.metadata.source === "bot_conversation" ? "原文保留在 Bot 对话中，此处只记录消息来源；长期记忆仅保存经过筛选的事实及支持片段。" : "（空）")}</div>
           <h4>助手原文</h4><div className="memory-original">{selected.assistantText || "（空）"}</div>
           <h4>关联记忆 · {derived.length}</h4>

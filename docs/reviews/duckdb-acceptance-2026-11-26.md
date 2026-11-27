@@ -372,3 +372,11 @@
 
 - Windows worker SHA256 为 `da9ccbd9cfde4e3a5e1ccb7e60175858b47284f1103e02240a5a16c9718eeead`。Node 26 的生产生命周期 10 步、Core 任务综合和 Pi Storage 官方 32 项及集成均通过。真实 Pi 使用本机模型夹具验证任务记忆隔离、离线工具实际写入、成果登记、重连和宿主替换。重复提交和宿主替换后的文件结果只出现一次。 [生产生命周期](../../out/duckdb-acceptance-20261126/core-production-lifecycle-115-final.log) · [Core 综合](../../out/duckdb-acceptance-20261126/core-task-and-python-115-dots-worker-authority.log) · [Pi Storage](../../out/duckdb-acceptance-20261126/pi-duckdb-storage-conformance-115-final.log)
 - 两个独立 Core 客户端复核 Dots 最新委派、工作区、暂停、重新启用、被新委派替代和 Pi 宿主失效后的工具权限。普通记忆搜索、上下文注入和 `memory_get` 以 Core 当前版本与任务范围为准。自动提炼候选发布、Goal 自动续跑和少数扩展入口仍需单独迁移及验收。 [Dots 权限](../../out/duckdb-acceptance-20261126/core-task-and-python-115-dots-worker-authority.log) · [普通记忆读取](../../out/duckdb-acceptance-20261126/core-task-and-python-memory-get-114.log)
+
+## Core 117 并发验收
+
+- Windows worker 的 SHA256 为 `a590aabf884121591e4f835e2a2422be3e98b9301b1dcdd94e657390b9864b84`。Node 26 的生产生命周期通过 10 步。关闭 UI 后，记忆模型请求暂停时，另一条前台会话照常完成。释放模型响应后，原任务的记忆只发布一次。 [生产生命周期](../../out/duckdb-acceptance-20261126/core-production-lifecycle-117.log)
+- 普通任务的模型只收到 Core 批准的来源。Core 在事务内核对来源原文、当前范围、批次租约与候选目标。两个客户端争抢或重放同一批次时只提交一次。撤回、归档和伪造引用会阻止发布。同一毫秒后来产生的来源留在下一批，删除部分来源后仍能处理原批次的有效条目。 [发布](../../out/duckdb-acceptance-20261126/memory-publication-117.log) · [调度](../../out/duckdb-acceptance-20261126/memory-extraction-scheduler-core117.log)
+- 租约到期时可重新认领。等待另一宿主的租约和等待模型超时均有界，前台重新生成可撤销旧提炼。用协议 115 创建的隔离数据在协议 117 上保留原任务和数据库代次。真实 Pi 的 Codex 提炼经 SSE 在发送时复核授权。 [数据兼容](../../out/duckdb-acceptance-20261126/memory-extraction-retained-117.log) · [模型权限](../../out/duckdb-acceptance-20261126/durable-provider-authority-117.log)
+- Goal 的续跑认领、提交和用量记录改由 Core 确认。Pi 的模型、工具和工具恢复会核对当前运行与已提交的续跑认领。隔离 Pi 测试覆盖撤回权限后没有发包或写文件，恢复中断工具时旧权限仍被拒绝，前台消息仍可运行。 [续跑驱动](../../out/duckdb-acceptance-20261126/core-goal-continuation-driver-117-final.log) · [Pi 权限](../../out/duckdb-acceptance-20261126/core-goal-runtime-authority-117-verified.log)
+- Core 任务综合、业务协议和 Pi 存储官方 32 项及集成通过。当前普通任务可自动提炼，Dots、Gateway、Bot 和 Work 来源仍需独立授权。忘记和替换候选继续进入审核。 [Core 综合](../../out/duckdb-acceptance-20261126/core-task-and-python-117-verified.log) · [业务协议](../../out/duckdb-acceptance-20261126/core-business-protocol-117.log) · [Pi 存储](../../out/duckdb-acceptance-20261126/pi-duckdb-storage-conformance-117.log)

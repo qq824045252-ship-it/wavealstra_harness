@@ -26,6 +26,7 @@ import {
 } from "./MemoryCandidateExtraction";
 import { readCoreRecallAuthority, resolveAssistantScopeChain, resolveWorkMemoryScope, type CoreMemoryRecallAuthority } from "./AssistantMemoryScopes";
 import { CoreMemoryRecallUnavailable, readCoreRecallAtom, searchCoreMemory } from "./MemoryCoreRecall";
+import { CoreMemoryExtractionUnavailable, extractCoreMemoryPlan, type CoreMemoryExtractionInput } from "./MemoryCoreExtraction";
 import { gatewayDotsMemorySource, hasGatewayDotsMemory } from "../gateway/GatewayDotsBindings";
 import { isGatewayConversation } from "../../shared/gateway-task";
 import { botMemorySource, botMemoryTextEligible, botMemoryConversationOnly, botMemoryWriteEvidenceAllowed, botMemoryAutomaticBoundary, botPeerMemoryInput } from "./BotMemorySource";
@@ -1395,7 +1396,12 @@ export class MemoryService {
   noteContextRecall(ids: string[]): void {
     if (ids.length) this.repository.markRecalled(ids);
   }
+  extractCorePlan(input: CoreMemoryExtractionInput) {
+    return extractCoreMemoryPlan(input);
+  }
+
   async extractAndStore(input: MemoryExtractionInput): Promise<MemoryExtractionResult> {
+    if (this.usesCoreRecall) throw new CoreMemoryExtractionUnavailable("自动提炼需要 Core 授权来源和写入租约");
     const empty = (): MemoryExtractionResult => ({
       globalChanged: false, spaceChanged: false, projectChanged: false, taskChanged: false,
       extractedCount: 0, committedCount: 0, reviewCount: 0,

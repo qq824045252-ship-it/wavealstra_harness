@@ -35,6 +35,7 @@ import { createMemoryExtension } from "../src/main/memory/memory-extension";
 import { hashContent } from "../src/main/memory/MemoryCandidateExtraction";
 import { updateMemoryWrite } from "../src/main/memory/MemoryRecordWrite";
 import { readCoreMemoryContext } from "../src/main/agent/CoreMemoryContextProjection";
+import type { CoreMemoryExtractionPlan } from "../src/main/memory/MemoryCoreExtractionWire";
 import { MemoryTurnRepository, prepareMemoryTurn } from "../src/main/memory/MemoryTurnRepository";
 import { shutdownCoreWorker } from "../src/main/platform/core-client";
 import { CoreBusinessClient } from "../src/main/platform/core-business-client";
@@ -944,7 +945,13 @@ try {
   assert(granted?.status === "claimed");
   assert.deepEqual(granted.turns.map(item => [item.id, item.attemptCount]), [[turn.id, 1]]);
   assert.deepEqual(await ui.writeMemoryTurnExtraction(winner, LOCAL_USER_ID), granted);
-  assert.equal(await turns.settleExtraction(stale, "completed"), "stale");
+  const basis = await turns.extractionBasis(winner);
+  assert.equal(basis.status, "ready");
+  assert.deepEqual(basis.turns.map(({ id, userText }) => [id, userText]), [[turn.id, turn.userText]]);
+  assert.deepEqual(await ui.writeMemoryTurnExtraction({ ...winner, kind: "settle", disposition: "completed" }, LOCAL_USER_ID),
+    { status: "blocked", reason: "publicationRequired" });
+  const emptyPlan = { basisStamp: basis.basisStamp, candidates: [] };
+  assert.deepEqual(await turns.publishExtraction(stale, emptyPlan), { status: "stale" });
   assert.equal(await turns.extractionCurrent(winner), true);
   assert((await turns.renewExtraction(winner) ?? 0) >= granted.leaseExpiresAt);
   assert.equal(await turns.settleExtraction(winner, "release"), "released");
@@ -953,13 +960,41 @@ try {
   const reclaimed = await turns.claimExtraction(replacement, { limit: 1, capturedThrough: at });
   assert(reclaimed.status === "claimed");
   assert.deepEqual(reclaimed.turns.map(item => [item.id, item.attemptCount]), [[turn.id, 1]]);
-  assert.equal(await turns.settleExtraction(winner, "completed"), "stale");
+  assert.deepEqual(await turns.publishExtraction(winner, emptyPlan), { status: "stale" });
+  const replacementBasis = await turns.extractionBasis(replacement);
+  assert.equal(replacementBasis.status, "ready");
   await ui.batch3Write({ kind: "memoryTurnDelete", deleteAll: false, ids: [turn.id], now: Date.now() });
   assert.equal(await turns.extractionCurrent(replacement), false);
-  assert.equal(await turns.settleExtraction(replacement, "completed"), "stale");
+  assert.deepEqual(await turns.publishExtraction(replacement, { basisStamp: replacementBasis.basisStamp, candidates: [] }), { status: "stale" });
   assert.equal(await turns.readDetail(turn.id), undefined);
   assert.equal(await turns.hasPending(extractionTask), false);
-  console.log("PASS concurrent Core memory extraction grants one owner, replays its request and fences deleted evidence");
+
+  const publicationTurn = prepareMemoryTurn({ taskId: extractionTask, userText: "Prefer a plain text summary", assistantText: "Recorded",
+    assistantMessageId: "memory-extraction-next-message", capturedAt: at + 1 });
+  assert.equal(await background.captureMemory({ kind: "turn", turn: publicationTurn }), 1);
+  const publisher = { taskId: extractionTask, owner: "desktop", token: "publish-claim" };
+  assert.equal((await turns.claimExtraction(publisher, { limit: 1, capturedThrough: at + 1 })).status, "claimed");
+  const freshBasis = await turns.extractionBasis(publisher);
+  assert.equal(freshBasis.status, "ready");
+  const publicationPlan: CoreMemoryExtractionPlan = { basisStamp: freshBasis.basisStamp, candidates: [{
+    kind: "preference", title: "Plain text summaries", content: "Prefer a plain text summary",
+    scopeType: "task", scopeId: extractionTask, confidence: 1, importance: 2, explicit: true, operationHint: "create",
+    evidence: { turnId: publicationTurn.id, quote: publicationTurn.userText }, action: { kind: "create" },
+  }] };
+  const [published, replayedPublication] = await Promise.all([
+    turns.publishExtraction(publisher, publicationPlan),
+    background.writeMemoryTurnExtraction({ ...publisher, ...publicationPlan, kind: "publish" }, LOCAL_USER_ID),
+  ]);
+  assert.deepEqual(published, { status: "published", extractedCount: 1, committedCount: 1, reviewCount: 0, changedScopes: ["task"], skippedSourceCount: 0 });
+  assert.deepEqual(replayedPublication, published);
+  assert.deepEqual(await turns.publishExtraction(publisher, { ...publicationPlan, candidates: [] }),
+    { status: "conflict", reason: "publicationPayloadChanged" });
+  assert.equal((await turns.readDetail(publicationTurn.id))?.extractionState, "completed");
+  const records = await memory.repository.readForTurn(publicationTurn.id);
+  assert.deepEqual(records.map(record => ({ title: record.title, scope: record.scopes[0]?.scopeId,
+    quote: record.evidence.find(evidence => evidence.evidenceKind === "conversation")?.excerpt })),
+  [{ title: "Plain text summaries", scope: extractionTask, quote: publicationTurn.userText }]);
+  console.log("PASS concurrent Core extraction grants one owner, blocks direct completion, fences deleted evidence, and publishes a guarded result once");
 
   const removedProject = "project-lost-deletion-receipt";
   assert.equal(await ui.writeProject("prepare-project-deletion", { kind: "create", policiesJson: JSON.stringify(emptyProjectPolicies()), resources: [],

@@ -61,7 +61,7 @@ import type { RuntimeWorkExecutionMetrics } from "../agent/work/WorkExecutionMet
 import type { RuntimeWorkspaceSharedData } from "../workspace/WorkspaceSharedContextService";
 import type { RuntimeWorkspaceBindingSnapshot } from "../workspace/WorkspaceLibraryBindingView";
 import type { RuntimeWorkspaceBindingMutation } from "../workspace/WorkspaceLibraryBindingService";
-import type { RuntimeMemoryTurnData, RuntimeMemoryTurnQuery, RuntimeMemoryTurnExtractionCommand, RuntimeMemoryTurnExtractionReply } from "../memory/MemoryTurnRepository";
+import type { MemoryExtractionRetry, MemoryExtractionSnapshot, RuntimeMemoryTurnData, RuntimeMemoryTurnQuery, RuntimeMemoryTurnExtractionCommand, RuntimeMemoryTurnExtractionReply } from "../memory/MemoryTurnRepository";
 import type { RuntimeMemoryRecordsQuery, RuntimeMemoryRecordsData } from "../memory/MemoryRecordsData";
 import type { RuntimeMemoryRecordWriteRequest, RuntimeMemoryRecordWriteReply } from "../memory/MemoryRecordWrite";
 import type { RuntimeProjectEventRequest, RuntimeProjectEventReply, RuntimeProjectPinRequest, RuntimeProjectPinReply, RuntimeProjectPostRequest, RuntimeProjectPostReply } from "../project/ProjectRepository";
@@ -881,6 +881,14 @@ export class RuntimeAuditReader implements PiStorageClient {
   async memoryTurnData(query: RuntimeMemoryTurnQuery, userId: string): Promise<RuntimeMemoryTurnData | undefined> {
     const data = await this.read<RuntimeMemoryTurnData>({ operation: "memoryTurnData", query, userId });
     return data?.kind === query.kind ? data : undefined;
+  }
+
+  readMemoryExtractionQueue(taskIds?: readonly string[]): Promise<MemoryExtractionSnapshot | undefined> {
+    return this.read({ operation: "readMemoryExtractionQueue", taskIds });
+  }
+
+  retryMemoryExtractionQueue(userId: string, operationId: string): Promise<MemoryExtractionRetry | undefined> {
+    return this.read({ operation: "retryMemoryExtractionQueue", userId, operationId });
   }
 
   writeMemoryTurnExtraction(command: RuntimeMemoryTurnExtractionCommand, userId: string): Promise<RuntimeMemoryTurnExtractionReply | undefined> {
@@ -3662,6 +3670,7 @@ const PI_STORAGE_READ_ONLY_ACTIONS = new Set([
 ]);
 
 const READ_ONLY_OPERATIONS = new Set([
+  "readMemoryExtractionQueue",
   "externalAgentHistoryPage", "readLoadoutObservations", "readGatewayExecutionAuthority",
   "snapshots", "snapshotReceipt", "artifactSnapshots", "artifactData", "readManagedArtifact", "nextManagedArtifact", "closeManagedArtifact",
   "workspaceFilePreview", "workspaceScan", "dotsFileRevision", "startDotsFileWatch", "stopDotsFileWatch",

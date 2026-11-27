@@ -2034,7 +2034,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
             ids,
             now,
         } => {
-            if delete_all {
+            let deleted = if delete_all {
                 tx.execute(
                     "UPDATE memory_evidence
                      SET excerpt = COALESCE(NULLIF(excerpt,''), (
@@ -2046,7 +2046,7 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                 )?;
                 let deleted = tx.execute("DELETE FROM memory_turns", [])?;
                 tx.execute("DELETE FROM memory_pipeline_state", [])?;
-                json!({ "deleted": deleted })
+                deleted
             } else {
                 let mut task_ids = HashSet::new();
                 let mut deleted = 0usize;
@@ -2081,8 +2081,16 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
                         [&tid],
                     )?;
                 }
-                json!({ "deleted": deleted })
+                deleted
+            };
+            if deleted > 0 {
+                for table in ["memory_scenarios", "memory_core_profiles"] {
+                    tx.execute(&format!("UPDATE {table} SET status='stale',updated_at=?1
+                        WHERE scope_type='task' AND scope_id=?2 AND status='active'"),
+                        params![now, crate::DOTS_TASK_ID])?;
+                }
             }
+            json!({ "deleted": deleted })
         }
         Request::MemoryResetFailedTurns { eligible_ids } => {
             for id in eligible_ids {

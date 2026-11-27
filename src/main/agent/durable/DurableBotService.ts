@@ -3,7 +3,7 @@ import { DotsIntentChanged } from "../../dots/DotsNativeIntent";
 import type { DotsRecoveryToolScope } from "../../dots/DotsRecovery";
 import { DotsCapabilityUnavailable } from "../../dots/DotsCapabilityRequirements";
 import { dotsGoalConclusion } from "../../dots/DotsGoalConclusion";
-import { ConversationIdle } from "@earendil-works/pi-durable";
+import { ConversationBusy, ConversationIdle } from "@earendil-works/pi-durable";
 import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsAssistantReply, type DotsCapabilityRequirement } from "../../../shared/dots";
 import { sameWorkspacePath } from "../../task/QQTaskWorkspace";
 import { readDurableDotsResult, type DurableDotsOutcome } from "./DurableDotsResult";
@@ -51,6 +51,9 @@ import { DEFAULT_DURABLE_RESUME_CONCURRENCY, ResumeAdmission, type ResumeAdmissi
 import { bindDotsConversationWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { DurableWorkspaceMoves } from "./DurableWorkspaceMoves";
 import { readDurableConversationHead, readDurableReadOnlyHistory, readDurableUserQuestions } from "./DurableReadOnlyHistory";
+import { resolveStoreId } from "./DuckDbStorage";
+import type { ActiveCoreGoalContinuation, CoreGoalContinuationClaim, CoreGoalPlacement, CoreGoalRuntimeWindow } from "../work/CoreGoalContinuationDriver";
+import { continuationNudge } from "../work/GoalContinuationService";
 import { modelKey, resolveBotModel, type BotModelResolution } from "./BotModelCatalog";
 import type { DurableDomainTools } from "./DurableDomainTools";
 import type { DurableEvidenceOptions } from "./DurableEvidenceProjection";
@@ -181,6 +184,7 @@ export interface DurableBotServiceOptions {
   prepareTask?: (request: AgentPromptRequest, mark?: AdmissionMark) => Promise<AgentPromptRequest>;
   beforeSubmit?: (request: AgentPromptRequest) => void | Promise<void>;
   beforeModelRequest?: (taskId: string) => void | Promise<void>;
+  verifyGoalContinuation?: (origin: ActiveCoreGoalContinuation) => Promise<void>;
   beforeToolExecution?: (taskId: string, cwd: string, name: string, args: unknown) => void;
   providerAuthorityGuarded?: (taskId: string) => boolean;
   onProviderUsage?: (taskId: string, input: { conversationId: string; generationTaskId: number;
@@ -201,6 +205,7 @@ export class DurableBotService {
   private readonly admissions = new Map<string, Map<Promise<unknown>, AbortController | undefined>>();
   private readonly admissionTails = new Map<string, Promise<unknown>>();
   private readonly admittingUserInputs = new Map<string, Set<{ requestId: string }>>();
+  private readonly goalAdmissions = new Map<string, AbortController>();
   private readonly projections = new Map<string, Promise<void>>();
   private readonly passiveReads = new Map<string, Promise<void>>();
   private resumeAdmission?: ResumeAdmission;
@@ -789,6 +794,10 @@ export class DurableBotService {
         onResponse: (message, info) => { this.workMetrics.response(taskId, message, info); this.options.onResponse?.(taskId, message, info); },
         onRequest: info => this.options.onRequest?.(taskId, info),
         onGoalToolResult: (identity, tool) => this.options.onGoalToolResult?.(taskId, identity, tool),
+        verifyGoalContinuation: core && taskId !== DOTS_TASK_ID && !isGatewayConversation(taskId) ? async origin => {
+          if (!this.options.verifyGoalContinuation) throw new Error("Goal 自动续跑的执行宿主未就绪");
+          await this.options.verifyGoalContinuation(origin);
+        } : undefined,
         beforeProviderRequest: async () => {
           await this.options.beforeModelRequest?.(taskId);
           if (core) await Promise.all([refreshPermissions(), refreshDotsFacts()]);
@@ -1377,6 +1386,90 @@ export class DurableBotService {
     return open.runtime.snapshot;
   }
 
+  async goalContinuationStoreId(taskId: string): Promise<string | undefined> {
+    const core = this.core;
+    const open = this.opened.get(taskId);
+    if (!core || !open || open.closing || this.closing) return;
+    const storeId = await resolveStoreId(core, open.directory);
+    if (this.opened.get(taskId) === open && !open.closing && !this.closing) return storeId;
+  }
+
+  async inspectGoalContinuation(taskId: string): Promise<CoreGoalRuntimeWindow | undefined> {
+    await this.admissionTails.get(taskId)?.catch(() => undefined);
+    const open = this.opened.get(taskId);
+    if (!open || !this.goalWindowAvailable(taskId, open)) return;
+    const storeId = await this.goalContinuationStoreId(taskId);
+    if (!storeId) return;
+    if (await open.readWaitingForInput()) return;
+    const snapshot = await open.runtime.refresh();
+    if (!this.goalWindowAvailable(taskId, open) || snapshot.busy || snapshot.queued > 0 || snapshot.compacting
+      || snapshot.status === "waiting_input") return;
+    return { snapshot, storeId };
+  }
+
+  private goalWindowAvailable(taskId: string, open: OpenBot): boolean {
+    return Boolean(this.core && taskId !== DOTS_TASK_ID && !isGatewayConversation(taskId) && !this.closing && !open.closing && !open.runtime.isSessionFailed()
+      && this.opened.get(taskId) === open && !this.admissionTails.has(taskId)
+      && !this.admittingUserInputs.get(taskId)?.size);
+  }
+
+  async submitClaimedGoalContinuation(claim: CoreGoalContinuationClaim, policyCurrent: () => Promise<boolean>): Promise<CoreGoalPlacement> {
+    const taskId = claim.taskId;
+    if (this.goalAdmissions.has(taskId)) return "unknown";
+    const open = this.opened.get(taskId);
+    if (!open || !this.options.verifyGoalContinuation || !this.goalWindowAvailable(taskId, open)) return "rejected";
+    const trace = (stage: string, error?: unknown) => {
+      if (process.env.MYBUDDY_ADMISSION_TRACE === "1") console.info("[GoalContinuation]", taskId, stage, error instanceof Error ? error.message : "");
+    };
+    const controller = new AbortController();
+    this.goalAdmissions.set(taskId, controller);
+    const origin: DurableInputOrigin = { goalContinuation: { taskId, workId: claim.workId, intentRevision: claim.intentRevision,
+      ownerEpoch: claim.ownerEpoch, attempt: claim.attempt, attemptSerial: claim.attemptSerial, claimOperationId: claim.operationId,
+      hostGeneration: claim.hostGeneration, storeId: claim.storeId } };
+    const request: AgentPromptRequest = { taskId, userMessageId: claim.requestId, assistantMessageId: claim.assistantMessageId,
+      text: continuationNudge(claim.attempt, claim.maxAttempts, claim.budget === null ? null : Math.max(0, claim.budget - claim.tokensUsed)),
+      displayText: `Goal 自动续跑 #${claim.attempt}/${claim.maxAttempts}`, announceUserMessage: false };
+    const assertCurrent = async () => {
+      if (controller.signal.aborted || !this.goalWindowAvailable(taskId, open)
+        || String(open.runtime.conversation.id) !== String(claim.conversationId) || !await policyCurrent()) throw new InputAdmissionStopped();
+      await this.readAdmissionCwd(taskId, open);
+      await this.options.beforeSubmit?.(request);
+      if (controller.signal.aborted || !this.goalWindowAvailable(taskId, open)) throw new InputAdmissionStopped();
+    };
+    try {
+      let audit: Awaited<ReturnType<NonNullable<DurableBotServiceOptions["auditInput"]>>>;
+      try {
+        if (await this.goalContinuationStoreId(taskId) !== claim.storeId || await open.readWaitingForInput()) {
+          trace("store_or_interaction_changed");
+          return "rejected";
+        }
+        await assertCurrent();
+        audit = await this.options.auditInput?.(request, origin);
+      } catch (error) {
+        trace("input_preflight_rejected", error);
+        return "rejected";
+      }
+      // Normal input admission can configure tools or rebind a workspace. A claimed
+      // continuation must use the already prepared conversation at the native store fence.
+      try {
+        const submission = await open.runtime.submit(request.text, claim.requestId, "reject",
+          { text: request.text, displayText: request.displayText!, attachments: [], audit, goalContinuation: origin.goalContinuation },
+          undefined, false, { validate: assertCurrent });
+        const record = await submission.status(context);
+        return record.type === "input" && record.requestId === claim.requestId && record.status !== "queued" ? "accepted" : "unknown";
+      } catch (error) {
+        if (error instanceof InputAdmissionStopped || error instanceof ConversationBusy) {
+          trace("pi_placement_rejected", error);
+          return "rejected";
+        }
+        console.warn("[GoalContinuation] Pi placement unconfirmed", error);
+        return "unknown";
+      }
+    } finally {
+      if (this.goalAdmissions.get(taskId) === controller) this.goalAdmissions.delete(taskId);
+    }
+  }
+
   async submissionStatus(receipt: AgentSubmissionReceipt, wait = false): Promise<AgentPromptResult> {
     if (!Number.isSafeInteger(receipt.submissionId) || receipt.submissionId <= 0 || !receipt.operationId) throw new Error("无效执行回执");
     return this.withRecovery(receipt.taskId, async open => {
@@ -1610,6 +1703,7 @@ export class DurableBotService {
   }
 
   private cancelInputAdmissions(taskId: string): void {
+    this.goalAdmissions.get(taskId)?.abort();
     for (const controller of this.admissions.get(taskId)?.values() ?? []) {
       if (controller) controller.abort(new InputAdmissionStopped());
     }

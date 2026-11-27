@@ -5,6 +5,9 @@ use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "memory_extraction_publication.rs"]
+mod publication;
+
 #[derive(Deserialize)]
 #[serde(
     tag = "kind",
@@ -25,6 +28,10 @@ pub enum Query {
         task_id: String,
     },
     ExtractionCurrent {
+        #[serde(flatten)]
+        lease: ExtractionLease,
+    },
+    ExtractionBasis {
         #[serde(flatten)]
         lease: ExtractionLease,
     },
@@ -129,6 +136,7 @@ pub fn read(db: &Connection, query: Query, user_id: &str) -> Result<Json> {
         }
         Query::ExtractionCurrent { lease } => Ok(json!({"kind":"extractionCurrent",
             "current":extraction_turn_ids(db, user_id, &lease)?.is_some()})),
+        Query::ExtractionBasis { lease } => publication::read_basis(db, user_id, &lease),
         Query::Tasks => {
             let sql = format!("SELECT m.task_id,COALESCE({TASK_TITLE},'原任务已删除'),COALESCE(w.state='trashed',FALSE)
                 FROM (SELECT DISTINCT task_id FROM memory_turns) m {TASK_JOINS} ORDER BY t.title,m.task_id");
@@ -246,6 +254,8 @@ pub enum ExtractionCommand {
         #[serde(flatten)]
         lease: ExtractionLease,
         captured_through: i64,
+        captured_row_id: Option<i64>,
+        source_ids: Option<Vec<String>>,
         limit: u32,
         lease_ms: Option<i64>,
     },
@@ -260,14 +270,31 @@ pub enum ExtractionCommand {
         disposition: Disposition,
         error: Option<String>,
     },
+    Publish {
+        #[serde(flatten)]
+        lease: ExtractionLease,
+        basis_stamp: String,
+        candidates: Vec<publication::Candidate>,
+    },
 }
 
 impl ExtractionCommand {
     pub fn task_id(&self) -> &str {
         match self {
-            Self::Claim { lease, .. } | Self::Renew { lease, .. } | Self::Settle { lease, .. } => {
-                &lease.task_id
-            }
+            Self::Claim { lease, .. }
+            | Self::Renew { lease, .. }
+            | Self::Settle { lease, .. }
+            | Self::Publish { lease, .. } => &lease.task_id,
+        }
+    }
+
+    pub fn publication_scopes(&self) -> Vec<(&str, Option<&str>)> {
+        match self {
+            Self::Publish { candidates, .. } => candidates
+                .iter()
+                .map(|candidate| (candidate.scope_type.as_str(), candidate.scope_id.as_deref()))
+                .collect(),
+            _ => Vec::new(),
         }
     }
 }
@@ -304,6 +331,8 @@ struct Claim {
     expires_at: i64,
     scope: String,
     turns: Vec<Witness>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publication: Option<Json>,
 }
 
 struct Receipt {
@@ -413,10 +442,11 @@ fn scope_stamp(db: &Connection, user_id: &str, task_id: &str) -> Result<Option<S
         json!(["bot", bot])
     } else {
         let task = db.query_row("SELECT nullif(t.project_id,''),nullif(t.space_id,''),t.cwd,t.archived,w.state,
-            p.archived,t.external_agent_pin_json FROM tasks t LEFT JOIN task_execution_workspace_state w ON w.task_id=t.id
+            p.archived,t.external_agent_pin_json,t.session_file FROM tasks t LEFT JOIN task_execution_workspace_state w ON w.task_id=t.id
             LEFT JOIN projects p ON p.id=t.project_id WHERE t.id=?1", [task_id], |r|
             Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?,
-                r.get::<_, i64>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<i64>>(5)?, r.get::<_, Option<String>>(6)?))).optional()?;
+                r.get::<_, i64>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<i64>>(5)?, r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?))).optional()?;
         let Some(task) = task else {
             return Ok(None);
         };
@@ -599,16 +629,22 @@ fn pending_batch(
     user_id: &str,
     task_id: &str,
     captured_through: i64,
+    captured_row_id: Option<i64>,
+    source_ids: Option<&[String]>,
     limit: u32,
 ) -> Result<Vec<Turn>> {
     let sql = format!("SELECT {TURN_COLUMNS},{TASK_TITLE},COALESCE(w.state='trashed',FALSE) FROM memory_turns m {TASK_JOINS}
-       WHERE m.task_id=?2 AND {RETRYABLE} AND m.captured_at<=?3 ORDER BY m.captured_at,m.rowid LIMIT ?4");
+       WHERE m.task_id=?2 AND {RETRYABLE} AND m.captured_at<=?3 AND (?5 IS NULL OR m.rowid<=?5)
+       AND (?6 IS NULL OR m.id IN (SELECT json_extract_string(value,'$') FROM json_each(?6)))
+       ORDER BY m.captured_at,m.rowid LIMIT ?4");
     let mut stmt = db.prepare(&sql)?;
     let mut cursor = stmt.query(params![
         user_id,
         task_id,
         captured_through,
-        i64::from(limit)
+        i64::from(limit),
+        captured_row_id,
+        source_ids.map(serde_json::to_string).transpose()?,
     ])?;
     let mut items = Vec::new();
     let mut bytes = 16_384;
@@ -632,12 +668,32 @@ fn claim_work(
     lease: &ExtractionLease,
     now: i64,
     captured_through: i64,
+    captured_row_id: Option<i64>,
+    mut source_ids: Option<Vec<String>>,
     limit: u32,
     lease_ms: Option<i64>,
 ) -> Result<Json> {
     let scope = receipt_scope(user_id, &lease.task_id);
     let limit = limit.clamp(1, 50);
-    let request_hash = digest(&json!([lease.owner, captured_through, limit, lease_ms]))?;
+    if let Some(ids) = source_ids.as_mut() {
+        if ids.is_empty()
+            || ids.len() > 50
+            || ids.iter().any(|id| id.trim().is_empty() || id.len() > 200)
+        {
+            return Err("Invalid memory extraction source IDs".into());
+        }
+        ids.sort_unstable();
+        if ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err("Duplicate memory extraction source IDs".into());
+        }
+    }
+    let request_hash = digest(&match (captured_row_id, source_ids.as_deref()) {
+        (row_id, Some(ids)) => json!([lease.owner, captured_through, row_id, limit, lease_ms, ids]),
+        (Some(row_id), None) => json!([lease.owner, captured_through, row_id, limit, lease_ms]),
+        (None, None) => json!([lease.owner, captured_through, limit, lease_ms]),
+    })?;
+    // Indexed extraction-state updates can change DuckDB row IDs after the queue snapshot.
+    let row_boundary = captured_row_id.filter(|_| source_ids.is_none());
     if let Some(previous) = receipt(db, &scope, &lease.token)? {
         if previous.request_hash == request_hash
             && previous.status == CLAIMED
@@ -658,7 +714,7 @@ fn claim_work(
         if live(&previous.claim, now)
             && read_claimed_batch(db, user_id, &lease.task_id, &previous.claim, false)?.is_some()
         {
-            return Ok(json!({"status":"busy"}));
+            return Ok(json!({"status":"busy","leaseExpiresAt":previous.claim.expires_at}));
         }
         if current_scope.as_deref() == Some(previous.claim.scope.as_str())
             && let Some(turns) =
@@ -667,6 +723,10 @@ fn claim_work(
             && turns
                 .iter()
                 .all(|turn| turn.captured_at <= captured_through as f64)
+            && source_ids
+                .as_ref()
+                .is_none_or(|ids| turns.iter().all(|turn| ids.binary_search(&turn.id).is_ok()))
+            && within_capture_boundary(db, &turns, row_boundary)?
         {
             recovered = Some(turns);
         } else {
@@ -685,6 +745,8 @@ fn claim_work(
             user_id,
             &lease.task_id,
             captured_through.min(now),
+            row_boundary,
+            source_ids.as_deref(),
             limit,
         )?,
     };
@@ -725,9 +787,27 @@ fn claim_work(
         expires_at: expiry(now, lease_ms),
         scope: current_scope,
         turns: witnesses,
+        publication: None,
     };
     persist_claim(db, &scope, &lease.token, &request_hash, &claim, now)?;
     Ok(json!({"status":"claimed","turns":turns,"leaseExpiresAt":claim.expires_at}))
+}
+
+fn within_capture_boundary(
+    db: &Connection,
+    turns: &[Turn],
+    captured_row_id: Option<i64>,
+) -> Result<bool> {
+    let Some(high_water) = captured_row_id else {
+        return Ok(true);
+    };
+    let ids = turns.iter().map(|turn| &turn.id).collect::<Vec<_>>();
+    Ok(db.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM memory_turns WHERE rowid>?1
+        AND id IN (SELECT json_extract_string(value,'$') FROM json_each(?2)))",
+        params![high_water, serde_json::to_string(&ids)?],
+        |r| r.get(0),
+    )?)
 }
 
 fn renew_work(
@@ -800,21 +880,26 @@ fn settle_work(
                 }
             }
             if status == "completed" {
-                let remaining: i64 = db.query_row(
-                    &format!("SELECT count(*) FROM memory_turns WHERE task_id=?1 AND {RETRYABLE}"),
-                    [&lease.task_id],
-                    |r| r.get(0),
-                )?;
-                db.execute("INSERT INTO memory_pipeline_state(task_id,captured_turns,turns_since_l1,last_l1_at,last_l2_at,last_l3_at,
-                  l1_run_count,l2_run_count,l3_run_count,updated_at) VALUES (?1,0,?2,?3,NULL,NULL,1,0,0,?3)
-                  ON CONFLICT(task_id) DO UPDATE SET turns_since_l1=excluded.turns_since_l1,last_l1_at=excluded.last_l1_at,
-                    l1_run_count=memory_pipeline_state.l1_run_count+1,updated_at=excluded.updated_at",
-                    params![lease.task_id, remaining, now])?;
+                note_publication(db, &lease.task_id, now)?;
             }
         }
     }
     close_receipt(db, &scope, &receipt, status)?;
     Ok(json!({"status":status}))
+}
+
+fn note_publication(db: &Connection, task_id: &str, now: i64) -> Result<()> {
+    let remaining: i64 = db.query_row(
+        &format!("SELECT count(*) FROM memory_turns WHERE task_id=?1 AND {RETRYABLE}"),
+        [task_id],
+        |r| r.get(0),
+    )?;
+    db.execute("INSERT INTO memory_pipeline_state(task_id,captured_turns,turns_since_l1,last_l1_at,last_l2_at,last_l3_at,
+        l1_run_count,l2_run_count,l3_run_count,updated_at) VALUES (?1,0,?2,?3,NULL,NULL,1,0,0,?3)
+        ON CONFLICT(task_id) DO UPDATE SET turns_since_l1=excluded.turns_since_l1,last_l1_at=excluded.last_l1_at,
+          l1_run_count=memory_pipeline_state.l1_run_count+1,updated_at=excluded.updated_at",
+        params![task_id, remaining, now])?;
+    Ok(())
 }
 
 pub fn write_extraction(
@@ -825,7 +910,8 @@ pub fn write_extraction(
     let lease = match &command {
         ExtractionCommand::Claim { lease, .. }
         | ExtractionCommand::Renew { lease, .. }
-        | ExtractionCommand::Settle { lease, .. } => lease,
+        | ExtractionCommand::Settle { lease, .. }
+        | ExtractionCommand::Publish { lease, .. } => lease,
     };
     if user_id.trim().is_empty()
         || lease.task_id.trim().is_empty()
@@ -842,17 +928,40 @@ pub fn write_extraction(
         ExtractionCommand::Claim {
             lease,
             captured_through,
+            captured_row_id,
+            source_ids,
             limit,
             lease_ms,
-        } => claim_work(&tx, user_id, &lease, now, captured_through, limit, lease_ms)?,
+        } => claim_work(
+            &tx,
+            user_id,
+            &lease,
+            now,
+            captured_through,
+            captured_row_id,
+            source_ids,
+            limit,
+            lease_ms,
+        )?,
         ExtractionCommand::Renew { lease, lease_ms } => {
             renew_work(&tx, user_id, &lease, now, lease_ms)?
+        }
+        ExtractionCommand::Settle {
+            disposition: Disposition::Completed,
+            ..
+        } => {
+            json!({"status":"blocked","reason":"publicationRequired"})
         }
         ExtractionCommand::Settle {
             lease,
             disposition,
             error,
         } => settle_work(&tx, user_id, &lease, now, disposition, error)?,
+        ExtractionCommand::Publish {
+            lease,
+            basis_stamp,
+            candidates,
+        } => publication::publish(&tx, user_id, &lease, now, &basis_stamp, &candidates)?,
     };
     crate::request_control::commit(tx)?;
     Ok(reply)

@@ -241,6 +241,13 @@ function directoryIdentity(path: string) {
   return JSON.stringify([realpathSync(path), String(stat.dev), String(stat.ino), String(stat.birthtimeNs)]);
 }
 
+function samePinnedWorkspace(previous: TaskWorkspaceAuthority, current: TaskWorkspaceAuthority, cwd: string): boolean {
+  if (!previous.binding || !sameWorkspacePath(previous.binding.cwd, cwd) || previous.workspaceMove || current.workspaceMove) return false;
+  const { version: _previousVersion, ...previousScope } = previous;
+  const { version: _currentVersion, ...currentScope } = current;
+  return JSON.stringify(previousScope) === JSON.stringify(currentScope);
+}
+
 /** Persist only the directory selected from the current authority, independent of renderer input. */
 export async function resolveTaskWorkspaceCwdAsync(db: AppDatabase, workspace: TaskExecutionWorkspace, taskId: string,
   options: { candidateOnly?: boolean } = {}): Promise<string> {
@@ -274,8 +281,14 @@ export async function resolveTaskWorkspaceCwdAsync(db: AppDatabase, workspace: T
     version = binding.version;
   }
   const current = await core.readTaskWorkspaceAuthority(taskId);
-  if (!current || current.version !== version || (!candidateOnly && current.cwd !== cwd) || directoryIdentity(cwd) !== identity) {
-    throw new Error("任务或工作空间已变化，请核对后重新发送");
+  if (current && current.version === version && (candidateOnly || current.cwd === cwd) && directoryIdentity(cwd) === identity) return cwd;
+
+  // Activity writes can advance the stamp while recovering an already bound task.
+  // Re-evaluate once only when the candidate keeps that exact binding.
+  if (candidateOnly && current && current.version !== version && samePinnedWorkspace(authority, current, cwd)) {
+    const selected = await selectCoreWorkspace(db, workspace, taskId, current, true);
+    const checked = await core.readTaskWorkspaceAuthority(taskId);
+    if (checked?.version === current.version && sameWorkspacePath(selected, cwd) && directoryIdentity(selected) === identity) return selected;
   }
-  return cwd;
+  throw new Error("任务或工作空间已变化，请核对后重新发送");
 }

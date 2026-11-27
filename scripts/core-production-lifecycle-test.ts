@@ -36,6 +36,10 @@ function sha256File(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+const EXTRACTED_TITLE = "Pinecrest ledger review preference";
+const EXTRACTED_FACT = "For Pinecrest ledger reviews, I prefer the exception list before the totals.";
+const FOREGROUND_DURING_EXTRACTION = "Acknowledge the independent foreground task while the memory request is waiting.";
+
 function startStoryLlmServer() {
   let reqCount = 0;
   let effectCount = 0;
@@ -47,6 +51,8 @@ function startStoryLlmServer() {
   const providerRequests: Array<{ lastRole?: string; hasWriteTool: boolean }> = [];
   let memoryExpectation: { ownRef: string; ownText: string; foreignRef: string } | undefined;
   let writeRequestMemory: { own: boolean; foreign: boolean } | undefined;
+  let extractionRequests = 0;
+  const extractionReply = Promise.withResolvers<void>();
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? "/";
@@ -70,12 +76,13 @@ function startStoryLlmServer() {
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(Buffer.from(c));
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
-    const messages = (body.messages ?? []) as Array<{ role?: string }>;
+    const messages = (body.messages ?? []) as Array<{ role?: string; content?: unknown }>;
     const lastRole = messages.at(-1)?.role;
     const toolNames = Array.isArray(body.tools)
       ? (body.tools as Array<{ function?: { name?: string }; name?: string }>).map(t => t.function?.name ?? t.name).filter(Boolean)
       : [];
     const hasWriteTool = toolNames.includes("write");
+    const messageText = JSON.stringify(messages);
     providerRequests.push({ lastRole, hasWriteTool });
 
     res.writeHead(200, {
@@ -84,10 +91,10 @@ function startStoryLlmServer() {
       connection: "keep-alive",
     });
 
-    reqCount += 1;
+    const requestId = ++reqCount;
     const writeChunk = (delta: Record<string, unknown>, finishReason: string | null = null) => {
       res.write(`data: ${JSON.stringify({
-        id: `story-${reqCount}`,
+        id: `story-${requestId}`,
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
         model: "fixture/model",
@@ -96,7 +103,31 @@ function startStoryLlmServer() {
     };
 
     if (!hasWriteTool && !toolNames.length) {
-      writeChunk({ role: "assistant", content: JSON.stringify({ candidates: [] }) });
+      const candidates: Array<Record<string, unknown>> = [];
+      const content = messages.at(-1)?.content;
+      const extractionText = typeof content === "string" ? content : Array.isArray(content)
+        ? content.map(part => typeof part?.text === "string" ? part.text : "").join("") : "";
+      let source: { id: string; user: string } | undefined;
+      if (extractionText.includes("conversationTurns")) {
+        const payload = JSON.parse(extractionText) as { conversationTurns?: Array<{ id: string; user: string }> };
+        source = payload.conversationTurns?.find(turn => turn.user.includes(EXTRACTED_FACT));
+      }
+      if (source) {
+        extractionRequests += 1;
+        await extractionReply.promise;
+        candidates.push({ kind: "preference", title: EXTRACTED_TITLE, content: EXTRACTED_FACT,
+          userEvidence: EXTRACTED_FACT, sourceTurnId: source.id, scopeType: "task", operationHint: "create",
+          confidence: 0.99, importance: 3, explicit: true, retention: "stable", sensitivity: "none" });
+      }
+      writeChunk({ role: "assistant", content: JSON.stringify({ candidates }) });
+      writeChunk({}, "stop");
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
+
+    if (lastRole === "user" && messageText.includes(FOREGROUND_DURING_EXTRACTION)) {
+      writeChunk({ role: "assistant", content: "Independent foreground task acknowledged." });
       writeChunk({}, "stop");
       res.write("data: [DONE]\n\n");
       res.end();
@@ -129,7 +160,7 @@ function startStoryLlmServer() {
         role: "assistant",
         tool_calls: [{
           index: 0,
-          id: `call_story_${reqCount}`,
+          id: `call_story_${requestId}`,
           type: "function",
           function: {
             name: "write",
@@ -179,8 +210,11 @@ function startStoryLlmServer() {
     requestSummary: () => providerRequests,
     expectMemory: (memory: NonNullable<typeof memoryExpectation>) => { memoryExpectation = memory; },
     writeRequestMemory: () => writeRequestMemory,
+    extractionRequests: () => extractionRequests,
+    finishExtraction: () => extractionReply.resolve(),
     getEffectCount: () => effectCount,
     async close() {
+      extractionReply.resolve();
       await new Promise<void>(resolve => server.close(() => resolve()));
     },
   };
@@ -362,7 +396,7 @@ async function main(): Promise<void> {
       taskId: "task-story-1",
       userMessageId: "story-u-1",
       assistantMessageId: "story-a-1",
-      text: "Produce story artifact, using the Aurora Indigo execution marker.",
+      text: `Produce story artifact, using the Aurora Indigo execution marker. ${EXTRACTED_FACT}`,
       modelId: "fixture/model",
     }, { durableAdmissionOnly: true });
     assert(promptReceipt.receipt, "Story Step 2: Pi Work admitted with receipt");
@@ -402,6 +436,7 @@ async function main(): Promise<void> {
       const snapshots = await db!.runtimeAuditReader!.artifactSnapshots(["task-story-1"]);
       return snapshots?.some(snapshot => snapshot.artifacts.some(artifact => artifact.id)) ?? false;
     }, "Pi Node Host persisted an artifact in Core while UI closed");
+    await until(() => llm.extractionRequests() > 0, "Pi Node Host started background memory extraction while UI was closed");
 
     // §6 Step 5: Offline domain activity (notification, note, unknown gateway reconciliation)
     await bgClient.upsertNote({
@@ -452,6 +487,20 @@ async function main(): Promise<void> {
       grouped: false,
     }) as RuntimeNotificationSqlRow[] | undefined;
     assert(caughtNotifs?.some(n => n.dedupe_key === "story-step5-notif"), "Story Step 6: Missed offline notification recovered");
+
+    const independent = await mainAgent.prompt({ taskId: "task-story-cancel", userMessageId: "story-independent-memory",
+      assistantMessageId: "story-independent-memory-answer", text: FOREGROUND_DURING_EXTRACTION,
+      modelId: "fixture/model" }, { durableAdmissionOnly: false });
+    assert.equal(independent.receipt?.status, "done", "An unrelated foreground turn completes while the extraction provider waits");
+
+    const readExtractedMemory = async () => (await memory.searchLexical({ taskId: "task-story-1", query: EXTRACTED_TITLE,
+      statuses: ["active"] })).filter(hit => hit.memory.title === EXTRACTED_TITLE && hit.memory.content === EXTRACTED_FACT);
+    assert.equal((await readExtractedMemory()).length, 0, "The model candidate is not visible before publication");
+    llm.finishExtraction();
+    await until(async () => (await readExtractedMemory()).length === 1, "Core published one grounded memory from the offline turn");
+    assert.equal((await readExtractedMemory())[0]!.memory.sourceTaskId, "task-story-1");
+    assert.equal(llm.extractionRequests(), 1, "One source turn initiated one model extraction");
+    console.log("PASS Story Step 6: foreground conversation finished during a held extraction, then the offline turn produced one Core L1 record");
 
     // §6 Step 7: Fault injection on Pi Host & Core Worker
     llm.setFaultMode(true, true);

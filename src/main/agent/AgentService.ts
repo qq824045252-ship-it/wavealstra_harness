@@ -91,6 +91,7 @@ import { app, BrowserWindow } from "electron";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 
 
 import { UsageStatsService, type RecordLiveInput } from "../usage/UsageStatsService";
@@ -212,6 +213,11 @@ import { WorkMemoryCapture } from "../memory/WorkMemoryCapture";
 import { MemoryOrganizationService } from "../memory/MemoryOrganizationService";
 import { MemorySkillDistillation } from "../memory/MemorySkillDistillation";
 import { MemoryPipelineManager } from "../memory/MemoryPipelineManager";
+import { CoreMemoryExtractionUnavailable } from "../memory/MemoryCoreExtraction";
+import type { CoreMemoryExtractionPlan } from "../memory/MemoryCoreExtractionWire";
+import type { MemoryExtractionLease, MemoryExtractionSnapshot } from "../memory/MemoryTurnRepository";
+import type { MemoryExtractionRunResult } from "../../shared/memory-kernel";
+import pLimit from "p-limit";
 import { MemorySkillEffectivenessService } from "../memory/MemorySkillEffectivenessService";
 import { MemorySkillRevisionService } from "../memory/MemorySkillRevisionService";
 import { createMemoryExtension } from "../memory/memory-extension";
@@ -244,6 +250,7 @@ import { normalizeGoalContinuationAttempts, projectConversationRuntime, projectC
   type GoalUserInputWitness, type RuntimeConversationGoalDraft, type WorkTaskAccess } from "./ConversationRuntimeData";
 import { renderConversationGoalSection } from "./ConversationGoalPrompt";
 import { GoalContinuationService } from "./work/GoalContinuationService";
+import { CoreGoalContinuationDriver } from "./work/CoreGoalContinuationDriver";
 import { BotRegistry } from "./work/BotRegistry";
 import { BotSettingsService } from "./work/BotSettingsService";
 import { BotExpertBindingService } from "./work/BotExpertBindingService";
@@ -548,6 +555,11 @@ export type AgentTaskLifecycleEvent =
       detail?: string;
     };
 
+type CoreMemoryBatchOutcome =
+  | { status: "busy"; leaseExpiresAt: number }
+  | { status: "published"; sourceIds: string[] }
+  | { status: "empty" | "refresh" | "stop" };
+
 export class AgentService {
   readonly registry = new SessionRegistry();
   private readonly pendingActions = new PendingActionRegistry();
@@ -585,6 +597,8 @@ export class AgentService {
   private readonly taskDiagnostics: TaskDiagnosticsRepository;
   private readonly contextUsageWrites: TaskContextUsageWrites;
   private readonly conversationGoalActivity: ConversationGoalActivity;
+  private readonly coreGoalContinuation?: CoreGoalContinuationDriver;
+  private readonly coreGoalUsage = new Map<string, Promise<boolean>>();
   private readonly conversationGoalSavedArtifacts: ConversationGoalSavedArtifacts;
   private readonly conversationInteractionRepo: ConversationInteractionRepository;
   private readonly stopDiagnosticObservation: () => void;
@@ -793,6 +807,15 @@ export class AgentService {
   }
 
   private memoryWriteQueue: Promise<void> = Promise.resolve();
+  private readonly memoryExtractionOwner = randomUUID();
+  private readonly memoryExtractionLimit = pLimit(3);
+  private memoryExtractionRevision = 0;
+  private readonly memoryExtractionRevisions = new Map<string, number>();
+  private readonly memoryExtractionJobs = new Map<string, {
+    sourceIds: Set<string>; sourceEpoch: number; dotsEpoch: number; result: Promise<MemoryExtractionRunResult>;
+    admission: AbortController;
+  }>();
+  private readonly memoryExtractionControllers = new Map<string, { controller: AbortController; lease: MemoryExtractionLease }>();
   private memorySourceEpoch = 0;
   private dotsMemoryEpoch = 0;
 
@@ -959,6 +982,20 @@ export class AgentService {
     this.codeReview = new CodeReviewService(db.fixtureConnection, event => broadcast(CodeReviewIpc.changed, event), db.runtimeAuditReader);
     this.taskDiagnostics = new TaskDiagnosticsRepository(db.fixtureConnection, this.runtimeAuditReader);
     this.conversationGoalActivity = new ConversationGoalActivity(db.fixtureConnection, this.runtimeAuditReader);
+    const goalHostGeneration = getDefaultPiHostGeneration();
+    if (this.executionMode === "host" && this.runtimeAuditReader?.supervised && goalHostGeneration) {
+      this.coreGoalContinuation = new CoreGoalContinuationDriver({
+        getClient: () => this.coreClientProvider?.(),
+        hostGeneration: goalHostGeneration,
+        policy: () => this.goalContinuationPolicy(),
+        canAdvance: (taskId, workId) => this.dotsActions?.canAdvanceGoalInCore(taskId, workId) ?? true,
+        inspect: async taskId => this.durableBots?.inspectGoalContinuation(taskId),
+        progressFingerprint: (taskId, workId, intentRevision) =>
+          this.coreGoalProgressFingerprint(taskId, workId, intentRevision),
+        place: async (claim, validate) => this.durableBots
+          ? this.durableBots.submitClaimedGoalContinuation(claim, validate) : "rejected",
+      });
+    }
     this.conversationGoalSavedArtifacts = new ConversationGoalSavedArtifacts(db.fixtureConnection, this.runtimeAuditReader);
     this.stopDiagnosticObservation = observeCacheRequestTraces((event, model) => this.taskDiagnostics.observeTrace(event, model));
     this.conversationInteractionRepo = new ConversationInteractionRepository(db.fixtureConnection, this.runtimeAuditReader);
@@ -1415,6 +1452,49 @@ export class AgentService {
     };
   }
 
+  private async coreGoalProgressFingerprint(taskId: string, workId: string, intentRevision: number): Promise<string> {
+    const current = await this.readLiveConversationGoalForTool(taskId, workId);
+    if (!current || current.versionGuard.expectedIntentRevision !== intentRevision) {
+      throw new Error("Goal 内容已变更");
+    }
+    const [artifacts] = (await this.artifactService?.readTaskSnapshots([taskId])) ?? [];
+    const versions = artifacts?.artifacts.map(artifact => [artifact.id, artifact.version]).sort() ?? [];
+    return createHash("sha256").update(JSON.stringify([
+      intentRevision, current.goal.progressSummary?.trim().replace(/\s+/gu, " ") ?? null,
+      current.goal.criteria.map(criterion =>
+        [criterion.id, criterion.status, criterion.evidence]),
+      versions,
+    ])).digest("hex");
+  }
+
+  private accountCoreGoalResponse(taskId: string, conversationId: number, generationId: number, entryId: number): void {
+    if (!this.coreGoalContinuation || taskId === DOTS_TASK_ID || isGatewayBotTaskId(taskId)) return;
+    const tail = this.coreGoalUsage.get(taskId) ?? Promise.resolve(true);
+    const next = tail.then(async previousConfirmed => {
+      const owner = await this.conversationGoalActivity.readGeneration({ taskId, conversationId: String(conversationId),
+        generationTaskId: generationId });
+      if (!owner) return previousConfirmed;
+      const client = this.coreClientProvider?.();
+      const hostGeneration = getDefaultPiHostGeneration();
+      const storeId = await this.durableBots?.goalContinuationStoreId(taskId);
+      if (!client || client.isClosed || !hostGeneration || !storeId) return false;
+      const budget = this.goalContinuationPolicy().tokenBudget;
+      const request = { operation: "writeGoalContinuation", command: { kind: "recordResponse", userId: LOCAL_USER_ID,
+        taskId, hostGeneration, storeId, conversationId, generationId, entryId,
+        fallbackBudget: budget === null ? null : Math.min(Number.MAX_SAFE_INTEGER, Math.ceil(budget)) } };
+      const send = () => client.request<{ status: string; code?: string }>(request);
+      const result = await send().catch(error => {
+        if (error instanceof RuntimeAuditUnknownOperationError) return send();
+        throw error;
+      });
+      return previousConfirmed && (result.status === "accounted" || result.status === "ignored");
+    }).catch(error => {
+      console.warn("[CoreGoalContinuation] response usage unconfirmed", error);
+      return false;
+    });
+    this.coreGoalUsage.set(taskId, next);
+  }
+
   private async readWorkTaskAccess(taskId: string): Promise<WorkTaskAccess> {
     if (this.db.fixtureConnection) {
       return { taskExists: Boolean(this.db.getTask(taskId)), hasWorkBinding: Boolean(this.workService.repo.bindingForTask(taskId)) };
@@ -1655,7 +1735,24 @@ export class AgentService {
   }
 
   /** Explicit "continue" on a deferred/exhausted Goal: fresh attempts and budget window. */
-  resumeGoalContinuation(goalId: string, taskId?: string): ConversationGoalMutationResult {
+  async resumeGoalContinuation(goalId: string, taskId?: string): Promise<ConversationGoalMutationResult> {
+    if (!this.workFixture) {
+      if (!taskId) return { ok: false, code: "invalid_request", message: "需要指定 Goal 所在的对话" };
+      if (this.executionMode === "isolated-client") {
+        const executionId = `pi-ctrl-goal-continue:${randomUUID()}`;
+        return this.submitCorePiExecution<ConversationGoalMutationResult>({ executionId, idempotencyKey: executionId,
+          taskId, kind: "pi_control", payload: { controlAction: "resumeGoalContinuation", goalId } });
+      }
+      const current = await this.readLiveConversationGoalForTool(taskId, goalId);
+      if (!current) return { ok: false, code: "not_found", message: "找不到该 Goal" };
+      const decision = await this.coreGoalContinuation?.continue(taskId, goalId);
+      if (decision?.status === "started") {
+        const next = await this.readLiveConversationGoalForTool(taskId, goalId);
+        return { ok: true, goal: next?.goal ?? current.goal };
+      }
+      return { ok: false, code: "conflict", message: decision?.status === "unknown"
+        ? "Goal 续跑尚未确认，请查看对话状态" : "当前无法继续此 Goal，请查看对话状态" };
+    }
     if (!this.goalMutationAllowed(goalId, taskId)) return { ok: false, code: "not_found", message: "找不到该 Goal" };
     const result = this.goalContinuations.resume(goalId);
     if (result.ok) return result;
@@ -1850,13 +1947,15 @@ export class AgentService {
   }
 
   handleCoreExecutionEvent(ev: CoreDomainEvent): void {
-    if (ev.domain === "work" && (ev.kind === "work.goalContinuationDeferred" || ev.kind === "work.goalContinuationCleared")) {
-      const { taskId, workId } = ev.payload;
+    if (ev.domain === "work" && (ev.kind === "work.goalContinuationDeferred" || ev.kind === "work.goalContinuationCleared"
+      || ev.kind === "work.goalContinuationChanged")) {
+      const taskId = ev.payload.taskId;
+      const workId = ev.payload.workId ?? ev.entityId;
       if (typeof taskId === "string" && typeof workId === "string") {
         void this.readLiveConversationGoalForTool(taskId, workId).then(current => {
           const continuation = current?.goal.continuation;
-          if (current && (ev.kind === "work.goalContinuationCleared" ? continuation?.state === "idle"
-            : continuation?.state === "deferred" && continuation.deferReason === "restart")) {
+          if (current && (ev.kind === "work.goalContinuationChanged" || (ev.kind === "work.goalContinuationCleared"
+            ? continuation?.state === "idle" : continuation?.state === "deferred" && continuation.deferReason === "restart"))) {
             this.emitPatch({ type: "conversation_goal_snapshot", taskId, goal: current.goal });
           }
         }).catch(error => console.warn("[AgentService] Goal recovery snapshot failed", error));
@@ -2119,10 +2218,17 @@ export class AgentService {
         await this.dotsActions?.assertAdmissionForSubmit(request);
         if (request.taskId === DOTS_TASK_ID) await this.assertDotsScheduleInput(request.userMessageId, request);
         const goalId = /^goal-continuation:(.+):\d+:\d+$/.exec(request.userMessageId)?.[1];
-        if (goalId && this.dotsActions?.canAdvanceGoal(request.taskId, goalId) === false)
-          throw new Error("Dots 设置当前暂停主动推进这项目标");
+        if (goalId && this.dotsActions) {
+          const allowed = this.workFixture ? this.dotsActions.canAdvanceGoal(request.taskId, goalId)
+            : await this.dotsActions.canAdvanceGoalInCore(request.taskId, goalId);
+          if (!allowed) throw new Error("Dots 设置当前暂停主动推进这项目标");
+        }
       },
       beforeModelRequest: taskId => this.assertMayExecuteTask(taskId),
+      verifyGoalContinuation: async claim => {
+        if (!this.coreGoalContinuation) throw new Error("当前执行宿主无法验证 Goal 续跑权限");
+        await this.coreGoalContinuation.assertCurrent(claim);
+      },
       resumeAllowed: async taskId => {
         // Keep Ordinary recovery, but do not resurrect the removed Bot mode's
         // workers or legacy Gateway sessions through the shared Durable engine.
@@ -2155,6 +2261,22 @@ export class AgentService {
           this.workFixture.continuations.onSettled(taskId, snapshot, owner?.goalId ?? lastInput?.goalContinuation?.workId ?? null);
         }
         computerUseRunCoordinator.endTask(taskId, snapshot.outcome === "completed" ? "completed" : "failed");
+        const accounting = this.coreGoalUsage.get(taskId);
+        const accounted = accounting ? await accounting : true;
+        if (this.coreGoalUsage.get(taskId) === accounting) this.coreGoalUsage.delete(taskId);
+        if (this.coreGoalContinuation && snapshot.outcome) {
+          const last = snapshot.messages.at(-1);
+          try {
+            await this.conversationGoalActivity.flush(taskId);
+            const owner = accounted && snapshot.outcome === "completed" && last?.role === "assistant"
+              ? await this.runtimeAuditReader?.readConversationGoalActivityOwner(
+                taskId, LOCAL_USER_ID, snapshot.conversationId, last.id)
+              : undefined;
+            this.coreGoalContinuation.onSettled(taskId, snapshot, owner?.goalId);
+          } catch (error) {
+            console.warn("[CoreGoalContinuation] settled owner unconfirmed", error);
+          }
+        }
         if (!snapshot.outcome || snapshot.outcome === "aborted") return;
         const message = snapshot.messages.filter(message => message.role === "assistant").at(-1);
         if (!message) return;
@@ -2209,6 +2331,9 @@ export class AgentService {
         if (info.sourceKind === "main") this.durableSkills.entries(taskId, info.conversationId, entries);
         for (const entry of [...entries].sort((a, b) => a.id - b.id)) {
           if (!entry.byTaskId) continue;
+          if (entry.kind === "pi.assistant" && entry.model?.some(message => message.role === "assistant")) {
+            this.accountCoreGoalResponse(taskId, entry.conversationId, entry.byTaskId, entry.id);
+          }
           for (const message of entry.model ?? []) {
             if (message.role !== "assistant") continue;
             this.recordDurableUsage(taskId, message, { conversationId: String(entry.conversationId), generationTaskId: entry.byTaskId,
@@ -2335,7 +2460,8 @@ export class AgentService {
     const recovered = await this.durableBots.resumePersisted();
     if (this.settingsStore.read().memoryEnabled) {
       this.memoryService.cognition.queueDotsViews();
-      if (this.memoryCaptureEnabled(DOTS_TASK_ID)) this.queueDotsMemoryRecovery();
+      if (!this.db.fixtureConnection) this.queueCoreMemoryRecovery();
+      else if (this.memoryCaptureEnabled(DOTS_TASK_ID)) this.queueDotsMemoryRecovery();
     }
     // Core defers interrupted Goal continuations in the fenced Pi bootstrap transaction.
     this.workFixture?.continuations.reconcileRestart();
@@ -2359,6 +2485,20 @@ export class AgentService {
     void this.memoryPipeline.turns.hasPending(DOTS_TASK_ID).then(pending => {
       if (pending) return this.queuePendingMemoryExtraction([DOTS_TASK_ID]);
     }).catch(error => console.warn("[Dots] Memory recovery failed", error));
+  }
+
+  private queueCoreMemoryRecovery(refreshPolicy = false): void {
+    if (this.executionMode === "isolated-client") {
+      const requestId = `memory-policy:${randomUUID()}`;
+      void this.submitCorePiExecution<MemoryExtractionRunResult>({ executionId: requestId, idempotencyKey: requestId,
+        taskId: "__memory_extraction_policy__", kind: "pi_control", timeoutMs: 15 * 60_000,
+        payload: { controlAction: "extractMemoryPending", refreshPolicy },
+      }).catch(error => console.warn("[AgentService] memory recovery failed", error));
+      return;
+    }
+    if (!this.modelRuntime) return;
+    void this.memoryPipeline.flushCaptureWrites().then(() => this.readAndRunCoreMemoryExtraction())
+      .catch(error => console.warn("[AgentService] memory recovery failed", error));
   }
 
   private boundExpertPrompt(identity: TaskExpertSnapshot): string {
@@ -5012,6 +5152,10 @@ export class AgentService {
     const nextDotsMemory = this.dotsMemoryMode(nextApp);
     if (previousDotsMemory !== nextDotsMemory) {
       this.dotsMemoryEpoch += 1;
+      if (!this.db.fixtureConnection) {
+        this.memoryExtractionJobs.get(DOTS_TASK_ID)?.admission.abort();
+        this.memoryExtractionControllers.get(DOTS_TASK_ID)?.controller.abort();
+      }
       if (nextDotsMemory === "readWrite") this.queueDotsMemoryRecovery();
     }
     const next = this.getAppSettings();
@@ -5026,7 +5170,14 @@ export class AgentService {
       this.durableBots?.refreshCompactionPolicy();
     }
     if (previous.memoryEnabled !== nextApp.memoryEnabled) {
-      if (!nextApp.memoryEnabled) this.memoryOrganization.pauseActive();
+      this.memorySourceEpoch += 1;
+      if (!nextApp.memoryEnabled) {
+        this.memoryOrganization.pauseActive();
+        this.abortMemoryExtractionJobs();
+      }
+      if (!this.db.fixtureConnection && (this.executionMode === "isolated-client" || nextApp.memoryEnabled)) {
+        this.queueCoreMemoryRecovery(true);
+      }
       this.sessionLifecycle.invalidateAll();
       this.notifyMemoryChanged({ scope: "settings" });
     }
@@ -5485,8 +5636,24 @@ export class AgentService {
   listKernelDismissedProjections() {
     return this.memoryService.listDismissedProjections();
   }
-  retryKernelFailedTurns() {
+  async retryKernelFailedTurns(): Promise<number> {
     if (!this.settingsStore.read().memoryEnabled) throw new Error("请先开启记忆再重试提炼");
+    if (this.executionMode === "isolated-client") {
+      const requestId = `memory-retry:${randomUUID()}`;
+      return await this.submitCorePiExecution<number>({ executionId: requestId, idempotencyKey: requestId,
+        taskId: "__memory_extraction__", kind: "pi_control", payload: { controlAction: "retryMemoryFailed" } });
+    }
+    if (!this.db.fixtureConnection) {
+      await this.memoryPipeline.flushCaptureWrites();
+      const admittedAt = this.memoryExtractionRevision;
+      const snapshot = await this.memoryPipeline.turns.retryExtractionQueue();
+      if (snapshot.reset > 0) {
+        this.notifyMemoryChanged({ scope: "settings" });
+        void this.runCoreMemoryExtraction(snapshot, admittedAt, undefined, true)
+          .catch(error => console.warn("[AgentService] memory retry failed", error));
+      }
+      return snapshot.reset;
+    }
     const { reset, taskIds } = this.memoryService.retryFailedTurns();
     if (reset <= 0) return 0;
     void this.queuePendingMemoryExtraction(taskIds).catch((error) => console.warn("[AgentService] memory retry failed", error));
@@ -5494,19 +5661,32 @@ export class AgentService {
     return reset;
   }
 
-  async extractKernelPendingTurns(): Promise<import("../../shared/memory-kernel").MemoryExtractionRunResult> {
+  async extractKernelPendingTurns(refreshPolicy = false): Promise<MemoryExtractionRunResult> {
+    if (refreshPolicy) {
+      this.memorySourceEpoch += 1;
+      this.abortMemoryExtractionJobs();
+      if (!this.settingsStore.read().memoryEnabled) return { ...this.emptyMemoryExtractionSummary(), interrupted: true };
+    }
     if (!this.settingsStore.read().memoryEnabled) throw new Error("请先开启记忆再处理待提炼对话");
+    if (this.executionMode === "isolated-client") {
+      const requestId = `memory-extract:${randomUUID()}`;
+      return await this.submitCorePiExecution<MemoryExtractionRunResult>({ executionId: requestId, idempotencyKey: requestId,
+        taskId: "__memory_extraction__", kind: "pi_control", timeoutMs: 15 * 60_000,
+        payload: { controlAction: "extractMemoryPending" } });
+    }
     if (!this.modelRuntime) throw new Error("模型尚未就绪，请稍后重试");
     await this.memoryPipeline.flushCaptureWrites();
+    if (!this.db.fixtureConnection) return this.readAndRunCoreMemoryExtraction();
     return this.queuePendingMemoryExtraction(this.memoryPipeline.turns.pendingTaskIds());
   }
 
   deleteAllKernelMemoryTurns(): Promise<number> {
     // Serialize with accepted originals, independently of the model extraction queue.
-    return this.memoryPipeline.withCaptureWrites(() => {
-      const deleted = this.memoryPipeline.turns.deleteAll();
+    return this.memoryPipeline.withCaptureWrites(async () => {
+      const deleted = await this.memoryPipeline.turns.deleteCaptured();
       this.memorySourceEpoch += 1;
-      if (deleted > 0) this.memoryService.cognition.invalidateDotsSources();
+      this.abortMemoryExtractionJobs();
+      if (deleted > 0) this.invalidateDeletedMemoryViews();
       this.notifyMemoryChanged({ scope: "settings" });
       return deleted;
     });
@@ -5516,21 +5696,232 @@ export class AgentService {
     if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !id.trim())) {
       throw new Error("请选择有效的对话来源");
     }
-    return this.memoryPipeline.withCaptureWrites(() => {
-      const deleted = this.memoryPipeline.turns.deleteMany(ids);
+    return this.memoryPipeline.withCaptureWrites(async () => {
+      const deleted = await this.memoryPipeline.turns.deleteCaptured(ids);
       if (deleted > 0) {
-        this.memoryService.cognition.invalidateDotsSources();
+        this.invalidateDeletedMemoryViews();
         this.notifyMemoryChanged({ scope: "settings" });
       }
       return deleted;
     });
   }
 
-  /** One writer for automatic capture, manual catch-up and retries. Read batches only after acquiring the queue. */
+  private invalidateDeletedMemoryViews(): void {
+    if (this.db.fixtureConnection) this.memoryService.cognition.invalidateDotsSources();
+    else this.memoryService.cognition.invalidateDotsViews();
+  }
+
   private queuePendingMemoryExtraction(
     taskIds: readonly string[],
     capturedModel?: NonNullable<AgentSession["model"]>,
-  ): Promise<import("../../shared/memory-kernel").MemoryExtractionRunResult> {
+  ): Promise<MemoryExtractionRunResult> {
+    if (!this.db.fixtureConnection) {
+      return this.readAndRunCoreMemoryExtraction([...new Set(taskIds)], capturedModel);
+    }
+    return this.queueFixtureMemoryExtraction(taskIds, capturedModel);
+  }
+
+  private async readAndRunCoreMemoryExtraction(taskIds?: readonly string[], capturedModel?: NonNullable<AgentSession["model"]>) {
+    const admittedAt = this.memoryExtractionRevision;
+    const snapshot = await this.memoryPipeline.turns.readExtractionQueue(taskIds);
+    return this.runCoreMemoryExtraction(snapshot, admittedAt, capturedModel);
+  }
+
+  private async runCoreMemoryExtraction(snapshot: MemoryExtractionSnapshot, admittedAt: number,
+    capturedModel?: NonNullable<AgentSession["model"]>, rerun = false): Promise<MemoryExtractionRunResult> {
+    const sourceEpoch = this.memorySourceEpoch;
+    const jobs = [...new Set(snapshot.taskIds)].map(taskId => {
+      if ((this.memoryExtractionRevisions.get(taskId) ?? 0) > admittedAt) {
+        return Promise.resolve({ ...this.emptyMemoryExtractionSummary(), interrupted: true });
+      }
+      const dotsEpoch = taskId === DOTS_TASK_ID ? this.dotsMemoryEpoch : 0;
+      const previous = this.memoryExtractionJobs.get(taskId);
+      const sourceIds = snapshot.sourceIdsByTask[taskId] ?? [];
+      if (!rerun && previous && !previous.admission.signal.aborted && previous.sourceEpoch === sourceEpoch && previous.dotsEpoch === dotsEpoch
+        && sourceIds.every(id => previous.sourceIds.has(id))) {
+        return previous.result.then(result => ({ ...this.emptyMemoryExtractionSummary(), interrupted: result.interrupted }));
+      }
+      const admission = previous && !previous.admission.signal.aborted ? previous.admission : new AbortController();
+      const enabled = () => !this.memoryDisposed && !admission.signal.aborted && Boolean(this.modelRuntime)
+        && this.memorySourceEpoch === sourceEpoch && this.memoryCaptureEnabled(taskId)
+        && (taskId !== DOTS_TASK_ID || this.dotsMemoryEpoch === dotsEpoch);
+      const result = (previous?.result.catch(() => undefined) ?? Promise.resolve()).then(async () => {
+        const summary = this.emptyMemoryExtractionSummary();
+        let refresh = true;
+        const remaining = new Set(sourceIds);
+        while (enabled() && remaining.size > 0) {
+          const page = Array.from(remaining).slice(0, 50);
+          const outcome = await this.memoryExtractionLimit(() => this.runCoreMemoryExtractionBatch(
+            taskId, snapshot.capturedThrough, page, enabled, summary, capturedModel,
+          ));
+          if (outcome.status === "busy") {
+            if (!enabled()) break;
+            try { await delay(Math.max(25, outcome.leaseExpiresAt - Date.now()), undefined, { signal: admission.signal, ref: false }); }
+            catch (error) { if (!admission.signal.aborted) throw error; }
+            continue;
+          }
+          if (outcome.status === "refresh" && refresh) { refresh = false; continue; }
+          if (outcome.status !== "published" && outcome.status !== "empty") break;
+          for (const id of outcome.status === "published" ? outcome.sourceIds : page) remaining.delete(id);
+          refresh = true;
+        }
+        if (!enabled()) summary.interrupted = true;
+        return summary;
+      }).finally(() => {
+        if (this.memoryExtractionJobs.get(taskId)?.result === result) this.memoryExtractionJobs.delete(taskId);
+      });
+      this.memoryExtractionJobs.set(taskId, { result, sourceEpoch, dotsEpoch, admission, sourceIds: new Set(sourceIds) });
+      return result;
+    });
+    const summary = this.emptyMemoryExtractionSummary();
+    for (const result of await Promise.all(jobs)) {
+      summary.processedTurns += result.processedTurns;
+      summary.failedTurns += result.failedTurns;
+      summary.skippedTasks += result.skippedTasks;
+      if (result.skippedSourceCount) summary.skippedSourceCount = (summary.skippedSourceCount ?? 0) + result.skippedSourceCount;
+      summary.interrupted ||= result.interrupted;
+    }
+    return summary;
+  }
+
+  private emptyMemoryExtractionSummary(): MemoryExtractionRunResult {
+    return { processedTurns: 0, failedTurns: 0, skippedTasks: 0, interrupted: false };
+  }
+
+  private abortMemoryExtractionJobs(): void {
+    if (this.db.fixtureConnection) return;
+    for (const { admission } of this.memoryExtractionJobs.values()) admission.abort();
+    for (const { controller } of this.memoryExtractionControllers.values()) controller.abort();
+  }
+
+  private async runCoreMemoryExtractionBatch(taskId: string, capturedThrough: number, sourceIds: readonly string[], enabled: () => boolean,
+    summary: MemoryExtractionRunResult, capturedModel?: NonNullable<AgentSession["model"]>): Promise<CoreMemoryBatchOutcome> {
+    const modelRuntime = this.modelRuntime;
+    if (!enabled() || !modelRuntime) return { status: "stop" };
+    const turns = this.memoryPipeline.turns;
+    const lease = { taskId, owner: this.memoryExtractionOwner, token: randomUUID() };
+    const leaseMs = 60_000;
+    const claim = await turns.claimExtraction(lease, { capturedThrough, sourceIds, limit: 8, leaseMs });
+    if (claim.status !== "claimed") {
+      if (claim.status === "ineligible") summary.skippedTasks++;
+      if (claim.status === "busy") return claim;
+      return { status: claim.status === "empty" ? "empty" : "stop" };
+    }
+    const controller = new AbortController();
+    this.memoryExtractionControllers.set(taskId, { controller, lease });
+    const current = () => enabled() && !controller.signal.aborted;
+    let renewal: Promise<void> | undefined;
+    const heartbeat = setInterval(() => {
+      if (renewal || !current()) return;
+      renewal = turns.renewExtraction(lease, leaseMs).then(expiresAt => {
+        if (expiresAt === undefined) controller.abort(new CoreMemoryExtractionUnavailable("记忆提炼认领已经失效"));
+      }).catch(error => controller.abort(error)).finally(() => { renewal = undefined; });
+    }, leaseMs / 3);
+    heartbeat.unref();
+    let settled = false;
+    let basisChanged = false;
+    const deadlineError = new Error("记忆提炼模型请求超时");
+    this.notifyMemoryChanged({ scope: "settings" });
+    try {
+      if (!current()) return { status: "stop" };
+      const basis = await turns.extractionBasis(lease);
+      if (basis.status !== "ready") { summary.skippedTasks++; return { status: "stop" }; }
+      const task = await this.db.readTask(taskId, { includeExpertBinding: false });
+      if (!task || !current()) return { status: "stop" };
+      const someSourcesErased = async () => {
+        const latestTask = await this.db.readTask(taskId, { includeExpertBinding: false });
+        if (!current() || !latestTask || latestTask.archived || latestTask.projectId !== task.projectId
+          || latestTask.spaceId !== task.spaceId || latestTask.cwd !== task.cwd) return false;
+        const remaining = await Promise.all(claim.turns.map(turn => turns.readDetail(turn.id)));
+        const count = remaining.filter(Boolean).length;
+        return count > 0 && count < claim.turns.length;
+      };
+      const publish = async (plan: CoreMemoryExtractionPlan): Promise<CoreMemoryBatchOutcome> => {
+        const result = await turns.publishExtraction(lease, plan);
+        if (result.status !== "published" && result.status !== "filtered") {
+          return { status: result.status === "conflict" || (result.status === "stale" && await someSourcesErased()) ? "refresh" : "stop" };
+        }
+        settled = true;
+        if (result.skippedSourceCount) summary.skippedSourceCount = (summary.skippedSourceCount ?? 0) + result.skippedSourceCount;
+        if (result.status === "published") {
+          summary.processedTurns += basis.turns.length;
+          if (result.changedScopes.includes("global")) this.notifyMemoryChanged({ scope: "global" });
+          if (task.spaceId && result.changedScopes.includes("workspace")) {
+            this.notifyMemoryChanged({ scope: "space", spaceId: task.spaceId });
+          }
+        }
+        return { status: "published", sourceIds: claim.turns.map(turn => turn.id) };
+      };
+      if (!basis.turns.length && basis.withheldSourceCount > 0) {
+        return await publish({ basisStamp: basis.basisStamp, candidates: [] });
+      }
+      const settings = createAgentSettingsManager(task.cwd || getMyBuddyDir(), getMyBuddyDir());
+      const provider = settings.getDefaultProvider();
+      const id = settings.getDefaultModel();
+      const fallback = provider && id ? `${provider}/${id}` : this.settingsStore.read().defaultModelId;
+      const requested = taskId === DOTS_TASK_ID ? this.configuredDotsModelId() : task.modelId || fallback;
+      const choices = taskId === DOTS_TASK_ID ? [requested] : [
+        capturedModel && `${capturedModel.provider}/${capturedModel.id}`, requested, fallback,
+      ];
+      let model: NonNullable<AgentSession["model"]> | undefined;
+      for (const key of new Set(choices)) {
+        if (key) model = await this.resolveEnabledModel(key, settings);
+        if (!current()) return { status: "stop" };
+        if (model) break;
+      }
+      if (!model) { summary.skippedTasks++; return { status: "stop" }; }
+      const modelId = `${model.provider}/${model.id}`;
+      const assertCurrent = async () => {
+        if (!current() || !await this.resolveEnabledModel(modelId, settings)) {
+          throw new CoreMemoryExtractionUnavailable("记忆提炼或模型已暂停");
+        }
+        const latest = await turns.extractionBasis(lease);
+        if (latest.status !== "ready" || latest.basisStamp !== basis.basisStamp || !current()) {
+          basisChanged = latest.status === "ready" && latest.basisStamp !== basis.basisStamp
+            || latest.status === "stale" && await someSourcesErased();
+          throw new CoreMemoryExtractionUnavailable("记忆提炼的原文或范围已变化");
+        }
+      };
+      const cancelled = Promise.withResolvers<never>();
+      const onAbort = () => cancelled.reject(controller.signal.reason);
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+      const deadline = setTimeout(() => controller.abort(deadlineError), 120_000);
+      deadline.unref();
+      let plan: CoreMemoryExtractionPlan;
+      try {
+        plan = await Promise.race([cancelled.promise, this.memoryService.extractCorePlan({
+          taskId, basis, model, modelRuntime, settings, isEnabled: current, assertCurrent, signal: controller.signal,
+        })]);
+      } finally {
+        clearTimeout(deadline);
+        controller.signal.removeEventListener("abort", onAbort);
+      }
+      return current() ? await publish(plan) : { status: "stop" };
+    } catch (error) {
+      const expired = controller.signal.reason === deadlineError && enabled();
+      if (!expired && (!current() || error instanceof CoreMemoryExtractionUnavailable)) {
+        return { status: current() && basisChanged ? "refresh" : "stop" };
+      }
+      const failure = error instanceof Error ? error.message : String(error);
+      if (await turns.settleExtraction(lease, "failed", failure) === "failed") {
+        settled = true;
+        summary.failedTurns += claim.turns.length;
+        console.warn("[AgentService] memory extraction failed", error);
+      }
+      return { status: "stop" };
+    } finally {
+      clearInterval(heartbeat);
+      await renewal;
+      this.memoryExtractionControllers.delete(taskId);
+      if (!settled) await turns.settleExtraction(lease, "release");
+      if (!this.memoryDisposed) this.notifyMemoryChanged({ scope: "settings" });
+    }
+  }
+
+  private queueFixtureMemoryExtraction(
+    taskIds: readonly string[],
+    capturedModel?: NonNullable<AgentSession["model"]>,
+  ): Promise<MemoryExtractionRunResult> {
     const sourceEpoch = this.memorySourceEpoch;
     const capturedThrough = Date.now();
     const run = this.memoryWriteQueue.then(async () => {
@@ -6280,7 +6671,7 @@ export class AgentService {
       return;
     }
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
-    await this.memoryWriteQueue;
+    await this.revokeTaskMemoryExtraction(req.taskId);
     const deletedFrom = await this.durableBots.deleteUserMessage(req);
     if (deletedFrom) this.conversationInteractions.deleteFrom(req.taskId, deletedFrom);
   }
@@ -6296,8 +6687,19 @@ export class AgentService {
       });
     }
     if (!this.durableBots) return { ok: false, requestId: req.requestId, code: "SESSION_NOT_FOUND", message: "执行服务尚未初始化" };
-    await this.memoryWriteQueue;
+    await this.revokeTaskMemoryExtraction(req.taskId);
     return this.durableBots.regenerate(req);
+  }
+
+  private async revokeTaskMemoryExtraction(taskId: string): Promise<void> {
+    if (this.db.fixtureConnection) return await this.memoryWriteQueue;
+    this.memoryExtractionRevisions.set(taskId, ++this.memoryExtractionRevision);
+    const job = this.memoryExtractionJobs.get(taskId);
+    job?.admission.abort();
+    const active = this.memoryExtractionControllers.get(taskId);
+    if (!active) return;
+    active.controller.abort();
+    await this.memoryPipeline.turns.settleExtraction(active.lease, "release");
   }
   private readonly auxiliaryRuntimes = new Set<DurableBotRuntime>();
   private readonly auxiliaryTextResults = new Map<string, { parentTaskId?: string; result: Promise<string> }>();
@@ -6796,12 +7198,16 @@ export class AgentService {
   }
 
   async closeAuditWrites(): Promise<void> {
+    const stoppingExtraction = this.memoryDisposed
+      ? Promise.allSettled([...this.memoryExtractionJobs.values()].map(job => job.result)) : undefined;
     await Promise.all([
       this.taskDiagnostics.closeWrites(), this.runtimeSnapshots.closeWrites(), this.usageStats.closeWrites(),
       this.memoryPipeline.closeCaptureWrites(), this.contextUsageWrites.close(),
+      stoppingExtraction,
       this.workHostAuthority.flush(),
       this.executionFailures.flush(), this.executionAttempts.flush(),
       this.loadoutObservations.flush(), this.conversationGoalActivity.flush(),
+      Promise.allSettled(this.coreGoalUsage.values()),
       this.conversationInteractionRepo.flush(), this.answerRouting.flush(),
       this.expertBindings.flush(),
       this.memoryService.flushWrites(),
@@ -6813,11 +7219,13 @@ export class AgentService {
 
   dispose(): void {
     this.workFixture?.continuations.dispose();
+    this.coreGoalContinuation?.dispose();
     this.builtinCapabilities.speechStreams.close();
     this.workFixture?.work.scheduler.stop();
     this.workHostAuthority.stop();
     this.stopDiagnosticObservation();
     this.memoryDisposed = true;
+    this.abortMemoryExtractionJobs();
     this.skillDistillation.pause();
     this.memoryOrganization.pauseActive();
     this.pendingMemoryTurns.clear();
@@ -6888,9 +7296,10 @@ export class AgentService {
     model: NonNullable<AgentSession["model"]>;
   }): Promise<void> {
     if (this.memoryDisposed || !this.memoryCaptureEnabled(input.taskId)) return;
-    const task = this.db.getTask(input.taskId);
     let created: boolean;
     try {
+      const task = await this.db.readTask(input.taskId, { includeExpertBinding: false });
+      if (this.memoryDisposed || !this.memoryCaptureEnabled(input.taskId)) return;
       // Persist the original before scheduling extraction. The capture queue is independent of model requests.
       created = await this.memoryPipeline.captureCompleted({
         taskId: input.taskId,

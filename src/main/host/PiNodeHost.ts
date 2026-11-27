@@ -209,6 +209,7 @@ export class PiNodeHost {
     const agent = await AgentService.open(this.db, this.options.taskWorkspace, {
       models: this.options.models,
       executionMode: "host",
+      coreClient: () => this.bridge?.connection,
     });
     this.agentService = agent;
     if (this.db.runtimeAuditReader) agent.pythonRuntime.setProjectBindingStore(new PythonProjectBindingStore(this.db.runtimeAuditReader));
@@ -890,6 +891,13 @@ export class PiNodeHost {
         const res = await agent.openDots();
         return { status: "completed", result: res };
       }
+      case "extractMemoryPending":
+        return { status: "completed", result: await agent.extractKernelPendingTurns(payload.refreshPolicy === true) };
+      case "retryMemoryFailed":
+        return { status: "completed", result: await agent.retryKernelFailedTurns() };
+      case "resumeGoalContinuation":
+        return { status: "completed", result: await agent.resumeGoalContinuation(
+          String(payload.goalId), dispatch.execution.taskId) };
       case "generateTaskTitle": {
         const res = await agent.generateTaskTitle(String(payload.taskId ?? dispatch.execution.taskId), payload.maxTokens as number | undefined);
         return { status: "completed", result: res };

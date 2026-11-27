@@ -1,5 +1,7 @@
 import { DURABLE_ARTIFACT_ENTRY_KIND as DOTS_ARTIFACT_KIND, durableArtifactRegistrationSchema, durableRegisteredArtifact as registeredDotsArtifact } from "./DurableArtifactRegistration";
 import { durableGoalAdmission, nativeGoalParentGeneration } from "./DurableGoalLineage";
+import { assertDurableGoalCompaction, assertDurableGoalContinuation } from "./DurableGoalContinuationAuthority";
+import type { ActiveCoreGoalContinuation } from "../work/CoreGoalContinuationDriver";
 import { durableGoalToolEvidence } from "./DurableGoalToolEvidence";
 import { dotsInputVersion, DotsIntentChanged } from "../../dots/DotsNativeIntent";
 import { DOTS_RECOVER_COMMIT, dotsRecoveryAllowsTool, dotsRecoveryAllowsVerify, validDotsRecoveryFilename, type DotsRecoveryToolScope } from "../../dots/DotsRecovery";
@@ -138,6 +140,7 @@ export interface DurableBotOptions {
   }) => void;
   onRequest?: (identity: import("../../../shared/conversation-goal-activity").GoalActivityAdmission & { sourceKind: "main" | "subagent" }) => void | Promise<void>;
   beforeProviderRequest?: () => void | Promise<void>;
+  verifyGoalContinuation?: (origin: ActiveCoreGoalContinuation) => Promise<void>;
   beforeToolExecution?: (name: string, args: unknown, cwd: string) => void | Promise<void>;
   admittingUserInputs?: () => readonly string[];
   /** Authority revocation must be rechecked before every provider attempt. */
@@ -326,8 +329,16 @@ export class DurableBotRuntime {
         return ++sequence.next;
       }, ctx);
     };
+    const verifyGoal = options.verifyGoalContinuation;
+    const goalTaskId = options.taskId;
+    const verifyCompaction = verifyGoal && goalTaskId ? async (sessionId: string | undefined, signal?: AbortSignal) => {
+      const harness = await requestHarness;
+      if (!harness) throw new Error("Goal 自动续跑的执行宿主未就绪");
+      await assertDurableGoalCompaction(goalTaskId, storage, harness, sessionId, { ...ctx, abortSignal: signal }, verifyGoal);
+    } : undefined;
     options = { ...options, models: taskScopedModels(options.models, options.cwd,
-      options.executionIdentity?.taskId, options.onProviderUsage, options.beforeProviderRequest, nextCompactionRequest, options.providerAuthorityGuarded) };
+      options.executionIdentity?.taskId, options.onProviderUsage, options.beforeProviderRequest, nextCompactionRequest, options.providerAuthorityGuarded,
+      verifyCompaction) };
     const initialModel = options.model ? options.models.getModel(options.model.provider, options.model.modelId) : undefined;
     const initialModelWindow = initialModel?.contextWindow ?? 0;
     const initialModelKey = options.model ? `${options.model.provider}/${options.model.modelId}` : undefined;
@@ -792,7 +803,7 @@ export class DurableBotRuntime {
     return outcome;
   }
 
-  async submit(content: UserInput, requestId: string, whenBusy: "steer" | "followUp" = "followUp", metadata?: BotInputMetadata, mark?: (stage: string) => void, requireActiveRun = false, guard?: { inputVersion?: string; validate(): void | Promise<void> }) {
+  async submit(content: UserInput, requestId: string, whenBusy: "steer" | "followUp" | "reject" = "followUp", metadata?: BotInputMetadata, mark?: (stage: string) => void, requireActiveRun = false, guard?: { inputVersion?: string; validate(): void | Promise<void> }) {
     this.assertSessionHealthy();
     try {
       const draft = { type: "input" as const, content, requestId, whenBusy, ...(requireActiveRun ? { whenIdle: "reject" as const } : {}),
@@ -1793,6 +1804,7 @@ async function durableExecutionEnv(target: EnvTarget, context: Context, rootCwd:
 const modelUsageEvidence = new WeakMap<Models, WeakMap<AbortSignal, ProviderUsageEvidence>>();
 type RequestGuard = (providerMessages?: readonly Message[]) => void | Promise<void>;
 const modelRequestGuards = new WeakMap<Models, WeakMap<AbortSignal, RequestGuard>>();
+const goalModelRequests = new WeakMap<Models, WeakSet<AbortSignal>>();
 const recoveryToolRequests = new WeakMap<Models, WeakMap<AbortSignal, DotsRecoveryToolScope>>();
 
 /**
@@ -1806,9 +1818,11 @@ function traceBoundary(api: HookApi, operation: CacheTraceOperation): () => Cach
 function taskScopedModels(models: Models, cwd: string,
   taskId?: string,
   onProviderUsage?: DurableBotOptions["onProviderUsage"], beforeProviderRequest?: DurableBotOptions["beforeProviderRequest"],
-  nextCompactionRequest?: () => Promise<number>, providerAuthorityGuarded?: () => boolean): Models {
+  nextCompactionRequest?: () => Promise<number>, providerAuthorityGuarded?: () => boolean,
+  verifyCompaction?: (sessionId: string | undefined, signal?: AbortSignal) => Promise<void>): Models {
   const settings = createAgentSettingsManager(cwd, getMyBuddyDir());
   const guards = new WeakMap<AbortSignal, RequestGuard>();
+  const goalRequests = new WeakSet<AbortSignal>();
   const recoveryTools = new WeakMap<AbortSignal, DotsRecoveryToolScope>();
   const evidence = new WeakMap<AbortSignal, ProviderUsageEvidence>();
   const scoped = new Proxy(models, { get(target, key) {
@@ -1840,6 +1854,7 @@ function taskScopedModels(models: Models, cwd: string,
         signal?.throwIfAborted();
         return withModelInvocationSettings(settings, () => target.streamSimple(args[0], input, {
           ...options,
+          ...(signal && goalRequests.has(signal) ? { deferred: false } : {}),
           ...(supportsUsageObservation(args[0].api)?{fetch:withUsageEvidence(options?.fetch??globalThis.fetch,observed,args[0].api)}:{}),
           ...durableAuthorityRequestOptions(args[0].api, Boolean(beforeProviderRequest)),
           onPayload: async (payload, model) => {
@@ -1860,6 +1875,7 @@ function taskScopedModels(models: Models, cwd: string,
       // instead of letting that request join the unbound chain with a generation request.
       const signal = args[2]?.signal;
       await beforeProviderRequest?.();
+      await verifyCompaction?.(args[2]?.sessionId, signal);
       signal?.throwIfAborted();
       const generationTaskId = -(await nextCompactionRequest!());
       // Separate persisted IDs from legacy per-open negative counters.
@@ -1873,6 +1889,7 @@ function taskScopedModels(models: Models, cwd: string,
           const replacement = await args[2]?.onPayload?.(payload, model);
           signal?.throwIfAborted();
           await beforeProviderRequest?.();
+          await verifyCompaction?.(args[2]?.sessionId, signal);
           signal?.throwIfAborted();
           return replacement;
         },
@@ -1889,6 +1906,7 @@ function taskScopedModels(models: Models, cwd: string,
     return typeof value === "function" ? (...args: unknown[]) => withModelInvocationSettings(settings, () => value.apply(target, args)) : value;
   } });
   modelRequestGuards.set(scoped, guards);
+  goalModelRequests.set(scoped, goalRequests);
   recoveryToolRequests.set(scoped, recoveryTools);
   modelUsageEvidence.set(scoped,evidence);
   return scoped;
@@ -1916,6 +1934,10 @@ function botExtension(
 ) {
   const childConversation = async (api: Pick<HookApi, "snapshot" | "conversationId">, context: Parameters<ToolRegistration["execute"]>[2]) =>
     Boolean((await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value || (await api.snapshot(DurableConsultIdentity, api.conversationId, context))?.key);
+  const verifyGoal = options.verifyGoalContinuation;
+  const goalTaskId = options.taskId;
+  const checkGoal = verifyGoal && goalTaskId ? (api: Pick<HookApi, "snapshot" | "conversationId">,
+    context: Context, toolTask?: TaskId) => assertDurableGoalContinuation(goalTaskId, storage, api, context, verifyGoal, toolTask) : undefined;
   const managed = options.nativeHooks && new DurableNativeHooks(options.nativeHooks, storage);
   // 工具任务是独立的 ToolTask（toolTaskId），触发它的却是一次 generation。
   // 只按 toolTaskId 记诊断会让每个工具单独成「一轮」；这里记录每个会话最近一次
@@ -2146,7 +2168,7 @@ function botExtension(
       tool.name === "write" && options.dotsRecoveryScope ? async (api, context) => {
         const scope = await toolRecoveryScope(api, context);
         return Boolean(scope && scope.kind !== "report-only");
-      } : undefined);
+      } : undefined, checkGoal && ((api, context) => checkGoal(api, context, api.taskId)));
     return { ...coordinated, execute: async (args, api, context) => {
       // Pi can recover a started or nested ToolTask without re-entering beforeTool.
       const recoveryBlock = await recoveryToolBlock(tool.name, args, api, context);
@@ -2193,7 +2215,12 @@ function botExtension(
       let validate: RequestGuard = () => { throw new Error("本轮上下文投影未完成"); };
       const guards = modelRequestGuards.get(options.models);
       if (context.abortSignal) guards?.set(context.abortSignal, messages => validate(messages));
+      const validateGoal = async () => {
+        const goal = await checkGoal?.(api, context);
+        if (goal && context.abortSignal) goalModelRequests.get(options.models)?.add(context.abortSignal);
+      };
       try {
+        await validateGoal();
         const scope = context.abortSignal && await recoveryScope(api, context);
         if (scope && context.abortSignal) recoveryToolRequests.get(options.models)?.set(context.abortSignal, scope);
         const child = await childConversation(api, context);
@@ -2210,7 +2237,7 @@ function botExtension(
         catch (error) { console.warn("[Durable] Request diagnostics failed", error); }
         if (child) {
           // 子代理/会诊是独立 conversation：用各自的协调器投影，绝不套用主会话的 refs。
-          validate = () => {};
+          validate = validateGoal;
           const childManager = await getContextManager?.(api.conversationId, context);
           const projected = await childManager?.beforeRequest(messages, api, context);
           return projected || hookNote ? { messages: requestWithHook(projected?.messages ?? messages) } : undefined;
@@ -2258,6 +2285,7 @@ function botExtension(
         validate = async providerMessages => {
           await validateEvidence?.();
           route?.validate();
+          await validateGoal();
           if (providerMessages && recordRecall) {
             recordRecall(providerMessages);
             recordRecall = undefined;

@@ -71,6 +71,7 @@ mod gadget_http_host;
 mod gadget_materialize;
 mod gadget_source_save;
 mod gadget_state;
+mod goal_continuation;
 mod goal_user_input;
 mod gateway_admission;
 mod gateway_channel_data;
@@ -93,6 +94,7 @@ mod maintenance_scheduler;
 mod material_retrieval_data;
 mod memory_baselines;
 mod memory_capture;
+mod memory_extraction_queue;
 mod memory_lexical;
 mod memory_organization_data;
 mod memory_record_write;
@@ -381,6 +383,13 @@ enum Request {
         query: memory_turn_data::Query,
         user_id: String,
     },
+    ReadMemoryExtractionQueue {
+        task_ids: Option<Vec<String>>,
+    },
+    RetryMemoryExtractionQueue {
+        user_id: String,
+        operation_id: String,
+    },
     WriteMemoryTurnExtraction {
         command: memory_turn_data::ExtractionCommand,
         user_id: String,
@@ -417,6 +426,14 @@ enum Request {
     },
     ReadConversationRuntime {
         query: conversation_runtime_data::Query,
+    },
+    ReadGoalContinuation {
+        query: goal_continuation::ReadRequest,
+    },
+    WriteGoalContinuation {
+        command: goal_continuation::Command,
+        #[serde(rename = "__client")]
+        client: Option<business_protocol::ClientContext>,
     },
     ReadConversationBranchData {
         query: conversation_branch_data::Query,
@@ -2358,6 +2375,12 @@ fn read(
     if let Request::MemoryTurnData { query, user_id } = request {
         return memory_turn_data::read(db, query, &user_id).map(Data::Json);
     }
+    if let Request::ReadMemoryExtractionQueue { task_ids } = request {
+        return memory_extraction_queue::snapshot(db, task_ids).map(Data::Json);
+    }
+    if let Request::RetryMemoryExtractionQueue { user_id, operation_id } = request {
+        return memory_extraction_queue::retry(db, &user_id, &operation_id).map(Data::Json);
+    }
     if let Request::WriteMemoryTurnExtraction { command, user_id } = request {
         return memory_turn_data::write_extraction(db, command, &user_id).map(Data::Json);
     }
@@ -2498,6 +2521,18 @@ fn read(
     }
     if let Request::ReadConversationRuntime { query } = request {
         return conversation_runtime_data::read(db, query).map(Data::Json);
+    }
+    if let Request::ReadGoalContinuation { query } = request {
+        return goal_continuation::read_request(db, query).map(Data::Json);
+    }
+    if let Request::WriteGoalContinuation { command, client } = request {
+        let Some(client) = client.filter(|client| client.role == "execution-host"
+            && executor_tracker.is_online().is_some_and(|(epoch, id)| epoch == client.epoch && id == client.client_id)) else {
+            return Ok(Data::Json(serde_json::json!({ "status": "rejected", "code": "executor_fenced" })));
+        };
+        let result = goal_continuation::write(db, command, &client)?;
+        if result.get("workId").is_some() { outbox.wake(); }
+        return Ok(Data::Json(result));
     }
     if let Request::ReadConversationBranchData { query, client } = request {
         return conversation_branch_data::read(db, query, client.as_ref()).map(Data::Json);
@@ -2954,6 +2989,8 @@ fn read(
         | Request::WorkspaceBindingSnapshot { .. }
         | Request::WriteWorkspaceBinding { .. }
         | Request::MemoryTurnData { .. }
+        | Request::ReadMemoryExtractionQueue { .. }
+        | Request::RetryMemoryExtractionQueue { .. }
         | Request::WriteMemoryTurnExtraction { .. }
         | Request::MemoryRecordsData { .. }
         | Request::MemoryRecordWriteSupported
@@ -3004,6 +3041,8 @@ fn read(
         | Request::ReadBotHistoryPage { .. }
         | Request::ReadBotRegistry { .. }
         | Request::ReadConversationRuntime { .. }
+        | Request::ReadGoalContinuation { .. }
+        | Request::WriteGoalContinuation { .. }
         | Request::ReadConversationBranchData { .. }
         | Request::CreateConversationGoal { .. }
         | Request::MarkWorkCardRead { .. }
@@ -3404,6 +3443,7 @@ fn classify_request(request: &Request) -> RequestClassification {
         | Request::WriteWorkspaceBinding { .. }
         | Request::WriteMemoryRecord { .. }
         | Request::WriteMemoryTurnExtraction { .. }
+        | Request::RetryMemoryExtractionQueue { .. }
         | Request::AppendGatewayMessage { .. }
         | Request::WriteGatewayChannel { .. }
         | Request::WriteDotsReplyData { .. }
@@ -3428,6 +3468,7 @@ fn classify_request(request: &Request) -> RequestClassification {
         | Request::WriteImprovementPackages { .. }
         | Request::WriteImprovementReview { .. }
         | Request::CreateConversationGoal { .. }
+        | Request::WriteGoalContinuation { .. }
         | Request::UpsertTaskRecord { .. }
         | Request::WriteTaskContextUsage { .. }
         | Request::DismissExecutionFailure { .. }
@@ -3475,10 +3516,12 @@ fn classify_request(request: &Request) -> RequestClassification {
         | Request::WorkspaceData { .. }
         | Request::WorkspaceBindingSnapshot { .. }
         | Request::MemoryTurnData { .. }
+        | Request::ReadMemoryExtractionQueue { .. }
         | Request::MemoryRecordsData { .. }
         | Request::ReadBotHistoryPage { .. }
         | Request::ReadBotRegistry { .. }
         | Request::ReadConversationRuntime { .. }
+        | Request::ReadGoalContinuation { .. }
         | Request::ReadConversationBranchData { .. }
         | Request::ReadWorkQueue { .. }
         | Request::WorkspaceSharedData { .. }
@@ -3640,6 +3683,7 @@ fn emit_side_effects(effects: Option<business_protocol::WriteSideEffects>) {
 
 fn resource_plan_for_request(request: &Request) -> Vec<resource_gate::ResourceRequirement> {
     use resource_gate::{ResourceKey, ResourceRequirement};
+    const GOAL_CONTINUATION_DOMAINS: [&str; 6] = ["batch1", "batch4b", "executor_presence", "pi_host", "tasks", "workspaces"];
     let mut plan = vec![
         ResourceRequirement::shared(ResourceKey::DbLifecycle),
         ResourceRequirement::shared(ResourceKey::CommitShare),
@@ -3659,6 +3703,18 @@ fn resource_plan_for_request(request: &Request) -> Vec<resource_gate::ResourceRe
                 format!("conversation-goal:{}", draft.user_id), operation_id.clone(),
             )));
         }
+        Request::WriteGoalContinuation { command, .. } => {
+            for domain in GOAL_CONTINUATION_DOMAINS {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), command.task_id().into())));
+            if !command.store_id().is_empty() {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::PiStore(command.store_id().into())));
+            }
+            if let Some(work_id) = command.work_id() {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("work".into(), work_id.into())));
+            }
+        }
         Request::CoreMaintenanceScheduler { .. } => {
             plan.push(ResourceRequirement::exclusive(ResourceKey::PublisherOrder));
             plan.push(ResourceRequirement::exclusive(ResourceKey::MaintenanceCycle(
@@ -3672,6 +3728,12 @@ fn resource_plan_for_request(request: &Request) -> Vec<resource_gate::ResourceRe
                 )));
             }
             if let pi_storage::Action::Commit { batches, .. } = &payload.action {
+                for (task_id, work_id) in batches.iter().flatten().filter_map(goal_continuation::placement_resources) {
+                    plan.extend(GOAL_CONTINUATION_DOMAINS.map(|domain|
+                        ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into()))));
+                    plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), task_id.into())));
+                    plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("work".into(), work_id.into())));
+                }
                 if batches.iter().flatten().any(pi_storage::is_dots_cron_input) {
                     for domain in ["cron", "batch4a", "batch2", "tasks", "workspaces", "projects"] {
                         plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
@@ -4173,10 +4235,23 @@ fn resource_plan_for_request(request: &Request) -> Vec<resource_gate::ResourceRe
             }
         }
         Request::WriteMemoryTurnExtraction { command, .. } => {
-            for domain in ["memory", "batch3", "tasks", "workspaces", "batch2", "general_write"] {
+            plan.push(ResourceRequirement::shared(ResourceKey::ExecutionAdmission));
+            for domain in ["memory", "tasks", "workspaces", "projects", "batch2", "batch3", "batch4a",
+                "batch4b", "work_graph", "gateway_admission", "general_write"] {
                 plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
             }
             plan.push(ResourceRequirement::exclusive(ResourceKey::Entity("task".into(), command.task_id().into())));
+            for (scope_type, scope_id) in command.publication_scopes() {
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Entity(
+                    format!("memory_extraction_{scope_type}"), scope_id.unwrap_or_default().into(),
+                )));
+            }
+        }
+        Request::RetryMemoryExtractionQueue { .. } => {
+            plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "memory".into())));
+            for domain in ["tasks", "batch2", "batch3", "workspaces"] {
+                plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+            }
         }
         Request::Batch4aWrite { .. } => {
             let domain = match request {
@@ -4366,7 +4441,7 @@ fn run() -> Result<()> {
         return Err("unexpected argument".into());
     }
     if argument == "--protocol-version" {
-        println!("115");
+        println!("117");
         return Ok(());
     }
     let db_path = PathBuf::from(argument);

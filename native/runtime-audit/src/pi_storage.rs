@@ -1509,7 +1509,7 @@ pub(crate) fn decode_pi_string(value: &str) -> Vec<u16> {
     units
 }
 
-fn encode_pi_string(units: Vec<u16>) -> String {
+pub(crate) fn encode_pi_string(units: Vec<u16>) -> String {
     let mut encoded = String::new();
     for character in char::decode_utf16(units) {
         match character {
@@ -1775,6 +1775,12 @@ fn commit_batches(
                 refused = Some("Dots 定时输入的授权已撤销或与已登记运行不一致".to_string());
                 break;
             }
+            if !crate::goal_continuation::placement_current(
+                tx, store_id, store.created_at_ms, commit_seq, host_generation, &batch,
+            )? {
+                refused = Some("原目标或会话已变化，请重新发起目标续跑".to_string());
+                break;
+            }
             let goal_inputs = crate::goal_user_input::prepare(tx, store_id, &batch)?;
             match validate_and_apply_batch(tx, store_id, commit_seq + 1, &batch, &mut max_id)? {
                 Ok(new_seq) => {
@@ -1909,6 +1915,35 @@ pub(crate) fn is_goal_input_conversation(db: &Connection, store: &str, conversat
         None => Some(PI_ROOT_CONVERSATION),
     };
     Ok(active == Some(conversation))
+}
+
+pub(crate) fn goal_live_run(
+    db: &Connection,
+    store: &str,
+    conversation: i64,
+) -> Result<Option<(i64, Vec<i64>)>> {
+    let address = DocAddressKey {
+        encoded_kind: "pi.live".into(),
+        scope: ScopeKey::Conversation(conversation),
+        doc_key: encode_doc_key(None),
+    };
+    let Some(id) = find_live_doc_at_address(db, store, &address)? else {
+        return Ok(None);
+    };
+    let (_, live) = materialize_doc_value(db, store, id, i64::MAX)?
+        .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() })?;
+    let Some(run) = live.get("run").filter(|run| !run.is_null()) else {
+        return Ok(None);
+    };
+    let task = parse_positive_id(run.get("taskId"), "Pi live run task identity")?;
+    let inputs = run["inputs"]
+        .as_array()
+        .filter(|inputs| !inputs.is_empty())
+        .ok_or("Pi live run has no input identities")?
+        .iter()
+        .map(|id| parse_positive_id(Some(id), "Pi live run input identity"))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(Some((task, inputs)))
 }
 
 pub fn dots_outbox_entry(write: &Value) -> Option<(&str, &Value)> {

@@ -502,6 +502,7 @@ async function verifyExecutionBridgeAndWatchdogRecovery(): Promise<void> {
 async function verifyDurableExecutionProgress(): Promise<void> {
   const dir = mkdtempSync(join(sandbox, "durable-progress-"));
   const dbPath = join(dir, "app.duckdb");
+  const progressDrainTimeoutMs = 60_000;
   let releaseBuffered!: () => void;
   const buffered = new Promise<void>(resolve => { releaseBuffered = resolve; });
   let releaseCancelledRun!: () => void;
@@ -510,12 +511,14 @@ async function verifyDurableExecutionProgress(): Promise<void> {
   const pendingCancelProgress = new Promise<void>(resolve => { allowCancelProgress = resolve; });
   let releaseDisconnected!: () => void;
   const pendingDisconnect = new Promise<void>(resolve => { releaseDisconnected = resolve; });
+  const overflowAdmission = Promise.withResolvers<Promise<unknown>[]>();
   let cancelRequested = false;
   let reports: Promise<unknown>[] = [];
   const bridge = new ExecutionHostBridge(executable!, dbPath, dir, {
     async start({ execution }, { reportProgress }) {
       const count = execution.executionId === "overflow" ? 193 : execution.executionId === "buffered" ? 70 : 1;
       reports = Array.from({ length: count }, (_, index) => reportProgress({ index }).catch(error => error));
+      if (execution.executionId === "overflow") overflowAdmission.resolve(reports);
       if (execution.executionId === "cancelled-run") await cancelledRun;
       return { status: "completed" };
     },
@@ -575,8 +578,8 @@ async function verifyDurableExecutionProgress(): Promise<void> {
     await waitUntil(() => firstBuffered, "first durable progress reached the transport");
     assert.equal((await status("buffered"))?.status, "running");
     releaseBuffered();
+    await within(Promise.all(reports), "buffered progress acknowledged", progressDrainTimeoutMs);
     await waitUntil(async () => (await status("buffered"))?.status === "completed", "settlement waits for the entire burst");
-    await Promise.all(reports);
     const bufferedEvents = await eventsFor("buffered");
     assert.deepEqual(
       bufferedEvents.filter(ev => ev.kind === "execution.progress").map(ev => ev.payload?.progress),
@@ -585,9 +588,17 @@ async function verifyDurableExecutionProgress(): Promise<void> {
     assert.equal(bufferedEvents.at(-1)?.kind, "execution.completed");
 
     await submit("overflow");
-    await waitUntil(async () => ["completed", "unknown"].includes((await status("overflow"))?.status ?? ""), "overflow settled");
-    assert.equal((await status("overflow"))?.status, "unknown", "A synchronous burst must respect admission bounds");
-    assert((await Promise.all(reports)).some(error => error instanceof Error && /overloaded/i.test(error.message)));
+    const overflowReports = await within(overflowAdmission.promise, "overflow burst admitted");
+    const excess = await within(overflowReports.at(-1)!, "overflow report rejected at admission");
+    assert(excess instanceof Error && /overloaded/i.test(excess.message));
+    // Every admitted report receives a separate durable Core acknowledgement in order.
+    const admittedReports = overflowReports.slice(0, -1);
+    const acknowledged = await within(Promise.all(admittedReports), "admitted overflow reports acknowledged", progressDrainTimeoutMs);
+    assert.deepEqual(acknowledged, admittedReports.map(() => undefined));
+    await waitUntil(async () => ["completed", "unknown"].includes((await status("overflow"))?.status ?? ""), "overflow settlement published after drain");
+    const overflowResult = await status("overflow");
+    assert.equal(overflowResult?.status, "unknown", "A synchronous burst must respect admission bounds");
+    assert.match(overflowResult?.errorMessage ?? "", /overloaded/i);
 
     await submit("rejected");
     await waitUntil(async () => ["completed", "unknown"].includes((await status("rejected"))?.status ?? ""), "Core rejection settled");

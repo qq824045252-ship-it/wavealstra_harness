@@ -163,6 +163,7 @@ function isMutatingCoreBusinessPayload(payload: Record<string, unknown>): boolea
     op === "coreEventsSnapshot"
     || op === "coreEventsReplay"
     || op === "coreSubscribe"
+    || op === "readGoalContinuation"
     || op === "control"
   ) {
     return false;

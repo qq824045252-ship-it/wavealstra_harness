@@ -3,13 +3,18 @@ import { createServer } from "node:http";
 import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { zstdDecompressSync } from "node:zlib";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { streamSimple as streamCodex } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
 import { streamSimple as streamBedrock } from "@earendil-works/pi-ai/api/bedrock-converse-stream";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { DurableBotRuntime, durableAuthorityRequestOptions, type DurableBotOptions } from "../src/main/agent/durable/DurableBotRuntime";
 import { setDefaultPiStorageClient } from "../src/main/agent/durable/DurableStorage";
+import { installModelInvocationAdmission } from "../src/main/agent/ModelInvocationAdmission";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { CoreMemoryExtractionUnavailable } from "../src/main/memory/MemoryCoreExtraction";
+import type { CoreMemoryExtractionReadyBasis } from "../src/main/memory/MemoryCoreExtractionWire";
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { shutdownCoreWorker } from "../src/main/platform/core-client";
 import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
@@ -25,12 +30,17 @@ const previous = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = join(root, "agent");
 await mkdir(process.env.PI_CODING_AGENT_DIR);
 let sends = 0;
+let websocketUpgrades = 0;
+let lastRequestPath: string | undefined;
 let lastRequestBody = "";
 let failNext: (() => void) | undefined;
+let extractionResponse: string | undefined;
 const server = createServer(async (request, response) => {
   const body: Buffer[] = [];
   for await (const part of request) body.push(part);
-  lastRequestBody = Buffer.concat(body).toString("utf8");
+  lastRequestPath = request.url;
+  const bytes = Buffer.concat(body);
+  lastRequestBody = (request.headers["content-encoding"] === "zstd" ? zstdDecompressSync(bytes) : bytes).toString("utf8");
   sends++;
   if (request.url?.includes("converse-stream")) {
     response.writeHead(400, { "content-type": "application/json", "x-amzn-errortype": "ValidationException" });
@@ -43,11 +53,13 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify({ error: { message: "fixture overloaded", type: "server_error" } }));
     return;
   }
-  const item = { type: "message", id: `msg_${sends}`, role: "assistant", status: "completed", content: [{ type: "output_text", text: "fixture answer", annotations: [] }] };
+  const item = { type: "message", id: `msg_${sends}`, role: "assistant", status: "completed", content: [{ type: "output_text", text: extractionResponse ?? "fixture answer", annotations: [] }] };
+  extractionResponse = undefined;
   response.writeHead(200, { "content-type": "text/event-stream" });
   for (const type of ["response.output_item.added", "response.output_item.done"]) response.write(`data: ${JSON.stringify({ type, output_index: 0, item })}\n\n`);
   response.end(`data: ${JSON.stringify({ type: "response.completed", response: { id: `resp_${sends}`, model: "fixture", status: "completed", output: [item], usage: { input_tokens: 3, output_tokens: 2 } } })}\n\n`);
 });
+server.on("upgrade", (_request, socket) => { websocketUpgrades++; socket.destroy(); });
 let db: AppDatabase | undefined;
 const runtimes: DurableBotRuntime[] = [];
 try {
@@ -66,6 +78,13 @@ try {
     streamSimple: (model, context, options) => streamBedrock(model as import("@earendil-works/pi-ai").Model<"bedrock-converse-stream">, context, {
       ...options, env: { ...options?.env, AWS_BEDROCK_SKIP_AUTH: "1", AWS_BEDROCK_FORCE_HTTP1: "1", AWS_REGION: "us-east-1" },
     }),
+  });
+  const fakeAccount = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "local-fixture" } })).toString("base64");
+  models.registerProvider("fixture-codex", { api: "openai-codex-responses", apiKey: `fixture.${fakeAccount}.fixture`,
+    baseUrl: `http://127.0.0.1:${address.port}/fixture`,
+    models: [{ id: "fixture", name: "fixture", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 1024,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+    streamSimple: (model, context, options) => streamCodex(model as import("@earendil-works/pi-ai").Model<"openai-codex-responses">, context, options),
   });
   await models.refresh({ allowNetwork: false });
   const usage: Array<{ conversationId: string; generationTaskId: number; reported: boolean; inputTokens: number; outputTokens: number }> = [];
@@ -224,6 +243,93 @@ try {
   assert.notEqual((await waitingEvidence).status, "done");
   assert.equal(sends, beforeEvidence, "evidence revoked during provider admission never reaches HTTP");
   console.log("PASS real Pi provider awaits Core evidence validation after authentication");
+
+  const extractionTask = "guarded-memory-extraction";
+  await app.writeTaskRecord({ id: extractionTask, title: extractionTask, updatedAt: Date.now() });
+  const extractionSettings = SettingsManager.inMemory({});
+  installModelInvocationAdmission(models, () => extractionSettings);
+  const extractionModel = models.getModel("fixture-codex", "fixture");
+  assert(extractionModel);
+  const quote = "Remember that our fixture torque is 17 Nm.";
+  const basisTurns = [{ id: "grounded", taskId: extractionTask, userText: quote, capturedAt: 1,
+    assistantText: "ASSISTANT_ONLY_EXTRACTION_MARKER", metadataJson: '{"trace":"UNVERIFIED_TOOL_MARKER"}' },
+  { id: "opted-out", taskId: extractionTask, userText: "Do not remember PRIVATE_OPTOUT_MARKER.", capturedAt: 2 },
+  { id: "exposed-credential", taskId: extractionTask, userText: "API key: SECRET_USER_MARKER", capturedAt: 3 }];
+  const basis: CoreMemoryExtractionReadyBasis = { kind: "extractionBasis", status: "ready", basisStamp: "fixture-basis",
+    turns: basisTurns, withheldSourceCount: 0, scopes: [{ scopeType: "task", scopeId: extractionTask }, { scopeType: "global", scopeId: null }], records: [
+      ...Array.from({ length: 40 }, (_, index) => ({ id: `unrelated-${index}`, kind: "fact" as const, title: `Chalk ${index}`,
+        content: "Unrelated chalk", scopeType: "global" as const, scopeId: null, status: "active", contentHash: `hash-${index}`,
+        revision: 1, mutationAllowed: false })),
+      { id: "old-fixture-torque", kind: "constraint", title: "Old torque setting", content: "Fixture torque is 12 Nm.",
+        scopeType: "task", scopeId: extractionTask, status: "active", contentHash: "hash-old-torque", revision: 4, mutationAllowed: true },
+      { id: "shared-guidance", kind: "constraint", title: "Shared setting", content: "Default fixture torque is 13 Nm.",
+        scopeType: "global", scopeId: null, status: "active", contentHash: "hash-shared", revision: 3, mutationAllowed: false },
+    ] };
+  const request = {
+    taskId: extractionTask, model: extractionModel, modelRuntime: models, settings: extractionSettings,
+    basis, isEnabled: () => true, assertCurrent: async () => {
+      if ((await app.readTask(extractionTask))?.archived !== false) throw new CoreMemoryExtractionUnavailable("提炼范围已经撤销");
+    },
+  };
+  const beforeExtraction = sends;
+  const baseCandidate = { kind: "constraint", scopeType: "task", confidence: 0.99, importance: 1, explicit: true, operationHint: "create" };
+  extractionResponse = JSON.stringify({ candidates: [
+    { ...baseCandidate, title: "Fixture torque", content: "Fixture torque is 17 Nm.", sourceTurnId: "grounded", userEvidence: quote },
+    { ...baseCandidate, title: "Torque for fixture assembly", content: "Fixture torque is 17 Nm.", sourceTurnId: "grounded", userEvidence: quote },
+    { ...baseCandidate, title: "Other source", content: "Unsupported fact.", sourceTurnId: "opted-out", userEvidence: quote },
+    { ...baseCandidate, title: "Task torque setting", content: "Current fixture torque is 17 Nm.", replaces: "Old torque setting",
+      operationHint: "update", sourceTurnId: "grounded", userEvidence: quote },
+    { ...baseCandidate, title: "Shared torque setting", content: "Current fixture torque is 17 Nm.", replaces: "Shared setting",
+      operationHint: "update", scopeType: "global", sourceTurnId: "grounded", userEvidence: quote },
+  ] });
+  const plan = await memory.extractCorePlan(request);
+  assert.equal(sends, beforeExtraction + 1);
+  assert.equal(lastRequestPath, "/fixture/codex/responses");
+  assert.equal(websocketUpgrades, 0, "background Codex extraction uses the authority-checked HTTP transport");
+  assert(lastRequestBody.includes(quote));
+  assert(lastRequestBody.includes("Old torque setting") && lastRequestBody.includes("Shared setting"),
+    "unrelated global atoms do not crowd authorized matching task and global atoms out of the prompt window");
+  for (const omitted of ["ASSISTANT_ONLY_EXTRACTION_MARKER", "UNVERIFIED_TOOL_MARKER", "PRIVATE_OPTOUT_MARKER", "SECRET_USER_MARKER"]) {
+    assert(!lastRequestBody.includes(omitted), `extraction request must omit ${omitted}`);
+  }
+  assert.deepEqual(plan, { basisStamp: "fixture-basis", candidates: [
+    { ...baseCandidate, scopeId: extractionTask, title: "Fixture torque", content: "Fixture torque is 17 Nm.",
+      evidence: { turnId: "grounded", quote }, action: { kind: "create" } },
+    { ...baseCandidate, scopeId: extractionTask, title: "Other source", content: "Unsupported fact.", explicit: false,
+      evidence: undefined, action: { kind: "review" } },
+    { ...baseCandidate, scopeId: extractionTask, title: "Task torque setting", content: "Current fixture torque is 17 Nm.",
+      replaces: "Old torque setting", operationHint: "update", evidence: { turnId: "grounded", quote },
+      action: { kind: "update", targetId: "old-fixture-torque", expectedRevision: 4 } },
+    { ...baseCandidate, scopeType: "global", scopeId: null, title: "Shared torque setting", content: "Current fixture torque is 17 Nm.",
+      replaces: "Shared setting", operationHint: "update", evidence: { turnId: "grounded", quote }, action: { kind: "review" } },
+  ] });
+  assert.deepEqual(await memory.extractCorePlan({ ...request, basis: { ...basis, basisStamp: "withheld-basis", turns: [], withheldSourceCount: 1 } }),
+    { basisStamp: "withheld-basis", candidates: [] });
+  assert.equal(sends, beforeExtraction + 1, "Core-authorized filtering of every source completes without a model request");
+  const blockedExtractionAdmission = Promise.withResolvers<void>();
+  const releaseExtractionAdmission = Promise.withResolvers<void>();
+  let extractionChecks = 0;
+  const pendingExtraction = memory.extractCorePlan({ ...request, assertCurrent: async () => {
+    if (++extractionChecks === 4) {
+      blockedExtractionAdmission.resolve();
+      await releaseExtractionAdmission.promise;
+    }
+    await request.assertCurrent();
+  } });
+  const rejectedExtraction = assert.rejects(pendingExtraction, CoreMemoryExtractionUnavailable);
+  try {
+    await Promise.race([blockedExtractionAdmission.promise, rejectedExtraction.then(() => {
+      throw new Error("Extraction stopped before the Pi request authority check");
+    })]);
+    await app.archiveTaskAsync(extractionTask, true);
+    assert.equal(sends, beforeExtraction + 1);
+  } finally {
+    releaseExtractionAdmission.resolve();
+  }
+  await rejectedExtraction;
+  assert.equal(sends, beforeExtraction + 1, "provider transport must not send after extraction scope revocation");
+  assert.equal(websocketUpgrades, 0);
+  console.log("PASS real Pi Codex extraction uses guarded SSE, grounds quotes and refuses authority loss at HTTP send");
   console.log("PASS lifecycle-checked tasks avoid hidden retries and Bedrock is available");
   console.log("PASS Bedrock supports both the awaited authority check and ordinary execution");
   console.log("PASS successful compact/reopen/compact keeps two reported receipts and 503 retry cannot bypass revocation");

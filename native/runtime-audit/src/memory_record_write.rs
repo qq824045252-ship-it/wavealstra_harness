@@ -1,5 +1,5 @@
 use crate::{DOTS_TASK_ID, Result, memory_records_data};
-use duckdb::{Connection, OptionalExt, params};
+use duckdb::{Connection, OptionalExt, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -126,10 +126,12 @@ pub fn write(db: &mut Connection, request: Request) -> Reply {
     match apply(db, request) {
         Ok(reply) => reply,
         Err(error) => {
-            if error
-                .downcast_ref::<duckdb::Error>()
-                .is_some_and(|e| matches!(crate::database::classify_duckdb_error(&e.to_string()), crate::database::DbError::Busy(_)))
-            {
+            if error.downcast_ref::<duckdb::Error>().is_some_and(|e| {
+                matches!(
+                    crate::database::classify_duckdb_error(&e.to_string()),
+                    crate::database::DbError::Busy(_)
+                )
+            }) {
                 return Reply::NeedsHost;
             }
             Reply::Rejected {
@@ -166,6 +168,14 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
         return Ok(Reply::CandidateRejected);
     }
     let tx = db.transaction()?;
+    let reply = save_in_tx(&tx, request)?;
+    if matches!(reply, Reply::Applied { .. }) {
+        tx.commit()?;
+    }
+    Ok(reply)
+}
+
+pub(crate) fn save_in_tx(tx: &Transaction<'_>, request: Request) -> Result<Reply> {
     let (record, revision, number, is_update, procedure_changed) = match request {
         Request::Create {
             record,
@@ -227,7 +237,8 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
     )?.execute(params![revision.revision_id, number, revision.changed_by, revision.reason, revision.changed_at, record.id])?;
     {
         let scopes: Vec<(String, Option<String>)> = {
-            let mut stmt = tx.prepare("SELECT scope_type, scope_id FROM memory_scopes WHERE memory_id=?1")?;
+            let mut stmt =
+                tx.prepare("SELECT scope_type, scope_id FROM memory_scopes WHERE memory_id=?1")?;
             stmt.query_map([&record.id], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<duckdb::Result<_>>()?
         };
@@ -299,7 +310,6 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
     if saved.is_null() {
         return Err(format!("记忆保存后不可读取：{}", record.id).into());
     }
-    tx.commit()?;
     Ok(Reply::Applied { record: saved })
 }
 

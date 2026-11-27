@@ -325,6 +325,7 @@ export interface MemoryTurnListRequest {
 export interface MemoryTurnTaskDto { id: string; title: string; trashed: boolean }
 
 export interface MemoryExtractionRunResult {
+  skippedSourceCount?: number;
   processedTurns: number;
   failedTurns: number;
   skippedTasks: number;

@@ -31,6 +31,11 @@ export type GoalContinuationOrigin = {
   intentRevision: number;
   ownerEpoch?: number;
   attempt: number;
+  taskId?: string;
+  attemptSerial?: number;
+  claimOperationId?: string;
+  hostGeneration?: string;
+  storeId?: string;
 };
 
 /** Ledger projection shown on the Goal chip. The Work remains the completion authority. */

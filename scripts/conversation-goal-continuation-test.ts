@@ -188,7 +188,7 @@ try {
 
   // ---------------------------------------------------------------- explicit continue
   await waitForIdle("goal-cap");
-  const resumed = agent.resumeGoalContinuation(capGoalId);
+  const resumed = await agent.resumeGoalContinuation(capGoalId);
   assert(resumed.ok, `继续应成功：${resumed.ok ? "" : resumed.message}`);
   await waitFor("继续后产生新的模型请求", () => requests.length > requestCountAfterCap);
   assert.equal(continuationOf(capGoalId).attempts >= 1, true, "继续后必须重新点火");
@@ -212,7 +212,7 @@ try {
   assert.equal(budgeted.attempts, 1, "预算在第一次续跑后命中，不应再点火第二次");
 
   await waitForIdle("goal-budget");
-  const budgetResumed = agent.resumeGoalContinuation(budgetGoal.goal.id);
+  const budgetResumed = await agent.resumeGoalContinuation(budgetGoal.goal.id);
   assert(budgetResumed.ok);
   await waitFor("继续重新开一个预算窗口", () => continuationOf(budgetGoal.goal.id).attempts >= 1);
   await waitFor("新预算窗口再次命中", () => continuationOf(budgetGoal.goal.id).state === "exhausted");

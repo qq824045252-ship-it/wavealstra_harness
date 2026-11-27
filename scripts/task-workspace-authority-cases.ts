@@ -51,6 +51,36 @@ export async function verifyTaskWorkspaceAuthority(application: AppDatabase, pee
   assert.equal((await peer.readTaskWorkspaceAuthority(pinnedTask))?.cwd, firstDirectory);
   await pinnedMove.write({ kind: "cancel", ...movement });
 
+  const sameDirectoryTask = "workspace-authority-recovery";
+  await application.writeTaskRecord({ id: sameDirectoryTask, title: "Recover pinned namespace", spaceId: child,
+    cwd: nextDirectory, updatedAt: Date.now() });
+  assert.equal((await ui.writeDurableTaskProjection({ kind: "bindBot", taskId: sameDirectoryTask,
+    directory: join(root, "workspace-authority-recovery-store"), cwd: nextDirectory }))?.status, "applied");
+
+  const resolveDuringActivity = async (taskId: string) => {
+    const readAuthority = ui.readTaskWorkspaceAuthority;
+    let projected = false;
+    ui.readTaskWorkspaceAuthority = async function (id) {
+      const snapshot = await readAuthority.call(this, id);
+      if (!projected && id === taskId) {
+        projected = true;
+        const projection = await peer.writeDurableTaskProjection({ kind: "snapshot", taskId: id,
+          status: "running", activityAt: Date.now() + 1_000, workspaces: [] });
+        assert.equal(projection?.status, "applied");
+      }
+      return snapshot;
+    };
+    try {
+      return await resolveTaskWorkspaceCwdAsync(application, privateWorkspace, taskId, { candidateOnly: true });
+    } finally {
+      ui.readTaskWorkspaceAuthority = readAuthority;
+      assert(projected);
+    }
+  };
+  assert.equal(await resolveDuringActivity(sameDirectoryTask), nextDirectory);
+  await assert.rejects(resolveDuringActivity(pinnedTask), /任务或工作空间已变化/);
+  console.log("PASS recovery reselects its existing pinned directory after unrelated activity, without admitting a stale move");
+
   assert.equal((await peer.setSidebarArchive({ kind: "space", id: parent, archived: true, at: Date.now() }))?.status, "saved");
   await assert.rejects(resolveTaskWorkspaceCwdAsync(application, privateWorkspace, boundTask), /归档/);
   assert.equal((await peer.setSidebarArchive({ kind: "space", id: parent, archived: false, at: Date.now() + 1 }))?.status, "saved");

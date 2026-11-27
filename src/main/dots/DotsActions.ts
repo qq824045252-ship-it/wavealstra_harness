@@ -416,6 +416,24 @@ export class DotsActions {
     return latest !== goalId || this.autonomousForTask(taskId);
   }
 
+  async canAdvanceGoalInCore(taskId: string, goalId: string): Promise<boolean> {
+    const core = this.db.runtimeAuditReader;
+    if (!core || this.pendingTargetControls.get(taskId)) return false;
+    const latest = await core.readDotsFollowupData<{ operationId: string; goalId: string | null } | null>({ kind: "latest", taskId });
+    if (latest === undefined) return false;
+    const authority = await core.readDotsFollowupData<{ exists: boolean; held: boolean; replaced: boolean }>({
+      kind: "state", taskId, operationId: latest?.operationId ?? "",
+    });
+    if (!authority?.exists || authority.held || authority.replaced || this.pendingTargetControls.get(taskId)) return false;
+    if (latest?.goalId !== goalId) return true;
+
+    const spaceId = (await this.db.readTask(taskId))?.spaceId;
+    if (!spaceId) return false;
+    const scope = await core.readDotsFileWatchData<{ scope: { held: boolean } | null }>({ kind: "scope", taskId, spaceId });
+    return scope?.scope?.held === false && this.preferences.followupMode === "continue" && this.allowsSpace(spaceId)
+      && !this.pendingTargetControls.get(taskId) && !this.pendingProactivePauses.get("") && !this.pendingProactivePauses.get(spaceId);
+  }
+
   mayRecover(request: AgentPromptRequest, source: string) {
     if (!this.allowsResult(request.taskId)) return false;
     if (request.dotsFileWatch || request.userMessageId.startsWith("dots-input-auto-") || source.startsWith("cron-") && isDotsAutomaticInput(source))

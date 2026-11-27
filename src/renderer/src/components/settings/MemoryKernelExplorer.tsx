@@ -571,7 +571,8 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
     setStatus("正在处理待提炼对话…回收区任务和已归档项目会跳过。");
     try {
       const result = await api.extractPendingTurns();
-      setStatus(`${result.interrupted ? "处理已中断" : "处理完成"}：提炼 ${result.processedTurns} 条，失败 ${result.failedTurns} 条，跳过 ${result.skippedTasks} 个不可提炼任务。`);
+      const withheld = result.skippedSourceCount ? ` 已过滤 ${result.skippedSourceCount} 条不允许提炼的来源。` : "";
+      setStatus(`${result.interrupted ? "处理已中断" : "处理完成"}。提炼 ${result.processedTurns} 条，失败 ${result.failedTurns} 条，跳过 ${result.skippedTasks} 个不可提炼任务。${withheld}`);
       await load();
     } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
     finally { setBusy(false); }
