@@ -19,7 +19,7 @@ export function sealSlackGatewayConfig(config: ChannelConfig): ChannelConfig {
 export function openSlackGatewayConfig(config: ChannelConfig): ChannelConfig {
   const encrypted = config.encryptedSecrets as EncryptedSecrets | undefined;
   if (!encrypted || encrypted.version !== 1 || typeof encrypted.ciphertext !== "string") {
-    throw new Error("Slack 连接凭据尚未保存在安全配置中");
+    throw new Error("Slack 安全配置不可用，请重新配置");
   }
   assertGatewayProviderStorage();
   try {
@@ -29,6 +29,7 @@ export function openSlackGatewayConfig(config: ChannelConfig): ChannelConfig {
 }
 
 export function slackGatewayConfigView(config: ChannelConfig): ChannelConfig {
-  const hasSecrets = Boolean((config.encryptedSecrets as EncryptedSecrets | undefined)?.ciphertext);
+  const encrypted = config.encryptedSecrets as EncryptedSecrets | undefined;
+  const hasSecrets = encrypted?.version === 1 && typeof encrypted.ciphertext === "string" && encrypted.ciphertext.length > 0;
   return { ...publicConfig(config), botToken: hasSecrets ? REDACTED : "", appToken: hasSecrets ? REDACTED : "" };
 }

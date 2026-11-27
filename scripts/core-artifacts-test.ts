@@ -171,13 +171,11 @@ async function verifyArtifactFiles(service: ReturnType<typeof openDomain>, reade
     { removed: [], failed: ["orphan-link/source.txt"] });
   const gc = await service.orphanGC();
   assert.deepEqual(gc.failed, []);
-  for (const file of ["orphan-link", "abandoned/draft/index.html", "abandoned/draft/.mybuddy-artifact-write"]) {
-    assert(gc.removed.includes(file), `expected cleanup of ${file}`);
-  }
-  assert.equal(existsSync(abandoned), false);
-  assert.equal(existsSync(orphanLink), false);
+  assert.deepEqual(gc.removed, []);
+  assert.equal(readFileSync(join(abandoned, "index.html"), "utf8"), "<html>未登记</html>");
+  assert.equal(existsSync(orphanLink), true);
   assert.equal(readFileSync(outsideFile, "utf8"), "工作区文件保留");
-  console.log("PASS Core cleans abandoned artifact files without traversing junction targets");
+  console.log("PASS automatic cleanup preserves unowned artifact bytes and never traverses a junction");
 
   const large = await service.register({ taskId: "task-files", kind: "html", content: "<html/>" });
   const raster = await service.register({ taskId: "task-files", kind: "image", content: "data:image/png;base64,AA==" });

@@ -133,35 +133,17 @@ export class CronService {
     private readonly weeklyMaintenance?: {start(): void; stopSchedule(): void},
     private readonly dotsReminderSink?: (event: { jobId: string; jobName: string; occurrence: number }) => void,
   ) {
-    if (this.coreOwnsScheduling) return;
-    if (!db.readonly) {
-      db.connection.exec(`CREATE TABLE IF NOT EXISTS cron_run_inputs (
-        run_id TEXT PRIMARY KEY REFERENCES cron_runs(id) ON DELETE CASCADE, request_json TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS dots_schedule_origins(job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
-          source TEXT NOT NULL, conversation INTEGER NOT NULL, entry INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS dots_schedule_scopes(job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
-          task_id TEXT, space_id TEXT);
-        CREATE TABLE IF NOT EXISTS dots_schedule_holds(job_id TEXT NOT NULL REFERENCES cron_jobs(id) ON DELETE CASCADE,
-          holder TEXT NOT NULL, PRIMARY KEY(job_id,holder));
-        CREATE TABLE IF NOT EXISTS dots_schedule_notices(job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
-          occurrence INTEGER NOT NULL)`);
-      if (db.connection.prepare("SELECT 1 FROM sqlite_master WHERE name='dots_proactive_pauses'").get()) {
-        db.connection.exec(`INSERT OR IGNORE INTO dots_schedule_holds
-          SELECT j.id, 'proactive:' || p.scope FROM dots_proactive_pauses p
-          JOIN json_each(p.timer_ids) x JOIN cron_jobs j ON j.id=x.value
-          WHERE j.enabled=0 AND json_extract(j.execution_json,'$.cancelledAt') IS NULL
-            AND NOT EXISTS (SELECT 1 FROM dots_schedule_holds h WHERE h.job_id=j.id)`);
-      }
-      try {
-        db.connection.prepare(`UPDATE cron_run_inputs
-          SET request_json = json_set(request_json, '$.request.welcomeMode', 'general')
-          WHERE json_valid(request_json) AND json_extract(request_json, '$.request.welcomeMode') = 'bot'`).run();
-      } catch (error) {
-        console.warn("[Cron] legacy welcomeMode migration skipped", error);
-      }
-    } else {
-      db.enqueueCronBatch4a({ kind: "cronStartupMigrate" }, "startupMigrate");
-    }
+    if (this.coreOwnsScheduling || db.readonly) return;
+    db.connection.exec(`CREATE TABLE IF NOT EXISTS cron_run_inputs (
+      run_id TEXT PRIMARY KEY REFERENCES cron_runs(id) ON DELETE CASCADE, request_json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS dots_schedule_origins(job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
+        source TEXT NOT NULL, conversation INTEGER NOT NULL, entry INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS dots_schedule_scopes(job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
+        task_id TEXT, space_id TEXT);
+      CREATE TABLE IF NOT EXISTS dots_schedule_holds(job_id TEXT NOT NULL REFERENCES cron_jobs(id) ON DELETE CASCADE,
+        holder TEXT NOT NULL, PRIMARY KEY(job_id,holder));
+      CREATE TABLE IF NOT EXISTS dots_schedule_notices(job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
+        occurrence INTEGER NOT NULL)`);
   }
 
   private get coreOwnsScheduling(): boolean {
@@ -376,13 +358,7 @@ export class CronService {
   }
 
   private scheduleOwner(jobId: string) {
-    const owner = this.db.connection.prepare("SELECT task_id AS taskId, space_id AS spaceId FROM dots_schedule_scopes WHERE job_id=?")
-      .get(jobId) as { taskId?: string; spaceId?: string } | undefined;
-    if (owner || !this.db.connection.prepare("SELECT 1 FROM sqlite_master WHERE name='dots_delegations'").get()) return owner;
-    // Older schedules only stored the original message. Link it only when that message has one distinct target.
-    return this.db.connection.prepare(`SELECT MIN(d.task_id) AS taskId, MIN(d.space_id) AS spaceId FROM dots_schedule_origins o
-      JOIN dots_delegations d ON d.source_message_id=o.source WHERE o.job_id=?
-      HAVING COUNT(DISTINCT d.task_id)=1 AND COUNT(DISTINCT COALESCE(d.space_id,''))=1`)
+    return this.db.connection.prepare("SELECT task_id AS taskId, space_id AS spaceId FROM dots_schedule_scopes WHERE job_id=?")
       .get(jobId) as { taskId?: string; spaceId?: string } | undefined;
   }
 

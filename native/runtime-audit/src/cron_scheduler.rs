@@ -536,25 +536,8 @@ fn table_exists(db: &Connection, name: &str) -> crate::Result<bool> {
 }
 
 pub(crate) fn schedule_owner(db: &Connection, job_id: &str) -> crate::Result<Option<(Option<String>, Option<String>)>> {
-    if let Some(pair) = db
-        .query_row(
-            "SELECT task_id, space_id FROM dots_schedule_scopes WHERE job_id = ?1",
-            [job_id],
-            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
-        )
-        .optional()?
-    {
-        return Ok(Some(pair));
-    }
-    if !table_exists(db, "dots_delegations")? {
-        return Ok(None);
-    }
     db.query_row(
-        "SELECT MIN(d.task_id), MIN(d.space_id)
-         FROM dots_schedule_origins o
-         JOIN dots_delegations d ON d.source_message_id = o.source
-         WHERE o.job_id = ?1
-         HAVING COUNT(DISTINCT d.task_id) = 1 AND COUNT(DISTINCT COALESCE(d.space_id, '')) = 1",
+        "SELECT task_id, space_id FROM dots_schedule_scopes WHERE job_id = ?1",
         [job_id],
         |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
     )
@@ -819,62 +802,6 @@ pub(crate) fn read_plan_context(
     let job = fetch_job(db, job_id)?.ok_or("automation plan disappeared within its read snapshot")?;
     let owner = if job.is_dots() { schedule_owner(db, job_id)? } else { None };
     Ok((owner, unavailable_reason(db, &job)?))
-}
-
-fn startup_migrate(tx: &Connection) -> crate::Result<()> {
-    if table_exists(tx, "dots_proactive_pauses")? {
-        let mut stmt = tx.prepare("SELECT scope, timer_ids FROM dots_proactive_pauses")?;
-        let mut rows = stmt.query([])?;
-        let mut holds = Vec::new();
-        while let Some(r) = rows.next()? {
-            let scope: String = r.get(0)?;
-            let ids_raw: String = r.get(1)?;
-            if let Ok(arr) = serde_json::from_str::<Vec<String>>(&ids_raw) {
-                for jid in arr {
-                    holds.push((jid, format!("proactive:{scope}")));
-                }
-            }
-        }
-        drop(rows);
-        drop(stmt);
-        for (jid, holder) in holds {
-            let _ = tx.execute(
-                "INSERT INTO dots_schedule_holds (job_id, holder)
-                 SELECT j.id, ?2
-                 FROM cron_jobs j
-                 WHERE j.id = ?1
-                   AND j.enabled = 0
-                   AND json_extract_string(j.execution_json, '$.cancelledAt') IS NULL
-                   AND NOT EXISTS (SELECT 1 FROM dots_schedule_holds h WHERE h.job_id = j.id)
-                 ON CONFLICT (job_id, holder) DO NOTHING",
-                params![jid, holder],
-            );
-        }
-    }
-    let mut stmt = tx.prepare(
-        "SELECT run_id, request_json FROM cron_run_inputs
-         WHERE json_valid(request_json)
-           AND json_extract_string(request_json, '$.request.welcomeMode') = 'bot'",
-    )?;
-    let mut rows = stmt.query([])?;
-    let mut updates = Vec::new();
-    while let Some(r) = rows.next()? {
-        let run_id: String = r.get(0)?;
-        let raw: String = r.get(1)?;
-        updates.push((
-            run_id,
-            crate::database::patch_json_fields(&raw, &[("$.request.welcomeMode", json!("general"))]),
-        ));
-    }
-    drop(rows);
-    drop(stmt);
-    for (run_id, updated) in updates {
-        tx.execute(
-            "UPDATE cron_run_inputs SET request_json = ?1 WHERE run_id = ?2",
-            params![updated, run_id],
-        )?;
-    }
-    Ok(())
 }
 
 fn set_job_enabled_tx(
@@ -1375,7 +1302,7 @@ fn reconcile_running_runs_tx(
     cfg: &RuntimeCronConfig,
     events: &mut Vec<EmittedEvent>,
     now: i64,
-) -> crate::Result<usize> {
+) -> crate::Result<()> {
     let mut stmt = tx.prepare(
         "SELECT r.id, r.job_id, r.started_at, r.task_id
          FROM cron_runs r
@@ -1386,7 +1313,6 @@ fn reconcile_running_runs_tx(
         .collect::<std::result::Result<Vec<_>, _>>()?;
     drop(stmt);
 
-    let mut resumed = 0usize;
     for (run_id, job_id, started_at, task_id) in running_rows {
         let job = fetch_job(tx, &job_id)?;
         if let Some(ref j) = job {
@@ -1421,93 +1347,28 @@ fn reconcile_running_runs_tx(
             }
             continue;
         }
-        let stored_input: Option<String> = tx
-            .query_row(
-                "SELECT request_json FROM cron_run_inputs WHERE run_id = ?1",
-                [&run_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let (Some(j), Some(_tid), Some(input_raw)) = (job, task_id, stored_input) else {
-            let err = "旧运行未保存操作身份，不能自动重放";
-            tx.execute(
-                "UPDATE cron_runs SET finished_at = ?1, status = 'error', error = ?2 WHERE id = ?3",
-                params![now, err, run_id],
-            )?;
-            events.push(append_event(
-                tx,
-                core_gen,
-                client_gen,
-                "cron",
-                "cron.runSettled",
-                &job_id,
-                now,
-                None,
-                &json!({
-                    "type": "run",
-                    "run": { "id": run_id, "jobId": job_id, "startedAt": started_at, "finishedAt": now, "status": "error", "error": err }
-                }),
-            )?);
-            continue;
-        };
-        let parsed: Value = serde_json::from_str(&input_raw).unwrap_or(Value::Null);
-        let req_val = parsed.get("request").cloned().unwrap_or(Value::Null);
-        let tid = req_val
-            .get("taskId")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
-        let new_task = parsed
-            .get("newTask")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let expected_uid = format!("cron-{run_id}-input");
-        if tid.is_empty()
-            || req_val.get("userMessageId").and_then(Value::as_str) != Some(expected_uid.as_str())
-        {
-            let err = "计划运行的操作身份不一致";
-            tx.execute(
-                "UPDATE cron_runs SET finished_at = ?1, status = 'error', error = ?2 WHERE id = ?3",
-                params![now, err, run_id],
-            )?;
-            continue;
-        }
-        let queue_in_dots = j.target_task_id.as_deref() == Some(DOTS_TASK_ID)
-            && j.is_dots()
-            && j.missed_runs == "coalesce";
-        let payload = json!({
-            "resourceKey": format!("cron-job:{}", j.id),
-            "cronRunId": run_id,
-            "cronJobId": j.id,
-            "jobName": j.name,
-            "projectId": j.project_id,
-            "newTask": new_task,
-            "generatedTaskTitle": if new_task { Some(j.name.clone()) } else { None::<String> },
-            "targetTaskId": j.target_task_id,
-            "queueInDots": queue_in_dots,
-            "isDots": j.is_dots(),
-            "previousLastRunAt": j.last_run_at,
-            "previousUpdatedAt": j.updated_at,
-            "request": req_val,
-        });
+        // Current runs commit their Core execution and Cron records in one transaction.
+        let err = "计划运行缺少 Core 执行回执";
         tx.execute(
-            "INSERT INTO core_execution_runs (
-                execution_id, idempotency_key, owner_generation, source_role, source_client_id, source_epoch,
-                task_id, kind, payload_json, status, revision, attempt, created_at_ms, updated_at_ms
-             ) VALUES (?1, ?2, ?3, 'service', 'core-cron', 0, ?4, 'cron', ?5, 'waiting_executor', 1, 0, ?6, ?6)
-             ON CONFLICT(idempotency_key) DO NOTHING",
-            params![
-                exec_id,
-                expected_uid,
-                core_gen,
-                tid,
-                serde_json::to_string(&payload)?,
-                now,
-            ],
+            "UPDATE cron_runs SET finished_at = ?1, status = 'error', error = ?2 WHERE id = ?3",
+            params![now, err, run_id],
         )?;
-        resumed += 1;
+        events.push(append_event(
+            tx,
+            core_gen,
+            client_gen,
+            "cron",
+            "cron.runSettled",
+            &job_id,
+            now,
+            None,
+            &json!({
+                "type": "run",
+                "run": { "id": run_id, "jobId": job_id, "taskId": task_id, "startedAt": started_at, "finishedAt": now, "status": "error", "error": err }
+            }),
+        )?);
     }
-    Ok(resumed)
+    Ok(())
 }
 
 fn startup_or_scan_tx(
@@ -1517,8 +1378,7 @@ fn startup_or_scan_tx(
     mark_started: bool,
     now: i64,
     events: &mut Vec<EmittedEvent>,
-) -> crate::Result<(usize, usize)> {
-    startup_migrate(tx)?;
+) -> crate::Result<usize> {
     let mut cfg = load_config(tx)?;
     if mark_started {
         cfg.started = true;
@@ -1540,7 +1400,7 @@ fn startup_or_scan_tx(
             set_job_enabled_tx(tx, core_gen, client_gen, events, &job.id, false, now)?;
         }
     }
-    let resumed = reconcile_running_runs_tx(tx, core_gen, client_gen, &cfg, events, now)?;
+    reconcile_running_runs_tx(tx, core_gen, client_gen, &cfg, events, now)?;
     let refreshed_jobs = fetch_all_jobs(tx)?;
     let mut armed = 0usize;
     for job in &refreshed_jobs {
@@ -1566,7 +1426,7 @@ fn startup_or_scan_tx(
             armed += 1;
         }
     }
-    Ok((resumed, armed))
+    Ok(armed)
 }
 
 fn tick_tx(
@@ -2098,17 +1958,17 @@ pub fn execute_write(
         }
         Command::Start { now_ms: at } => {
             let now = at.unwrap_or_else(now_ms);
-            let (resumed, armed) =
+            let armed =
                 startup_or_scan_tx(&tx, &core_gen, &client.generation, true, now, &mut events)?;
             dispatch_waiting_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
-            json!({ "status": "ok", "started": true, "resumedRuns": resumed, "armedJobs": armed, "nowMs": now })
+            json!({ "status": "ok", "started": true, "armedJobs": armed, "nowMs": now })
         }
         Command::ScanRecovery { now_ms: at } => {
             let now = at.unwrap_or_else(now_ms);
-            let (resumed, armed) =
+            let armed =
                 startup_or_scan_tx(&tx, &core_gen, &client.generation, false, now, &mut events)?;
             dispatch_waiting_executions(&tx, &core_gen, tracker, &mut events, &mut dispatches)?;
-            json!({ "status": "ok", "resumedRuns": resumed, "armedJobs": armed, "nowMs": now })
+            json!({ "status": "ok", "armedJobs": armed, "nowMs": now })
         }
         Command::Tick {
             now_ms: at,

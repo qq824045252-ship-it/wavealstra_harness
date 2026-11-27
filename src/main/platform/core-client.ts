@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { constants, createReadStream } from "node:fs";
-import { chmod, copyFile, link, lstat, mkdir, readFile, realpath, stat, unlink } from "node:fs/promises";
+import { access, chmod, copyFile, link, lstat, mkdir, readFile, realpath, stat, unlink } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
 import { basename, dirname, join, resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -14,6 +14,7 @@ const PROTOCOL = 89;
 const CONNECT_TIMEOUT_MS = 12_000;
 const ATTEMPT_TIMEOUT_MS = 1_200;
 const MAX_HANDSHAKE_BYTES = 8_192;
+const RELEASE_VERSION = /^[0-9][a-zA-Z0-9.+-]{0,127}$/;
 
 export type CoreClientRole = "ui" | "execution-host" | "background-service";
 
@@ -105,11 +106,13 @@ export async function initializeCoreDatabase(
   dataDirectory: string,
   dbPath: string,
   expectedVersion: number,
+  releaseVersion?: string,
 ): Promise<{ schemaVersion: number; rebuilt: boolean; materialized: boolean }> {
   await mkdir(dataDirectory, { recursive: true });
-  const directory = await realpath(dataDirectory);
+  const directory = releaseVersion === undefined ? await realpath(dataDirectory) : resolve(dataDirectory);
   const { stdout } = await execFileAsync(executable, [
     "--init-database", directory, dbPath, String(expectedVersion),
+    ...(releaseVersion === undefined ? [] : [releaseVersion]),
   ], {
     windowsHide: true,
     timeout: 15_000,
@@ -223,14 +226,14 @@ async function resolveCoreDatabasePath(path: string): Promise<string> {
   return join(await realpath(dirname(path)), basename(path));
 }
 
-async function readEndpoint(dataDirectory: string, database: string): Promise<CoreEndpoint | undefined> {
+async function readEndpoint(dataDirectory: string, ...databases: string[]): Promise<CoreEndpoint | undefined> {
   let value: Partial<CoreEndpoint>;
   try { value = JSON.parse(await readFile(join(dataDirectory, "core.json"), "utf8")) as Partial<CoreEndpoint>; }
   catch (error) {
     if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
-  if (!Number.isInteger(value.protocol) || value.protocol! < 1 || !Number.isInteger(value.port) || value.port! < 1 || value.port! > 65535
+  if (!value || !Number.isInteger(value.protocol) || value.protocol! < 1 || !Number.isInteger(value.port) || value.port! < 1 || value.port! > 65535
     || !Number.isInteger(value.pid) || value.pid! <= 0 || !Number.isInteger(value.workerPid) || value.workerPid! <= 0
     || typeof value.token !== "string" || !/^[0-9a-f]{32}$/.test(value.token)
     || typeof value.generation !== "string" || typeof value.binaryHash !== "string" || !/^[0-9a-f]{64}$/.test(value.binaryHash)
@@ -240,7 +243,8 @@ async function readEndpoint(dataDirectory: string, database: string): Promise<Co
     // still prevents takeover even when this metadata is malformed.
     return;
   }
-  if (!samePath(value.dbPath, database)) throw new Error("Core data directory belongs to another database");
+  const dbPath = value.dbPath;
+  if (!databases.some(database => samePath(dbPath, database))) throw new Error("Core data directory belongs to another database");
   return value as CoreEndpoint;
 }
 
@@ -378,8 +382,13 @@ async function stopEndpoint(endpoint: CoreEndpoint, dataDirectory: string, guard
     client!.once("close", () => { clearTimeout(timer); resolveClose(); });
     client!.stdin.write(JSON.stringify({ operation: "coreShutdown", requestId: `shutdown-${endpoint.generation}` }) + "\n");
   });
+  await waitForCoreDatabaseOwnership(guardExecutable, dataDirectory, deadline, signal);
+}
+
+async function waitForCoreDatabaseOwnership(guardExecutable: string, dataDirectory: string, deadline: number, signal?: AbortSignal): Promise<void> {
   // Endpoint disappearance alone does not prove a worker is gone. Acquiring both OS
   // guards proves the retired parent and its worker released ownership before reuse.
+  const remaining = () => Math.max(1, deadline - Date.now());
   let last: unknown;
   while (Date.now() < deadline) {
     if (signal?.aborted) throw abortError();
@@ -389,6 +398,115 @@ async function stopEndpoint(endpoint: CoreEndpoint, dataDirectory: string, guard
     } catch (error) { last = error; await pause(Math.min(20, remaining()), signal); }
   }
   throw new Error(`Core did not release process ownership: ${String(last)}`);
+}
+
+async function optionalRegularFile(path: string) {
+  try {
+    const metadata = await lstat(path);
+    if (!metadata.isFile()) throw new Error(`升级数据库要求使用普通文件：${path}`);
+    return metadata;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+async function isCurrentDatabaseRelease(directory: string, database: string, releaseVersion: string): Promise<boolean> {
+  const stamp = join(directory, "database-release.json");
+  const [databaseFile, stampFile] = await Promise.all([optionalRegularFile(database), optionalRegularFile(stamp)]);
+  if (!stampFile) return false;
+  if (stampFile.size > 4096) throw new Error("数据库版本记录过大，无法确认升级");
+  const saved = JSON.parse(await readFile(stamp, "utf8")) as { releaseVersion?: unknown; databaseGeneration?: unknown } | null;
+  if (typeof saved?.releaseVersion !== "string" || !RELEASE_VERSION.test(saved.releaseVersion) ||
+      typeof saved.databaseGeneration !== "string" || !saved.databaseGeneration.trim() || Object.keys(saved).length !== 2) {
+    throw new Error("数据库版本记录无效，无法确认升级");
+  }
+  return Boolean(databaseFile) && saved.releaseVersion === releaseVersion;
+}
+
+async function stopPriorCoreForUpgrade(endpoint: CoreEndpoint, executable: string, directory: string): Promise<void> {
+  const transport = await connectEndpoint(endpoint, undefined, ATTEMPT_TIMEOUT_MS, { role: "ui", clientId: `package-upgrade-${process.pid}` }).catch(error => {
+    if ((error as NodeJS.ErrnoException).code === "ECONNREFUSED") return undefined;
+    throw error;
+  });
+  // A stale descriptor does not prove ownership is free. The initializer will
+  // still have to acquire both guards before touching any database file.
+  if (!transport) return;
+  const { CoreBusinessClient } = await import("./core-business-client");
+  const { RuntimeAuditUnknownOperationError } = await import("./runtime-audit");
+  const prior = CoreBusinessClient.attachAuthenticated(transport);
+  let stopUnconfirmed: Error | undefined;
+  try {
+    const original = immutableBinaryPath(directory, endpoint.binaryHash);
+    if (await fingerprint(original) !== endpoint.binaryHash) throw new Error("升级前 Core 可执行文件身份校验失败");
+    const status = await prior.piHost<{ hosts?: Array<{ pid: number; status: string; dbPath: string }> }>({ action: "status" });
+    if (!Array.isArray(status.hosts)) throw new Error("Core 未确认旧 Pi 宿主列表");
+    const hosts = status.hosts.filter(host => ["launching", "starting", "bootstrapping", "running"].includes(host.status));
+    if (hosts.some(host => !Number.isSafeInteger(host.pid) || host.pid < 0 || host.pid === process.pid ||
+        typeof host.dbPath !== "string" || !samePath(host.dbPath, endpoint.dbPath))) throw new Error("升级前 Pi 宿主归属未确认");
+    const stopped = await prior.piHost<{ stopped?: number }>({ action: "stop", reason: "package_upgrade" });
+    if (typeof stopped.stopped !== "number" || !Number.isSafeInteger(stopped.stopped) || stopped.stopped < 0) {
+      throw new Error("Core 未确认旧 Pi 宿主已停止");
+    }
+    const stillRunning = ({ pid }: { pid: number }) => {
+      if (!pid) return false;
+      try { process.kill(pid, 0); return true; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+        throw error;
+      }
+    };
+    const deadline = Date.now() + CONNECT_TIMEOUT_MS;
+    while (hosts.some(stillRunning)) {
+      if (Date.now() >= deadline) throw new Error("旧 Pi 宿主在升级前未退出");
+      await pause(40);
+    }
+    try {
+      const reply = await prior.assistantLifecycle("stop", { reason: "package_upgrade" });
+      if (reply.status !== "ok" || reply.state.mode !== "stopped_explicitly") throw new Error("Core 未确认升级停机");
+    } catch (error) {
+      if (!(error instanceof RuntimeAuditUnknownOperationError)) throw error;
+      stopUnconfirmed = error;
+    }
+  } finally {
+    await prior.close();
+  }
+  await waitForCoreDatabaseOwnership(executable, directory, Date.now() + CONNECT_TIMEOUT_MS);
+  if (stopUnconfirmed) {
+    const { readCoreLifecycleFile } = await import("./core-autostart");
+    const lifecycle = await readCoreLifecycleFile(directory);
+    if (lifecycle.mode !== "stopped_explicitly" || lifecycle.reason !== "package_upgrade") throw stopUnconfirmed;
+  }
+}
+
+/** A packaged version change starts with a clean database. The guarded Rust
+ * initializer is the sole authority for deleting or stamping the database. */
+export async function preparePackagedCoreDatabase(executable: string, dataDirectory: string, expectedVersion: number,
+  releaseVersion: string): Promise<void> {
+  if (!RELEASE_VERSION.test(releaseVersion)) throw new Error("MyBuddy 应用版本无效，无法确认升级");
+  if (!(await stat(executable)).isFile()) throw new Error("Rust 核心程序缺失，无法检查发行版本数据库");
+  await access(executable, constants.X_OK);
+  const requestedDirectory = resolve(dataDirectory);
+  if (basename(requestedDirectory) !== ".mybuddy") throw new Error("升级数据库要求使用 MyBuddy 数据目录");
+  await mkdir(requestedDirectory, { recursive: true });
+  let ancestor = requestedDirectory;
+  for (;;) {
+    if (!(await lstat(ancestor)).isDirectory()) throw new Error("升级数据库要求使用普通 MyBuddy 数据目录");
+    const parent = dirname(ancestor);
+    if (parent === ancestor) break;
+    ancestor = parent;
+  }
+  const directory = await realpath(requestedDirectory);
+  const database = join(directory, "app.duckdb");
+  if (await isCurrentDatabaseRelease(directory, database, releaseVersion)) return;
+  const legacy = join(directory, "app.db");
+  const previous = await readEndpoint(directory, database, legacy);
+  if (previous) {
+    if (await isCurrentDatabaseRelease(directory, database, releaseVersion)) return;
+    await optionalRegularFile(previous.dbPath);
+    await stopPriorCoreForUpgrade(previous, executable, directory);
+  }
+  await initializeCoreDatabase(executable, requestedDirectory, join(requestedDirectory, "app.duckdb"), expectedVersion, releaseVersion);
 }
 
 /** Starts only a detached supervisor. Its OS guards arbitrate concurrent launches; the

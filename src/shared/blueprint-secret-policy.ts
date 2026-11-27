@@ -1,5 +1,5 @@
 const SENSITIVE_FILE = /^(?:\.env(?:\..+)?|credentials?(?:\.(?:json|ya?ml|toml))?|secrets?(?:\.(?:json|ya?ml|toml))?|auth\.json|oauth\.json|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)|.+\.(?:pem|key|p12|pfx))$/i;
-const FORBIDDEN_CAPTURE_SEGMENT = /^(?:node_modules|cache|\.cache|\.next|dist|build|logs|\.mybuddy-task\.json)$/i;
+const FORBIDDEN_CAPTURE_SEGMENT = /^(?:node_modules|cache|\.cache|\.next|dist|build|logs|\.mybuddy-task\.json|\.mybuddy-storage-generation|\.mybuddy-blueprint-stage)$/i;
 const TEMP_LOG_FILE = /\.log$/i;
 const SECRET_KEY = "api[_-]?key|access[_-]?token|refresh[_-]?token|password|client[_-]?secret|authorization";
 

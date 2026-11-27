@@ -356,6 +356,7 @@ pub fn reconcile(db: &mut Connection, root: &Path) -> Result<Vec<String>> {
             .collect::<duckdb::Result<HashSet<_>>>()?
     };
     let mut failed = Vec::new();
+    let mut generation = None;
     for entry in fs::read_dir(&root)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -384,6 +385,12 @@ pub fn reconcile(db: &mut Connection, root: &Path) -> Result<Vec<String>> {
             continue;
         }
         let path = entry.path();
+        if generation.is_none() {
+            generation = Some(crate::managed_storage_owner::generation(&transaction)?);
+        }
+        if !crate::managed_storage_owner::matches(&path, generation.as_deref().unwrap_or_default()) {
+            continue;
+        }
         if let Err(error) =
             fs::symlink_metadata(&path).and_then(|metadata| remove_orphan(&path, &metadata))
         {

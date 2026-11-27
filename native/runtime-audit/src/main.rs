@@ -23,6 +23,7 @@ mod artifact_cleanup;
 mod artifact_content;
 mod artifact_snapshots;
 mod artifact_write;
+mod managed_storage_owner;
 mod blueprint_capture;
 mod blueprint_instance;
 mod blueprint_storage;
@@ -44,6 +45,7 @@ mod cron_plan;
 mod cron_scheduler;
 mod cron_write;
 mod db_schema;
+mod database_release;
 mod diagnostics;
 mod dots_delegation_data;
 mod dots_activity_data;
@@ -4255,8 +4257,7 @@ fn resource_plan_for_request(request: &Request) -> Vec<resource_gate::ResourceRe
         }
         Request::Batch4aWrite { .. } => {
             let domain = match request {
-                Request::Batch4aWrite { request: batch4a_writes::Request::CronStartupMigrate
-                    | batch4a_writes::Request::CronUpsertJob { .. }
+                Request::Batch4aWrite { request: batch4a_writes::Request::CronUpsertJob { .. }
                     | batch4a_writes::Request::CronSetEnabled { .. }
                     | batch4a_writes::Request::CronRemoveJob { .. }
                     | batch4a_writes::Request::CronInsertRun { .. }
@@ -4486,15 +4487,19 @@ fn run() -> Result<()> {
         .first()
         .is_some_and(|argument| argument == "--init-database")
     {
-        let [_, data_dir, db_path, version] = all.as_slice() else {
-            return Err("expected --init-database <data directory> <database path> <schema version>".into());
+        let (data_dir, db_path, version, release) = match all.as_slice() {
+            [_, data_dir, db_path, version] => (data_dir, db_path, version, None),
+            [_, data_dir, db_path, version, release] => (
+                data_dir, db_path, version, Some(release.to_str().ok_or("invalid release version")?),
+            ),
+            _ => return Err("expected --init-database <data directory> <database path> <schema version> [release version]".into()),
         };
         let expected: u32 = version
             .to_string_lossy()
             .parse()
             .map_err(|_| "invalid schema version")?;
         let report =
-            db_schema::initialize_database(Path::new(data_dir), Path::new(db_path), expected)?;
+            db_schema::initialize_database(Path::new(data_dir), Path::new(db_path), expected, release)?;
         println!("{}", serde_json::to_string(&report)?);
         return Ok(());
     }
@@ -4504,7 +4509,7 @@ fn run() -> Result<()> {
         return Err("unexpected argument".into());
     }
     if argument == "--protocol-version" {
-        println!("118");
+        println!("119");
         return Ok(());
     }
     let db_path = PathBuf::from(argument);
@@ -5278,9 +5283,11 @@ mod request_classification_tests {
         use pi_host_supervisor::{AfterProcessEffect, PiHostPhase, PiHostWritePhase};
         use std::sync::mpsc::channel;
 
-        let path = tempfile::tempdir()?;
+        let path = std::env::temp_dir().join(format!(
+            "mybuddy-scheduler-process-{}-{}", std::process::id(), request_control::now_ms(),
+        ));
         let (engine, _) = database::DuckDbEngine::open_or_initialize(
-            path.path().join("app.duckdb"), Default::default(),
+            path.join("app.duckdb"), Default::default(),
         )?;
         let gate = resource_gate::ResourceGate::new(32);
         let mut ticker = SchedulerTickerGuard::new();
@@ -5314,6 +5321,10 @@ mod request_classification_tests {
         let reader = engine.checkout_reader(Duration::from_secs(2))?;
         assert_eq!(reader.conn().query_row("SELECT title FROM tasks WHERE id='independent'", [],
             |row| row.get::<_, String>(0))?, "Independent");
+        drop(reader);
+        drop(engine);
+        assert_eq!(path.parent(), Some(std::env::temp_dir().as_path()));
+        std::fs::remove_dir_all(path)?;
         Ok(())
     }
 

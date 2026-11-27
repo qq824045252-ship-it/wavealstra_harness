@@ -6,9 +6,10 @@ use crate::{
     },
     gadget_materialize::{materialize_gadget, write_new},
     library_text::is_link,
+    managed_storage_owner,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use duckdb::{Connection};
+use duckdb::Connection;
 use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
@@ -50,7 +51,7 @@ struct GeneratedGadget {
 pub struct Directories(Vec<PathBuf>);
 
 impl Directories {
-    fn reserve(&mut self, target: PathBuf, operation_id: &str) -> Result<()> {
+    fn reserve(&mut self, target: PathBuf, operation_id: &str, generation: &str) -> Result<()> {
         match fs::create_dir(&target) {
             Ok(()) => (),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
@@ -61,7 +62,8 @@ impl Directories {
                 )?;
                 let marker = target.join(MARKER);
                 let metadata = fs::symlink_metadata(&marker)?;
-                if !metadata.is_file()
+                if !managed_storage_owner::matches(&target, generation)
+                    || !metadata.is_file()
                     || is_link(&metadata)
                     || metadata.len() != operation_id.len() as u64
                     || fs::read(&marker)? != operation_id.as_bytes()
@@ -74,6 +76,7 @@ impl Directories {
             Err(error) => return Err(error.into()),
         }
         self.0.push(target.clone());
+        managed_storage_owner::mark(&target, generation)?;
         write_new(&target.join(MARKER), operation_id.as_bytes())
     }
 
@@ -96,6 +99,7 @@ impl Storage {
     pub fn materialize(
         self,
         operation_id: &str,
+        generation: &str,
         workspaces: &[(String, PathBuf)],
         gadget_ids: &HashSet<String>,
         directories: &mut Directories,
@@ -121,7 +125,7 @@ impl Storage {
                 return Err("Blueprint 实例目录越界".into());
             }
             let instance = fs::canonicalize(managed)?.join(folder);
-            directories.reserve(instance.clone(), operation_id)?;
+            directories.reserve(instance.clone(), operation_id, generation)?;
             let mut locations = HashMap::new();
             for (id, path) in workspaces {
                 let relative = path.strip_prefix(first_path)?;
@@ -135,7 +139,7 @@ impl Storage {
         for gadget in self.gadgets {
             let target = gadget_path(&gadget.root, &gadget.id)?;
             let files = decode_source_files(gadget.files)?;
-            directories.reserve(target.clone(), operation_id)?;
+            directories.reserve(target.clone(), operation_id, generation)?;
             materialize_gadget(
                 &target,
                 &files,
@@ -198,8 +202,9 @@ fn validate_seed_path(path: &str) -> Result<()> {
                     | "dist"
                     | "build"
                     | ".mybuddy-task.json"
-                    | MARKER
             )
+            || part.eq_ignore_ascii_case(MARKER)
+            || part.eq_ignore_ascii_case(managed_storage_owner::MARKER)
             || part.contains(['\\', '\0'])
             || (cfg!(windows) && !valid_windows_component(part))
         {
@@ -246,6 +251,7 @@ pub fn reconcile(db: &mut Connection, path: &Path) -> Result<Vec<String>> {
     };
     let registered: HashSet<_> = paths.iter().map(|path| path_key(Path::new(path))).collect();
     let mut real_paths = None;
+    let mut generation = None;
     let mut failures = Vec::new();
     for entry in fs::read_dir(root)? {
         let entry = entry?;
@@ -274,6 +280,12 @@ pub fn reconcile(db: &mut Connection, path: &Path) -> Result<Vec<String>> {
             if let Err(error) = cleanup_committed_marker(&tx, &target) {
                 failures.push(format!("{name}: {error}"));
             }
+            continue;
+        }
+        if generation.is_none() {
+            generation = Some(managed_storage_owner::generation(&tx)?);
+        }
+        if !managed_storage_owner::matches(&target, generation.as_deref().unwrap_or_default()) {
             continue;
         }
         if let Err(error) =

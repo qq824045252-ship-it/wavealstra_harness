@@ -1,11 +1,11 @@
 use crate::{
-    Result, artifact_content::physical_directory, gadget_files::remove_orphan,
-    library_text::is_link,
+    Result, artifact_content::{OWNER, physical_directory}, gadget_files::remove_orphan,
+    library_text::is_link, managed_storage_owner,
 };
-use duckdb::{Connection};
+use duckdb::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     fs,
     io::ErrorKind,
     path::{Component, Path, PathBuf},
@@ -36,14 +36,16 @@ pub fn clean(db: &mut Connection, root: &Path, cleanup: Cleanup) -> Result<Repor
         Err(error) => return Err(error.into()),
     };
 
-    let candidates = match cleanup {
-        Cleanup::Selected { paths } => paths
-            .into_iter()
-            .filter_map(|path| relative(Path::new(&path)))
-            .collect(),
+    let (candidates, generation) = match cleanup {
+        Cleanup::Selected { paths } => (
+            paths.into_iter().filter_map(|path| relative(Path::new(&path))).collect(),
+            None,
+        ),
         Cleanup::Orphans => {
             let before = registered(db)?;
-            find_orphans(&root, &before, &mut report.failed)?
+            let generation = managed_storage_owner::generation(db)?;
+            let candidates = find_orphans(&root, &before, &generation, &mut report.failed)?;
+            (candidates, Some(generation))
         }
     };
     if candidates.is_empty() {
@@ -61,10 +63,24 @@ pub fn clean(db: &mut Connection, root: &Path, cleanup: Cleanup) -> Result<Repor
         }
         let live_targets =
             live_targets.get_or_insert_with(|| canonical_targets(&root, &live.paths));
-        if live_targets.contains(&path_key(&root.join(&path))) {
+        let target = path_key(&root.join(&path));
+        if live_targets
+            .range(target.clone()..)
+            .next()
+            .is_some_and(|live| live.starts_with(&target))
+        {
             continue;
         }
-        match remove_file(&root, &path) {
+        let owner_generation = if path.components().count() == 3
+            && path.file_name().is_some_and(|name| name == OWNER)
+            && path.parent().is_some_and(|parent| live.protected.contains(&path_key(parent)))
+        {
+            // A registered artifact already proves the transient write marker can be removed.
+            None
+        } else {
+            generation.as_deref()
+        };
+        match remove_file(&root, &path, owner_generation) {
             Ok(true) => report.removed.push(display(&path)),
             Ok(false) => (),
             Err(_) => report.failed.push(display(&path)),
@@ -132,7 +148,7 @@ fn display(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn canonical_targets(root: &Path, live: &[PathBuf]) -> HashSet<PathBuf> {
+fn canonical_targets(root: &Path, live: &[PathBuf]) -> BTreeSet<PathBuf> {
     live.iter()
         .filter_map(|path| fs::canonicalize(root.join(path)).ok())
         .filter(|path| path.starts_with(root))
@@ -143,6 +159,7 @@ fn canonical_targets(root: &Path, live: &[PathBuf]) -> HashSet<PathBuf> {
 fn find_orphans(
     root: &Path,
     registered: &Registered,
+    generation: &str,
     failed: &mut Vec<String>,
 ) -> Result<Vec<PathBuf>> {
     let mut pending = vec![root.to_owned()];
@@ -165,21 +182,24 @@ fn find_orphans(
             let entry = entry?;
             let absolute = entry.path();
             let path = absolute.strip_prefix(root)?;
-            let info = match fs::symlink_metadata(&absolute) {
-                Ok(info) => info,
+            match fs::symlink_metadata(&absolute) {
+                Ok(info) if info.is_dir() && !is_link(&info) => (),
+                Ok(_) => continue,
                 Err(error) if error.kind() == ErrorKind::NotFound => continue,
                 Err(_) => {
                     failed.push(display(path));
                     continue;
                 }
             };
-            if info.is_dir() && !is_link(&info) {
+            if path.components().count() == 1 {
                 pending.push(absolute);
-            } else if !registered.protected.contains(&path_key(path)) {
-                if relative(path).is_some() {
+            } else if relative(path).is_some() {
+                if registered.protected.contains(&path_key(path)) {
+                    if fs::symlink_metadata(absolute.join(OWNER)).is_ok() {
+                        candidates.push(path.join(OWNER));
+                    }
+                } else if managed_storage_owner::matches(&absolute, generation) {
                     candidates.push(path.to_owned());
-                } else {
-                    failed.push(display(path));
                 }
             }
         }
@@ -187,7 +207,7 @@ fn find_orphans(
     Ok(candidates)
 }
 
-fn remove_file(root: &Path, path: &Path) -> Result<bool> {
+fn remove_file(root: &Path, path: &Path, generation: Option<&str>) -> Result<bool> {
     let mut parent = root.to_owned();
     for part in path.parent().ok_or("成果清理路径无效")?.components() {
         let Component::Normal(part) = part else {
@@ -211,7 +231,13 @@ fn remove_file(root: &Path, path: &Path) -> Result<bool> {
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    if info.is_dir() && !is_link(&info) {
+    let directory = info.is_dir() && !is_link(&info);
+    if let Some(generation) = generation {
+        let owner = if directory { &target } else { &parent };
+        if !managed_storage_owner::matches(owner, generation) {
+            return Ok(false);
+        }
+    } else if directory {
         return Err("成果文件已变为目录，停止清理".into());
     }
     remove_orphan(&target, &info)?;

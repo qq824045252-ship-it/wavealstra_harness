@@ -217,6 +217,10 @@ export class CoreBusinessClient {
     return new CoreBusinessClient(client);
   }
 
+  static attachAuthenticated(transport: RuntimeCoreClient): CoreBusinessClient {
+    return new CoreBusinessClient(transport);
+  }
+
   get generation(): string {
     return this.transport.generation;
   }

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createArtifactDomain } from "../src/main/artifact/ArtifactDomainSetup";
 import { BlueprintRepository } from "../src/main/blueprint/BlueprintRepository";
 import { writeBlueprintInstance, type RuntimeBlueprintInstance } from "../src/main/blueprint/BlueprintInstanceWrite";
 import { GadgetRegistry } from "../src/main/gadget/GadgetRegistry";
@@ -13,6 +14,7 @@ import { GadgetStorage } from "../src/main/gadget/GadgetStorage";
 import { shutdownCoreWorker } from "../src/main/platform/core-client";
 import { locateRuntimeAudit, RuntimeAuditReader, RuntimeAuditUnknownOperationError } from "../src/main/platform/runtime-audit";
 import { BLUEPRINT_DEFINITION_SCHEMA_VERSION } from "../src/shared/blueprint-types";
+import { DOTS_TASK_ID } from "../src/shared/dots";
 
 const executable = process.env.RUNTIME_AUDIT_BINARY ?? locateRuntimeAudit(process.cwd());
 assert(executable && existsSync(executable), "This test requires the supervised Core worker");
@@ -158,6 +160,72 @@ try {
   assert.equal(await desktop.read(gadget.id), null);
   assert.equal(existsSync(join(gadgetRoot, gadget.id)), false);
   console.log("PASS explicit outcomes and Blueprint instances replay after restart; Gadget deletion removes its unregistered files");
+
+  const artifactRoot = join(root, "artifacts");
+  const artifacts = createArtifactDomain(undefined, {}, ui, artifactRoot).service;
+  await artifacts.flushWrites();
+  const artifact = await artifacts.register({ taskId: "task", kind: "html", content: "Keep Artifact" });
+  const otherArtifact = await artifacts.register({ taskId: "task", kind: "html", content: "Discard Artifact" });
+  const artifactPath = artifacts.entryPathOfDescriptor(artifact)!;
+  const otherArtifactPath = artifacts.entryPathOfDescriptor(otherArtifact)!;
+  await ui.writeArtifact("task", randomUUID(), { kind: "remove", id: otherArtifact.id, requireTrashed: false });
+  assert.equal(await ui.artifactById(otherArtifact.id), null);
+
+  const makeGadget = (content: string) => desktop.createAsync({ name: content, scope: { type: "task", taskId: "task" },
+    files: [{ path: "index.html", content }] });
+  const retainedGadget = await makeGadget("Keep Gadget");
+  const orphanGadget = await makeGadget("Discard Gadget");
+  const gadgetPath = join(gadgetRoot, retainedGadget.id, "code", "index.html");
+  const orphanGadgetPath = join(gadgetRoot, orphanGadget.id, "code", "index.html");
+  assert.equal(await ui.writeWorkbench(randomUUID(), { kind: "deleteGadget", id: orphanGadget.id }), "changed");
+
+  const orphanInstancePath = join(instanceDirectory, `bp-${randomUUID()}`);
+  assert.deepEqual(await ui.instantiateBlueprint(randomUUID(), { ...instance,
+    workspaces: [{ id: "orphan-instance", name: "Orphan instance", path: orphanInstancePath, parentId: null }],
+    storage: { workspaceInstancesRoot: instanceDirectory, gadgets: [],
+      seeds: [{ workspaceId: "orphan-instance", path: "welcome.md", base64: Buffer.from("Discard Blueprint").toString("base64") }] },
+  }), { kind: "committed", skippedLibraries: [] });
+  assert.equal((await ui.deleteWorkspace({ id: "orphan-instance", dotsTaskId: DOTS_TASK_ID }))?.status, "saved");
+
+  const unstampedGadget = join(gadgetRoot, "gdt-unindexed");
+  const unstampedInstance = join(instanceDirectory, `bp-${randomUUID()}`);
+  const unstampedArtifact = join(artifactRoot, "task", "unindexed");
+  for (const directory of [unstampedGadget, unstampedInstance, unstampedArtifact]) {
+    mkdirSync(directory);
+    writeFileSync(join(directory, "saved.txt"), "Keep unindexed files");
+  }
+  const orphanFiles = [otherArtifactPath, orphanGadgetPath, join(orphanInstancePath, "welcome.md")];
+  const retainedFiles: Array<[string, string]> = [
+    [artifactPath, "Keep Artifact"], [gadgetPath, "Keep Gadget"], [join(instancePath, "welcome.md"), "Blueprint is ready"],
+    ...[unstampedGadget, unstampedInstance, unstampedArtifact].map((directory): [string, string] =>
+      [join(directory, "saved.txt"), "Keep unindexed files"]),
+  ];
+  for (const file of orphanFiles) assert.equal(existsSync(file), true);
+  const recoverStorage = async () => {
+    const cleaned = await ui.cleanupArtifactFiles(artifactRoot, { kind: "orphans" });
+    assert(cleaned && cleaned !== "needsHost");
+    assert.deepEqual(cleaned.failed, []);
+    assert.deepEqual(await ui.reconcileGadgetStorage(gadgetRoot), []);
+    assert.deepEqual(await ui.reconcileBlueprintStorage(instanceDirectory), []);
+    for (const file of orphanFiles) assert.equal(existsSync(file), false);
+    for (const [file, expected] of retainedFiles) assert.equal(readFileSync(file, "utf8"), expected);
+  };
+  await recoverStorage();
+  assert.equal((await ui.artifactById(artifact.id))?.id, artifact.id);
+  assert.equal((await desktop.read(retainedGadget.id))?.id, retainedGadget.id);
+  assert((await ui.workspaceData({ kind: "spaces" }))?.spaces.some(space => space.id === "instance"));
+
+  // Simulate two database-only rebuilds and an ordinary restart in between.
+  for (const rebuild of [true, false, true]) {
+    await ui.close();
+    await shutdownCoreWorker(root, database);
+    if (rebuild) for (const file of [database, `${database}.wal`, `${database}.tmp`]) rmSync(file, { force: true });
+    ui = open();
+    assert.equal(await ui.artifactById(artifact.id), null);
+    assert.deepEqual((await ui.workspaceData({ kind: "spaces" }))?.spaces, []);
+    await recoverStorage();
+  }
+  console.log("PASS startup removes current-generation orphans and preserves all three asset types across database-only rebuilds");
 } finally {
   await Promise.all([ui.close(), host.close()]);
   await shutdownCoreWorker(root, database);

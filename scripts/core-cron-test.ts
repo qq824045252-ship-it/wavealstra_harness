@@ -10,6 +10,7 @@ import type { CronJobDto } from "../src/shared/agent-ipc";
 import { DOTS_TASK_ID } from "../src/shared/dots";
 import { encodeCronPlan, type CronPlanGuard } from "../src/main/db/CronPlanPersistence";
 import { shutdownCoreWorker } from "../src/main/platform/core-client";
+import { CoreBusinessClient } from "../src/main/platform/core-business-client";
 import { locateRuntimeAudit, RuntimeAuditReader } from "../src/main/platform/runtime-audit";
 
 type Row = Record<string, unknown>;
@@ -199,6 +200,53 @@ try {
   })));
   assert.deepEqual([...lastSlot].sort(), [false, true]);
   console.log("PASS an automation quota cannot be oversold by competing Core clients");
+
+  const recoveryJobId = lastSlot[0] ? "competing-0" : "competing-1";
+  const started = await ui.cronScheduler<{ status: string; runId: string }>({ action: "runNow", jobId: recoveryJobId });
+  assert(started?.status === "ok" && started.runId);
+  const savedInput = await ui.cronData<string>({ kind: "runInput", runId: started.runId });
+  assert(savedInput);
+
+  const orphanPlan = encodeCronPlan({ ...plan("orphan-job", "ordinary"), enabled: false });
+  assert.equal(await ui.writeCronPlan({ kind: "save", row: orphanPlan, expected: null, guard }), true);
+  const orphan = await snapshot(ui, orphanPlan.id);
+  assert(orphan);
+  const orphanId = "no-execution-receipt";
+  const orphanInput = JSON.stringify({ request: { taskId: "ordinary", userMessageId: `cron-${orphanId}-input`, welcomeMode: "bot" } });
+  assert.equal(await ui.writeCronRun({ kind: "start", inputJson: orphanInput, expectedJob: expected(orphan),
+    requiredTasks: ["ordinary"], requiredProjects: [],
+    run: { id: orphanId, jobId: orphanPlan.id, taskId: "ordinary", startedAt: Date.now(), status: "running" } }), true);
+
+  await ui.close();
+  await background.close();
+  await shutdownCoreWorker(root, database);
+
+  const reopened = new RuntimeAuditReader(executable, database, { coreDataDirectory: root });
+  let executor: CoreBusinessClient | undefined;
+  try {
+    assert.equal((await reopened.cronScheduler({ action: "start" }))?.status, "ok");
+    assert.equal((await snapshot(reopened, recoveryJobId))?.activeRun?.id, started.runId);
+    assert.equal(await reopened.cronData({ kind: "runInput", runId: started.runId }), savedInput);
+    const orphanState = await snapshot(reopened, orphanPlan.id);
+    assert.equal(orphanState?.activeRun, null);
+    assert.equal(orphanState?.latestRun?.status, "error");
+    assert.equal(await reopened.cronData({ kind: "runInput", runId: orphanId }), orphanInput, "Startup leaves unsupported historical inputs alone");
+
+    executor = await CoreBusinessClient.connect(executable, database, { dataDirectory: root, role: "execution-host", clientId: "cron-recovery" });
+    assert.equal((await reopened.cronScheduler({ action: "scanRecovery" }))?.status, "ok");
+    const executionId = `cron-exec-${started.runId}`;
+    const execution = (await executor.executionStatus(executionId)).execution;
+    assert.equal(execution?.status, "dispatching");
+    assert.equal(execution.idempotencyKey, `cron-${started.runId}-input`);
+    assert.equal((await executor.executionStatus(`cron-exec-${orphanId}`)).execution, null);
+    assert.equal((await executor.executorAck(executionId, execution.attempt)).status, "ok");
+    assert.equal((await executor.executorSettled({ executionId, attempt: execution.attempt, status: "completed" })).status, "ok");
+    assert.equal((await snapshot(reopened, recoveryJobId))?.latestRun?.status, "success");
+    console.log("PASS reopening Core preserves and settles current Cron receipts without reconstructing orphan runs");
+  } finally {
+    await executor?.close();
+    await reopened.close();
+  }
 } finally {
   await ui.close();
   await background.close();

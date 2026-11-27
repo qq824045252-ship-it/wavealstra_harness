@@ -126,7 +126,6 @@ pub enum Request {
     },
 
     // ---------- Cron ----------
-    CronStartupMigrate,
     CronUpsertJob {
         id: String,
         name: String,
@@ -751,57 +750,6 @@ pub fn run(db: &mut Connection, request: Request) -> Result<Value> {
         }
 
         // ---------- Cron ----------
-        Request::CronStartupMigrate => {
-            let pauses: Vec<(String, String)> = {
-                let mut stmt = tx.prepare("SELECT scope, timer_ids FROM dots_proactive_pauses")?;
-                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-                    .collect::<duckdb::Result<_>>()?
-            };
-            for (scope, timer_ids_raw) in pauses {
-                let Ok(ids) = serde_json::from_str::<Vec<String>>(&timer_ids_raw) else {
-                    continue;
-                };
-                if ids.is_empty() {
-                    continue;
-                }
-                let slots = crate::database::anon_placeholders(ids.len());
-                let holder = format!("proactive:{scope}");
-                let sql = format!(
-                    "INSERT INTO dots_schedule_holds(job_id, holder)
-                     SELECT j.id, ? FROM cron_jobs j
-                     WHERE j.id IN ({slots}) AND j.enabled=0
-                       AND json_extract_string(j.execution_json,'$.cancelledAt') IS NULL
-                       AND NOT EXISTS (SELECT 1 FROM dots_schedule_holds h WHERE h.job_id=j.id)
-                     ON CONFLICT DO NOTHING"
-                );
-                let mut p: Vec<&dyn duckdb::ToSql> = vec![&holder];
-                for id in &ids {
-                    p.push(id);
-                }
-                tx.execute(&sql, duckdb::params_from_iter(p))?;
-            }
-            let inputs: Vec<(String, String)> = {
-                let mut stmt = tx.prepare(
-                    "SELECT run_id, request_json FROM cron_run_inputs
-                     WHERE json_valid(request_json)
-                       AND json_extract_string(request_json, '$.request.welcomeMode') = 'bot'",
-                )?;
-                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-                    .collect::<duckdb::Result<_>>()?
-            };
-            for (run_id, raw) in inputs {
-                if let Ok(mut doc) = serde_json::from_str::<Value>(&raw)
-                    && let Some(req) = doc.get_mut("request").and_then(Value::as_object_mut)
-                {
-                    req.insert("welcomeMode".into(), json!("general"));
-                    let _ = tx.execute(
-                        "UPDATE cron_run_inputs SET request_json = ?1 WHERE run_id = ?2",
-                        params![serde_json::to_string(&doc)?, run_id],
-                    );
-                }
-            }
-            json!({ "ok": true })
-        }
         Request::CronUpsertJob {
             id,
             name,

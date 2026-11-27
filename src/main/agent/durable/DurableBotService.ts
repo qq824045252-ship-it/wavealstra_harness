@@ -653,7 +653,7 @@ export class DurableBotService {
       let domain: DurableDomainTools | undefined;
       try { domain = await this.options.tools?.(task, cwd, mcp); }
       catch (error) { throw new DurableToolAssemblyError(error); }
-      const initialHistory = async () => {
+      const initialHistory = core ? undefined : async () => {
         const legacy = task.sessionFile ? SessionManager.open(task.sessionFile, undefined, cwd) : undefined;
         return legacy ? {
           messages: convertToLlm(legacy.getBranch().flatMap(entry => entry.type === "message" ? [entry.message] : [])),
@@ -1513,10 +1513,8 @@ export class DurableBotService {
     try {
       const [stored, task] = await Promise.all([this.readBinding(taskId), this.options.db.readTask(taskId, { includeExpertBinding: false })]);
       binding = stored;
-      if (!binding && !task?.sessionFile) return { messages: [] };
-      // Opening history is inspection, not permission to resume pending tasks, migrate a
-      // Durable journal, repair configuration, or assemble execution tools. A legacy Pi
-      // sessionFile has no Durable binding yet and retains its separate import path below.
+      if (!binding && (this.core || !task?.sessionFile)) return { messages: [] };
+      // Core history reads the persisted projection. Fixture sessions can seed history from a file.
       if (binding) {
         // Read the very projection used by onSnapshot to produce deltas. Opening
         // another writer (or refreshing this one) would itself produce events.

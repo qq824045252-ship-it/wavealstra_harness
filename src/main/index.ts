@@ -25,7 +25,7 @@ import { CoreBusinessClient } from "./platform/core-business-client";
 import { ensurePiNodeHostScript } from "./host/pi-node-host-bundle";
 import { assertExpectedPiVersion } from "./host/pi-version";
 import { syncCoreAutostart } from "./platform/core-autostart";
-import { shutdownCoreWorker } from "./platform/core-client";
+import { preparePackagedCoreDatabase, shutdownCoreWorker } from "./platform/core-client";
 import { isMainAppWindowRequest } from "./AppWindowIpc";
 import { GoogleWorkspaceWriteIpc } from "../shared/google-workspace-write";
 import { googleWorkspaceWriteService } from "./connectors/GoogleWorkspaceWriteService";
@@ -244,7 +244,7 @@ import { SelectionStore } from "./artifact/SelectionStore";
 import { WebArtifactRuntime } from "./artifact/WebArtifactRuntime";
 import { CronService } from "./cron/CronService";
 import { TaskTerminalService } from "./terminal/TaskTerminalService";
-import { AppDatabase } from "./db/AppDatabase";
+import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "./db/AppDatabase";
 import { TaskBoardRepository } from "./task/TaskBoardRepository";
 import { DotsIpc, DOTS_TASK_ID } from "../shared/dots";
 import { DotsReporting } from "./dots/DotsReporting";
@@ -3203,6 +3203,10 @@ app.whenReady().then(async () => {
   const workspacesMigration = migrateLegacyTaskWorkspacesDirs();
   const runtimeAuditExecutable = locateRuntimeAudit(app.getAppPath(), app.isPackaged ? process.resourcesPath : undefined);
   runtimeAuditExecutablePath = runtimeAuditExecutable;
+  if (app.isPackaged) {
+    if (!runtimeAuditExecutable) throw new Error("Rust 核心程序缺失，无法检查发行版本数据库");
+    await preparePackagedCoreDatabase(runtimeAuditExecutable, getMyBuddyDir(), CURRENT_DATABASE_SCHEMA_VERSION, app.getVersion());
+  }
   db = await AppDatabase.open(undefined, { runtimeAuditExecutable, runtimeAuditSupervised: true, readonly: true });
   if (!db.runtimeAuditReader) throw new Error("通知服务需要 Rust Core");
   const supervised = Boolean(db.runtimeAuditReader?.supervised && runtimeAuditExecutablePath && db.databasePath !== ":memory:");
@@ -3485,25 +3489,15 @@ app.whenReady().then(async () => {
     if (patch.type !== "conversation_interaction_snapshot") return;
     void taskNotifications.patch(patch).catch(error => console.warn("[NotificationService] interaction notification failed", error));
   });
-  // 用量统计：启动后延迟调度异步分片回填历史 session jsonl + 扫描 subagent 归档
-  // （水位+size/mtime 短路；分片让出事件循环，不阻塞启动；失败仅告警）
-  try {
-    setImmediate(() => {
-      void agentService.usageStats
-        .listSessionFiles()
-        .then(files => agentService.usageStats.backfillAllTasksAsync(files))
-        .then(() => agentService.usageStats.reattributeToMyBuddyModelsAsync())
-        .catch((err) => console.warn(`[usage] 启动回填失败: ${err instanceof Error ? err.message : String(err)}`));
-    });
-    const subagentArchive = join(getMyBuddyDir(), "subagent", "usage-archive.jsonl");
-    setImmediate(() => {
-      void agentService.usageStats.scanSubagentArchiveAsync(subagentArchive).catch(err => {
-        console.warn(`[usage] subagent 归档扫描失败: ${err instanceof Error ? err.message : String(err)}`);
-      });
-    });
-  } catch (err) {
-    console.warn(`[usage] 启动回填调度失败: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  setImmediate(() => {
+    const usage = agentService.usageStats;
+    const historical = app.isPackaged ? Promise.resolve() : usage.listSessionFiles().then(files => usage.backfillAllTasksAsync(files));
+    void historical.then(() => usage.reattributeToMyBuddyModelsAsync()).catch(err => console.warn("[usage] 更新用量归属失败", err));
+    if (!app.isPackaged) {
+      void usage.scanSubagentArchiveAsync(join(getMyBuddyDir(), "subagent", "usage-archive.jsonl"))
+        .catch(err => console.warn("[usage] subagent 归档扫描失败", err));
+    }
+  });
   // 终端宿主：renderer 无目录决定权。
   // · 任务终端 cwd = agentService.resolveTaskExecutionWorkspaceCwd（独立任务 / 隔离目录）
   // · 空间终端 cwd = 空间绑定的真实文件夹（未绑定/不可用直接抛错，不静默回退）
@@ -3915,7 +3909,7 @@ app.whenReady().then(async () => {
     },
   );
   // 3B.2：legacy artifact 数据源（session jsonl + artifact-index.json），首次 hydrate 时一次性迁移
-  artifactLegacySource = {
+  if (!app.isPackaged) artifactLegacySource = {
     loadLegacyArtifacts: async (taskId) => {
       const row = taskId === DOTS_TASK_ID ? undefined : await db.readTask(taskId, { includeExpertBinding: false });
       if (!row?.sessionFile) return null;

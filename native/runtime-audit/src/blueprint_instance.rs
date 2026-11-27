@@ -244,7 +244,8 @@ fn write_instance(
     if let (Some(storage), Some(workspace_paths), Some(gadget_ids)) =
         (instance.storage, workspace_paths, gadget_ids)
     {
-        storage.materialize(operation_id, &workspace_paths, &gadget_ids, directories)?;
+        let generation = crate::managed_storage_owner::generation(&tx)?;
+        storage.materialize(operation_id, &generation, &workspace_paths, &gadget_ids, directories)?;
     }
     let status = Status::Committed { skipped_libraries };
     tx.execute(

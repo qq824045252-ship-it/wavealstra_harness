@@ -1,7 +1,7 @@
 import { safeStorage } from "electron";
 import type { GatewayChannelType } from "../../shared/agent-ipc";
 import type { ChannelConfig } from "./channels";
-import { GATEWAY_SECRET_FIELDS } from "./GatewaySecrets";
+import { GATEWAY_REDACTED, GATEWAY_SECRET_FIELDS } from "./GatewaySecrets";
 
 export type SecureGatewayProvider = Exclude<GatewayChannelType, "slack">;
 const fields: Record<SecureGatewayProvider, { public: string[]; required: string[] }> = {
@@ -79,6 +79,8 @@ export function openGatewayProviderConfig(type: SecureGatewayProvider, config: C
   } catch { throw new Error("Gateway 安全配置无法读取，请重新配置"); }
 }
 export function gatewayProviderConfigView(type: SecureGatewayProvider, config: ChannelConfig): ChannelConfig {
-  const encrypted = config.encryptedSecrets as { ciphertext?: unknown } | undefined;
-  return { ...select(config, fields[type].public), ...Object.fromEntries(GATEWAY_SECRET_FIELDS[type].map(key => [key, encrypted?.ciphertext || config[key] ? "••••••" : ""])) };
+  const encrypted = config.encryptedSecrets as { version?: unknown; ciphertext?: unknown } | undefined;
+  const hasSecrets = encrypted?.version === 1 && typeof encrypted.ciphertext === "string" && encrypted.ciphertext.length > 0;
+  return { ...select(config, fields[type].public),
+    ...Object.fromEntries(GATEWAY_SECRET_FIELDS[type].map(key => [key, hasSecrets ? GATEWAY_REDACTED : ""])) };
 }

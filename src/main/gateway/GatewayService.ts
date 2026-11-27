@@ -733,27 +733,17 @@ export class GatewayService {
     if (this.channelOperations.get(row.id) !== priorOperation) return;
     const adapter = this.adapters.get(row.id);
     if (!adapter) return;
-    let config: Record<string, unknown>;
-    try {
-      config = JSON.parse(row.configJson || "{}") as Record<string, unknown>;
-    } catch {
-      console.warn(`[Gateway] ${row.id} 配置损坏，跳过恢复`);
-      return;
-    }
     const operation = this.beginChannelOperation(row.id);
     const current = () => this.ownsChannelOperation(row.id, operation, epoch);
     try {
-      let state = await this.readChannelState(row.id);
+      const state = await this.readChannelState(row.id);
       if (!current() || !isDeepStrictEqual(state.channel, row)) return;
-      // Encrypt existing plaintext configuration before enabling its transport.
-      if (isSecureGatewayProvider(adapter.type) && !config.encryptedSecrets) {
-        config = sealGatewayProviderConfig(adapter.type, validateGatewayProviderConfig(adapter.type, config));
-        const sealed = { ...row, configJson: JSON.stringify(config) };
-        if (!await this.writeChannel(sealed, state)) return;
-        row = sealed;
-        state = { channel: sealed, revision: state.revision === undefined ? undefined : state.revision + 1 };
+      let config: Record<string, unknown>;
+      try {
+        config = JSON.parse(row.configJson || "{}") ?? {};
+      } catch {
+        throw new Error("Gateway 安全配置无法读取，请重新配置");
       }
-      if (!current()) return;
       const opened = adapter.type === "slack" ? openSlackGatewayConfig(config)
         : isSecureGatewayProvider(adapter.type) ? openGatewayProviderConfig(adapter.type, config) : config;
       this.secrets.remember(adapter.id, adapter.type, opened);
@@ -865,7 +855,7 @@ export class GatewayService {
     if (!row) return { hasConfig: false, config: {} };
     let config: Record<string, unknown> = {};
     try {
-      config = JSON.parse(row.configJson || "{}") as Record<string, unknown>;
+      config = JSON.parse(row.configJson || "{}") ?? {};
     } catch {
       return { hasConfig: true, config: {} };
     }
@@ -897,29 +887,24 @@ export class GatewayService {
     const adapter = this.adapters.get(channelId);
     if (!adapter) throw new Error(`unknown channel: ${channelId}`);
 
-    // 脱敏占位符字段 → 复用已存配置的旧值
     const priorOperation = this.channelOperations.get(channelId);
     const state = await this.readChannelState(channelId);
     const stored = state.channel;
     if (this.channelOperations.get(channelId) !== priorOperation || this.lifecycleEpoch !== epoch || this.stopping) {
       throw new Error("Gateway 连接已取消");
     }
-    let storedConfig: Record<string, unknown> = {};
-    if (stored) {
-      try {
-        storedConfig = JSON.parse(stored.configJson || "{}") as Record<string, unknown>;
-      } catch {
-        // ignore
-      }
-    }
     let merged: Record<string, unknown> = { ...config };
-    const storedSecrets = adapter.type === "slack" && storedConfig.encryptedSecrets
-      ? openSlackGatewayConfig(storedConfig)
-      : isSecureGatewayProvider(adapter.type) && storedConfig.encryptedSecrets
-        && REDACTED_FIELDS[adapter.type].some(key => merged[key] === GATEWAY_REDACTED)
-        ? openGatewayProviderConfig(adapter.type, storedConfig) : storedConfig;
-    for (const [key, value] of Object.entries(merged)) {
-      if (REDACTED_FIELDS[adapter.type].includes(key) && value === GATEWAY_REDACTED && storedSecrets[key]) merged[key] = storedSecrets[key];
+    const reuseFields = REDACTED_FIELDS[adapter.type].filter(key => merged[key] === GATEWAY_REDACTED);
+    if (reuseFields.length) {
+      let storedConfig: Record<string, unknown>;
+      try {
+        storedConfig = JSON.parse(stored?.configJson || "{}") ?? {};
+      } catch {
+        throw new Error("Gateway 安全配置无法读取，请重新配置");
+      }
+      const storedSecrets = adapter.type === "slack"
+        ? openSlackGatewayConfig(storedConfig) : openGatewayProviderConfig(adapter.type, storedConfig);
+      for (const key of reuseFields) merged[key] = storedSecrets[key];
     }
 
     // Socket Mode needs no HTTP listener. Seal before connecting, refuse plaintext fallback.

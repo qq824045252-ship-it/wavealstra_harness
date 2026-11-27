@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
-import { GatewayService } from "../src/main/gateway/GatewayService";
+import { GATEWAY_REDACTED, GatewayService } from "../src/main/gateway/GatewayService";
 import { GatewayDeliveryJournal } from "../src/main/gateway/GatewayDeliveryJournal";
 import { gatewaySessionQueueKey } from "../src/main/gateway/GatewayPlatformRegistry";
 import { openGatewayProviderConfig, sealGatewayProviderConfig, validateGatewayProviderConfig } from "../src/main/gateway/GatewayProviderConfig";
@@ -110,6 +110,27 @@ function saveConnected(db: AppDatabase, type: "telegram" | "wechat", config: Cha
   db.upsertGatewayChannel({ id: `${type}-default`, type, name: type, connected: true,
     configJson: JSON.stringify(sealGatewayProviderConfig(type, validateGatewayProviderConfig(type, config))) });
 }
+
+await fixture(async ({ db, gateway, counters }) => {
+  const configJson = JSON.stringify(mpConfig);
+  db.upsertGatewayChannel({ id: "wechat-default", type: "wechat", name: "WeChat", connected: true, configJson });
+  await gateway.restoreChannels();
+  assert.equal(counters.mpAuthorizations, 0, "A plaintext profile cannot attempt provider authorization");
+  assert.equal((await db.readGatewayChannels("wechat-default"))[0]?.configJson, configJson);
+  assert.equal((await gateway.getChannelConfig("wechat-default")).config.appSecret, "");
+  assert((await gateway.listMessages({ channelId: "wechat-default" })).some(message => message.text.includes("请重新配置")));
+  const { appSecret: _secret, token: _token, encodingAESKey: _key, ...publicConfig } = mpConfig;
+  await assert.rejects(gateway.connect("wechat-default", {
+    ...publicConfig, appSecret: GATEWAY_REDACTED, token: GATEWAY_REDACTED, encodingAESKey: GATEWAY_REDACTED,
+  }), /请重新配置/);
+  assert.equal(counters.mpAuthorizations, 0);
+  await gateway.connect("wechat-default", mpConfig);
+  const saved = JSON.parse((await db.readGatewayChannels("wechat-default"))[0]!.configJson);
+  assert.deepEqual(openGatewayProviderConfig("wechat", saved), mpConfig);
+  assert.equal(saved.appSecret, undefined);
+  assert.equal((await gateway.getChannelConfig("wechat-default")).config.appSecret, GATEWAY_REDACTED);
+});
+console.log("PASS Gateway requires fresh credentials after a plaintext profile and persists an encrypted reconnect");
 
 for (const action of ["stop", "suspend"] as const) {
   await fixture(async ({ db, gateway, counters, holdGetMe, holdMpAuthorization, track }) => {

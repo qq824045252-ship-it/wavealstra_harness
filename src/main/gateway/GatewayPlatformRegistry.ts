@@ -394,6 +394,7 @@ export class GatewayPlatformRegistry {
       return;
     }
     void this.recoverCore(channelId, retryBlocked).catch(() => {
+      if (this.suspended || this.pausedChannels.has(channelId)) return;
       this.report(channelId, "Gateway 恢复暂时不可用，已保留待处理记录");
       this.scheduleResume(channelId, 1_000);
     });
@@ -409,13 +410,14 @@ export class GatewayPlatformRegistry {
     const pending = this.coreRecoveries.get(recoveryKey);
     if (pending?.epoch === epoch && pending.channelEpoch === channelEpoch && pending.accountKey === accountKey
         && pending.generation === generation) return pending.ready;
+    const current = () => !this.suspended && !this.pausedChannels.has(channelId) && this.epoch === epoch
+      && (this.channelEpochs.get(channelId) ?? 0) === channelEpoch && this.entries.get(channelId) === adapter
+      && (adapter.isConnected() ? adapter.workConnectionKey?.() : undefined) === accountKey
+      && adapter.gatewayConnectionGeneration?.() === generation;
     const cutoff = this.now();
     const ready = journal.readRecovery({ channelId, accountKey, sessionKey, retryBlocked, cutoff,
       limit: sessionKey === undefined ? 1024 : 64, continuationsOnly: adapter.type === "slack" }).then(state => {
-      if (this.suspended || this.pausedChannels.has(channelId) || this.epoch !== epoch
-        || (this.channelEpochs.get(channelId) ?? 0) !== channelEpoch || this.entries.get(channelId) !== adapter
-        || (adapter.isConnected() ? adapter.workConnectionKey?.() : undefined) !== accountKey
-        || adapter.gatewayConnectionGeneration?.() !== generation) return false;
+      if (!current()) return false;
       this.coreDeliveryCounts.set(channelId, state.counts);
       if (!accountKey) {
         this.scheduleOfflineRecovery(channelId, state.counts);
@@ -425,6 +427,9 @@ export class GatewayPlatformRegistry {
       this.scheduleStored(adapter, state.pending);
       if (state.nextRetryAt !== null) this.scheduleResume(channelId, Math.max(1, state.nextRetryAt - this.now()));
       return state.truncated;
+    }).catch(error => {
+      if (!current()) return false;
+      throw error;
     }).finally(() => {
       if (this.coreRecoveries.get(recoveryKey)?.ready === ready) this.coreRecoveries.delete(recoveryKey);
     });

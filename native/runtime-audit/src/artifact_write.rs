@@ -127,12 +127,14 @@ fn write_managed_inner(
         return Err("managed-content 注册必须提供非空 content".into());
     }
     let storage = row.storage_path.as_deref().ok_or("成果缺少受管路径")?;
+    let generation = crate::managed_storage_owner::generation(&tx)?;
     let (draft, path) = Pending::prepare(
         std::path::Path::new(&row.root_dir),
         storage,
         task_id,
         &row.id,
         operation_id,
+        &generation,
     )
     .map_err(|error| format!("materialize 失败: {error}"))?;
     *pending = Some(draft);

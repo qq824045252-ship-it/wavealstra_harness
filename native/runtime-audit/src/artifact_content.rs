@@ -18,7 +18,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const OWNER: &str = ".mybuddy-artifact-write";
+pub(crate) const OWNER: &str = ".mybuddy-artifact-write";
 const MAX_READ_BYTES: usize = 20 * 1024 * 1024;
 const CHUNK_BYTES: usize = 1024 * 1024;
 
@@ -92,6 +92,7 @@ impl Pending {
         task_id: &str,
         artifact_id: &str,
         operation_id: &str,
+        generation: &str,
     ) -> Result<(Self, PathBuf)> {
         let [task, artifact, entry] = artifact_components(relative)?;
         if task != task_id || artifact != artifact_id {
@@ -110,26 +111,28 @@ impl Pending {
             Ok(()) => (),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                 physical_directory(&directory, &task)?;
-                // An interrupted reservation can leave an empty directory before the marker is written.
-                let marker = directory.join(OWNER);
-                if fs::read_dir(&directory)?.next().is_some() {
-                    let info = fs::symlink_metadata(&marker)?;
-                    if !info.is_file()
-                        || is_link(&info)
-                        || info.len() != operation_id.len() as u64
-                        || fs::read(&marker)? != operation_id.as_bytes()
-                    {
-                        return Err("成果目录已存在".into());
-                    }
-                    fs::remove_dir_all(&directory)?;
-                    fs::create_dir(&directory)?;
+                if !crate::managed_storage_owner::matches(&directory, generation) {
+                    return Err("成果目录已存在".into());
                 }
+                let marker = directory.join(OWNER);
+                let info = fs::symlink_metadata(&marker)?;
+                if !info.is_file()
+                    || is_link(&info)
+                    || info.len() != operation_id.len() as u64
+                    || fs::read(&marker)? != operation_id.as_bytes()
+                {
+                    return Err("成果目录已存在".into());
+                }
+                fs::remove_dir_all(&directory)?;
+                fs::create_dir(&directory)?;
             }
             Err(error) => return Err(error.into()),
         }
         let target = directory.join(entry);
         let pending = Self { directory, task };
-        if let Err(error) = write_new(&pending.directory.join(OWNER), operation_id.as_bytes()) {
+        if let Err(error) = crate::managed_storage_owner::mark(&pending.directory, generation)
+            .and_then(|()| write_new(&pending.directory.join(OWNER), operation_id.as_bytes()))
+        {
             pending.discard();
             return Err(error);
         }

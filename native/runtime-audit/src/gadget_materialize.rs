@@ -148,8 +148,10 @@ fn create_files(db: &mut Connection, input: Create) -> Result<Reply> {
     if create_gadget(&tx, input.gadget, origin)? != 1 {
         return Ok(Reply::ScopeChanged);
     }
-    reserve_gadget(&target, &id)?;
+    let generation = crate::managed_storage_owner::generation(&tx)?;
+    reserve_gadget(&target, &id, &generation)?;
     let attempt = (|| -> Result<()> {
+        crate::managed_storage_owner::mark(&target, &generation)?;
         write_new(&target.join(OWNER), id.as_bytes())?;
         materialize_gadget(
             &target,
@@ -177,12 +179,12 @@ fn create_files(db: &mut Connection, input: Create) -> Result<Reply> {
     Err("Gadget 创建没有提交记录".into())
 }
 
-fn reserve_gadget(target: &Path, id: &str) -> Result<()> {
+fn reserve_gadget(target: &Path, id: &str, generation: &str) -> Result<()> {
     match fs::create_dir(target) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {
             checked_directory(target, target.parent().ok_or("Gadget 目录无效")?, "root")?;
-            if !is_owner(target, id) {
+            if !crate::managed_storage_owner::matches(target, generation) || !is_owner(target, id) {
                 return Err(format!("Gadget storage 已存在：{id}").into());
             }
             fs::remove_dir_all(target)?;
