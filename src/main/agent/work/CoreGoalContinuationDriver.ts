@@ -55,6 +55,10 @@ export interface ActiveCoreGoalContinuation {
   storeId: string;
 }
 
+export class CoreGoalContinuationRevokedError extends Error {
+  constructor() { super("Goal 自动续跑的执行授权已失效"); }
+}
+
 export interface CoreGoalRuntimeWindow {
   snapshot: DurableBotSnapshot;
   storeId: string;
@@ -144,18 +148,17 @@ export class CoreGoalContinuationDriver {
   }
 
   async assertCurrent(origin: ActiveCoreGoalContinuation): Promise<void> {
-    const stopped = () => new Error("Goal 自动续跑的执行授权已失效");
     const pending = this.pendingClaims.get(origin.taskId);
     if (!pending || this.options.hostGeneration !== origin.hostGeneration || pending.operationId !== origin.claimOperationId
       || pending.workId !== origin.workId || pending.intentRevision !== origin.intentRevision || pending.ownerEpoch !== origin.ownerEpoch
       || pending.attemptSerial !== origin.attemptSerial || pending.conversationId !== origin.conversationId || pending.storeId !== origin.storeId
-      || !await this.allowed(origin.taskId, origin.workId)) throw stopped();
+      || !await this.allowed(origin.taskId, origin.workId)) throw new CoreGoalContinuationRevokedError();
     const query = { kind: "activeClaim", userId: pending.userId, taskId: pending.taskId, workId: pending.workId,
       storeId: pending.storeId, hostGeneration: pending.hostGeneration, conversationId: origin.conversationId, runTaskId: origin.runTaskId };
     const current = await this.client().request<{ status?: string; workId?: string; attemptSerial?: number }>({ operation: "readGoalContinuation", query });
     if (current?.status !== "current" || current.workId !== pending.workId || current.attemptSerial !== pending.attemptSerial
       || this.pendingClaims.get(origin.taskId) !== pending
-      || this.disposed || !this.options.policy().enabled) throw stopped();
+      || this.disposed || !this.options.policy().enabled) throw new CoreGoalContinuationRevokedError();
   }
 
   dispose(): void {

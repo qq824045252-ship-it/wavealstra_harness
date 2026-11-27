@@ -1,7 +1,7 @@
 import { DURABLE_ARTIFACT_ENTRY_KIND as DOTS_ARTIFACT_KIND, durableArtifactRegistrationSchema, durableRegisteredArtifact as registeredDotsArtifact } from "./DurableArtifactRegistration";
 import { durableGoalAdmission, nativeGoalParentGeneration } from "./DurableGoalLineage";
 import { assertDurableGoalCompaction, assertDurableGoalContinuation } from "./DurableGoalContinuationAuthority";
-import type { ActiveCoreGoalContinuation } from "../work/CoreGoalContinuationDriver";
+import { CoreGoalContinuationRevokedError, type ActiveCoreGoalContinuation } from "../work/CoreGoalContinuationDriver";
 import { durableGoalToolEvidence } from "./DurableGoalToolEvidence";
 import { dotsInputVersion, DotsIntentChanged } from "../../dots/DotsNativeIntent";
 import { DOTS_RECOVER_COMMIT, dotsRecoveryAllowsTool, dotsRecoveryAllowsVerify, validDotsRecoveryFilename, type DotsRecoveryToolScope } from "../../dots/DotsRecovery";
@@ -106,6 +106,9 @@ const CompactionRequestSequence = defineDoc({ kind: "mybuddy.compaction-request-
 });
 const AuditReceipts = defineDoc({ kind: "mybuddy.audit-receipts", version: 1, scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false,
   initial: () => ({ settled: {} as Record<string, number> }),
+});
+const RevokedGoalRecovery = defineDoc({ kind: "mybuddy.revoked-goal-recovery", version: 1, scope: "conversation", history: "latest", fork: "initial",
+  checkpointWhen: () => false, initial: () => ({ pending: null as { runTaskId: TaskId; inputId: Submission["id"] } | null }),
 });
 
 // Display telemetry lives with Durable, never in the task scheduler or renderer clock.
@@ -669,6 +672,66 @@ export class DurableBotRuntime {
   }
 
   resume(): void { this.assertSessionHealthy(); this.harness.resume(); }
+
+  async recoverRevokedGoal(): Promise<void> {
+    const verify = this.options.verifyGoalContinuation;
+    const taskId = this.options.taskId;
+    if (!verify || !taskId) return;
+    const conversation = this.conversation;
+    const run = (await this.harness.snapshot(LiveDoc, conversation.id, ctx))?.run;
+    let pending = (await this.harness.snapshot(RevokedGoalRecovery, conversation.id, ctx))?.pending;
+    if (run) {
+      if (run.inputs.length !== 1 || run.afterRun) return;
+      const submission = await this.storage.submission(run.inputs[0], ctx);
+      if (submission?.type !== "input" || !submission.requestId?.startsWith("goal-continuation:")) return;
+      try {
+        await assertDurableGoalContinuation(taskId, this.storage, { conversationId: conversation.id,
+          snapshot: this.harness.snapshot.bind(this.harness) }, ctx, verify);
+        return;
+      } catch (error) {
+        if (!(error instanceof CoreGoalContinuationRevokedError)) throw error;
+      }
+      pending = await conversation.commit(async tx => {
+        const observed = (await tx.doc(LiveDoc, conversation.id)).run;
+        if (!observed || observed.taskId !== run.taskId || observed.inputs.length !== 1 || observed.inputs[0] !== run.inputs[0]) return;
+        const exact = { runTaskId: run.taskId, inputId: run.inputs[0] };
+        (await tx.doc(RevokedGoalRecovery, conversation.id)).pending = exact;
+        return exact;
+      }, ctx);
+    }
+    if (!pending) return;
+    const exact = pending;
+    const bounded = { ...ctx, abortSignal: AbortSignal.timeout(10_000) };
+    if (run) {
+      await this.harness.abortTask(exact.runTaskId, bounded);
+      await this.harness.waitForTask(exact.runTaskId, bounded);
+    }
+    await conversation.commit(async tx => {
+      const live = await tx.doc(LiveDoc, conversation.id);
+      const recovery = await tx.doc(RevokedGoalRecovery, conversation.id);
+      if (live.run?.taskId === exact.runTaskId || recovery.pending?.runTaskId !== exact.runTaskId
+        || recovery.pending.inputId !== exact.inputId) return;
+      if (live.run || live.runFailure?.taskId !== exact.runTaskId || live.runFailure.inputs.length !== 1
+        || live.runFailure.inputs[0] !== exact.inputId) {
+        recovery.pending = null;
+        return;
+      }
+      const queued = (await tx.doc(InboxDoc, conversation.id)).items.filter(item => item.mode !== "write");
+      for (const item of queued) {
+        const data = item.entry?.data;
+        const input = data && typeof data === "object" && !Array.isArray(data) ? data.mybuddyInput : undefined;
+        if (!input || typeof input !== "object" || Array.isArray(input)) continue;
+        const requestId = input.inputRequestId;
+        if (input.goalContinuation || input.gatewayOrigin || input.botRequestId
+          || typeof requestId === "string" && /^(?:goal-continuation:|dots-input-)/.test(requestId)) {
+          recovery.pending = null;
+          return;
+        }
+      }
+      if (queued.length) await conversation.submit(tx, { type: "continue", requestId: `mybuddy:resume-inputs-after-revoked-goal:${exact.runTaskId}` });
+      recovery.pending = null;
+    }, bounded);
+  }
   private installCompatibility(tools: readonly ToolRegistration[]): void {
     if (!tools.length) return;
     const compatibility = new Map(this.compatibilityTools.map(tool => [tool.name, tool]));

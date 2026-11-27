@@ -398,7 +398,11 @@ export class DurableBotService {
       shouldSkip: taskId => this.resumeSkipReason(taskId),
       // `open()` deduplicates by taskId, so a session the user opened first is only a no-op open
       // plus the same resume hand-over. Skipping it here would drop that recovery obligation.
-      run: async taskId => { (await this.open(taskId)).runtime.resume(); },
+      run: async taskId => {
+        const { runtime } = await this.open(taskId);
+        await runtime.recoverRevokedGoal();
+        runtime.resume();
+      },
     });
     this.resumeAdmission = admission;
     const reader = this.options.db.runtimeAuditReader;
