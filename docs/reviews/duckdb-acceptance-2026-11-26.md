@@ -393,3 +393,8 @@
 - Windows worker SHA256 为 `77fd676485ec3dd448f9b73e1f8d4959818c8ae79bbe7d1529b5b3dc53b1bb40`。发行版启动用应用版本核对数据库版本记录。同版本启动保留现有库和宿主。首次遇到尚未记录版本的旧安装，或版本变化时，先确认旧 Pi 和 Core 停止，再由 Rust 持有两把所有权锁，删除已确认的 MyBuddy 库和附属文件，创建空库后写入版本记录。 [发行版入口](../../out/duckdb-acceptance-20261126/core-database-release-119-final.log) · [真实宿主切换](../../out/duckdb-acceptance-20261126/packaged-pi-release-cutover-118-to-119.log)
 - 隔离验证覆盖旧 SQLite、当前 DuckDB、Durable 和 Gateway 旧库、升级中途退出，以及 Windows 目录联接。已知升级可继续清理残留文件。源文件损坏、只读、归属异常或旧宿主未退出时，程序拒绝切换。旧项目文件、配置、成果、Gadget 数据和 Blueprint 工作区在多次重建及正常重启后均保留。 [文件与版本保护](../../out/duckdb-acceptance-20261126/database-release-reset-119-final-probe.log) · [成果](../../out/duckdb-acceptance-20261126/core-artifacts-119-asset-retention.log) · [工作台](../../out/duckdb-acceptance-20261126/core-workbench-119-asset-retention.log)
 - 发行版已关闭旧会话、旧成果索引和用量归档的自动回填。Cron 不再重建缺少 Core 回执的旧输入，正常重启仍沿原回执续跑。Gateway 的旧明文凭据需要重新配置，当前凭据仍按原流程使用。旧 Gadget、项目知识和工作区集成的 CommonJS 门禁在 Node 26 加载 Pi 时失败，已退役其入口，保留场景源码。 [会话](../../out/duckdb-acceptance-20261126/pi-core-jsonl-discard-118.log) · [Cron](../../out/duckdb-acceptance-20261126/core-cron-119-recovery.log)
+
+## Core 120 Dots 暂停和恢复
+
+- Windows worker SHA256 为 `ad62083cec440984807e35b1981067eaea6c7369450fe1944a98c8663fad4781`。Dots 主动暂停、计划暂停和操作回执在一个 Core 事务内提交。恢复全局暂停时保留单空间和手动暂停。旧请求的重放只回读原回执，暂停时新建的计划在恢复后可重新排程。 [真实 Dots 入口](../../out/duckdb-acceptance-20261126/dots-proactive-control-120.log)
+- 隔离 Core 120 复验了发行版重建、原生数据库保护、Goal 认领与 Work 任务越过第一批阻塞候选。Goal 原生测试改用真实 SHA-256 作为输入，完整原生套件 99 项通过。Node 26 类型检查和 Cron 的现有回执恢复也通过。 [数据库切换](../../out/duckdb-acceptance-20261126/core-database-release-120.log) · [原生套件](../../out/duckdb-acceptance-20261126/native-full-120.log) · [Cron](../../out/duckdb-acceptance-20261126/core-cron-120.log)

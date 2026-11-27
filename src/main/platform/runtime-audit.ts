@@ -421,6 +421,14 @@ export class RuntimeAuditReader implements PiStorageClient {
     return this.read({ operation: "coreCronScheduler", ...command }, "database", false, 15_000);
   }
 
+  async setDotsProactive(source: string, pause: boolean, spaceId?: string): Promise<RuntimeDotsProactiveControlReceipt> {
+    const result = await this.cronScheduler<{ status: "ok"; receipt: RuntimeDotsProactiveControlReceipt } |
+      { status: "rejected"; message: string }>({ action: "setDotsProactive", source, pause, spaceId });
+    if (result?.status === "rejected") throw new Error(result.message);
+    if (!result?.receipt) throw new Error("Core 未确认主动跟进设置");
+    return result.receipt;
+  }
+
   dotsScheduler<T = Record<string, unknown>>(command: Record<string, unknown> & { action: string }): Promise<T | undefined> {
     if (!this.supervised) return Promise.resolve(undefined);
     return this.read({ operation: "coreDotsScheduler", ...command }, "database", false, 15_000);
@@ -3134,6 +3142,12 @@ type RuntimeRemoteArtifactImage = (RuntimeRemoteArtifactImageOpen & { body: Read
 interface RuntimeArtifactCleanup {
   removed: string[];
   failed: string[];
+}
+
+export interface RuntimeDotsProactiveControlReceipt {
+  scope: string;
+  proactive: "paused" | "enabled";
+  schedules: Array<{ id: string; state: string }>;
 }
 
 export type RuntimeCronDataQuery =

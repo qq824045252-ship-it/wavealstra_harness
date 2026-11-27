@@ -10,6 +10,19 @@ const DELIVERY_ALLOWED: &str = "
       AND json_extract_string(value_json,'$.paused')='true')
     AND NOT EXISTS (SELECT 1 FROM dots_proactive_pauses WHERE scope='')";
 
+pub(crate) fn is_local_scope(db: &Connection, space_id: &str) -> Result<bool> {
+    Ok(db.query_row(
+        "WITH RECURSIVE ancestors(id,parent_id,archived) AS (
+            SELECT id,parent_id,archived FROM spaces WHERE id=?
+            UNION SELECT s.id,s.parent_id,s.archived FROM spaces s JOIN ancestors a ON s.id=a.parent_id
+        ) SELECT EXISTS(SELECT 1 FROM ancestors WHERE parent_id IS NULL)
+            AND NOT EXISTS(SELECT 1 FROM ancestors WHERE archived<>0 OR starts_with(id,'sp-gw-')
+                OR starts_with(id,'bot-space-') OR starts_with(id,'bot-team-space-') OR starts_with(id,'bot-workspace-group-'))",
+        [space_id],
+        |row| row.get(0),
+    )?)
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Query {

@@ -1450,9 +1450,18 @@ ${input.text}`),
     }
     if (input.action === "pause_proactive" || input.action === "resume_proactive") {
       if (sourceId.startsWith("cron-") || sourceId.startsWith("goal-continuation:")) throw new Error("主动跟进策略需要用户明确交代");
+      const pause = input.action === "pause_proactive";
+      const core = this.db.runtimeAuditReader;
+      if (core?.supervised) {
+        const scope = input.spaceId ? required(input.spaceId, "工作空间 ID") : undefined;
+        if (scope && !this.allowsSpace(scope)) throw new Error("工作空间不存在或未授权给 Dots");
+        const receipt = await core.setDotsProactive(sourceId, pause, scope);
+        if (!pause) this.watches.refresh();
+        this.hooks.changed?.();
+        return receipt;
+      }
       if (input.spaceId) this.space(input.spaceId);
       const scope = input.spaceId ?? "";
-      const pause = input.action === "pause_proactive";
       const key = JSON.stringify([sourceId,input.action,scope]);
       const pendingPrior = this.pendingControlReceipts.get(key)?.outcome;
       const prior = pendingPrior !== undefined

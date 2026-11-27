@@ -40,6 +40,10 @@ fn default_followup_mode() -> String {
     "continue".to_owned()
 }
 
+fn present_scope<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<Vec<String>>>, D::Error> {
+    Option::deserialize(d).map(Some)
+}
+
 #[derive(Clone, Debug)]
 struct CronJobRow {
     id: String,
@@ -196,6 +200,7 @@ pub enum Command {
     },
     SyncConfig {
         dots_followup_mode: Option<String>,
+        #[serde(default, deserialize_with = "present_scope")]
         dots_space_ids: Option<Option<Vec<String>>>,
         dots_suspended: Option<bool>,
         default_model_id: Option<Option<String>>,
@@ -220,6 +225,11 @@ pub enum Command {
         job_id: Option<String>,
         restoring: Option<bool>,
         now_ms: Option<i64>,
+    },
+    SetDotsProactive {
+        source: String,
+        space_id: Option<String>,
+        pause: bool,
     },
     Stop,
 }
@@ -838,6 +848,120 @@ fn set_job_enabled_tx(
         )?);
     }
     Ok(())
+}
+
+fn proactive_schedule_state(job: &CronJobRow, unavailable: bool, started: bool, now: i64) -> &'static str {
+    if job.cancelled_at.is_some() {
+        "cancelled"
+    } else if unavailable {
+        "unavailable"
+    } else if job.max_runs.is_some_and(|max| job.run_count >= max) {
+        "max_runs_reached"
+    } else if job.effective_to.is_some_and(|end| end <= now) {
+        "expired"
+    } else if job.schedule_type == "at" && parse_iso8601_utc_ms(&job.schedule_expr).is_some_and(|at| at <= now) {
+        "scheduled_time_passed"
+    } else if !job.enabled {
+        "paused"
+    } else if !started {
+        "scheduler_stopped"
+    } else if compute_next_run_at(job, now).is_none() {
+        "no_future_occurrence"
+    } else {
+        "scheduled"
+    }
+}
+
+fn set_dots_proactive_tx(
+    tx: &Connection,
+    core_gen: &str,
+    client_gen: &str,
+    events: &mut Vec<EmittedEvent>,
+    source: &str,
+    space: &str,
+    pause: bool,
+    now: i64,
+) -> crate::Result<Value> {
+    if source.trim().is_empty() || source.starts_with("cron-") || source.starts_with("goal-continuation:") {
+        return Ok(json!({ "status": "rejected", "message": "主动跟进策略需要用户明确交代" }));
+    }
+    let cfg = load_config(tx)?;
+    if !space.is_empty() && (cfg.dots_space_ids.as_ref().is_some_and(|ids| !ids.iter().any(|id| id == space))
+        || !crate::dots_proactive_data::is_local_scope(tx, space)?)
+    {
+        return Ok(json!({ "status": "rejected", "message": "工作空间不存在或未授权给 Dots" }));
+    }
+    let action = if pause { "pause_proactive" } else { "resume_proactive" };
+    let key = serde_json::to_string(&(source, action, space))?;
+    let prior: Option<String> = tx.query_row(
+        "SELECT outcome FROM dots_control_receipts WHERE operation_id=?", [&key], |row| row.get(0),
+    ).optional()?;
+    if let Some(prior) = prior {
+        let receipt: Value = serde_json::from_str(&prior)?;
+        return Ok(json!({ "status": "ok", "receipt": receipt }));
+    }
+
+    let saved: Option<String> = tx.query_row(
+        "SELECT timer_ids FROM dots_proactive_pauses WHERE scope=?", [space], |row| row.get(0),
+    ).optional()?;
+    let ids: Vec<String> = if let Some(saved) = saved {
+        serde_json::from_str(&saved)?
+    } else if pause {
+        let mut ids = Vec::new();
+        for job in fetch_all_jobs(tx)? {
+            if !job.is_dots() || job.is_reminder || job.cancelled_at.is_some() { continue; }
+            if !space.is_empty() && schedule_owner(tx, &job.id)?.and_then(|(_, space)| space).as_deref() != Some(space) { continue; }
+            if job.max_runs.is_some_and(|max| job.run_count >= max) && !tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM cron_runs WHERE job_id=? AND status='running')", [&job.id], |row| row.get::<_, bool>(0),
+            )? { continue; }
+            ids.push(job.id);
+        }
+        ids
+    } else {
+        Vec::new()
+    };
+    if pause {
+        tx.execute("INSERT INTO dots_proactive_pauses (scope,timer_ids) VALUES (?,?) ON CONFLICT DO NOTHING",
+            params![space, serde_json::to_string(&ids)?])?;
+    } else {
+        tx.execute("DELETE FROM dots_proactive_pauses WHERE scope=?", [space])?;
+    }
+
+    let holder = format!("proactive:{space}");
+    let mut schedules = Vec::new();
+    for id in ids {
+        let Some(mut job) = fetch_job(tx, &id)? else { continue; };
+        if !job.is_dots() || job.is_reminder || job.cancelled_at.is_some() { continue; }
+        let in_scope = space.is_empty() || schedule_owner(tx, &id)?.and_then(|(_, space)| space).as_deref() == Some(space);
+        let unavailable = unavailable_reason(tx, &job)?.is_some();
+        let enabled = if pause {
+            let held = tx.query_row("SELECT EXISTS(SELECT 1 FROM dots_schedule_holds WHERE job_id=?)", [&id], |row| row.get::<_, bool>(0))?;
+            if in_scope && (job.enabled || held) {
+                tx.execute("INSERT INTO dots_schedule_holds (job_id,holder) VALUES (?,?) ON CONFLICT DO NOTHING", params![id, holder])?;
+                false
+            } else { job.enabled }
+        } else {
+            let released = tx.execute("DELETE FROM dots_schedule_holds WHERE job_id=? AND holder=?", params![id, holder])? != 0;
+            job.enabled || (released && !unavailable && job.max_runs.is_none_or(|max| job.run_count < max)
+                && dots_schedule_visible(tx, &id, &cfg)? && !dots_followup_paused(tx, &job)?)
+        };
+        if enabled != job.enabled {
+            set_job_enabled_tx(tx, core_gen, client_gen, events, &id, enabled, now)?;
+            job.enabled = enabled;
+            job.updated_at = now;
+            if enabled {
+                arm_job_state_tx(tx, &job, &cfg, false, now)?;
+            }
+        }
+        if in_scope {
+            schedules.push(json!({ "id": id, "state": proactive_schedule_state(&job, unavailable, cfg.started, now) }));
+        }
+    }
+    let receipt = json!({ "scope": if space.is_empty() { "all" } else { space },
+        "proactive": if pause { "paused" } else { "enabled" }, "schedules": schedules });
+    tx.execute("INSERT INTO dots_control_receipts (operation_id,target_task_id,outcome) VALUES (?,?,?)",
+        params![key, DOTS_TASK_ID, serde_json::to_string(&receipt)?])?;
+    Ok(json!({ "status": "ok", "receipt": receipt }))
 }
 
 fn compose_prompt(job: &CronJobRow, cfg: &RuntimeCronConfig) -> String {
@@ -2052,6 +2176,9 @@ pub fn execute_write(
                 }
             }
             json!({ "status": "ok", "armed": armed })
+        }
+        Command::SetDotsProactive { source, space_id, pause } => {
+            set_dots_proactive_tx(&tx, &core_gen, &client.generation, &mut events, &source, space_id.as_deref().unwrap_or(""), pause, now_ms())?
         }
         Command::Stop => {
             let now = now_ms();

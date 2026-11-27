@@ -1176,7 +1176,10 @@ mod tests {
 
     const HOST: &str = "goal-test-host";
     const DIRECTORY: &str = "goal-test-store";
-    const FINGERPRINT: &str = "024748dffd7d40a03c58b166a42d64484f76fd2be6ee325193e938c09d664f4bd";
+
+    fn progress_fingerprint() -> String {
+        crate::work_scheduler::sha256_hex("Goal criteria are unchanged")
+    }
 
     fn scope() -> Query {
         Query {
@@ -1247,7 +1250,7 @@ mod tests {
             "operationId":operation,"intentRevision":row["intentRevision"],"stateVersion":row["stateVersion"],"ownerEpoch":row["ownerEpoch"],
             "hostGeneration":HOST,"storeId":row["storeId"],"conversationId":1,"expectedStoreCommitSeq":row["storeCommitSeq"],
             "expectedAttemptSerial":row["attemptSerial"],"expectedLedgerUpdatedAt":row["updatedAt"],"sourceEntryId":3,"trigger":trigger,
-            "maxAttempts":3,"fallbackBudget":50,"progressFingerprint":FINGERPRINT})
+            "maxAttempts":3,"fallbackBudget":50,"progressFingerprint":progress_fingerprint()})
     }
 
     #[test]
@@ -1277,6 +1280,7 @@ mod tests {
         let mut restart = claim_command(&row, "manual", "continued");
         restart["sourceEntryId"] = 4.into();
         let manual = write(&mut db, command(restart), &client()).unwrap();
+        assert_eq!(manual["status"], "claimed", "{manual}");
         assert_eq!(manual["requestId"], "goal-continuation:goal-work:1:1");
         assert_eq!(manual["tokensUsed"], 0);
         let late = write(&mut db, command(input.clone()), &client()).unwrap();
@@ -1334,7 +1338,7 @@ mod tests {
 
         let report = json!({"kind":"reportAttempt","userId":"limited-user","taskId":"goal-task","workId":"goal-work",
             "operationId":"late-attempt","claimOperationId":"first-claim","hostGeneration":HOST,"storeId":store,"outcome":"settled",
-            "progressFingerprint":FINGERPRINT});
+            "progressFingerprint":progress_fingerprint()});
         assert_eq!(
             write(&mut db, command(report.clone()), &client()).unwrap()["code"],
             "submission_missing"
@@ -1458,6 +1462,7 @@ mod tests {
     }
 
     fn claimed_batch(claim: &Value) -> Vec<Value> {
+        assert_eq!(claim["status"], "claimed", "{claim}");
         input_batch(
             &claim["requestId"],
             4,

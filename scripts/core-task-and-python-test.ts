@@ -57,6 +57,7 @@ import { verifyConversationBranchLineage } from "./conversation-branch-lineage-c
 import { verifyExternalAgentHistory } from "./external-agent-history-cases";
 import { verifyTaskWriteGrants } from "./task-write-grants-cases";
 import { verifyDurableToolPersistence } from "./durable-tool-core-cases";
+import { verifyDotsProactiveControl } from "./dots-proactive-core-cases";
 
 const executable = process.env.RUNTIME_AUDIT_BINARY ?? locateRuntimeAudit(process.cwd());
 assert(executable && existsSync(executable), "This test requires the supervised Core worker");
@@ -1664,6 +1665,7 @@ try {
   await verifyConversationBranchLineage(application, background, root);
   await verifyTaskWriteGrants(application, background, root);
   await verifyDurableToolPersistence(application, background);
+  await verifyDotsProactiveControl(application, background, root);
 
   const workerSpace = await application.writeWorkspaceUpsert({ id: "dots-worker-authority-space", name: "Worker authority", path: root });
   const authorityTask = { ...task("dots-worker-authority-task", "Worker authority"), spaceId: workerSpace.id, cwd: root };

@@ -3792,6 +3792,12 @@ fn resource_plan_for_request(request: &Request) -> Vec<resource_gate::ResourceRe
             if matches!(request, Request::CoreGatewayScheduler { command: gateway_scheduler::Command::Start { .. }, .. }) {
                 plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "gateway_delivery_recovery".into())));
             }
+            if matches!(request, Request::CoreCronScheduler { command: cron_scheduler::Command::SetDotsProactive { .. }, .. }) {
+                for domain in ["tasks", "workspaces", "projects", "batch4a"] {
+                    plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), domain.into())));
+                }
+                plan.push(ResourceRequirement::exclusive(ResourceKey::Namespace("domain".into(), "dots_proactive".into())));
+            }
             if let Request::CoreExecution { action: business_protocol::ExecutionRequest::Submit { task_id, dots_recovery: Some(_), .. }, .. } = request {
                 plan.push(ResourceRequirement::shared(ResourceKey::Namespace("domain".into(), "cron".into())));
                 plan.extend(["batch2", "batch4a", "tasks", "workspaces", "work_graph"].map(|name|
@@ -4509,7 +4515,7 @@ fn run() -> Result<()> {
         return Err("unexpected argument".into());
     }
     if argument == "--protocol-version" {
-        println!("119");
+        println!("120");
         return Ok(());
     }
     let db_path = PathBuf::from(argument);
