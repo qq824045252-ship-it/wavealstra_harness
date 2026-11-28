@@ -85,6 +85,9 @@ pub enum Action {
         store_id: String,
         writer_epoch: i64,
         host_generation: Option<String>,
+        /// 一次预留多少个 id（缺省 1）。批量发号让写者不必每条 id 单开一个事务。
+        #[serde(default)]
+        count: Option<i64>,
     },
     Commit {
         store_id: String,
@@ -359,7 +362,15 @@ fn execute_inner(db: &mut Connection, action: Action, operation_id: Option<&str>
             store_id,
             writer_epoch,
             host_generation,
-        } => mint_id(db, &store_id, writer_epoch, host_generation.as_deref(), operation_id),
+            count,
+        } => mint_id(
+            db,
+            &store_id,
+            writer_epoch,
+            host_generation.as_deref(),
+            operation_id,
+            count,
+        ),
         Action::Commit {
             store_id,
             writer_epoch,
@@ -933,7 +944,9 @@ fn mint_id(
     writer_epoch: i64,
     host_generation: Option<&str>,
     operation_id: Option<&str>,
+    count: Option<i64>,
 ) -> Result<OpOutcome> {
+    let count = count.unwrap_or(1).clamp(1, 1_024);
     let receipt = operation_id
         .map(|id| MutationReceipt::new(id, store_id, &("mintId", writer_epoch, host_generation)))
         .transpose()?;
@@ -946,16 +959,16 @@ fn mint_id(
         if let Some(receipt) = &receipt && let Some(prior) = receipt.replay(tx)? {
             return Ok(prior);
         }
-        if row.next_id > MAX_SAFE_INTEGER {
+        if row.next_id > MAX_SAFE_INTEGER - count {
             return Ok(OpOutcome::fatal("ID space is exhausted"));
         }
         let id = row.next_id;
-        let next_id = id.saturating_add(1);
+        let next_id = id.saturating_add(count);
         tx.execute(
             "UPDATE durable_stores SET next_id = ?2, updated_at_ms = ?3 WHERE store_id = ?1",
             params![store_id, next_id, now],
         )?;
-        let data = json!({ "id": id });
+        let data = json!({ "id": id, "count": count });
         if let Some(receipt) = &receipt {
             receipt.save(tx, &data, now)?;
         }

@@ -881,14 +881,20 @@ export class DurableBotRuntime {
           if (guard?.inputVersion && await dotsInputVersion(tx, this.conversation.id) !== guard.inputVersion)
             throw new DotsIntentChanged("原任务已有新的用户要求，本次跟进未派发");
           await guard?.validate();
-          return this.conversation.submit(tx, draft);
+          mark?.("submitTxStart");
+          const committed = await this.conversation.submit(tx, draft);
+          mark?.("submitTx");
+          return committed;
         }, ctx);
+        mark?.("submitCommitted");
         const accepted = await this.harness.submission(id, ctx);
+        mark?.("submitReceipt");
         if (!accepted) throw new Error("任务跟进回执不存在");
         return accepted;
       };
       const submission = (guard || requireActiveRun) ? await submitGuarded() : await this.conversation.submit(draft, ctx);
       mark?.("committed");
+      mark?.("projectStart");
       await this.refresh();
       mark?.("projected");
       return submission;

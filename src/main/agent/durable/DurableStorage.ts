@@ -93,6 +93,8 @@ export async function openDurableStorage(
       hostGeneration: defaultHostGeneration,
       leaseHolder: `${lease.owner.host}:${lease.owner.pid}:${lease.owner.token ?? ""}`,
       forceTakeover: true,
+      // 生产写者一次领一整块 id 在内存里发号，把「一次发送 3 趟 mintId」压成 0–1 趟。
+      idBlock: DuckDbStorage.ID_BLOCK,
     });
     return { storage, lease };
   } catch (error) {

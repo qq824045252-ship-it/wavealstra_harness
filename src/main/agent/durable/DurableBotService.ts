@@ -51,7 +51,7 @@ import { DEFAULT_DURABLE_RESUME_CONCURRENCY, ResumeAdmission, type ResumeAdmissi
 import { bindDotsConversationWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { DurableWorkspaceMoves } from "./DurableWorkspaceMoves";
 import { readDurableConversationHead, readDurableReadOnlyHistory, readDurableUserQuestions } from "./DurableReadOnlyHistory";
-import { resolveStoreId } from "./DuckDbStorage";
+import { piStorageTrace, resolveStoreId } from "./DuckDbStorage";
 import type { ActiveCoreGoalContinuation, CoreGoalContinuationClaim, CoreGoalPlacement, CoreGoalRuntimeWindow } from "../work/CoreGoalContinuationDriver";
 import { continuationNudge } from "../work/GoalContinuationService";
 import { modelKey, resolveBotModel, type BotModelResolution } from "./BotModelCatalog";
@@ -1083,6 +1083,7 @@ export class DurableBotService {
       const audit = await this.options.auditInput?.(request, origin);
       signal.throwIfAborted();
       await this.options.beforeSubmit?.(request);
+      mark?.("outerBeforeSubmit");
       signal.throwIfAborted();
       mark?.("payload");
       const guarded = request.dotsFileWatch || request.dotsSteerInputVersion || origin?.goalContinuation || origin?.goalUserInput
@@ -1093,9 +1094,12 @@ export class DurableBotService {
           ...(origin?.goalContinuation ? { goalContinuation: origin.goalContinuation } : {}),
           ...(origin?.goalUserInput ? { goalUserInput: origin.goalUserInput } : {}) }, mark, request.requireActiveRun,
         { inputVersion: request.dotsFileWatch?.inputVersion ?? request.dotsSteerInputVersion, validate: async () => {
+          mark?.("validateStart");
           signal.throwIfAborted();
           if (guarded || !this.options.db.fixtureConnection) await this.options.beforeSubmit?.(request);
+          mark?.("validateBeforeSubmit");
           if (this.core || isGatewayConversation(request.taskId)) await this.readAdmissionCwd(request.taskId, open);
+          mark?.("validateCwd");
           signal.throwIfAborted();
         } });
       return { submission, open };
@@ -1118,6 +1122,7 @@ export class DurableBotService {
     // Time only; never record the input, files, credentials or provider payload.
     const timestamps: Record<string, number> = {};
     const start = performance.now();
+    piStorageTrace.reset();
     const mark: AdmissionMark = stage => { timestamps[stage] = Math.round((performance.now() - start) * 10) / 10; };
     try { return await admit(mark); }
     catch (error) {
@@ -1127,7 +1132,10 @@ export class DurableBotService {
       }
       throw error;
     }
-    finally { mark("finished"); console.info("[SendAdmission]", JSON.stringify({ inputId: request.userMessageId, ...timestamps })); }
+    finally {
+      mark("finished");
+      console.info("[SendAdmission]", JSON.stringify({ inputId: request.userMessageId, ...timestamps, piStorage: piStorageTrace.summary(), piStorageOrder: piStorageTrace.order() }));
+    }
   }
 
   private trackAdmission<T>(taskId: string, operation: () => Promise<T>, mark?: AdmissionMark, controller?: AbortController): Promise<T> {

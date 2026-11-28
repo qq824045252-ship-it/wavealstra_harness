@@ -63,6 +63,11 @@ export interface DuckDbWriterOptions {
   leaseTtlMs?: number;
   forceTakeover?: boolean;
   expectedWriterEpoch?: number;
+  /**
+   * 一次向 Core 预留多少个 id 并在内存里发号。缺省 1（每条 id 一趟往返），生产写者传
+   * `DuckDbStorage.ID_BLOCK`；只有空闲到每毫秒都计较的路径才需要它。
+   */
+  idBlock?: number;
 }
 
 interface PiStorageEnvelope<T> {
@@ -137,11 +142,43 @@ function unwrapEnvelope<T>(
   }
 }
 
+/**
+ * `MYBUDDY_ADMISSION_TRACE=1` 时记录每次 piStorage 往返（只记录动作名与耗时，不记录内容）。
+ *
+ * 准入阶段的一次 `submit` 会穿过多个存储读与一次提交，逐个动作的实际往返次数是判断
+ * 「该合并成复合命令」还是「该减少读」的唯一依据，因此保留这条极轻的计数通道。
+ */
+export const piStorageTrace = {
+  enabled: process.env.MYBUDDY_ADMISSION_TRACE === "1",
+  calls: [] as { action: string; ms: number; detail?: string; t: number }[],
+  startedAt: 0,
+  reset(): void {
+    this.calls.length = 0;
+    this.startedAt = performance.now();
+  },
+  /** 按发生顺序返回，`t` 是相对 reset() 的毫秒偏移。 */
+  order(): { action: string; detail?: string; t: number; ms: number }[] {
+    return this.calls.map(call => ({ action: call.action, detail: call.detail, t: Math.round(call.t * 10) / 10, ms: Math.round(call.ms * 10) / 10 }));
+  },
+  summary(): Record<string, { n: number; ms: number }> {
+    const out: Record<string, { n: number; ms: number }> = {};
+    for (const call of this.calls) {
+      const key = call.detail === undefined ? call.action : `${call.action}:${call.detail}`;
+      const row = out[key] ?? { n: 0, ms: 0 };
+      row.n += 1;
+      row.ms = Math.round((row.ms + call.ms) * 10) / 10;
+      out[key] = row;
+    }
+    return out;
+  },
+};
+
 async function callPiStorage<T>(
   client: PiStorageClient,
   command: Record<string, unknown> & { action: string },
   storeId: string,
   context?: Context,
+  detail?: string,
 ): Promise<T> {
   throwIfAborted(context);
   const encoded = command.action === "resolveStoreId" ? command :
@@ -149,6 +186,7 @@ async function callPiStorage<T>(
   const hasReceipt = command.action === "commit" || command.action === "mintId";
   const request = hasReceipt ? { ...encoded, operationId: randomUUID() } : encoded;
   let raw: PiStorageEnvelope<T> | undefined;
+  const tracedAt = piStorageTrace.enabled ? performance.now() : 0;
   try {
     raw = await client.piStorage<PiStorageEnvelope<T>>(request, context?.abortSignal);
   } catch (error) {
@@ -160,6 +198,7 @@ async function callPiStorage<T>(
     }
     if (!raw?.ok) throw error;
   }
+  if (tracedAt) piStorageTrace.calls.push({ action: command.action, ms: performance.now() - tracedAt, detail, t: tracedAt - piStorageTrace.startedAt });
   if (!hasReceipt) throwIfAborted(context);
   return unwrapEnvelope(mapPiStrings(raw, decodePiStorageText) as typeof raw, command.action, storeId);
 }
@@ -219,7 +258,47 @@ export class DuckDbStorage implements Storage {
     readonly incarnationKey: string | undefined,
     private readonly leaseHolder: string | undefined,
     private readonly leaseTtlMs: number | undefined,
+    private readonly idBlock: number | undefined,
   ) {}
+
+  /**
+   * 单写者租约内的读缓存。
+   *
+   * 一次发送里 `document(6)` 与 `findDocument(pi.agent)` 各被读 4 次，每次是一趟 5–8 ms 的
+   * Core 往返，读出来的内容在宿主下一次 `commit` 之前不可能变化——宿主持有这份 store 的
+   * 排他 `writerEpoch`，没有第二个写者。所以按「读点 + id/address」记住**原始回包**，
+   * commit 成功后整体失效，下一次读再回填。
+   *
+   * 只缓存原始回包、不缓存物化后的 `value`：物化仍然每次新建对象（按 delta 逐条 apply），
+   * 调用方拿到的结果与未命中时完全一致，避免把可变文档对象共享出去。
+   */
+  private readonly readCache = new Map<string, unknown>();
+
+  private static readonly READ_CACHE_LIMIT = 32;
+
+  /**
+   * id 块预分配。
+   *
+   * 一次发送要 3 个 id（entry、submission、文档 change），每个都是一趟 8–13 ms 的 Core 事务。
+   * 写者在租约内一次领一整块、随后在内存里发号：`next_id` 是这份 store 自己的单调计数，
+   * 多领的号即使没用上也只是在账本上留空洞，唯一性和单调性都不受影响。换代（新实例）时
+   * 池子自然作废，不会重发已经用掉的号。
+   */
+  private readonly idPool: number[] = [];
+
+  static readonly ID_BLOCK = 64;
+
+  private cachedRead<T>(key: string): T | undefined {
+    return this.readCache.get(key) as T | undefined;
+  }
+
+  private rememberRead(key: string, value: unknown): void {
+    if (this.readCache.size >= DuckDbStorage.READ_CACHE_LIMIT && !this.readCache.has(key)) {
+      const oldest = this.readCache.keys().next();
+      if (!oldest.done) this.readCache.delete(oldest.value);
+    }
+    this.readCache.set(key, value);
+  }
 
   static async openWriter(
     client: PiStorageClient,
@@ -248,6 +327,7 @@ export class DuckDbStorage implements Storage {
       info.incarnationKey,
       options.leaseHolder,
       options.leaseTtlMs,
+      options.idBlock === undefined ? undefined : Math.max(1, Math.floor(options.idBlock)),
     );
   }
 
@@ -270,6 +350,7 @@ export class DuckDbStorage implements Storage {
       undefined,
       undefined,
       info.incarnationKey,
+      undefined,
       undefined,
       undefined,
     );
@@ -343,7 +424,10 @@ export class DuckDbStorage implements Storage {
         },
         this.storeId,
         context,
+        batches.map(batch => batch.map(write => write.type === "document.change" ? `document.change:${write.id}` : write.type).join("|")).join("+") || "empty",
       );
+      // 自己写完就把读缓存整体作废：文档、回执与任务行都可能刚落盘。
+      if (res.stored > 0) this.readCache.clear();
       for (let i = 0; i < res.seqs.length; i += 1) {
         receive(i, res.seqs[i] as Seq);
       }
@@ -356,26 +440,44 @@ export class DuckDbStorage implements Storage {
   async mintId<I extends Id<string>>(): Promise<I> {
     return await this.runTracked(undefined, async () => {
       const writerEpoch = this.assertWritable();
-      const res = await callPiStorage<{ id: number }>(
+      if (this.idBlock === undefined) {
+        const res = await callPiStorage<{ id: number }>(
+          this.client,
+          {
+            action: "mintId",
+            storeId: this.storeId,
+            writerEpoch,
+            ...(this.hostGeneration !== undefined ? { hostGeneration: this.hostGeneration } : {}),
+          },
+          this.storeId,
+        );
+        return res.id as I;
+      }
+      const pooled = this.idPool.shift();
+      if (pooled !== undefined) return pooled as I;
+      const res = await callPiStorage<{ id: number; count?: number }>(
         this.client,
         {
           action: "mintId",
           storeId: this.storeId,
           writerEpoch,
           ...(this.hostGeneration !== undefined ? { hostGeneration: this.hostGeneration } : {}),
+          count: this.idBlock,
         },
         this.storeId,
       );
+      const count = res.count ?? 1;
+      for (let offset = 1; offset < count; offset += 1) this.idPool.push(res.id + offset);
       return res.id as I;
     });
   }
 
-  private query<T>(command: Record<string, unknown> & { action: string }, context: Context): Promise<T> {
+  private query<T>(command: Record<string, unknown> & { action: string }, context: Context, detail?: string): Promise<T> {
     return callPiStorage<T>(this.client, {
       ...command,
       storeId: this.storeId,
       expectedIncarnation: this.incarnationKey,
-    }, this.storeId, context);
+    }, this.storeId, context, detail);
   }
 
   async conversation(id: ConversationId, context: Context): Promise<ConversationRecord | undefined> {
@@ -548,10 +650,18 @@ export class DuckDbStorage implements Storage {
     context: Context,
   ): Promise<SubmissionRecord | undefined> {
     return await this.runTracked(context, async () => {
-      const res = await this.query<SubmissionRecord | null>(
-        { action: "submissionByRequest", conversationId, requestId },
-        context,
-      );
+      // 去重探测在同一轮里会被问 3 次；宿主是唯一写者，自己 commit 之前答案不会变。
+      const key = `submissionByRequest|${conversationId}|${requestId}`;
+      let res: SubmissionRecord | null;
+      if (this.readCache.has(key)) {
+        res = this.cachedRead<SubmissionRecord | null>(key) ?? null;
+      } else {
+        res = await this.query<SubmissionRecord | null>(
+          { action: "submissionByRequest", conversationId, requestId },
+          context,
+        );
+        this.rememberRead(key, res);
+      }
       return res ?? undefined;
     });
   }
@@ -562,10 +672,18 @@ export class DuckDbStorage implements Storage {
     context: Context,
   ): Promise<DocumentRecord | undefined> {
     return await this.runTracked(context, async () => {
-      const res = await this.query<DocumentRecord | null>(
-        { action: "findDocument", address, at },
-        context,
-      );
+      const key = `findDocument|${JSON.stringify(address)}|${JSON.stringify(at)}`;
+      let res: DocumentRecord | null;
+      if (this.readCache.has(key)) {
+        res = this.cachedRead<DocumentRecord | null>(key) ?? null;
+      } else {
+        res = await this.query<DocumentRecord | null>(
+          { action: "findDocument", address, at },
+          context,
+          JSON.stringify(address),
+        );
+        this.rememberRead(key, res);
+      }
       return res ?? undefined;
     });
   }
@@ -576,16 +694,25 @@ export class DuckDbStorage implements Storage {
     context: Context,
   ): Promise<StoredDocument | undefined> {
     return await this.runTracked(context, async () => {
-      const res = await this.query<{
+      type RawDocument = {
         record: DocumentRecord;
         version: number;
         baseValue: JsonObject;
         deltas: Op[][];
         deltasSinceBase: number;
-      } | null>(
-        { action: "document", id, at },
-        context,
-      );
+      } | null;
+      const key = `document|${id}|${JSON.stringify(at)}`;
+      let res: RawDocument;
+      if (this.readCache.has(key)) {
+        res = this.cachedRead<RawDocument>(key) ?? null;
+      } else {
+        res = await this.query<RawDocument>(
+          { action: "document", id, at },
+          context,
+          String(id),
+        );
+        this.rememberRead(key, res);
+      }
       if (!res) return undefined;
       let value: JsonObject = res.baseValue;
       for (const ops of res.deltas) {
