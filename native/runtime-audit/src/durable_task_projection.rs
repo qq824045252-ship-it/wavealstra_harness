@@ -39,14 +39,16 @@ fn collapsible_snapshot_reply(
     if !workspaces.is_empty() || !snapshot_touch_is_collapsible(status) {
         return Ok(None);
     }
-    let stored: Option<(String, Option<f64>)> = db
+    let stored: Option<(Option<String>, Option<f64>)> = db
         .prepare("SELECT status, CAST(updated_at AS DOUBLE) FROM tasks WHERE id = ?1")?
         .query_row([task_id], |row| Ok((row.get(0)?, row.get(1).ok())))
         .optional()?;
     let Some((stored_status, stored_activity)) = stored else {
         return Ok(None);
     };
-    if stored_status != status {
+    // A task the user never gave a status still has a NULL column, and a probe that cannot read
+    // it must fall through to the write path instead of failing the projection.
+    if stored_status.as_deref() != Some(status) {
         return Ok(None);
     }
     // The ordering guard only moves `updated_at` forward, so a projection that is not strictly
@@ -952,7 +954,8 @@ mod snapshot_touch_tests {
         let db = Connection::open_in_memory()?;
         db.execute_batch(
             "CREATE TABLE tasks(id VARCHAR PRIMARY KEY, status VARCHAR, updated_at BIGINT);
-             INSERT INTO tasks VALUES ('touch-a','in_progress',1000),('touch-b','in_progress',1000);",
+             INSERT INTO tasks VALUES ('touch-a','in_progress',1000),('touch-b','in_progress',1000),
+               ('touch-null',NULL,1000);",
         )?;
         Ok(db)
     }
@@ -1046,6 +1049,16 @@ mod snapshot_touch_tests {
             Some(4_000.0),
             &[]
         )?));
+        Ok(())
+    }
+
+    #[test]
+    fn a_task_without_a_status_keeps_the_write_path() -> crate::Result<()> {
+        // 用户从未写过状态的任务，`status` 列是 NULL：探测必须落回写路径，而不是把读列失败
+        // 当成投影被拒绝。
+        let db = task_db()?;
+        remember_snapshot_touch("touch-null", "in_progress");
+        assert!(collapsible_snapshot_reply(&db, "touch-null", "in_progress", Some(4_000.0), &[])?.is_none());
         Ok(())
     }
 }

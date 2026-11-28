@@ -3428,6 +3428,7 @@ mod tests {
                 store_id: "store-a".into(),
                 writer_epoch: epoch1,
                 host_generation: Some("gen-1".into()),
+                count: None,
             },
         )
         .unwrap()["data"]["id"]
@@ -3548,6 +3549,7 @@ mod tests {
                 store_id: "store-a".into(),
                 writer_epoch: epoch2,
                 host_generation: None,
+                count: None,
             },
         )
         .unwrap();
