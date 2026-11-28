@@ -39,6 +39,14 @@
 
 ## Default workflow
 
+### Rust Core Architecture Guardrails (Route B: Single DuckDB + HotState)
+
+- **禁止 1:1 透传单表 SQL 为独立 IPC**：不得新增零碎的 `*ById` / `HasAny*` / `*Count` / 单字段查询 RPC。一次业务动作在 Rust Core 只允许暴露 1 个粗粒度复合接口（聚合视图 View 或单事务复合命令 Command），不变量校验（存在性、回收站、工作区链、cwd/binding 一致性）必须下沉到 Rust Core 单事务内完成。
+- **严禁纯 DB 写请求走外部文件 `fsync`**：`.runtime-operations/*.json` 只允许用于带外部副作用（进程启停、文件系统移动/删除）的请求；纯 DuckDB 事务依赖 DuckDB 自身事务/WAL 原子性，不得在写前/写后额外写盘 `sync_all()`。
+- **确定性失败严禁伪装成 `OUTCOME_UNKNOWN`**：未进入 `commit()`（`commits == 0 && !committing`）的 SQL/Schema/约束/校验错误必须返回 `confirmedNoEffect: true` 与真实错误原因，不得触发“操作仍在处理或结果尚未确认”。
+- **禁止继续膨胀 TS 同步/`*Async` 双轨复制代码**：后续子系统迁移统一收口为异步接口，测试夹具走内存实例或薄适配层，不得在 Service 文件内整段复制同步与异步两套业务逻辑。
+- **性能门禁**：生产 DuckDB 必须保持 `checkpoint_threshold` 与关闭前 `CHECKPOINT`，只读池归还连接不得执行 `ROLLBACK`。
+
 ### Summary size contract
 
 | 规则 | 强制检查 |

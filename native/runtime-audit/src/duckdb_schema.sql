@@ -524,6 +524,15 @@ CREATE TABLE IF NOT EXISTS usage_events (
   backfilled BIGINT NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS usage_event_coverage (
+  entry_id VARCHAR PRIMARY KEY,
+  input_known BIGINT NOT NULL,
+  output_known BIGINT NOT NULL,
+  cache_read_known BIGINT NOT NULL,
+  cache_write_known BIGINT NOT NULL,
+  cost_known BIGINT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS usage_backfill_state (
   session_file VARCHAR PRIMARY KEY,
   last_entry_id VARCHAR,

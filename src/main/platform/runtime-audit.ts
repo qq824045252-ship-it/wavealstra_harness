@@ -238,7 +238,7 @@ export class RuntimeAuditNotStartedOperationError extends Error {
 export class RuntimeAuditOperationFailedError extends Error {
   readonly code = "RUNTIME_OPERATION_FAILED";
   constructor(readonly requestId: string, readonly operation: string, readonly reason?: string) {
-    super("操作执行失败，未完成请求的变更，请检查后重试");
+    super(reason ? `操作执行失败（${reason}），未完成请求的变更，请检查后重试` : "操作执行失败，未完成请求的变更，请检查后重试");
     this.name = "RuntimeAuditOperationFailedError";
   }
 }
@@ -2468,7 +2468,7 @@ export class RuntimeAuditReader implements PiStorageClient {
     if (index >= 0) queue.splice(index, 1);
   }
 
-  private settle(entry: AuditRequest, outcome: RuntimeAuditOutcome, value?: unknown, uncertain = false, knownFailure = false): void {
+  private settle(entry: AuditRequest, outcome: RuntimeAuditOutcome, value?: unknown, uncertain = false, knownFailure = false, failureReason?: string): void {
     if (entry.settled) return;
     if (entry.capability && outcome === "completed" && typeof value !== "boolean"
       && !(entry.operation === "gadgetState" && (value as { kind?: string } | null)?.kind === "supported")) outcome = "failed";
@@ -2485,7 +2485,7 @@ export class RuntimeAuditReader implements PiStorageClient {
       if (this.unconfirmed.size > 1_024) this.unconfirmed.delete(this.unconfirmed.keys().next().value!);
       entry.reject(new RuntimeAuditUnknownOperationError(entry.id, entry.operation));
     } else if (entry.mutation && knownFailure) {
-      entry.reject(new RuntimeAuditOperationFailedError(entry.id, entry.operation));
+      entry.reject(new RuntimeAuditOperationFailedError(entry.id, entry.operation, failureReason));
     } else if ((entry.mutation || entry.capability) && outcome !== "completed" && value === undefined) {
       if (entry.capability) this.clearCapabilities();
       entry.reject(new RuntimeAuditNotStartedOperationError(entry.id, entry.operation, outcome));
@@ -2578,11 +2578,11 @@ export class RuntimeAuditReader implements PiStorageClient {
 
     let activeReads = 0;
     let activeWrites = 0;
-    let hasAbandonedMutation = false;
+    const abandonedMutationOps = new Set<string>();
     for (const item of active.values()) {
       if (item.mutation) {
         activeWrites += 1;
-        if (item.settled) hasAbandonedMutation = true;
+        if (item.settled) abandonedMutationOps.add(item.operation);
       } else {
         activeReads += 1;
       }
@@ -2595,7 +2595,7 @@ export class RuntimeAuditReader implements PiStorageClient {
         return candidate;
       }
       if (candidate.mutation) {
-        if (!hasAbandonedMutation && activeWrites < writeLimit) return candidate;
+        if (!abandonedMutationOps.has(candidate.operation) && activeWrites < writeLimit) return candidate;
       } else if (activeReads < readLimit) {
         return candidate;
       }
@@ -2630,7 +2630,7 @@ export class RuntimeAuditReader implements PiStorageClient {
     }
     else if (receipt.state === "cancelled" || receipt.state === "expired") this.settle(entry, "cancelled");
     else this.settle(entry, "failed", undefined, receipt.state === "unknown",
-      receipt.state === "failed" && receipt.neverStarted !== true);
+      receipt.state === "failed" && receipt.neverStarted !== true, receipt.error);
     this.releaseExecution(entry);
   }
 
@@ -2840,7 +2840,7 @@ export class RuntimeAuditReader implements PiStorageClient {
       historyRequestId?: string; historyLane?: boolean; historyReady?: boolean;
       parallelReads?: number; parallelWorkspaceIo?: number;
       status?: string; data?: unknown; inference?: boolean; scan?: boolean; maintenance?: boolean; replyId?: unknown;
-      neverStarted?: boolean; errorCode?: string;
+      neverStarted?: boolean; errorCode?: string; confirmedNoEffect?: boolean; error?: string;
       dotsFileWatches?: Array<{ id: string; lost: boolean }>;
     };
     try { reply = JSON.parse(line); } catch { this.stop(session, "protocol"); return; }
@@ -2901,8 +2901,8 @@ export class RuntimeAuditReader implements PiStorageClient {
     } else {
       if (entry.lane === "database") this.unavailable();
       if (entry.lane === "inference") this.recordInferenceFailure();
-      const knownFailure = reply.errorCode === "FAILED" && reply.neverStarted !== true;
-      this.settle(entry, "failed", undefined, reply.neverStarted !== true && !knownFailure, knownFailure);
+      const knownFailure = (reply.confirmedNoEffect === true || reply.errorCode === "FAILED") && reply.neverStarted !== true;
+      this.settle(entry, "failed", undefined, reply.neverStarted !== true && !knownFailure, knownFailure, reply.error);
     }
     this.releaseExecution(entry);
   }

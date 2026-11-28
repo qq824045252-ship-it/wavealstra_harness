@@ -180,7 +180,7 @@ pub(super) fn route_input(
             let operation=value.get("operation").and_then(Value::as_str).unwrap_or("").to_owned();
             let deadline=value.get("deadlineAt").and_then(Value::as_u64).unwrap_or(0);
             let request=match serde_json::from_value::<Request>(value) {Ok(request)=>request,Err(_)=>{request_control::emit(&Rejection{status:"error",code:"INVALID_REQUEST",never_started:true}.frame(&id))?;continue;}};
-            if let Err(error)=control.register(&id,&operation,deadline,crate::request_may_mutate(&request)) {request_control::emit(&error.frame(&id))?;continue;}
+            if let Err(error)=control.register_with_persistence(&id,&operation,deadline,crate::request_may_mutate(&request),crate::request_has_external_effect(&request)) {request_control::emit(&error.frame(&id))?;continue;}
             match request {
                 Request::HistoryRead{request_id,session,action}=>{
                     if history.is_none() {history=Some(history_worker(Arc::clone(&engine))?);}

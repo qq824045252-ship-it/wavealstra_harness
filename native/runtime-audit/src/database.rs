@@ -203,12 +203,14 @@ struct PoolInner {
 pub struct BoundedConnPool {
     state: Arc<(Mutex<PoolInner>, Condvar)>,
     capacity: usize,
+    is_writer: bool,
 }
 
 pub struct PooledConnection {
     pool: Arc<(Mutex<PoolInner>, Condvar)>,
     conn: Option<Connection>,
     epoch: u64,
+    is_writer: bool,
     interrupt_handle: Arc<InterruptHandle>,
     bound_request: Option<(String, Arc<crate::request_control::Control>)>,
 }
@@ -250,7 +252,9 @@ impl Drop for PooledConnection {
     fn drop(&mut self) {
         self.unbind_request();
         if let Some(conn) = self.conn.take() {
-            let _ = conn.execute_batch("ROLLBACK");
+            if self.is_writer {
+                let _ = conn.execute_batch("ROLLBACK");
+            }
             let (lock, cv) = &*self.pool;
             let mut inner = lock.lock().unwrap_or_else(|e| e.into_inner());
             inner.conns.push_back((conn, self.epoch));
@@ -260,7 +264,7 @@ impl Drop for PooledConnection {
 }
 
 impl BoundedConnPool {
-    fn from_connections(conns: Vec<Connection>) -> Self {
+    fn from_connections(conns: Vec<Connection>, is_writer: bool) -> Self {
         let capacity = conns.len();
         let deque = conns.into_iter().enumerate().map(|(idx, c)| (c, (idx as u64) + 1)).collect();
         Self {
@@ -273,6 +277,7 @@ impl BoundedConnPool {
                 Condvar::new(),
             )),
             capacity,
+            is_writer,
         }
     }
 
@@ -296,6 +301,7 @@ impl BoundedConnPool {
                     pool: Arc::clone(&self.state),
                     conn: Some(conn),
                     epoch,
+                    is_writer: self.is_writer,
                     interrupt_handle,
                     bound_request: None,
                 });
@@ -448,6 +454,7 @@ impl DuckDbEngine {
             .threads(config.duckdb_threads)?
             .max_memory(&config.max_memory)?;
         let root_conn = Connection::open_with_flags(&path, ddb_cfg)?;
+        let _ = root_conn.execute_batch("SET checkpoint_threshold = '8MB'");
 
         let db_gen = ensure_schema_and_meta(&root_conn)?;
 
@@ -467,8 +474,8 @@ impl DuckDbEngine {
             database_generation: db_gen.clone(),
             config,
             _root_conn: Mutex::new(root_conn),
-            write_pool: BoundedConnPool::from_connections(writers),
-            read_pool: BoundedConnPool::from_connections(readers),
+            write_pool: BoundedConnPool::from_connections(writers, true),
+            read_pool: BoundedConnPool::from_connections(readers, false),
             reserved_snapshot_reader: Mutex::new(reserved_snapshot_reader),
             reserved_publisher_owner: Mutex::new(reserved_publisher_owner),
             closed: AtomicBool::new(false),
@@ -521,6 +528,9 @@ impl DuckDbEngine {
         self.closed.store(true, Ordering::Release);
         self.write_pool.close();
         self.read_pool.close();
+        if let Ok(conn) = self._root_conn.lock() {
+            let _ = conn.execute_batch("CHECKPOINT");
+        }
     }
 }
 
@@ -597,6 +607,16 @@ fn ensure_schema_and_meta(conn: &Connection) -> Result<String, DbError> {
         && initialized
     {
         conn.execute_batch(GATEWAY_EXECUTION_SCHEMA_SQL)?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS usage_event_coverage (
+                entry_id VARCHAR PRIMARY KEY,
+                input_known BIGINT NOT NULL,
+                output_known BIGINT NOT NULL,
+                cache_read_known BIGINT NOT NULL,
+                cache_write_known BIGINT NOT NULL,
+                cost_known BIGINT NOT NULL
+            );",
+        )?;
         return Ok(gen_id);
     }
 

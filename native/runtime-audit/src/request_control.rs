@@ -62,6 +62,8 @@ pub struct Receipt {
     pub never_started: bool,
     #[serde(default)]
     pub durable: bool,
+    #[serde(skip)]
+    persist_file_receipt: bool,
     #[serde(default)]
     pub commits: u32,
     #[serde(default)]
@@ -225,7 +227,7 @@ impl Control {
     }
 
     fn persist(&self, receipt: &Receipt) -> io::Result<()> {
-        if !receipt.durable {
+        if !receipt.persist_file_receipt {
             return Ok(());
         }
         let Some(path) = self.receipt_path(&receipt.request_id) else {
@@ -317,6 +319,17 @@ impl Control {
         deadline_at: u64,
         durable: bool,
     ) -> Result<(), Rejection> {
+        self.register_with_persistence(id, operation, deadline_at, durable, durable)
+    }
+
+    pub fn register_with_persistence(
+        &self,
+        id: &str,
+        operation: &str,
+        deadline_at: u64,
+        durable: bool,
+        persist_file_receipt: bool,
+    ) -> Result<(), Rejection> {
         if id.is_empty()
             || id.len() > 192
             || operation.is_empty()
@@ -329,71 +342,79 @@ impl Control {
                 never_started: true,
             });
         }
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.records.contains_key(id) {
-            return Err(Rejection {
-                status: "error",
-                code: "DUPLICATE_REQUEST",
-                never_started: false,
-            });
-        }
-        while state.records.len() >= MAX_RECORDS {
-            let Some(index) = state.order.iter().position(|cand_id| {
-                state.records.get(cand_id).is_none_or(|slot| {
-                    let receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
-                    receipt.terminal()
-                        && !receipt.pending_dispatch
-                        && !receipt.persistence_pending
-                        && !receipt.committing
-                        && !(receipt.durable && receipt.state == "unknown")
-                })
-            }) else {
+        let mut evicted_paths = Vec::new();
+        let outcome = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.records.contains_key(id) {
                 return Err(Rejection {
                     status: "error",
-                    code: "OVERLOADED",
-                    never_started: true,
+                    code: "DUPLICATE_REQUEST",
+                    never_started: false,
                 });
-            };
-            let old = state.order.remove(index).unwrap();
-            state.records.remove(&old);
-            if let Some(path) = self.receipt_path(&old) {
-                let _ = fs::remove_file(path);
             }
+            while state.records.len() >= MAX_RECORDS {
+                let Some(index) = state.order.iter().position(|cand_id| {
+                    state.records.get(cand_id).is_none_or(|slot| {
+                        let receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
+                        receipt.terminal()
+                            && !receipt.pending_dispatch
+                            && !receipt.persistence_pending
+                            && !receipt.committing
+                            && !(receipt.durable && receipt.state == "unknown")
+                    })
+                }) else {
+                    return Err(Rejection {
+                        status: "error",
+                        code: "OVERLOADED",
+                        never_started: true,
+                    });
+                };
+                let old = state.order.remove(index).unwrap();
+                state.records.remove(&old);
+                if let Some(path) = self.receipt_path(&old) {
+                    evicted_paths.push(path);
+                }
+            }
+            let expired = deadline_at <= now_ms();
+            state.records.insert(
+                id.into(),
+                RequestSlot::new(Receipt {
+                    request_id: id.into(),
+                    operation: operation.into(),
+                    state: if expired { "expired" } else { "queued" }.into(),
+                    generation: self.generation.clone(),
+                    deadline_at,
+                    cancel_requested: false,
+                    never_started: expired,
+                    durable,
+                    persist_file_receipt,
+                    commits: 0,
+                    boundary_rejected: false,
+                    pending_dispatch: !expired,
+                    confirmed_no_effect: false,
+                    committing: false,
+                    cancel_outcome_pending: false,
+                    persistence_pending: false,
+                    updated_at: now_ms(),
+                    result: None,
+                    error: None,
+                }),
+            );
+            state.order.push_back(id.into());
+            if expired {
+                Err(Rejection {
+                    status: "expired",
+                    code: "EXPIRED",
+                    never_started: true,
+                })
+            } else {
+                Ok(())
+            }
+        };
+        for path in evicted_paths {
+            let _ = fs::remove_file(path);
         }
-        let expired = deadline_at <= now_ms();
-        state.records.insert(
-            id.into(),
-            RequestSlot::new(Receipt {
-                request_id: id.into(),
-                operation: operation.into(),
-                state: if expired { "expired" } else { "queued" }.into(),
-                generation: self.generation.clone(),
-                deadline_at,
-                cancel_requested: false,
-                never_started: expired,
-                durable,
-                commits: 0,
-                boundary_rejected: false,
-                pending_dispatch: !expired,
-                confirmed_no_effect: false,
-                committing: false,
-                cancel_outcome_pending: false,
-                persistence_pending: false,
-                updated_at: now_ms(),
-                result: None,
-                error: None,
-            }),
-        );
-        state.order.push_back(id.into());
-        if expired {
-            Err(Rejection {
-                status: "expired",
-                code: "EXPIRED",
-                never_started: true,
-            })
-        } else {
-            Ok(())
-        }
+        outcome
     }
 
     pub fn start(&self, id: &str) -> Result<(), Rejection> {
@@ -531,7 +552,11 @@ impl Control {
                 }
             } else if success {
                 "committed"
-            } else if receipt.confirmed_no_effect && receipt.commits == 0 {
+            } else if (receipt.confirmed_no_effect || !receipt.persist_file_receipt)
+                && receipt.commits == 0
+                && !receipt.committing
+            {
+                receipt.confirmed_no_effect = true;
                 "failed"
             } else if receipt.durable {
                 "unknown"
@@ -646,7 +671,15 @@ impl Control {
         let receipt = slot.receipt.lock().unwrap_or_else(|e| e.into_inner());
         if receipt.state == "failed" && receipt.confirmed_no_effect && !receipt.never_started {
             return Some(
-                json!({"replyId":id,"historyLane":true,"status":"error","errorCode":"FAILED","neverStarted":false}),
+                json!({
+                    "replyId": id,
+                    "historyLane": true,
+                    "status": "error",
+                    "errorCode": "FAILED",
+                    "confirmedNoEffect": true,
+                    "error": receipt.error,
+                    "neverStarted": false
+                }),
             );
         }
         if !receipt.boundary_rejected {
@@ -1096,6 +1129,42 @@ mod tests {
 
         drop(w);
         drop(engine);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pure_db_mutation_skips_file_receipt_and_marks_precommit_error_as_failed() {
+        let dir = std::env::temp_dir().join(format!(
+            "mybuddy-rc-puredb-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("app.duckdb");
+        let control = Control::open(&db_path).unwrap();
+
+        control
+            .register_with_persistence("pure-db-err", "upsertTaskRecord", now_ms() + 30_000, true, false)
+            .unwrap();
+        control.start("pure-db-err").unwrap();
+        let receipt_dir = db_path.with_extension("runtime-operations");
+        assert_eq!(fs::read_dir(&receipt_dir).unwrap().count(), 0);
+
+        control.finish(
+            "pure-db-err",
+            false,
+            None,
+            Some("Catalog Error: Table does not exist".into()),
+        );
+        assert_eq!(fs::read_dir(&receipt_dir).unwrap().count(), 0);
+        assert_eq!(control.status("pure-db-err")["state"], "failed");
+        let frame = control.terminal_override("pure-db-err").unwrap();
+        assert_eq!(frame["errorCode"], "FAILED");
+        assert_eq!(frame["confirmedNoEffect"], true);
+        assert_eq!(frame["error"], "Catalog Error: Table does not exist");
+        assert_eq!(frame["neverStarted"], false);
+
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -3703,6 +3703,43 @@ fn request_may_mutate(request: &Request) -> bool {
     classify_request(request).may_mutate
 }
 
+/// Only requests that touch external processes or managed files outside DuckDB need
+/// external `.runtime-operations/*.json` fsync receipts. Pure DuckDB writes rely on
+/// DuckDB's atomic transaction/WAL commit instead of triple-fsyncing every mutation.
+fn request_has_external_effect(request: &Request) -> bool {
+    let class = classify_request(request);
+    if !class.may_mutate {
+        return false;
+    }
+    if matches!(
+        class.lane,
+        ExecutionLane::Maintenance | ExecutionLane::WorkspaceIo | ExecutionLane::GadgetIo
+    ) {
+        return true;
+    }
+    matches!(
+        request,
+        Request::CorePiHost { .. }
+            | Request::CoreGadgetHost { .. }
+            | Request::LibraryText { .. }
+            | Request::SaveLibraryText { .. }
+            | Request::CreateGadgetFiles { .. }
+            | Request::RemoveGadgetFiles { .. }
+            | Request::ExportGadgetFiles { .. }
+            | Request::SaveGadgetSource { .. }
+            | Request::ReconcileGadgetStorage { .. }
+            | Request::ReconcileBlueprintStorage { .. }
+            | Request::CaptureBlueprintGadget { .. }
+            | Request::InstantiateBlueprint { .. }
+            | Request::MoveWorkspaceTree { .. }
+            | Request::RestoreTrashedTask { .. }
+            | Request::PurgeTrashedTask { .. }
+            | Request::WriteManagedArtifact { .. }
+            | Request::PublishLibraryIndex { .. }
+            | Request::PublishLibraryDocument { .. }
+    )
+}
+
 fn emit_side_effects(effects: Option<business_protocol::WriteSideEffects>) {
     let Some(fx) = effects else {
         return;
