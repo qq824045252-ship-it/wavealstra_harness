@@ -384,7 +384,7 @@ export class ExecutionHostBridge {
         const control = active.control;
         try {
           await progressStream.seal();
-          if (result.status !== "completed") await progressStream.confirmPending();
+          await progressStream.confirmPending();
         } catch (error) {
           result = { status: "unknown", errorMessage: error instanceof Error ? error.message : String(error) };
         }

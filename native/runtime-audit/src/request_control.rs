@@ -47,6 +47,10 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Receipt {
@@ -62,7 +66,7 @@ pub struct Receipt {
     pub never_started: bool,
     #[serde(default)]
     pub durable: bool,
-    #[serde(skip)]
+    #[serde(default = "default_true")]
     persist_file_receipt: bool,
     #[serde(default)]
     pub commits: u32,
@@ -541,6 +545,7 @@ impl Control {
             if receipt.terminal() {
                 return;
             }
+            let was_committing = receipt.committing;
             receipt.committing = false;
             receipt.state = if receipt.boundary_rejected {
                 if receipt.commits > 0 {
@@ -554,7 +559,7 @@ impl Control {
                 "committed"
             } else if (receipt.confirmed_no_effect || !receipt.persist_file_receipt)
                 && receipt.commits == 0
-                && !receipt.committing
+                && !was_committing
             {
                 receipt.confirmed_no_effect = true;
                 "failed"

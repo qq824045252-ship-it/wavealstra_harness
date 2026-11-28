@@ -96,7 +96,7 @@ function msvcEnvironmentFromFilesystem(install, env) {
 
 function rustBuildTools() {
   if (cachedBuildTools) return cachedBuildTools;
-  if (process.platform !== "win32") return { cargo: "cargo", env: process.env };
+  if (process.platform !== "win32") return { cargo: "cargo", env: process.env, usesExternalTargetDir: false };
   const options = { encoding: "utf8", windowsHide: true, timeout: 10_000 };
   const env = { ...process.env };
   let cargo = "cargo";
@@ -104,7 +104,8 @@ function rustBuildTools() {
   let hasRustc = false;
   try { cargoVersion = execFileSync("cargo", ["--version"], options); } catch {}
   try { execFileSync("rustc", ["-vV"], options); hasRustc = true; } catch {}
-  if (!cargoVersion || /huacnlee\/cargo/i.test(cargoVersion) || !hasRustc) {
+  const usesExternalTargetDir = /huacnlee\/cargo/i.test(cargoVersion);
+  if (!cargoVersion || !hasRustc) {
     const home = env.RUSTUP_HOME || path.join(require("node:os").homedir(), ".rustup");
     let configured;
     try {
@@ -117,10 +118,18 @@ function rustBuildTools() {
     for (const file of ["cargo.exe", "rustc.exe"]) {
       if (!fs.existsSync(path.join(bin, file))) throw new Error("A complete standard Rust toolchain is required: " + bin);
     }
-    env.Path = bin + path.delimiter + (env.Path || env.PATH || "");
+    const existingPath = env.Path || env.PATH || "";
+    if (!cargoVersion) {
+      env.Path = bin + path.delimiter + existingPath;
+      cargo = path.join(bin, "cargo.exe");
+      console.log("[RuntimeAudit] Using standard Rust toolchain " + name);
+    } else {
+      // Keep the user's preferred cargo (e.g. ~/.cargo/bin) so cache is shared,
+      // and append rustup's toolchain bin so rustc.exe is resolvable.
+      env.Path = existingPath ? existingPath + path.delimiter + bin : bin;
+      console.log("[RuntimeAudit] Using existing cargo with rustc from " + name);
+    }
     delete env.PATH;
-    cargo = path.join(bin, "cargo.exe");
-    console.log("[RuntimeAudit] Using standard Rust toolchain " + name);
   }
   // An ordinary PowerShell may resolve Git's link.exe instead of MSVC's.
   // Prefer setting the MSVC environment directly from the installed toolchain:
@@ -156,7 +165,7 @@ function rustBuildTools() {
       throw new Error("MSVC x64 build tools are required (Visual Studio Build Tools with VC tools x86/x64)");
     }
   }
-  return cachedBuildTools = { cargo, env };
+  return cachedBuildTools = { cargo, env, usesExternalTargetDir };
 }
 
 function runCargo(args, buildOptions) {
@@ -165,6 +174,27 @@ function runCargo(args, buildOptions) {
   // cc-rs's `parallel` feature honours Cargo's -j; Cargo derives NUM_JOBS for
   // build scripts itself. Setting NUM_JOBS here as well can deadlock the jobserver.
   execFileSync(cargo, [subcommand, "-j", String(jobs), ...rest], { ...buildOptions, env });
+}
+
+function runCargoArtifacts(args, buildOptions) {
+  const { cargo, env } = rustBuildTools();
+  const [subcommand, ...rest] = args;
+  const stdout = execFileSync(
+    cargo,
+    [subcommand, "-j", String(jobs), "--message-format=json-render-diagnostics", ...rest],
+    { ...buildOptions, env, encoding: "utf8", stdio: ["inherit", "pipe", "inherit"], maxBuffer: 64 * 1024 * 1024 },
+  );
+  const executables = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.startsWith("{")) continue;
+    try {
+      const msg = JSON.parse(line);
+      if (msg.reason === "compiler-artifact" && typeof msg.executable === "string" && msg.executable) {
+        executables.push(msg.executable);
+      }
+    } catch {}
+  }
+  return executables;
 }
 
 
@@ -223,14 +253,18 @@ function verify(target, directory) {
 // 调用点固定在二进制构建之后：放在前面会让 dev-deps 抢光 jobserver token。
 function verifyCrateTests(target, build) {
   if (!process.env.CI && process.env.RUNTIME_AUDIT_TESTS !== "1") return;
-  const args = [
-    "test", "--locked", "--release", "--target", platforms[target].target, "--target-dir", build,
-  ];
+  const { usesExternalTargetDir } = rustBuildTools();
+  const args = usesExternalTargetDir
+    ? ["test", "--locked", "--release"]
+    : ["test", "--locked", "--release", "--target", platforms[target].target, "--target-dir", build];
   if (target === "win-x64") {
-    runCargo([...args, "--no-run"], {
-      cwd: crate, stdio: "inherit", windowsHide: true, timeout: 3_600_000,
+    const built = runCargoArtifacts([...args, "--no-run"], {
+      cwd: crate, windowsHide: true, timeout: 3_600_000,
     });
-    ensureExecutablesMedium(executableTree(path.join(build, platforms[target].target, "release", "deps")));
+    const toFix = built.length
+      ? built
+      : executableTree(path.join(build, platforms[target].target, "release", "deps"));
+    ensureExecutablesMedium(toFix);
   }
   runCargo(args, {
     cwd: crate, stdio: "inherit", windowsHide: true, timeout: 900_000,
@@ -267,13 +301,21 @@ function prepare(target) {
     if (target === "win-x64") ensureExecutablesMedium([packaged]);
     return;
   }
-  console.log(`[RuntimeAudit] cargo build -j ${jobs} (logical CPUs: ${logicalCpus}, target dir: ${path.relative(root, build)})`);
-  runCargo([
-    "build", "--locked", "--release", "--target", triple, "--target-dir", build,
-  ], { cwd: crate, stdio: "inherit", windowsHide: true, timeout: 3_600_000 });
+  const { usesExternalTargetDir } = rustBuildTools();
+  const buildArgs = usesExternalTargetDir
+    ? ["build", "--locked", "--release"]
+    : ["build", "--locked", "--release", "--target", triple, "--target-dir", build];
+  console.log(
+    `[RuntimeAudit] cargo build -j ${jobs} (logical CPUs: ${logicalCpus}, target dir: ${usesExternalTargetDir ? "shared cargo cache" : path.relative(root, build)})`,
+  );
+  const builtExecutables = runCargoArtifacts(buildArgs, {
+    cwd: crate, windowsHide: true, timeout: 3_600_000,
+  });
+  const builtBinary = builtExecutables.find(file => path.basename(file).toLowerCase() === executable.toLowerCase())
+    || path.join(build, triple, "release", executable);
   verifyCrateTests(target, build);
   fs.mkdirSync(output, { recursive: true });
-  fs.copyFileSync(path.join(build, triple, "release", executable), packaged);
+  fs.copyFileSync(builtBinary, packaged);
   if (target === "win-x64") ensureExecutablesMedium([packaged]);
   verify(target, output);
   fs.writeFileSync(receipt, digest);
