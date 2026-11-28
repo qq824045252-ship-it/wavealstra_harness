@@ -590,6 +590,8 @@ export class AgentService {
   private readonly executionMode: AgentExecutionMode;
   private coreClientProvider?: () => CoreBusinessClient | undefined;
   private readonly activeRemoteTasks = new Map<string, string>();
+  /** Tasks whose last snapshot we forwarded still claimed a running turn. */
+  private readonly durableSettlePending = new Set<string>();
   private readonly remoteExecutionListeners = new Map<string, Set<(ev: CoreDomainEvent) => void>>();
   private readonly patchListeners = new Set<(patch: AgentUiPatch) => void>();
   /** 会话文件历史解析缓存：key = sessionFile + cwd，value = 文件指纹 + 解析结果 */
@@ -2242,9 +2244,20 @@ export class AgentService {
     if (ev.kind === "execution.running" && taskId) {
       this.activeRemoteTasks.set(taskId, executionId);
     } else if (ev.kind === "execution.completed" || ev.kind === "execution.failed" || ev.kind === "execution.cancelled" || ev.kind === "execution.paused" || ev.kind === "execution.unknown") {
+      // Settlement events carry no taskId, so recover it from the prompt receipt (only real
+      // submissions have one) and from the running-execution map.
+      const settledTasks = new Set<string>();
+      const receiptTaskId = (payload.result as { receipt?: { taskId?: unknown } } | undefined)?.receipt?.taskId;
+      if (typeof receiptTaskId === "string" && this.durableSettlePending.has(receiptTaskId)) settledTasks.add(receiptTaskId);
+      if (taskId && this.durableSettlePending.has(taskId)) settledTasks.add(taskId);
       for (const [tid, eid] of this.activeRemoteTasks) {
-        if (eid === executionId) this.activeRemoteTasks.delete(tid);
+        if (eid !== executionId) continue;
+        this.activeRemoteTasks.delete(tid);
+        if (this.durableSettlePending.has(tid)) settledTasks.add(tid);
       }
+      // The host stops forwarding progress once its reporter is untracked, so the frame that
+      // finally clears `busy` can be dropped. Ask the writer directly and forward the result.
+      for (const tid of settledTasks) void this.settleDurableSnapshot(tid);
     }
     if (ev.kind === "execution.progress" && payload.progress && typeof payload.progress === "object") {
       const progress = payload.progress as {
@@ -2260,6 +2273,11 @@ export class AgentService {
           if (this.activeRemoteTasks.get(progress.patch.taskId) === executionId) {
             this.activeRemoteTasks.delete(progress.patch.taskId);
           }
+        }
+        // Remember which tasks the renderer last saw as busy: only those need a settle frame.
+        if (progress.patch.type === "durable_snapshot") {
+          if (progress.patch.snapshot.busy) this.durableSettlePending.add(progress.patch.taskId);
+          else this.durableSettlePending.delete(progress.patch.taskId);
         }
         this.emitPatch(progress.patch);
       } else if (progress.kind === "task_lifecycle" && progress.event) {
@@ -6864,6 +6882,22 @@ export class AgentService {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Settlement fallback. `submission.wait()` can resolve before the runtime clears `live.run`,
+   * and the host drops progress as soon as its reporter is untracked, so the frame that finally
+   * reports `busy: false` may never reach the renderer. Ask the writer for the live snapshot and
+   * forward it once the turn really is over.
+   */
+  private async settleDurableSnapshot(taskId: string): Promise<void> {
+    const history = await this.loadTaskHistory(taskId, undefined, "current", { liveBaseline: true })
+      .catch(() => undefined);
+    const snapshot = history?.durable;
+    if (!snapshot || typeof snapshot.epoch !== "string" || typeof snapshot.revision !== "number") return;
+    if (snapshot.busy) return;
+    this.durableSettlePending.delete(taskId);
+    this.emitPatch({ type: "durable_snapshot", taskId, snapshot });
   }
 
   /**

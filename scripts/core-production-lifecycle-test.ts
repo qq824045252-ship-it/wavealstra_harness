@@ -385,6 +385,17 @@ async function main(): Promise<void> {
         const baseline = turnPatches[snapshotAt] as { snapshot?: { epoch?: unknown; revision?: unknown } };
         assert.equal(typeof baseline.snapshot?.epoch, "string", "baseline carries the writer epoch");
         assert.equal(typeof baseline.snapshot?.revision, "number", "baseline carries the writer revision");
+        // A turn that ends while the runtime still reports busy keeps the "正在准备回复…"
+        // placeholder, the sidebar spinner and the stop button alive. The turn must publish a
+        // frame that clears it, and the main process must see it (reporter still tracked).
+        const settledSnapshot = () => patches.slice(patchStart)
+          .filter((patch): patch is Extract<AgentUiPatch, { type: "durable_snapshot" }> =>
+            patch.type === "durable_snapshot" && isDotsPatch(patch))
+          .at(-1);
+        await until(() => settledSnapshot()?.snapshot?.busy === false,
+          `turn ${phase} publishes a snapshot that clears busy`, 5_000);
+        assert(settledSnapshot()?.snapshot?.messages.some(message => message.streaming) !== true,
+          "the settle frame leaves no row streaming");
         // Storage reads drop the writer version on purpose; only the live Pi Node Host can answer with it.
         const storedHistory = await mainAgent.loadTaskHistory(DOTS_TASK_ID);
         assert.equal(storedHistory.durable?.epoch, undefined, "stored history must not invent an epoch");

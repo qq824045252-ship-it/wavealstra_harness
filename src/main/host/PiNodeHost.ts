@@ -833,6 +833,7 @@ export class PiNodeHost {
       if (existing.receipt.status === "unanswered") return { status: "unknown", result: existing };
       if (payload.waitForSettled === false) return { status: "completed", result: existing };
       const settled = await agent.waitForSubmission(existing.receipt);
+      await this.awaitDurableIdle(agent, req.taskId);
       await this.flushDurableSnapshot(agent, req.taskId, helpers);
       return this.settledResult(settled);
     }
@@ -856,6 +857,7 @@ export class PiNodeHost {
     if (!accepted.receipt) return { status: "completed", result: accepted };
     if (payload.waitForSettled === false) return { status: "completed", result: accepted };
     const settled = await agent.waitForSubmission(accepted.receipt);
+    await this.awaitDurableIdle(agent, req.taskId);
     await this.flushDurableSnapshot(agent, req.taskId, helpers);
     return this.settledResult(settled);
   }
@@ -881,6 +883,22 @@ export class PiNodeHost {
         kind: "ui_patch",
         patch: { type: "durable_snapshot", taskId, snapshot },
       }).catch(() => undefined);
+    }
+  }
+
+  /**
+   * `submission.wait()` resolves as soon as the reply is committed, but the runtime clears
+   * `live.run` a few ticks later, so a snapshot taken in between still reports `busy: true`.
+   * That frame leaves "正在准备回复…", the sidebar spinner and the stop button alive after the
+   * answer is already on screen. Wait for the writer to actually go idle (bounded) so the
+   * settle frame the renderer receives is the terminal one; a queued follow-up keeps the
+   * timeout in place and the frame simply stays busy.
+   */
+  private async awaitDurableIdle(agent: AgentService, taskId: string, timeoutMs = 2_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline && !this.closed) {
+      if (!agent.isTaskBusy(taskId)) return;
+      await new Promise(resolve => setTimeout(resolve, 25));
     }
   }
 
