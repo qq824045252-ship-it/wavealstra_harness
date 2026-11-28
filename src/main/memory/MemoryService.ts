@@ -24,12 +24,19 @@ import {
   responseText,
   extractCandidates,
 } from "./MemoryCandidateExtraction";
-import { readCoreRecallAuthority, resolveAssistantScopeChain, resolveWorkMemoryScope, type CoreMemoryRecallAuthority } from "./AssistantMemoryScopes";
-import { CoreMemoryRecallUnavailable, readCoreRecallAtom, searchCoreMemory } from "./MemoryCoreRecall";
+import {
+  readCoreRecallAuthority,
+  resolveAssistantScopeChain,
+  resolveAssistantScopeChainAsync,
+  resolveWorkMemoryScope,
+  resolveWorkMemoryScopeAsync,
+  type CoreMemoryRecallAuthority,
+} from "./AssistantMemoryScopes";
+import { CoreMemoryRecallUnavailable, coreRecallVisible, readCoreRecallAtom, searchCoreMemory } from "./MemoryCoreRecall";
 import { CoreMemoryExtractionUnavailable, extractCoreMemoryPlan, type CoreMemoryExtractionInput } from "./MemoryCoreExtraction";
 import { gatewayDotsMemorySource, hasGatewayDotsMemory } from "../gateway/GatewayDotsBindings";
 import { isGatewayConversation } from "../../shared/gateway-task";
-import { botMemorySource, botMemoryTextEligible, botMemoryConversationOnly, botMemoryWriteEvidenceAllowed, botMemoryAutomaticBoundary, botPeerMemoryInput } from "./BotMemorySource";
+import { botMemorySource, botMemoryTextEligible, botMemoryConversationOnly, botMemoryWriteEvidenceAllowed, botMemoryAutomaticBoundary, botPeerMemoryInput, readBotMemorySource } from "./BotMemorySource";
 import { projectMemoryContext } from "../agent/MemoryContextProjection";
 import { createHash, randomUUID } from "node:crypto";
 import type { ObservationSource } from "../../shared/native-improvement";
@@ -196,6 +203,33 @@ export class MemoryService {
       assignment.taskId === taskId && assignment.personalMemoryBindingId === origin.personalMemoryBindingId;
   }
 
+  async readAnswerRuleSource(id: string, taskId: string): Promise<MemoryRecordDto | undefined> {
+    if (!this.usesCoreRecall) return this.getForRecall(id, {taskId});
+    const scoped = taskId === DOTS_TASK_ID ? undefined : await this.readCurrentCoreMemory(id, {taskId});
+    if (taskId !== DOTS_TASK_ID && !scoped) return;
+    await this.forgetWatermarks.flush();
+    const reader = this.db.runtimeAuditReader;
+    const detail = await reader?.memoryRecordsData({kind: "detail", id});
+    if (detail?.kind !== "detail") throw new CoreMemoryRecallUnavailable("Core 未确认回答规则来源");
+    if (!detail.record || !detail.revision || (scoped && (scoped.revision !== detail.revision ||
+      scoped.memory.contentHash !== detail.record.contentHash))) return;
+    const memory = memoryRecordFromWire(detail.record);
+    const now = Date.now();
+    if (memory.status !== "active" || (memory.validFrom ?? 0) > now || (memory.validUntil ?? Infinity) <= now) return;
+    const privateChannel = memory.metadata.dotsPrivateGateway === true;
+    if (taskId === DOTS_TASK_ID && !privateChannel && !coreRecallVisible(memory, {scopes: [
+      {scopeType: "task", scopeId: taskId, distance: 0}, {scopeType: "global", distance: 10},
+    ], witness: taskId}, {taskId})) return;
+    const history = await reader?.memoryRecordsData({kind: "history", id});
+    if (history?.kind !== "history") throw new CoreMemoryRecallUnavailable("Core 未确认回答规则来源修订");
+    const latest = history.revisions[0];
+    if (latest?.revision !== detail.revision) return;
+    const grounded = history.revisions.find(revision => revision.changeReason?.startsWith("dots-source-v1 "));
+    if (privateChannel && !grounded) return;
+    if (grounded && !await this.readDotsRevisionSource(DOTS_TASK_ID, id, grounded.revision)) return;
+    return {...memory, evidence: []};
+  }
+
   async readDotsContextSnapshot(id: string, revision?: number) {
     const source = await this.readDotsRevisionSource(DOTS_TASK_ID, id, revision);
     if (!source || source.stance !== "statement" || source.applicability) return;
@@ -307,6 +341,22 @@ export class MemoryService {
     return record;
   }
 
+  async currentDelegationSourceAsync(taskId: string, id: string, revision: number): Promise<MemoryRecordDto | undefined> {
+    if (!this.usesCoreRecall) return this.currentDelegationSource(taskId, id, revision);
+    const now = Date.now();
+    const [taskAtom, dotsSource, history] = await Promise.all([
+      this.readCurrentCoreMemory(id, { taskId, statuses: ["active"] }),
+      this.readDotsRevisionSource(DOTS_TASK_ID, id, revision),
+      this.db.runtimeAuditReader?.memoryRecordsData({ kind: "history", id }),
+    ]);
+    if (!taskAtom || !dotsSource) return;
+    const record = taskAtom.memory;
+    if (record.status !== "active" || (record.validFrom !== undefined && record.validFrom > now)
+      || (record.validUntil !== undefined && record.validUntil <= now)) return;
+    if (history?.kind !== "history" || history.revisions[0]?.revision !== revision) return;
+    return record;
+  }
+
   /** Scope-safe visibility check used by Agent/MCP surfaces; guessed ids must not cross scope boundaries. */
   canAccess(id: string, request: MemorySearchRequest): boolean {
     const memory = this.repository.get(id);
@@ -368,6 +418,22 @@ export class MemoryService {
     return { scopeType: "task", scopeId: taskId };
   }
 
+  async inferAgentScopeAsync(taskId: string): Promise<{ scopeType: MemoryScopeType; scopeId?: string }> {
+    if (!this.db.coreIdentity) return this.inferAgentScope(taskId);
+    if (isGatewayConversation(taskId)) return { scopeType: "task", scopeId: taskId };
+    const work = await resolveWorkMemoryScopeAsync(this.db, taskId);
+    if (work) return { scopeType: "work", scopeId: work.work_id };
+    const conversation = await readBotMemorySource(this.db, taskId);
+    if (conversation?.shared) return { scopeType: "conversation", scopeId: taskId };
+    if (conversation?.team_id) return { scopeType: "team", scopeId: conversation.team_id };
+    const botId = await this.channelBotIdAsync(taskId);
+    if (botId) return { scopeType: "bot", scopeId: botId };
+    const task = await this.db.readTask(taskId, { includeExpertBinding: false });
+    if (task?.projectId) return { scopeType: "project", scopeId: task.projectId };
+    if (task?.spaceId) return { scopeType: "workspace", scopeId: task.spaceId };
+    return { scopeType: "task", scopeId: taskId };
+  }
+
   list(request: MemoryListRequest | number = {}): MemoryRecordDto[] {
     return this.repository.listFiltered(settingsListRequest(request));
   }
@@ -420,7 +486,61 @@ export class MemoryService {
   listScenarios(limit = 300): MemoryScenarioDto[] { return this.cognition.listScenarios(limit); }
   listCoreProfiles(limit = 100): MemoryCoreProfileDto[] { return this.cognition.listCoreProfiles(limit); }
   listSkillCandidates(status?: import("../../shared/memory-kernel").MemorySkillCandidateStatus, limit?: number) { return this.learning.list(status, limit); }
+  listSkillCandidatesAsync(status?: import("../../shared/memory-kernel").MemorySkillCandidateStatus, limit?: number) { return this.learning.listAsync(status, limit); }
   refreshSkillCandidates() { return this.learning.refresh(); }
+  refreshSkillCandidatesAsync() { return this.learning.refreshAsync(); }
+  async deleteSkillHistoryAsync(request: import("../../shared/memory-kernel").MemorySkillHistoryDeleteRequest): Promise<number> {
+    if (!this.db.coreIdentity) return this.deleteSkillHistory(request);
+    if (!request || !["candidate", "revision"].includes(request.kind)
+      || (request.all !== undefined && typeof request.all !== "boolean")
+      || (request.ids !== undefined && (!Array.isArray(request.ids) || request.ids.some((id) => typeof id !== "string" || !id.trim())))
+      || (request.all ? request.ids !== undefined : !Array.isArray(request.ids))) {
+      throw new Error("请选择要删除的技能历史记录。");
+    }
+    const readByStatus = async (status: "stale" | "rejected") => {
+      if (request.kind === "candidate") return (await this.learning.listAsync(status, 1000)).map(r => ({ id: r.id, status: r.status }));
+      const res = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "skillEffectivenessQuery", action: "revisionList", status, limit: 1000 });
+      return res?.kind === "skillRevisionCandidateList"
+        ? (res.rows as Array<{ id: string; status: string }>)
+        : [];
+    };
+    if (request.all) {
+      const count = (await readByStatus("stale")).length + (await readByStatus("rejected")).length;
+      if (count > 0) {
+        this.enqueueBatch3("清空技能历史记录", {
+          kind: "memorySkillHistoryDelete",
+          kindName: request.kind,
+          deleteAll: true,
+          ids: [],
+        });
+      }
+      return count;
+    }
+    const ids = [...new Set(request.ids!)];
+    let count = 0;
+    for (const id of ids) {
+      let status: string | undefined;
+      if (request.kind === "candidate") {
+        status = (await this.learning.getAsync(id))?.status;
+      } else {
+        const res = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "skillEffectivenessQuery", action: "revisionById", id });
+        status = res?.kind === "skillRevisionCandidate" && res.row ? String((res.row as { status: string }).status) : undefined;
+      }
+      if (status && status !== "stale" && status !== "rejected") {
+        throw new Error("只能删除已过期或已拒绝的历史记录；待处理记录请拒绝，已生成技能请在技能中心管理。");
+      }
+      if (status) count += 1;
+    }
+    if (count > 0) {
+      this.enqueueBatch3("删除技能历史记录", {
+        kind: "memorySkillHistoryDelete",
+        kindName: request.kind,
+        deleteAll: false,
+        ids,
+      });
+    }
+    return count;
+  }
   deleteSkillHistory(request: import("../../shared/memory-kernel").MemorySkillHistoryDeleteRequest): number {
     if (!request || !["candidate", "revision"].includes(request.kind)
       || (request.all !== undefined && typeof request.all !== "boolean")
@@ -806,7 +926,7 @@ export class MemoryService {
 
   async updateSettingsMemory(request: MemoryUpdateRequest): Promise<MemoryRecordDto> {
     const worker = this.db.runtimeAuditReader;
-    if (!worker || this.db.connection.inTransaction) return this.update(request);
+    if (!worker || this.db.inTransaction) return this.update(request);
 
     // A competing settings or Project edit may have advanced the revision while
     // the host was cleaning the text. Reapply the user's patch to the current row.
@@ -1063,6 +1183,28 @@ export class MemoryService {
     return { detached, forgotten };
   }
 
+  async detachAllInScopeAsync(scopeType: Exclude<MemoryScopeType, "global">, scopeId: string): Promise<{ detached: number; forgotten: number }> {
+    if (!this.requiresRustWrites) return this.detachAllInScope(scopeType, scopeId);
+    let detached = 0;
+    let forgotten = 0;
+    for (;;) {
+      const records = await this.readList({ scopeType, scopeId, limit: 200 });
+      if (!records.length) break;
+      let progress = 0;
+      for (const record of records) {
+        try {
+          const result = await this.detachSettingsScope(record.id, scopeType, scopeId);
+          if (result.detached) { detached += 1; progress += 1; }
+          if (result.forgotten) forgotten += 1;
+        } catch (error) {
+          console.warn("[MemoryKernel] detachAllInScopeAsync skipped", record.id, error);
+        }
+      }
+      if (progress === 0) break;
+    }
+    return { detached, forgotten };
+  }
+
   canPromoteFromTask(taskId: string, targetScopeType: MemoryScopeType, targetScopeId?: string): boolean {
     if (isGatewayConversation(taskId)) return targetScopeType === "task" && targetScopeId === taskId;
     const work = this.workMemoryScope(taskId);
@@ -1087,6 +1229,58 @@ export class MemoryService {
       return this.db.getSpaceAncestors(task.spaceId).some((space) => space.id === targetScopeId && !space.effectiveArchived);
     }
     return false;
+  }
+
+  async canPromoteFromTaskAsync(taskId: string, targetScopeType: MemoryScopeType, targetScopeId?: string): Promise<boolean> {
+    if (!this.db.coreIdentity) return this.canPromoteFromTask(taskId, targetScopeType, targetScopeId);
+    if (isGatewayConversation(taskId)) return targetScopeType === "task" && targetScopeId === taskId;
+    const work = await resolveWorkMemoryScopeAsync(this.db, taskId);
+    if (work) return (targetScopeType === "task" && targetScopeId === taskId)
+      || (targetScopeType === "work" && targetScopeId === work.work_id)
+      || (!work.shared && targetScopeType === "project" && Boolean(work.project_id) && targetScopeId === work.project_id);
+    const conversation = await readBotMemorySource(this.db, taskId);
+    if (conversation) return (targetScopeType === "conversation" && targetScopeId === taskId)
+      || (!conversation.shared && targetScopeType === (conversation.team_id ? "team" : "bot") && targetScopeId === (conversation.team_id ?? conversation.bot_id));
+    const channelBotId = await this.channelBotIdAsync(taskId);
+    if (channelBotId) return (targetScopeType === "bot" && targetScopeId === channelBotId)
+      || (targetScopeType === "task" && targetScopeId === taskId);
+    if (["bot", "team", "conversation", "work"].includes(targetScopeType)) return false;
+    const task = await this.db.readTask(taskId, { includeExpertBinding: false });
+    if (!task) return false;
+    if (targetScopeType === "global") return targetScopeId == null;
+    if (targetScopeType === "task") return targetScopeId === taskId;
+    if (targetScopeType === "project") return Boolean(task.projectId && targetScopeId === task.projectId);
+    if (targetScopeType === "workspace") {
+      if (!task.spaceId || !targetScopeId) return false;
+      if (targetScopeId === task.spaceId) return true;
+      const spaces = new Map((await this.db.readSpaces()).map(s => [s.id, s]));
+      const visited = new Set<string>();
+      let cursor: string | null = task.spaceId;
+      while (cursor && !visited.has(cursor)) {
+        visited.add(cursor);
+        const space = spaces.get(cursor);
+        if (!space) break;
+        if (space.id !== task.spaceId && space.id === targetScopeId && !space.effectiveArchived) return true;
+        cursor = space.parentId ?? null;
+      }
+      return false;
+    }
+    return false;
+  }
+
+  async promoteFromTaskAsync(taskId: string, id: string, scopeType: MemoryScopeType, scopeId?: string): Promise<MemoryRecordDto> {
+    if (!this.db.coreIdentity) return this.promoteFromTask(taskId, id, scopeType, scopeId);
+    if (taskId !== "transient") {
+      const atom = await this.readCurrentCoreMemory(id, { taskId, includeInherited: true });
+      if (!atom) throw new Error("记忆不存在或不属于当前任务可见作用域");
+      if (!await this.canMutateFromTaskAsync(taskId, atom.memory)) {
+        throw new Error("当前 Bot / Work 执行者不能改写共享事实或其他身份的记忆，请修改原属范围或仅移除当前绑定");
+      }
+      if (!await this.canPromoteFromTaskAsync(taskId, scopeType, scopeId)) {
+        throw new Error("目标作用域不属于当前任务可写范围，拒绝越界提升");
+      }
+    }
+    return this.promoteSettingsScope(id, scopeType, scopeId);
   }
 
   promoteFromTask(taskId: string, id: string, scopeType: MemoryScopeType, scopeId?: string): MemoryRecordDto {
@@ -1138,9 +1332,9 @@ export class MemoryService {
     return memoryRecordFromWire(reply.record);
   }
 
-  private async settingsScopeWorker(id: string, scopeType: MemoryScopeType, scopeId?: string) {
+    private async settingsScopeWorker(id: string, scopeType: MemoryScopeType, scopeId?: string) {
     const worker = this.db.runtimeAuditReader;
-    if (!worker || this.db.connection.inTransaction || !MEMORY_SCOPE_TYPES.includes(scopeType)
+    if (!worker || this.db.inTransaction || !MEMORY_SCOPE_TYPES.includes(scopeType)
       || typeof id !== "string" || /[\uD800-\uDFFF]/u.test(id)
       || (scopeId !== undefined && (typeof scopeId !== "string" || /[\uD800-\uDFFF]/u.test(scopeId)))
       || (scopeType === "global" && scopeId === "")) return;
@@ -1243,7 +1437,7 @@ export class MemoryService {
     const stamp = this.recallScopeStamp(request);
     if (!query) {
       const baseline = await this.searchBaselines([request]);
-      if (!this.db.connection.open || this.recallScopeStamp(request) !== stamp) return [];
+      if (!this.db.isOpen || this.recallScopeStamp(request) !== stamp) return [];
       return baseline && this.isCurrentBaselineVersion(baseline.version) ? baseline.hits[0] : this.search(request);
     }
     const scopes = this.resolveScopeChain(request);
@@ -1253,22 +1447,22 @@ export class MemoryService {
     } satisfies import("./MemorySearchScope").MemorySearchScope;
     const candidates = await this.repository.searchScopedAsync(query, scopeQuery,
       Math.max(Math.min(request.limit ?? 20, 100) * 4, 100), canRead);
-    if (!this.db.connection.open || this.recallScopeStamp(request) !== stamp) return [];
+    if (!this.db.isOpen || this.recallScopeStamp(request) !== stamp) return [];
     const runtime = this.db.runtimeAuditReader;
-    const scores = runtime && candidates.scoped.length && !this.db.connection.inTransaction
+    const scores = runtime && candidates.scoped.length && !this.db.inTransaction
       ? await runtime.memoryLexicalScores({
         scope: memorySearchWhere(scopeQuery),
         compact: normalizeSearchText(query),
         targets: [...new Map(candidates.scoped.map(({ memory: { id, contentHash } }) => [id, { id, contentHash }])).values()],
       })
       : undefined;
-    if (!this.db.connection.open || this.recallScopeStamp(request) !== stamp) return [];
+    if (!this.db.isOpen || this.recallScopeStamp(request) !== stamp) return [];
     const dots = request.taskId === DOTS_TASK_ID && dotsQuestionTerms(query).length > 0;
     const hits = await rankMemorySearchAsync({ scoped: candidates.scoped, ftsRank: candidates.ftsRanks, query,
       textScores: scores && new Map(scores.map(({ id, similarity }) => [id, similarity])),
       request: dots ? { ...request, limit: 100 } : request, scopes,
       visible: canRead, current: id => this.repository.get(id) });
-    if (!this.db.connection.open || this.recallScopeStamp(request) !== stamp) return [];
+    if (!this.db.isOpen || this.recallScopeStamp(request) !== stamp) return [];
     const visible = hits.map(hit => ({ ...hit, memory: this.forgetWatermarks.projectEvidence(hit.memory, scopes) }));
     return dots ? this.rankDotsQuery(request, visible) : visible;
   }
@@ -1364,7 +1558,7 @@ export class MemoryService {
     const requestedLimit = Math.max(1, Math.min(100, request.limit ?? 20));
     const query = request.query?.trim() ?? "";
     const initialScopeStamp = this.recallScopeStamp(request);
-    const freshLexical = async (): Promise<MemorySearchHit[]> => this.db.connection.open
+    const freshLexical = async (): Promise<MemorySearchHit[]> => this.db.isOpen
       && this.recallScopeStamp(request) === initialScopeStamp
       ? this.searchLexical({ ...request, limit: Math.max(requestedLimit * 3, 40) }) : [];
     if (query.length < 4 || !this.semantic) {
@@ -1379,11 +1573,11 @@ export class MemoryService {
           const memory = this.repository.get(id);
           return Boolean(memory && memory.contentHash === hash && this.visibleInChain(memory, this.resolveScopeChain(request), request));
         }, Math.max(requestedLimit * 3, 40));
-      if (!this.db.connection.open || this.recallScopeStamp(request) !== initialScopeStamp) return [];
+      if (!this.db.isOpen || this.recallScopeStamp(request) !== initialScopeStamp) return [];
       // Cached DTOs are not authorization: a forget, supersede, expiry, scope detach,
       // or update may have happened while the embedding runtime was busy.
       const lexical = await freshLexical();
-      if (!this.db.connection.open || this.recallScopeStamp(request) !== initialScopeStamp) return [];
+      if (!this.db.isOpen || this.recallScopeStamp(request) !== initialScopeStamp) return [];
       if (request.taskId === DOTS_TASK_ID && !semantic.length) return lexical.slice(0, requestedLimit);
       const currentScopes = this.resolveScopeChain(request);
       const canRead = this.recallVisibility(request, currentScopes);
@@ -1678,7 +1872,7 @@ export class MemoryService {
 
   async reviewSettingsCandidate(id: string, decision: "approve" | "reject"): Promise<ReturnType<MemoryService["resolveCandidateReview"]>> {
     const worker = this.db.runtimeAuditReader;
-    if (decision === "reject" && worker && !this.db.connection.inTransaction
+    if (decision === "reject" && worker && !this.db.inTransaction
       && typeof id === "string" && !/[\uD800-\uDFFF]/u.test(id)
       && (await worker.memoryRecordsData({ kind: "candidateReviewSupported" }))?.kind === "candidateReviewSupported") {
       const reply = await worker.writeMemoryRecord({ kind: "rejectCandidate", id, at: Date.now() });
@@ -2003,6 +2197,43 @@ export class MemoryService {
     const row = this.db.connection.prepare(`SELECT bot_id FROM bot_channel_bindings
       WHERE channel_type='desktop' AND channel_identifier=?`).get(JSON.stringify([LOCAL_USER_ID, taskId])) as { bot_id: string } | undefined;
     return row?.bot_id ?? botMemorySource(this.db, taskId)?.bot_id;
+  }
+
+  private async channelBotIdAsync(taskId: string): Promise<string | undefined> {
+    if (!this.db.coreIdentity) return this.channelBotId(taskId);
+    const bot = await this.db.runtimeAuditReader?.readBotRegistry({
+      kind: "channel", userId: LOCAL_USER_ID, channelType: "desktop", channelIdentifier: JSON.stringify([LOCAL_USER_ID, taskId]),
+    });
+    if (bot?.bot_id) return bot.bot_id;
+    return (await readBotMemorySource(this.db, taskId))?.bot_id;
+  }
+
+  private async canMutateFromTaskAsync(taskId: string, memory: MemoryRecordDto): Promise<boolean> {
+    if (!this.db.coreIdentity) return this.canMutateFromTask(taskId, memory);
+    const receipt = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "detail", id: memory.id });
+    if (receipt?.kind === "detail" && receipt.record && memoryRecordFromWire(receipt.record).metadata.factualSnapshot === true) {
+      return false;
+    }
+    if (isGatewayConversation(taskId)) {
+      return memory.scopes.length === 1 && await this.canPromoteFromTaskAsync(taskId, memory.scopes[0].scopeType, memory.scopes[0].scopeId);
+    }
+    const [work, conversation] = await Promise.all([
+      resolveWorkMemoryScopeAsync(this.db, taskId),
+      readBotMemorySource(this.db, taskId),
+    ]);
+    const botId = work || conversation?.team_id || conversation?.shared ? undefined : await this.channelBotIdAsync(taskId);
+    if (!work && !botId && !conversation) return true;
+    const sourceWork = work && !work.shared && memory.scopes.length === 1 && memory.sourceType === "agent" && memory.sourceTaskId
+      ? await resolveWorkMemoryScopeAsync(this.db, memory.sourceTaskId)
+      : undefined;
+    return memory.scopes.length > 0 && memory.scopes.every(scope =>
+      (scope.scopeType === "task" && scope.scopeId === taskId)
+      || (work && scope.scopeType === "work" && scope.scopeId === work.work_id)
+      || (work && !work.shared && Boolean(sourceWork && sourceWork.work_id === work.work_id)
+        && scope.scopeType === "project" && Boolean(work.project_id) && scope.scopeId === work.project_id)
+      || (!work && scope.scopeType === "bot" && scope.scopeId === botId)
+      || (conversation && scope.scopeType === "conversation" && scope.scopeId === taskId)
+      || (conversation?.team_id && scope.scopeType === "team" && scope.scopeId === conversation.team_id));
   }
 
   private workMemoryScope(taskId: string) { return resolveWorkMemoryScope(this.db, taskId); }

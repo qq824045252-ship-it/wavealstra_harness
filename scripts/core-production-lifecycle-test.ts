@@ -5,6 +5,8 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { verifyDotsRoutingTurns } from "./core-dots-routing-turn-cases";
+import { DOTS_TASK_ID } from "../src/shared/dots";
 import { AgentService } from "../src/main/agent/AgentService";
 import { ExecutionAttemptRepository } from "../src/main/agent/ExecutionAttemptRepository";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
@@ -39,7 +41,7 @@ const EXTRACTED_TITLE = "Pinecrest ledger review preference";
 const EXTRACTED_FACT = "For Pinecrest ledger reviews, I prefer the exception list before the totals.";
 const FOREGROUND_DURING_EXTRACTION = "Acknowledge the independent foreground task while the memory request is waiting.";
 
-function startStoryLlmServer() {
+function startStoryLlmServer(dotsOnly: boolean) {
   let reqCount = 0;
   let effectCount = 0;
   const seenEffectIds = new Set<string>();
@@ -101,6 +103,14 @@ function startStoryLlmServer() {
       })}\n\n`);
     };
 
+    const dotsRequest = dotsOnly && ["dots-ordinary-new", "dots-ordinary-existing", "好久不见"].find(key =>
+      JSON.stringify(messages.at(-1)?.content ?? "").includes(key));
+    if (dotsRequest) {
+      writeChunk({ role: "assistant", content: "Acknowledged " + dotsRequest });
+      writeChunk({}, "stop");
+      res.end("data: [DONE]\n\n");
+      return;
+    }
     if (!hasWriteTool && !toolNames.length) {
       const candidates: Array<Record<string, unknown>> = [];
       const content = messages.at(-1)?.content;
@@ -244,7 +254,8 @@ async function main(): Promise<void> {
   writeFileSync(join(gadgetDir, "index.html"), "<html><body><h1>Story Gadget v1</h1></body></html>\n", "utf8");
   copyFileSync(runtimeAuditExecutable, upgradeExePath);
 
-  const llm = startStoryLlmServer();
+  const dotsOnly = process.argv.includes("--dots-send");
+  const llm = startStoryLlmServer(dotsOnly);
   const baseUrl = await llm.start();
 
   mkdirSync(dataDir, { recursive: true });
@@ -266,7 +277,7 @@ async function main(): Promise<void> {
 
   const coreHash = sha256File(runtimeAuditExecutable);
   const versions = assertExpectedPiVersion(process.cwd());
-  const piScript = await ensurePiNodeHostScript(process.cwd());
+  const piScript = (dotsOnly ? process.env.MYBUDDY_TEST_DOTS_PI_SCRIPT : undefined) ?? await ensurePiNodeHostScript(process.cwd());
 
   let db: AppDatabase | undefined;
   let ui: UiReconnectController | undefined;
@@ -285,10 +296,10 @@ async function main(): Promise<void> {
     assert.ok(db.coreIdentity?.databaseGeneration, "Story Step 1: Core opened and identified the application database");
     console.log("PASS Story Step 1: Core opened the application database without a local SQL connection");
 
-    const launchRes = await db.runtimeAuditReader!.piHost<{ launched?: boolean; pid?: number; hostGeneration?: string }>({
+    const launchHost = (scriptPath = piScript) => db!.runtimeAuditReader!.piHost<{ launched?: boolean; pid?: number; hostGeneration?: string }>({
       action: "launch",
       executable: process.execPath,
-      scriptPath: piScript,
+      scriptPath,
       dataDirectory: dataDir,
       dbPath,
       storageRoot,
@@ -298,9 +309,10 @@ async function main(): Promise<void> {
       extraEnv: { HOME: tempRoot, USERPROFILE: tempRoot, MYBUDDY_APP_PATH: process.cwd(),
         ...(process.env.MYBUDDY_SQLITE_ATTEMPTS ? {
           MYBUDDY_SQLITE_ATTEMPTS: process.env.MYBUDDY_SQLITE_ATTEMPTS,
-          NODE_OPTIONS: '--require=' + JSON.stringify(join(process.cwd(), "scripts", "no-sqlite-open-guard.cjs")),
+          NODE_OPTIONS: '--require=' + JSON.stringify(join(process.cwd(), "scripts", dotsOnly ? "dots-send-sqlite-guard.cjs" : "no-sqlite-open-guard.cjs")),
         } : {}), ...(process.env.MYBUDDY_ADMISSION_TRACE === "1" ? { MYBUDDY_ADMISSION_TRACE: "1" } : {}) },
     });
+    const launchRes = await launchHost();
     assert(launchRes?.launched && launchRes.pid && launchRes.hostGeneration, "Story Step 1: Detached Pi Node Host started");
     const piPid1 = launchRes.pid!;
     const piGen1 = launchRes.hostGeneration!;
@@ -330,6 +342,57 @@ async function main(): Promise<void> {
       clientId: "story-bg",
     });
 
+    if (dotsOnly) {
+      mainAgent = await AgentService.open(db, undefined, {
+        executionMode: "isolated-client", coreClient: () => ui?.getClient(),
+      });
+      ui.addHooks({ onEvent: ev => mainAgent?.handleCoreExecutionEvent(ev) });
+      await mainAgent.init();
+      let firstConversation: string | undefined;
+      for (const phase of ["fresh", "existing", "new"]) {
+        if (phase === "existing") {
+          await db.runtimeAuditReader!.piHost({ action: "stop", reason: "reopen_existing_dots" });
+          await until(() => !isProcessAlive(piPid1), "first Dots Pi Host exits");
+          const replacement = await launchHost(process.env.MYBUDDY_TEST_DOTS_REOPEN_PI_SCRIPT ?? piScript);
+          assert(replacement?.launched && replacement.pid && replacement.hostGeneration !== piGen1);
+          await until(async () => {
+            const status = await db!.runtimeAuditReader!.piHost<{ activeHost?: { status: string; pid: number } }>({ action: "status" });
+            return status?.activeHost?.pid === replacement.pid && status?.activeHost?.status === "running";
+          }, "replacement Dots Pi Host available");
+          console.log("PASS existing Dots conversation reopened under a different Pi Host generation");
+        }
+        if (phase === "new") await mainAgent.newDotsConversation();
+        const task = await mainAgent.openDots();
+        assert.equal(task.id, DOTS_TASK_ID);
+        const text = phase === "fresh" ? "好久不见" : "dots-ordinary-" + phase;
+        console.log("Desktop Dots prompt", phase, JSON.stringify(text));
+        const sent = await mainAgent.prompt({ taskId: DOTS_TASK_ID, userMessageId: "dots-ordinary-" + phase, assistantMessageId: "dots-reply-" + phase,
+          text, modelId: "fixture/model" });
+        assert.equal(sent.error, undefined, JSON.stringify(sent.error));
+        assert(sent.receipt, "desktop Dots admission receipt");
+        const completion = await mainAgent.waitForSubmission(sent.receipt);
+        assert.equal(completion.error, undefined, JSON.stringify(completion.error));
+        const history = await mainAgent.loadTaskHistory(DOTS_TASK_ID);
+        assert(history.messages.some(row => row.role === "user" && row.text.includes(text)));
+        assert(history.messages.some(row => row.role === "assistant" && row.text.includes("Acknowledged " + text)),
+          JSON.stringify({ messages: history.messages.map(m => m.text), durable: history.durable }));
+        assert(history.durable?.conversationId, "Core identifies the Dots conversation");
+        if (phase === "fresh") {
+          firstConversation = history.durable.conversationId;
+          await verifyDotsRoutingTurns(db, tempRoot);
+        }
+        if (phase === "existing") assert.equal(history.durable.conversationId, firstConversation);
+        if (phase === "new") assert.notEqual(history.durable.conversationId, firstConversation);
+        if (phase === "existing") assert(history.messages.some(row => row.role === "assistant" && row.text.includes("Acknowledged 好久不见")));
+        console.log("PASS real Dots desktop open, prompt receipt, Pi response and history:", phase);
+      }
+      assert(existsSync(dbPath));
+      assert(!existsSync(join(dataDir, "app.db")));
+      const attempts = process.env.MYBUDDY_SQLITE_ATTEMPTS!;
+      assert.equal(existsSync(attempts) ? readFileSync(attempts, "utf8") : "", "");
+      console.log("PASS no SQLite open attempted by the desktop service or Pi Host");
+      return;
+    }
     await db.writeWorkspaceUpsert({ id: "story-space", name: "Story Workspace", path: workspaceDir });
     const now = Date.now();
     await db.writeTaskRecord({
@@ -649,6 +712,11 @@ async function main(): Promise<void> {
 
     console.log(`PASS Step 10 Story (§6 Steps 1-10): coreSha256=${coreHash.slice(0, 12)}, effectCount=${llm.getEffectCount()}, ctrlMs=${ctrlElapsedMs.toFixed(2)}`);
   } catch (err) {
+    if (dotsOnly) {
+      const log = process.env.MYBUDDY_SQLITE_ATTEMPTS;
+      console.error("[Dots send failure]", JSON.stringify({ sqliteGuard: log && existsSync(log) ? "recorded access" : "no access",
+        appDbExists: existsSync(join(dataDir, "app.db")) }));
+    }
     if (process.env.MYBUDDY_ADMISSION_TRACE === "1") {
       const history = await mainAgent?.loadTaskHistory("task-story-1").catch(() => undefined);
       console.error("[Story fixtures]", JSON.stringify({ writeReturned: llm.isToolCallReturned(), requests: llm.requestSummary(),

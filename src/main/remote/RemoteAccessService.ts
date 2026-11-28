@@ -176,7 +176,7 @@ export class RemoteAccessService {
 
   async bootstrap(device: RemoteDeviceSummary): Promise<RemoteBootstrap> {
     const settings = this.settings.read();
-    const dots = this.db.getTask(DOTS_TASK_ID) ?? await this.db.openDotsAsync();
+    const dots = (await this.db.readTask(DOTS_TASK_ID, { includeExpertBinding: false })) ?? await this.db.openDotsAsync();
     return {
       apiVersion: REMOTE_API_VERSION,
       server: this.serverInfo(),
@@ -201,12 +201,12 @@ export class RemoteAccessService {
   }
 
   async history(taskId: string, beforeEntryId?: number) {
-    if (!this.db.getTask(taskId)) return null;
+    if (!await this.db.readTask(taskId, { includeExpertBinding: false })) return null;
     const nativeProjected = mapRemoteHistory(taskId, await this.agent.loadTaskHistory(taskId, beforeEntryId, "current"));
     // 更早历史块只回 durable 存储里那一页：块靠 page.before 游标前进，
     // 掺入 ACP 全量历史会让块首条与客户端记录的 blockIds 不匹配（前插补偿失效）
     // 并且每页都重发同一批 ACP 消息。ACP 轮次只属于实时窗口投影。
-    if (beforeEntryId !== undefined) return this.images.enrichHistory(taskId, nativeProjected);
+    if (beforeEntryId !== undefined) return await this.images.enrichHistory(taskId, nativeProjected);
     // 与桌面端 loadTaskHistory IPC 一致：ACP 外部 Agent 的轮次存在
     // external_agent_runs 而非 builtin session 文件，必须合入否则手机端看不到
     const externalHistory = this.externalAgent?.history(taskId) ?? { messages: [], runs: [] };
@@ -220,8 +220,8 @@ export class RemoteAccessService {
       return { ...projectedMessage, acp: mapRemoteAcpRun(run) };
     });
     // 先在「手机端投影」这一层合并，再交给图片富化，避免把 Remote 形状塞回 ChatMessageDto
-    if (!projected.length) return this.images.enrichHistory(taskId, nativeProjected);
-    return this.images.enrichHistory(taskId, {
+    if (!projected.length) return await this.images.enrichHistory(taskId, nativeProjected);
+    return await this.images.enrichHistory(taskId, {
       ...nativeProjected,
       messages: [...nativeProjected.messages, ...projected]
         .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),

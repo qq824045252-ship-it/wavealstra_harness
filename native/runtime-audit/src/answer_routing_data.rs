@@ -32,6 +32,16 @@ pub enum Request {
         revision: i64,
         note: String,
     },
+    TurnState {
+        task_id: String,
+        input_id: String,
+    },
+    PreviousEvidence {
+        task_id: String,
+        input_id: String,
+        rule_id: String,
+        at: i64,
+    },
     RecordTurn {
         task_id: String,
         input_id: String,
@@ -130,16 +140,46 @@ pub struct UseRow {
 }
 
 #[derive(Serialize)]
+pub struct PriorTurn {
+    rule_id: String,
+    revision: i64,
+    at: i64,
+    detail: String,
+    phrase: String,
+    evidence: Option<String>,
+    scope: String,
+    status: String,
+    snapshot: Option<String>,
+}
+
+#[derive(Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum Reply {
-    Rules { rows: Vec<RuleRow> },
-    Versions { rows: Vec<VersionRow> },
-    History { rows: Vec<UseRow> },
-    Saved { revision: i64 },
+    Rules {
+        rows: Vec<RuleRow>,
+    },
+    TurnState {
+        rows: Vec<RuleRow>,
+        prior: Option<PriorTurn>,
+    },
+    PreviousEvidence {
+        evidence: Option<String>,
+    },
+    Versions {
+        rows: Vec<VersionRow>,
+    },
+    History {
+        rows: Vec<UseRow>,
+    },
+    Saved {
+        revision: i64,
+    },
     Removed,
     Conflict,
     NeedsHost,
-    Rejected { message: String },
+    Rejected {
+        message: String,
+    },
 }
 
 pub fn run(db: &mut Connection, request: Request) -> Reply {
@@ -184,6 +224,38 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
                 .query_map([project_id], rule_row)?
                 .collect::<duckdb::Result<_>>()?;
             Ok(Reply::Rules { rows })
+        }
+        Request::TurnState { task_id, input_id } => {
+            let tx = db.transaction()?;
+            let rows = {
+                let mut stmt = tx.prepare("SELECT id,revision,config FROM answer_rules
+                    WHERE enabled=1 AND (project_id IS NULL OR project_id=(SELECT project_id FROM tasks WHERE id=?1))")?;
+                stmt.query_map([&task_id], rule_row)?
+                    .collect::<duckdb::Result<_>>()?
+            };
+            let prior = tx.query_row(
+                r#"SELECT rule_id,revision,"at",detail,phrase,evidence,scope,status,snapshot FROM answer_rule_turns
+                   WHERE task_id=?1 AND input_id=?2"#,
+                params![task_id, input_id], |r| Ok(PriorTurn {
+                    rule_id: r.get(0)?, revision: r.get(1)?, at: r.get(2)?, detail: r.get(3)?,
+                    phrase: r.get(4)?, evidence: r.get(5)?, scope: r.get(6)?, status: r.get(7)?, snapshot: r.get(8)?,
+                })
+            ).optional()?;
+            tx.commit()?;
+            Ok(Reply::TurnState { rows, prior })
+        }
+        Request::PreviousEvidence {
+            task_id,
+            input_id,
+            rule_id,
+            at,
+        } => {
+            let evidence = db.query_row(
+                r#"SELECT evidence FROM answer_rule_turns WHERE task_id=?1 AND rule_id=?2 AND input_id<>?3
+                   AND "at"<=?4 ORDER BY "at" DESC,rowid DESC LIMIT 1"#,
+                params![task_id, rule_id, input_id, at], |r| r.get::<_, Option<String>>(0)
+            ).optional()?.flatten();
+            Ok(Reply::PreviousEvidence { evidence })
         }
         Request::Versions { id } => {
             let mut stmt = db.prepare(
@@ -255,7 +327,21 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
             snapshot,
         } => {
             let tx = db.transaction()?;
-            tx.execute(
+            // A retry owns its original revision. New receipts must still match the live
+            // rule, and a withdrawn/deleted rule can only revoke a receipt it already owns.
+            let eligible: bool = tx.query_row(
+                "WITH existing AS (SELECT 1 FROM answer_rule_turns WHERE task_id=?1 AND input_id=?2
+                    AND rule_id=?3 AND revision=?4)
+                 SELECT (?5='revoked' AND EXISTS (SELECT 1 FROM existing)) OR EXISTS (
+                    SELECT 1 FROM answer_rules WHERE id=?3 AND enabled=1
+                    AND (project_id IS NULL OR project_id=(SELECT project_id FROM tasks WHERE id=?1))
+                    AND (revision=?4 OR EXISTS (SELECT 1 FROM existing)))",
+                params![task_id, input_id, rule_id, revision, status], |r| r.get(0),
+            )?;
+            if !eligible {
+                return Ok(Reply::Conflict);
+            }
+            let changed = tx.execute(
                 "INSERT INTO answer_rule_turns(task_id,input_id,rule_id,revision,title,\"at\",detail,phrase,evidence,scope,status,snapshot)
                  VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
                  ON CONFLICT(task_id,input_id) DO UPDATE SET detail=excluded.detail,evidence=excluded.evidence,status=excluded.status
@@ -264,7 +350,11 @@ fn apply(db: &mut Connection, request: Request) -> Result<Reply> {
                 params![task_id, input_id, rule_id, revision, title, at, detail, phrase, evidence, scope, status, snapshot],
             )?;
             tx.commit()?;
-            Ok(Reply::Saved { revision })
+            Ok(if changed == 1 {
+                Reply::Saved { revision }
+            } else {
+                Reply::Conflict
+            })
         }
     }
 }
@@ -358,7 +448,13 @@ fn save(db: &mut Connection, draft: Draft) -> Result<Reply> {
         tx.execute(
             "INSERT INTO answer_rules(project_id,source_id,source_hash,enabled,config,id,revision)
             VALUES(?1,?2,NULL,?3,?4,?5,1)",
-            params![draft.project_id, draft.source_id, draft.enabled, draft.config, draft.id],
+            params![
+                draft.project_id,
+                draft.source_id,
+                draft.enabled,
+                draft.config,
+                draft.id
+            ],
         )?;
         1
     };

@@ -2730,7 +2730,10 @@ export class AppDatabase {
         if (channelId) {
           const path = gatewayChannelDirectory(this, channelId, true);
           if (space.path != null && space.path !== path) throw new Error("网关渠道空间必须使用其专属目录");
-          if (space.parentId) this.assertSpaceExists(space.parentId);
+          if (space.parentId) {
+            const spaces = await this.readSpaces();
+            if (!spaces.some((item) => item.id === space.parentId)) throw new Error(`父级空间不存在：${space.parentId}`);
+          }
           const result = await reader.batch2Write<{ parentId: string | null; sortOrder: number }>({
             kind: "upsertSpaceRaw",
             id: space.id,
@@ -3187,6 +3190,56 @@ export class AppDatabase {
       }
       seen.add(cursor);
       const space = this.getSpace(cursor);
+      if (!space) {
+        if (options.requireExisting) throw new WorkspacePathError(cursor, undefined, "workspace-binding-missing");
+        break;
+      }
+      const raw = space.path?.trim();
+      if (!raw) {
+        cursor = space.parentId ?? null;
+        continue;
+      }
+      const abs = resolve(raw);
+      if (options.requireExisting) {
+        if (!isAbsolute(raw)) throw new WorkspacePathError(cursor, raw, "workspace-path-invalid");
+        try {
+          if (!statSync(abs).isDirectory()) throw new WorkspacePathError(cursor, abs, "workspace-path-invalid");
+        } catch (error) {
+          if (error instanceof WorkspacePathError) throw error;
+          const code = (error as NodeJS.ErrnoException).code;
+          throw new WorkspacePathError(cursor, abs, code === "ENOENT" ? "workspace-path-missing" : "workspace-path-invalid");
+        }
+        return abs;
+      }
+      if (existsSync(abs)) {
+        try {
+          if (!statSync(abs).isDirectory()) {
+            cursor = space.parentId ?? null;
+            continue;
+          }
+        } catch {
+          cursor = space.parentId ?? null;
+          continue;
+        }
+      }
+      return abs;
+    }
+    return null;
+  }
+
+  async resolveWorkspaceExecutionPathAsync(spaceId: string | null | undefined, options: { requireExisting?: boolean } = {}): Promise<string | null> {
+    if (!this.coreIdentity) return this.resolveWorkspaceExecutionPath(spaceId, options);
+    if (!spaceId) return null;
+    const spaces = new Map((await this.readSpaces()).map(s => [s.id, s]));
+    const seen = new Set<string>();
+    let cursor: string | null = spaceId;
+    while (cursor) {
+      if (seen.has(cursor)) {
+        if (options.requireExisting) throw new WorkspacePathError(cursor, undefined, "workspace-binding-cycle");
+        break;
+      }
+      seen.add(cursor);
+      const space = spaces.get(cursor);
       if (!space) {
         if (options.requireExisting) throw new WorkspacePathError(cursor, undefined, "workspace-binding-missing");
         break;
@@ -4211,12 +4264,12 @@ export class AppDatabase {
       if (result?.status === "saved") return;
       if (result?.status === "rejected") throw new Error(result.message);
       if (!result) {
-        if (!this.getTask(taskId) && !this.getTaskExecutionWorkspaceState(taskId)) return;
+        if (!(await this.readTask(taskId, { includeExpertBinding: false })) && !(await this.readTaskExecutionWorkspaceState(taskId))) return;
         throw new Error("未收到永久删除确认，请刷新后查看回收站");
       }
     } else if (this.requiresRustWrites) {
       options?.assertAllowed?.();
-      const current = this.getTaskExecutionWorkspaceState(taskId);
+      const current = await this.readTaskExecutionWorkspaceState(taskId);
       if (current?.state !== "trashed" || current.updatedAt !== updatedAt ||
           current.trashedAt !== trashedAt || current.trashPath !== trashPath) {
         throw new Error(`purge 中止：回收站条目已变化：${taskId}`);
@@ -4573,7 +4626,7 @@ export class AppDatabase {
         return this.deleteSpace(id, { archiveRoots });
       }
       if (result?.status === "rejected") throw new Error(result.message);
-      if (!this.getSpace(id)) return;
+      if (!(await this.readSpace(id))) return;
       throw new Error("未收到工作空间删除确认，请刷新后查看状态");
     });
   }
@@ -4941,6 +4994,7 @@ export class AppDatabase {
 
   /** Called only from the validated Gateway admission path, not general task write IPC. */
   bindGatewayConversationSpace(taskId: string, channelId: string): void {
+    if (this.coreIdentity) throw new Error("Core 模式下禁止调用同步 bindGatewayConversationSpace");
     if (!isGatewayConversation(taskId) || !isGatewaySidebarChannelId(channelId)) throw new Error("网关对话渠道身份无效");
     const stored = this.getTask(taskId);
     if (!stored || (stored.gatewaySidebarChannelId && stored.gatewaySidebarChannelId !== channelId)) throw new Error("网关对话渠道归属不一致");
@@ -5138,6 +5192,205 @@ export class AppDatabase {
         at: r.created_at,
       }))
       .reverse();
+  }
+
+  async readSpace(id: string): Promise<SpaceDto | undefined> {
+    if (this.sqlite) return this.getSpace(id);
+    const spaces = await this.readSpaces();
+    return spaces.find((space) => space.id === id);
+  }
+
+  async readSpaceChildren(parentId: string | null): Promise<SpaceDto[]> {
+    if (this.sqlite) return this.getSpaceChildren(parentId);
+    const spaces = await this.readSpaces();
+    return spaces
+      .filter((space) => (space.parentId ?? null) === parentId)
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.id.localeCompare(b.id));
+  }
+
+  async readSpaceAncestors(spaceId: string): Promise<SpaceDto[]> {
+    if (this.sqlite) return this.getSpaceAncestors(spaceId);
+    const byId = new Map((await this.readSpaces()).map((space) => [space.id, space]));
+    const out: SpaceDto[] = [];
+    const seen = new Set<string>();
+    let cursor = byId.get(spaceId)?.parentId ?? null;
+    while (cursor) {
+      if (seen.has(cursor)) break;
+      seen.add(cursor);
+      const space = byId.get(cursor);
+      if (!space) break;
+      out.push(space);
+      cursor = space.parentId ?? null;
+    }
+    return out;
+  }
+
+  async isSpaceEffectiveArchivedAsync(spaceId: string): Promise<boolean> {
+    if (this.sqlite) return this.isSpaceEffectiveArchived(spaceId);
+    const space = await this.readSpace(spaceId);
+    return Boolean(space?.effectiveArchived);
+  }
+
+  async isTaskEffectiveArchivedAsync(taskId: string): Promise<boolean> {
+    if (this.sqlite) return this.isTaskEffectiveArchived(taskId);
+    const task = await this.readTask(taskId, { includeExpertBinding: false });
+    if (!task) return false;
+    if (task.archived) return true;
+    return task.spaceId ? this.isSpaceEffectiveArchivedAsync(task.spaceId) : false;
+  }
+
+  async readTaskExecutionWorkspaceState(taskId: string): Promise<TaskExecutionWorkspaceStateRow | undefined> {
+    if (this.sqlite) return this.getTaskExecutionWorkspaceState(taskId);
+    const row = await this.runtimeAuditReader?.readWorkspaceState(taskId);
+    if (row === undefined) throw new Error("Core 未确认任务工作区状态读取");
+    return row ?? undefined;
+  }
+
+  async bindTaskExecutionWorkspaceCwdAsync(taskId: string, cwd: string): Promise<void> {
+    if (this.requiresRustWrites) {
+      await this.queueTaskBatch2Write([taskId], "绑定任务工作目录", {
+        kind: "bindTaskExecutionWorkspaceCwd", taskId, cwd, at: Date.now(),
+      });
+      return;
+    }
+    this.bindTaskExecutionWorkspaceCwd(taskId, cwd);
+  }
+
+  async addTaskWriteGrantAsync(taskId: string, path: string): Promise<void> {
+    if (this.requiresRustWrites) {
+      await this.queueTaskBatch2Write([taskId], "添加目录写授权", {
+        kind: "addTaskWriteGrant", taskId, path, at: Date.now(),
+      });
+      return;
+    }
+    this.addTaskWriteGrant(taskId, path);
+  }
+
+  async deleteTaskAsync(id: string): Promise<void> {
+    if (id === DOTS_TASK_ID) throw new Error("Dots 对话不能作为普通任务删除");
+    if (this.requiresRustWrites) {
+      await this.queueTaskBatch2Write([id], "删除任务", { kind: "deleteTask", id });
+      return;
+    }
+    this.deleteTask(id);
+  }
+
+  async upsertTaskExecutionWorkspaceStateAsync(row: TaskExecutionWorkspaceStateRow): Promise<void> {
+    if (this.requiresRustWrites) {
+      await this.queueTaskBatch2Write([row.taskId], "更新任务工作区状态", {
+        kind: "upsertTaskExecutionWorkspaceState",
+        taskId: row.taskId,
+        directoryName: row.directoryName,
+        state: row.state,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        trashedAt: row.trashedAt ?? null,
+        purgeAfter: row.purgeAfter ?? null,
+        trashPath: row.trashPath ?? null,
+      });
+      return;
+    }
+    this.upsertTaskExecutionWorkspaceState(row);
+  }
+
+  async deleteTaskExecutionWorkspaceStateAsync(taskId: string): Promise<void> {
+    if (this.requiresRustWrites) {
+      await this.queueTaskBatch2Write([taskId], "删除任务工作区状态", {
+        kind: "deleteTaskExecutionWorkspaceState", taskId,
+      });
+      return;
+    }
+    this.deleteTaskExecutionWorkspaceState(taskId);
+  }
+
+  async readSpaceDeleteStatus(spaceId: string): Promise<{
+    exists: boolean;
+    hasChildren: boolean;
+    hasBlockersTasks: boolean;
+    hasTasks: boolean;
+    hasOwnedMaterials: boolean;
+  }> {
+    if (this.sqlite) {
+      return {
+        exists: Boolean(this.getSpace(spaceId)),
+        hasChildren: this.getSpaceChildren(spaceId).length > 0,
+        hasBlockersTasks: this.hasSpaceDeleteBlockers(spaceId),
+        hasTasks: this.hasTasksInSpace(spaceId),
+        hasOwnedMaterials: this.hasWorkspaceOwnedMaterials(spaceId),
+      };
+    }
+    const res = await this.runtimeAuditReader?.readSpaceDeleteStatus(spaceId);
+    if (!res?.deleteStatus) throw new Error("Core 未确认空间删除前检查");
+    return res.deleteStatus;
+  }
+
+  async readRunningCronRuns(): Promise<Array<{ id: string; jobId: string; startedAt: number }>> {
+    if (this.sqlite) return this.listRunningCronRuns();
+    const rows = await this.readCronData<Array<{ id: string; jobId: string; startedAt: number }>>({ kind: "running" });
+    if (!Array.isArray(rows)) throw new Error("Core 未确认运行中的定时任务");
+    return rows;
+  }
+
+  async readTaskContextUsage(taskId: string): Promise<{
+    usedTokens: number | null;
+    contextWindow: number;
+    cacheHitRate: number | null;
+  } | null> {
+    if (this.sqlite) return this.getTaskContextUsage(taskId);
+    const usage = await this.runtimeAuditReader?.readTaskContextUsage(taskId);
+    if (usage === undefined) throw new Error("Core 未确认任务上下文用量");
+    return usage;
+  }
+
+  async readConversationBranchByRequestId(requestId: string): Promise<ConversationBranchInfoDto | undefined> {
+    if (!requestId) return undefined;
+    if (this.sqlite) return this.findConversationBranchByRequestId(requestId);
+    const hit = await this.runtimeAuditReader?.readConversationBranchByRequestId(requestId);
+    if (hit === undefined) throw new Error("Core 未确认分支请求检查");
+    return hit.childTaskId ? this.readConversationBranchInfo(hit.childTaskId) : undefined;
+  }
+
+  async readConversationBranchInfo(childTaskId: string): Promise<ConversationBranchInfoDto | undefined> {
+    if (this.sqlite) return this.getConversationBranchInfo(childTaskId);
+    const res = await this.runtimeAuditReader?.readConversationBranchData("info", childTaskId);
+    if (res === undefined) throw new Error("Core 未确认分支详情");
+    return res.rows[0];
+  }
+
+  async readConversationBranchChildren(parentTaskId: string): Promise<ConversationBranchInfoDto[]> {
+    if (this.sqlite) return this.listConversationBranchChildren(parentTaskId);
+    const res = await this.runtimeAuditReader?.readConversationBranchData("children", parentTaskId);
+    if (res === undefined) throw new Error("Core 未确认子分支列表");
+    return res.rows;
+  }
+
+  async readConversationBranchSessionFiles(): Promise<Array<{ childTaskId: string; sourceSessionFile: string }>> {
+    if (this.sqlite) {
+      return this.db.prepare("SELECT child_task_id AS childTaskId, source_session_file AS sourceSessionFile FROM conversation_branches WHERE NULLIF(source_session_file, '') IS NOT NULL")
+        .all() as Array<{ childTaskId: string; sourceSessionFile: string }>;
+    }
+    const res = await this.runtimeAuditReader?.readConversationBranchSessionFiles();
+    if (res === undefined) throw new Error("Core 未确认分支会话文件引用");
+    return res.rows;
+  }
+
+  async readRuntimeBotForTask(taskId: string, userId: string): Promise<{ hasBinding: boolean; botId: string | null }> {
+    if (!this.sqlite && this.runtimeAuditReader) {
+      const res = await this.runtimeAuditReader.readRuntimeBotForTask(taskId, userId);
+      if (res !== undefined) return res;
+      throw new Error("Core 未确认任务关联 Bot");
+    }
+    const binding = this.db.prepare(`SELECT b.bot_id,b.work_id FROM work_execution_bindings b
+      JOIN works w ON w.work_id=b.work_id WHERE b.task_id=? AND w.user_id=?
+      ORDER BY b.admitted_at DESC, b.rowid DESC LIMIT 1`).get(taskId, userId) as { bot_id: string; work_id: string } | undefined;
+    const hasTeamOwnershipTable = Boolean(this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_team_ownership'").get());
+    const hasWorkTeamsTable = Boolean(this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_teams'").get());
+    const isTeam = binding ? (
+      (hasTeamOwnershipTable && Boolean(this.db.prepare("SELECT 1 FROM work_team_ownership WHERE work_id=?").get(binding.work_id)))
+      || (hasWorkTeamsTable && Boolean(this.db.prepare("SELECT 1 FROM work_teams WHERE work_id=?").get(binding.work_id)))
+    ) : false;
+    const hasBinding = Boolean(this.db.prepare("SELECT 1 FROM work_execution_bindings WHERE task_id=? LIMIT 1").get(taskId));
+    return { hasBinding, botId: binding && !isTeam ? binding.bot_id : null };
   }
 
   close(): void {

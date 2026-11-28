@@ -154,10 +154,10 @@ export class RemoteTaskCommandService {
     let submitting = false;
     try {
       const operation = this.operationIdentity(request.operationId);
-      const task = this.requireTask(taskId);
+      const task = await this.requireTaskAsync(taskId);
       const accepted = await this.agent.findSubmission(taskId, `remote-user-${operation}`);
-      if (accepted) { submitting = true; return this.promptResponse(taskId, operation, accepted); }
-      if (this.db.isTaskEffectiveArchived(taskId)) throw new RemoteConflictError("任务已归档或回收，不能继续执行");
+      if (accepted) { submitting = true; return this.promptResponse(taskId, operation, accepted, task); }
+      if (await this.db.isTaskEffectiveArchivedAsync(taskId)) throw new RemoteConflictError("任务已归档或回收，不能继续执行");
       const text = request.text.trim();
       // P1 修复：纯附件消息合法（schema 已保证 text/attachments 至少其一）
       if (!text && !request.attachments?.length) throw new RemoteValidationError("消息不能为空");
@@ -194,7 +194,7 @@ export class RemoteTaskCommandService {
         assistantMessageId,
         streamingBehavior: this.agent.isTaskBusy(taskId) ? "followUp" : undefined,
       }, { durableAdmissionOnly: true });
-      return this.promptResponse(taskId, operation, result);
+      return this.promptResponse(taskId, operation, result, task);
     } catch (error) {
       if (!submitting && (error instanceof RemoteValidationError || error instanceof RemoteNotFoundError || error instanceof RemoteConflictError)) {
         throw new RemotePromptRejectedError(error.message, { cause: error });
@@ -203,9 +203,9 @@ export class RemoteTaskCommandService {
     }
   }
 
-  private promptResponse(taskId: string, operation: string, result: AgentPromptResult): RemotePromptResponse {
+  private promptResponse(taskId: string, operation: string, result: AgentPromptResult, task?: ReturnType<RemoteTaskCommandService["requireTask"]>): RemotePromptResponse {
     if (!result.receipt) throw new RemoteConflictError(result.error?.message ?? "输入尚未取得持久回执");
-    return { task: mapRemoteTask(this.requireTask(taskId), { busy: this.agent.isTaskBusy(taskId), pendingActionCount: this.agent.listPendingActions(taskId).length }),
+    return { task: mapRemoteTask(task ?? this.requireTask(taskId), { busy: this.agent.isTaskBusy(taskId), pendingActionCount: this.agent.listPendingActions(taskId).length }),
       userMessageId: `remote-user-${operation}`, assistantMessageId: `remote-assistant-${operation}`,
       queued: result.queued, receipt: result.receipt, cancelled: result.cancelled, error: result.error };
   }
@@ -258,7 +258,7 @@ export class RemoteTaskCommandService {
   }
 
   async abort(taskId: string): Promise<void> {
-    this.requireTask(taskId);
+    await this.requireTaskAsync(taskId);
     // ACP 外部 Agent 与内置 Pi 是两条执行链：手机端点「停止」必须两条都停，
     // 否则 ACP 进程会继续在电脑端跑完（用户以为已中断）。
     if (this.externalAgent?.active(taskId).length) this.externalAgent.cancel(undefined, taskId);
@@ -271,10 +271,10 @@ export class RemoteTaskCommandService {
    * 2) 写入本轮用户/助手消息 id，交给 ExternalAgentRuntime.prompt（真实 ACP 进程在电脑端跑）；
    * 3) 返回手机端投影（run 信息），UI 通过 SSE agent.patch 收到流式输出。
    */
-  acpPromptExisting(taskId: string, agentId: string, request: RemoteAcpPromptRequest): RemoteAcpPromptResponse {
+  async acpPromptExisting(taskId: string, agentId: string, request: RemoteAcpPromptRequest): Promise<RemoteAcpPromptResponse> {
     if (taskId === DOTS_TASK_ID) throw new RemoteConflictError("MyBuddy Dots 不支持切换到 ACP Agent");
-    this.requireTask(taskId);
-    if (this.db.isTaskEffectiveArchived(taskId)) throw new RemoteConflictError("任务已归档或回收，不能继续执行");
+    await this.requireTaskAsync(taskId);
+    if (await this.db.isTaskEffectiveArchivedAsync(taskId)) throw new RemoteConflictError("任务已归档或回收，不能继续执行");
     const runtime = this.requireAcpRuntime();
     this.requireAvailableAgent(agentId, runtime);
     const text = request.text.trim();
@@ -283,12 +283,12 @@ export class RemoteTaskCommandService {
     if (this.externalAgent!.active(taskId).length) {
       throw new RemoteConflictError("该任务已有 ACP Agent 正在执行，请先停止或等待完成");
     }
-    const continuation = this.resolveAcpContinuation(taskId, agentId, request.continueFromRunId, request.newSession);
+    const continuation = await this.resolveAcpContinuation(taskId, agentId, request.continueFromRunId, request.newSession);
     const userMessageId = `remote-acp-user-${randomUUID()}`;
     const assistantMessageId = `remote-acp-assistant-${randomUUID()}`;
     let runId: string;
     try {
-      runId = runtime.prompt({
+      runId = (await runtime.prompt({
         taskId,
         agentId: agentId as Parameters<typeof runtime.prompt>[0]["agentId"],
         text,
@@ -296,7 +296,7 @@ export class RemoteTaskCommandService {
         userMessageId,
         assistantMessageId,
         ...(continuation ? { continueFromRunId: continuation } : {}),
-      }).runId;
+      })).runId;
     } catch (error) {
       throw new RemoteValidationError(error instanceof Error ? error.message : String(error));
     }
@@ -343,7 +343,7 @@ export class RemoteTaskCommandService {
     const assistantMessageId = `remote-acp-assistant-${randomUUID()}`;
     try {
       const attachments = await this.persistAttachments(taskId, request.attachments);
-      const runId = runtime.prompt({
+      const runId = (await runtime.prompt({
         taskId,
         agentId: request.agentId as Parameters<typeof runtime.prompt>[0]["agentId"],
         text,
@@ -351,10 +351,10 @@ export class RemoteTaskCommandService {
         userMessageId,
         assistantMessageId,
         ...(attachments?.length ? { attachments } : {}),
-      }).runId;
+      })).runId;
       const run = runtime.history(taskId).runs.find((candidate) => candidate.runId === runId);
       if (!run) throw new RemoteConflictError("ACP Run 未能建立，请稍后重试");
-      const created = this.requireTask(taskId);
+      const created = await this.requireTaskAsync(taskId);
       return {
         task: mapRemoteTask(created, {
           busy: true,
@@ -365,7 +365,7 @@ export class RemoteTaskCommandService {
         assistantMessageId,
       };
     } catch (error) {
-      this.db.deleteTask(taskId);
+      await this.db.deleteTaskAsync(taskId);
       await cleanupRemoteUploads(taskId, this.uploadsRoot).catch(() => undefined);
       throw error;
     }
@@ -388,12 +388,12 @@ export class RemoteTaskCommandService {
    * 注意：ACP 子进程每轮都会重新启动（一次性进程），这里续接的是 **session**，
    * 也就是对话上下文，而不是复用进程。
    */
-  private resolveAcpContinuation(
+  private async resolveAcpContinuation(
     taskId: string,
     agentId: string,
     continueFromRunId?: string,
     newSession?: boolean,
-  ): string | undefined {
+  ): Promise<string | undefined> {
     if (newSession) return undefined;
     const runs = this.externalAgent!.history(taskId).runs;
     const requested = continueFromRunId?.trim();
@@ -401,17 +401,19 @@ export class RemoteTaskCommandService {
       const run = runs.find((candidate) => candidate.runId === requested);
       if (!run) return undefined;
       if (run.agentId !== agentId) throw new RemoteValidationError("续聊必须使用同一个 ACP Agent");
-      return this.isResumableInTask(run, taskId) ? run.runId : undefined;
+      return (await this.isResumableInTask(run, taskId)) ? run.runId : undefined;
     }
-    const latest = [...runs].reverse().find((run) => run.agentId === agentId && this.isResumableInTask(run, taskId));
-    return latest?.runId;
+    for (const run of [...runs].reverse()) {
+      if (run.agentId === agentId && (await this.isResumableInTask(run, taskId))) return run.runId;
+    }
+    return undefined;
   }
 
   /** 可恢复 = 建过 session + Agent 声明支持 resume + 工作目录仍是本任务当前的权威 root */
-  private isResumableInTask(run: ExternalAgentRunDto, taskId: string): boolean {
+  private async isResumableInTask(run: ExternalAgentRunDto, taskId: string): Promise<boolean> {
     if (!run.sessionId || !run.capabilities.resumeSupported) return false;
     try {
-      const current = this.agent.resolveTaskExecutionWorkspaceCwd(taskId);
+      const current = await this.agent.resolveTaskExecutionWorkspaceCwdAsync(taskId);
       const normalize = (value: string): string => resolvePath(value);
       return normalize(run.cwd) === normalize(current);
     } catch {
@@ -419,12 +421,12 @@ export class RemoteTaskCommandService {
     }
   }
 
-  respondToInteraction(
+  async respondToInteraction(
     taskId: string,
     interactionId: string,
     answer: RemoteConversationInteractionAnswer,
-  ): RemoteConversationInteractionMutationResult {
-    this.requireTask(taskId);
+  ): Promise<RemoteConversationInteractionMutationResult> {
+    await this.requireTaskAsync(taskId);
     const interaction = this.agent.getConversationRuntimeSnapshot(taskId).interactions.find((candidate) => candidate.id === interactionId);
     if (!interaction) throw new RemoteConflictError("回答请求已失效，请刷新任务状态");
     const result = this.agent.respondConversationInteraction(interactionId, answer);
@@ -433,8 +435,8 @@ export class RemoteTaskCommandService {
     throw new RemoteConflictError(result.message);
   }
 
-  cancelInteraction(taskId: string, interactionId: string): RemoteConversationInteractionMutationResult {
-    this.requireTask(taskId);
+  async cancelInteraction(taskId: string, interactionId: string): Promise<RemoteConversationInteractionMutationResult> {
+    await this.requireTaskAsync(taskId);
     const interaction = this.agent.getConversationRuntimeSnapshot(taskId).interactions.find((candidate) => candidate.id === interactionId);
     if (!interaction) throw new RemoteConflictError("回答请求已失效，请刷新任务状态");
     const result = this.agent.cancelConversationInteraction(interactionId);
@@ -505,6 +507,12 @@ export class RemoteTaskCommandService {
         : undefined,
     });
     if (!resolved) throw new RemoteConflictError("审批已失效，请刷新任务状态");
+  }
+
+  private async requireTaskAsync(taskId: string) {
+    const task = await this.db.readTask(taskId, { includeExpertBinding: false });
+    if (!task) throw new RemoteNotFoundError("任务不存在");
+    return task;
   }
 
   private requireTask(taskId: string) {

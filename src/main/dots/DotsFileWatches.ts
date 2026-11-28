@@ -108,6 +108,7 @@ export class DotsFileWatches {
   }
 
   private get(id: string) {
+    if (this.core) throw new Error("Core 模式下禁止同步读取 dots_file_watches");
     return this.pendingRows.get(id) ?? (this.db.connection.prepare("SELECT * FROM dots_file_watches WHERE id=?").get(id) as FileWatch | undefined);
   }
 
@@ -187,6 +188,7 @@ export class DotsFileWatches {
   }
 
   list(taskId?: string) {
+    if (this.core) throw new Error("Core 模式下请使用异步 readList 读取 dots_file_watches");
     const rows = this.db.connection.prepare("SELECT * FROM dots_file_watches WHERE (? IS NULL OR task_id=?) ORDER BY rowid DESC").all(taskId ?? null, taskId ?? null) as FileWatch[];
     const byId = new Map(rows.map(r => [r.id, r]));
     for (const [id, pending] of this.pendingRows) {
@@ -281,11 +283,47 @@ export class DotsFileWatches {
     return this.project(this.get(id)!);
   }
 
+  async controlTargetAsync(taskId: string, action: "pause" | "stop"): Promise<void> {
+    if (!this.core) {
+      this.controlTarget(taskId, action);
+      return;
+    }
+    const targetState: FileWatch["state"] = action === "pause" ? "paused" : "cancelled";
+    const note = action === "pause" ? "原事项已暂停" : "原事项已停止";
+    for await (const row of this.coreRows(taskId, false)) {
+      if (row.state === "watching" || row.state === "sending" || row.state === "paused") {
+        await this.transition(row, targetState, note);
+      }
+    }
+  }
+
   controlTarget(taskId: string, action: "pause" | "stop") {
     for (const projected of this.list(taskId)) {
       if (projected.state === "watching" || projected.state === "sending" || projected.state === "paused") {
         this.update(projected.id, action === "pause" ? "paused" : "cancelled", action === "pause" ? "原事项已暂停" : "原事项已停止");
       }
+    }
+  }
+
+  async resumeTargetAsync(taskId: string, inputVersion: string): Promise<void> {
+    if (!this.core) {
+      this.resumeTarget(taskId, inputVersion);
+      return;
+    }
+    const ids: string[] = [];
+    for await (const row of this.coreRows(taskId, false)) {
+      if (row.state === "paused") ids.push(row.id);
+    }
+    if (ids.length) {
+      await this.db.runtimeAuditReader!.batch4aWrite({
+        kind: "dotsFileWatchUpdate",
+        id: null,
+        taskId,
+        state: "watching",
+        note: "",
+        inputVersion,
+        resumePaused: true,
+      });
     }
   }
 
@@ -524,7 +562,7 @@ export class DotsFileWatches {
   }
 
   private wake(id: string) {
-    if (!this.started) return;
+    if (!this.started || this.core) return;
     if (this.flights.has(id)) { this.dirty.add(id); return; }
     const flight = this.check(id).catch(error => {
       const row = this.get(id);

@@ -136,7 +136,7 @@ export class ProjectFolderRelocation {
   }
 
   async previewAsync(projectId: string, target: string): Promise<ProjectFolderPreview> {
-    if (!this.db.coreIdentity && !this.db.runtimeAuditReader?.supervised && !this.db.connection.readonly) return this.preview(projectId, target);
+    if (!this.db.coreIdentity && !this.db.runtimeAuditReader?.supervised && !this.db.readonly) return this.preview(projectId, target);
     return this.savePreview(projectId, this.inspect(projectId, target, await this.readCore()));
   }
 
@@ -155,7 +155,7 @@ export class ProjectFolderRelocation {
     if (!pending || pending.expires < Date.now()) throw new Error("预览已失效，请重新选择文件夹");
     let artifactEvents: ArtifactUpdatedEvent[] = [];
     const reader = this.db.runtimeAuditReader;
-    if (this.db.coreIdentity || reader?.supervised || this.db.connection.readonly) {
+    if (this.db.coreIdentity || reader?.supervised || this.db.readonly) {
       if (!reader) throw new Error("目录迁移失败：Rust 写入核心未就绪");
       const snapshot = await this.readCore();
       const fresh = this.inspect(pending.projectId, pending.target, snapshot);

@@ -125,7 +125,8 @@ export type RuntimeDiagnosticWrite =
 
 export type RuntimeWorkspaceQuery =
   | { kind: "spaces" }
-  | { kind: "visibleSpaces" | "navigation"; userId: string };
+  | { kind: "visibleSpaces" | "navigation"; userId: string }
+  | { kind: "spaceDeleteStatus"; spaceId: string };
 
 export interface RuntimePythonProjectBinding {
   dir_key: string;
@@ -811,6 +812,22 @@ export class RuntimeAuditReader implements PiStorageClient {
     return this.read({ operation: "externalAgentHistoryPage", taskId, after });
   }
 
+  externalAgentData<T = unknown>(query: { kind: "run" | "tools"; runId: string }): Promise<T | undefined> {
+    return this.read<T>({ operation: "externalAgentData", query });
+  }
+
+  readSpaceDeleteStatus(spaceId: string): Promise<{
+    deleteStatus?: {
+      exists: boolean;
+      hasChildren: boolean;
+      hasBlockersTasks: boolean;
+      hasTasks: boolean;
+      hasOwnedMaterials: boolean;
+    };
+  } | undefined> {
+    return this.read({ operation: "workspaceData", query: { kind: "spaceDeleteStatus", spaceId } });
+  }
+
   applicationDatabaseIdentity(): Promise<ApplicationDatabaseIdentity | undefined> {
     return this.read({ operation: "applicationDatabaseIdentity" });
   }
@@ -927,9 +944,11 @@ export class RuntimeAuditReader implements PiStorageClient {
     return reply;
   }
 
-  async memoryRecordsData(query: RuntimeMemoryRecordsQuery): Promise<RuntimeMemoryRecordsData | undefined> {
+  async memoryRecordsData<T extends RuntimeMemoryRecordsData = RuntimeMemoryRecordsData>(query: RuntimeMemoryRecordsQuery): Promise<T | undefined> {
     const data = await this.read<RuntimeMemoryRecordsData>({ operation: "memoryRecordsData", query });
-    return data?.kind === query.kind ? data : undefined;
+    if (!data) return undefined;
+    if (query.kind === "skillEffectivenessQuery") return data as T;
+    return data.kind === query.kind ? (data as T) : undefined;
   }
 
   async writeMemoryRecord(request: RuntimeMemoryRecordWriteRequest): Promise<RuntimeMemoryRecordWriteReply | undefined> {
@@ -1138,6 +1157,10 @@ export class RuntimeAuditReader implements PiStorageClient {
       query: { kind: "worker", taskId, operationId, spaceIds, hostGeneration } });
   }
 
+  readDotsActionData<T = unknown>(query: Record<string, unknown>): Promise<T | undefined> {
+    return this.read<T>({ operation: "readDotsDelegationData", query: { kind: "actionData", ...query } });
+  }
+
   writeGatewayChannel(operationId: string, channel: GatewayChannelRecord, expected: GatewayChannelRecord | null,
     expectedRevision?: number, transition?: RuntimeGatewayChannelTransition): Promise<RuntimeGatewayChannelWriteReply | undefined> {
     return this.read({ operation: "writeGatewayChannel", operationId, draft: { channel, expected, expectedRevision, transition } });
@@ -1319,6 +1342,34 @@ export class RuntimeAuditReader implements PiStorageClient {
     return this.read({ operation: "readDurableTaskProjection", query: { kind: "resumePage", after } });
   }
 
+  readTaskContextUsage(taskId: string): Promise<Omit<TaskContextUsageSnapshot, "taskId"> | null | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "taskContextUsage", taskId } });
+  }
+
+  readRuntimeBotForTask(taskId: string, userId: string): Promise<{ hasBinding: boolean; botId: string | null } | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "runtimeBotForTask", taskId, userId } });
+  }
+
+  readDurableWorkspaceMove(taskId: string): Promise<{ fromCwd: string; toCwd: string } | null | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "workspaceMove", taskId } });
+  }
+
+  readTaskContinuation(taskId: string): Promise<{
+    workId: string; continuationPlanId: string | null; intentRevision: number; inputSnapshotId: string; state: string;
+  } | null | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "taskContinuation", taskId } });
+  }
+
+  readBotTaskWorkspace(taskId: string): Promise<string | null | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "botTaskWorkspace", taskId } });
+  }
+
+  readBotExecutionSettings(botId: string, messageId?: string): Promise<{
+    settingsJson: string | null; messageSettingsJson: string | null; messageProfileJson: string | null;
+  } | undefined> {
+    return this.read({ operation: "readDurableTaskProjection", query: { kind: "botExecutionSettings", botId, messageId } });
+  }
+
   private supportsNotificationData(): Promise<boolean> {
     this.notificationDataCapability ??= this.read<boolean>({ operation: "notificationDataSupported" }).then(result => result === true);
     return this.notificationDataCapability;
@@ -1460,6 +1511,14 @@ export class RuntimeAuditReader implements PiStorageClient {
 
   readConversationBranchData(kind: "info" | "children", taskId: string): Promise<{ rows: ConversationBranchInfoDto[] } | undefined> {
     return this.read({ operation: "readConversationBranchData", query: { kind, taskId } });
+  }
+
+  readConversationBranchByRequestId(requestId: string): Promise<{ childTaskId: string | null } | undefined> {
+    return this.read({ operation: "readConversationBranchData", query: { kind: "byRequestId", requestId } });
+  }
+
+  readConversationBranchSessionFiles(): Promise<{ rows: Array<{ childTaskId: string; sourceSessionFile: string }> } | undefined> {
+    return this.read({ operation: "readConversationBranchData", query: { kind: "sessionFiles" } });
   }
 
   async archivedTaskCandidates(dotsTaskId: string, taskIds: string[], spaceIds: string[]): Promise<ArchiveTaskCandidate[] | undefined> {
@@ -2743,6 +2802,7 @@ export class RuntimeAuditReader implements PiStorageClient {
     const session: AuditSession = {
       child, closed, historyReady, advertiseHistory, pending: new Map(), controls: new Map(),
       history: new Map(), chunks: [], bytes: 0, dotsFileWatches: new Map(),
+      openedAt: Date.now(), lastReplyBytes: 0,
       supervised,
       parallelReadLimit: defaultReads,
       parallelWorkspaceIoLimit: defaultWs,
@@ -2769,6 +2829,7 @@ export class RuntimeAuditReader implements PiStorageClient {
       const line = Buffer.concat(session.chunks, session.bytes).toString("utf8");
       session.chunks = [];
       session.bytes = 0;
+      session.lastReplyBytes = line.length;
       this.receiveReply(session, line);
       offset = newline + 1;
     }
@@ -2922,6 +2983,12 @@ export class RuntimeAuditReader implements PiStorageClient {
       if (pending.lane === "database") hasDatabasePending = true;
     }
     const inferenceWasOnlyJob = hasInference && !hasOtherPending && session.history.size === 0;
+    // A supervised session never ends on its own: the supervisor closed the socket or
+    // this reader rejected a frame. Name the cause so a reconnect storm can be traced.
+    if (session.supervised) console.warn(
+      `[RuntimeAudit] reader session ended: cause=${cause} code=${session.child.exitCode ?? "open"} ` +
+      `pending=database:${hasDatabasePending ? 1 : 0} inference:${hasInference ? 1 : 0} other:${hasOtherPending ? 1 : 0} ` +
+      `ageMs=${Date.now() - session.openedAt} lastReplyChars=${session.lastReplyBytes}`);
     this.session = undefined;
     for (const settle of session.history.values()) settle(undefined);
     session.history.clear();
@@ -3199,6 +3266,7 @@ export type RuntimeCronDataQuery =
   | { kind: "jobState"; jobId: string }
   | { kind: "overview"; limit: number }
   | { kind: "runs"; limit: number; jobIds?: string[] }
+  | { kind: "running" }
   | { kind: "jobRuns"; jobId: string; limit: number; before?: { startedAt: number; id: string } }
   | { kind: "runInput"; runId: string }
   | { kind: "dotsRunAuthorization"; source: string; purpose: "continuation" | "notification" }
@@ -3665,6 +3733,8 @@ interface AuditSession {
   child: AuditTransport;
   supervised: boolean;
   closed: Promise<void>;
+  openedAt: number;
+  lastReplyBytes: number;
   chunks: Buffer[];
   bytes: number;
   dotsFileWatches: Map<string, { changed(): void; lost(): void }>;
@@ -3730,7 +3800,7 @@ const PI_STORAGE_READ_ONLY_ACTIONS = new Set([
 
 const READ_ONLY_OPERATIONS = new Set([
   "readMemoryExtractionQueue",
-  "externalAgentHistoryPage", "readLoadoutObservations", "readGatewayExecutionAuthority",
+  "externalAgentHistoryPage", "externalAgentData", "readLoadoutObservations", "readGatewayExecutionAuthority",
   "snapshots", "snapshotReceipt", "artifactSnapshots", "artifactData", "readManagedArtifact", "nextManagedArtifact", "closeManagedArtifact",
   "workspaceFilePreview", "workspaceScan", "dotsFileRevision", "startDotsFileWatch", "stopDotsFileWatch",
   "openWorkspaceArtifact", "openManagedArtifactImage",

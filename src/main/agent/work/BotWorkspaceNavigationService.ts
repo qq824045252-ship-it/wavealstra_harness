@@ -10,8 +10,9 @@ export const teamWorkspaceSpaceId = (id: string) => `bot-team-space-${digest(id)
 export class BotWorkspaceNavigationService {
   constructor(private readonly db: AppDatabase, private readonly userId: string) {}
   private ensureRegistry(): void {
-    if (!this.db.connection.readonly) {
-      this.db.connection.exec(`CREATE TABLE IF NOT EXISTS bot_workspace_navigation_spaces (space_id TEXT PRIMARY KEY, auto_name TEXT NOT NULL)`);
+    const fixture = this.db.fixtureConnection;
+    if (fixture && !this.db.readonly && !this.db.coreIdentity) {
+      fixture.exec(`CREATE TABLE IF NOT EXISTS bot_workspace_navigation_spaces (space_id TEXT PRIMARY KEY, auto_name TEXT NOT NULL)`);
     }
   }
   private group(kind: 'bot' | 'team'): string {

@@ -32,12 +32,18 @@ const controller = {
     const { token, ...dto } = grant;
     return { grant: { ...dto, accessSince: 1, createdAt: 1, updatedAt: 1 }, token };
   },
+  async createGrantAsync(request: { name: string; mode: "read" | "read-write"; scopeType: "workspace"; scopeId: string }) {
+    return this.createGrant(request);
+  },
   updateGrant(request: { id: string; enabled?: boolean; mode?: "read" | "read-write" }) {
     const grant = grants.find((item) => item.id === request.id)!;
     if (request.enabled !== undefined) grant.enabled = request.enabled;
     if (request.mode !== undefined) grant.mode = request.mode;
     const { token: _token, ...dto } = grant;
     return { ...dto, accessSince: 1, createdAt: 1, updatedAt: 1 };
+  },
+  async updateGrantAsync(request: { id: string; enabled?: boolean; mode?: "read" | "read-write" }) {
+    return this.updateGrant(request);
   },
   rotateGrant(id: string) {
     const grant = grants.find((item) => item.id === id)!;
@@ -51,36 +57,40 @@ const controller = {
   },
 } as any;
 
-try {
-  const bridge = new ExternalCliMemoryBridge(controller, root);
-  const first = bridge.ensureWorkspaceAccess({ workspaceId: "ws-a", workspaceName: "A", cwd: "C:\\repo-a" });
-  assert.equal(first.enabled, true);
-  assert.equal(first.mode, "read");
-  assert.equal(grants.length, 1);
-  assert.equal(grants[0].scopeType, "workspace");
-  assert.equal(grants[0].scopeId, "ws-a");
-  const firstProfile = JSON.parse(readFileSync(first.profilePath!, "utf8"));
-  assert.equal(firstProfile.token, grants[0].token);
+async function main() {
+  try {
+    const bridge = new ExternalCliMemoryBridge(controller, root);
+    const first = await bridge.ensureWorkspaceAccess({ workspaceId: "ws-a", workspaceName: "A", cwd: "C:\\repo-a" });
+    assert.equal(first.enabled, true);
+    assert.equal(first.mode, "read");
+    assert.equal(grants.length, 1);
+    assert.equal(grants[0].scopeType, "workspace");
+    assert.equal(grants[0].scopeId, "ws-a");
+    const firstProfile = JSON.parse(readFileSync(first.profilePath!, "utf8"));
+    assert.equal(firstProfile.token, grants[0].token);
 
-  const again = bridge.ensureWorkspaceAccess({ workspaceId: "ws-a", workspaceName: "A", cwd: "C:\\repo-a" });
-  assert.equal(again.enabled, true);
-  assert.equal(grants.length, 1, "same workspace/profile must reuse one delegated grant");
-  assert.equal(JSON.parse(readFileSync(again.profilePath!, "utf8")).token, firstProfile.token, "unchanged mode should reuse token");
+    const again = await bridge.ensureWorkspaceAccess({ workspaceId: "ws-a", workspaceName: "A", cwd: "C:\\repo-a" });
+    assert.equal(again.enabled, true);
+    assert.equal(grants.length, 1, "same workspace/profile must reuse one delegated grant");
+    assert.equal(JSON.parse(readFileSync(again.profilePath!, "utf8")).token, firstProfile.token, "unchanged mode should reuse token");
 
-  writeEnabled = true;
-  const upgraded = bridge.ensureWorkspaceAccess({ workspaceId: "ws-a", workspaceName: "A", cwd: "C:\\repo-a" });
-  assert.equal(upgraded.mode, "read-write");
-  assert.equal(grants.length, 1, "permission upgrade must rotate/reuse the same bridge grant");
-  const upgradedProfile = JSON.parse(readFileSync(upgraded.profilePath!, "utf8"));
-  assert.notEqual(upgradedProfile.token, firstProfile.token, "mode change rotates delegated token");
-  assert.equal(grants[0].mode, "read-write");
+    writeEnabled = true;
+    const upgraded = await bridge.ensureWorkspaceAccess({ workspaceId: "ws-a", workspaceName: "A", cwd: "C:\\repo-a" });
+    assert.equal(upgraded.mode, "read-write");
+    assert.equal(grants.length, 1, "permission upgrade must rotate/reuse the same bridge grant");
+    const upgradedProfile = JSON.parse(readFileSync(upgraded.profilePath!, "utf8"));
+    assert.notEqual(upgradedProfile.token, firstProfile.token, "mode change rotates delegated token");
+    assert.equal(grants[0].mode, "read-write");
 
-  bridge.ensureWorkspaceAccess({ workspaceId: "ws-b", workspaceName: "B", cwd: "D:\\repo-b" });
-  assert.equal(grants.length, 2, "different workspace gets a different credential");
-  assert.notEqual(grants[0].token, grants[1].token);
-  assert.notEqual(grants[0].scopeId, grants[1].scopeId);
+    await bridge.ensureWorkspaceAccess({ workspaceId: "ws-b", workspaceName: "B", cwd: "D:\\repo-b" });
+    assert.equal(grants.length, 2, "different workspace gets a different credential");
+    assert.notEqual(grants[0].token, grants[1].token);
+    assert.notEqual(grants[0].scopeId, grants[1].scopeId);
 
-  console.log("external-cli-memory-bridge-test: PASS");
-} finally {
-  rmSync(root, { recursive: true, force: true });
+    console.log("external-cli-memory-bridge-test: PASS");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
+
+void main();

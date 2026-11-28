@@ -75,7 +75,13 @@ export class ArchivedContentDeletion {
     // any task or deleting any Gadget, so a rejected workspace purge cannot lose its children.
     const protectedSpaces = new Set<string>();
     const materialFailures = new Set<string>();
-    const spacesWithMaterials = new Set([...selectedSpaces].filter((id) => db.hasWorkspaceOwnedMaterials(id)));
+    const spacesWithMaterials = new Set<string>();
+    for (const id of selectedSpaces) {
+      const hasMaterials = db.coreIdentity
+        ? (await db.readSpaceDeleteStatus(id)).hasOwnedMaterials
+        : db.hasWorkspaceOwnedMaterials(id);
+      if (hasMaterials) spacesWithMaterials.add(id);
+    }
     for (const [id, subtree] of selectedSubtrees) {
       if (![...subtree].some((spaceId) => spacesWithMaterials.has(spaceId))) continue;
       fail("space", id, "工作空间或其子空间仍有自有资料，请先迁移或清空资料后再彻底删除");
@@ -99,13 +105,31 @@ export class ArchivedContentDeletion {
     // Include trashed rows so a deleted space leaves no restorable tasks behind.
     const tasks = await db.readArchivedTaskCandidates([...directTasks], [...selectedSpaces]);
     const archiveRootIds = [...selectedRoots];
-    const isInSelectedArchivedTree = (spaceId: string | null | undefined) =>
-      db.isInArchivedWorkspaceSelection(spaceId, selectedRoots);
+    const isInSelectedArchivedTree = (spaceId: string | null | undefined, liveSpacesById = spacesById) => {
+      const visited = new Set<string>();
+      for (let current = spaceId ?? undefined; current && !visited.has(current); current = liveSpacesById.get(current)?.parentId ?? undefined) {
+        visited.add(current);
+        if (selectedRoots.has(current) && liveSpacesById.get(current)?.effectiveArchived) return true;
+      }
+      return false;
+    };
+    const branchSessionFiles = await db.readConversationBranchSessionFiles();
     for (const task of tasks) {
-      const wasTrashed = db.getTaskExecutionWorkspaceState(task.id)?.state === "trashed";
+      const wasTrashed = (await db.readTaskExecutionWorkspaceState(task.id))?.state === "trashed";
       // A surviving branch owns its source; once its final child is also purged the source can be cleaned.
-      const branchSources = db.connection.prepare("SELECT source_session_file FROM conversation_branches WHERE child_task_id=?").all(task.id) as Array<{ source_session_file: string }>;
-      const sessionFiles = [...new Set([task.sessionFile, ...branchSources.map((branch) => branch.source_session_file)].filter(Boolean) as string[])];
+      const branchSources = branchSessionFiles.filter((branch) => branch.childTaskId === task.id);
+      const sessionFiles = [...new Set([task.sessionFile, ...branchSources.map((branch) => branch.sourceSessionFile)].filter(Boolean) as string[])];
+      const checkAllowed = async () => {
+        const current = await db.readTask(task.id, { includeExpertBinding: false });
+        if (!current) throw new Error("任务已不存在");
+        const directStillArchived = directTasks.has(task.id) && (
+          (task.archived === true && current.archived === true) ||
+          Boolean(current.spaceId && await db.isSpaceEffectiveArchivedAsync(current.spaceId))
+        );
+        if (!directStillArchived && !isInSelectedArchivedTree(current.spaceId)) {
+          throw new Error("任务或所属空间已恢复，已停止彻底删除");
+        }
+      };
       const assertAllowed = () => {
         const current = db.getTask(task.id);
         if (!current) throw new Error("任务已不存在");
@@ -114,30 +138,32 @@ export class ArchivedContentDeletion {
           (task.archived === true && current.archived === true) ||
           Boolean(current.spaceId && db.isSpaceEffectiveArchived(current.spaceId))
         );
-        if (!directStillArchived && !isInSelectedArchivedTree(current.spaceId)) {
+        if (!directStillArchived && !db.isInArchivedWorkspaceSelection(current.spaceId, selectedRoots)) {
           throw new Error("任务或所属空间已恢复，已停止彻底删除");
         }
       };
       try {
-        assertAllowed();
+        if (db.coreIdentity) await checkAllowed();
+        else assertAllowed();
         // Re-run shutdown even for existing trash entries; a stale runtime may still own that task.
-        await lifecycle.trash(task.id, { strict: true, assertAllowed });
+        await lifecycle.trash(task.id, { strict: true, assertAllowed: db.coreIdentity ? undefined : assertAllowed });
         await lifecycle.purge(task.id, {
-          force: true, strict: true, assertAllowed,
+          force: true, strict: true, assertAllowed: db.coreIdentity ? undefined : assertAllowed,
           archiveScope: {
             direct: directTasks.has(task.id) ? (task.archived === true ? "explicit" : "inherited") : "none",
             selectedRoots: archiveRootIds,
           },
         });
-        if (db.getTask(task.id) || db.getTaskExecutionWorkspaceState(task.id)) throw new Error("任务永久删除后校验失败");
+        if (await db.readTask(task.id, { includeExpertBinding: false }) || await db.readTaskExecutionWorkspaceState(task.id)) throw new Error("任务永久删除后校验失败");
       } catch (error) {
-        fail("task", task.id, !db.getTask(task.id) ? `任务已删除，附属内容清理失败：${error instanceof Error ? error.message : String(error)}` : error);
+        const currentTask = await db.readTask(task.id, { includeExpertBinding: false });
+        fail("task", task.id, !currentTask ? `任务已删除，附属内容清理失败：${error instanceof Error ? error.message : String(error)}` : error);
         // Failed explicit purge must remain available for retry after an app restart.
         // Previously trashed tasks keep their original lifecycle; never override a concurrent restore.
-        if (!wasTrashed && db.getTask(task.id) && db.getTaskExecutionWorkspaceState(task.id)?.state === "trashed") {
+        if (!wasTrashed && currentTask && (await db.readTaskExecutionWorkspaceState(task.id))?.state === "trashed") {
           try {
             await lifecycle.restoreFromTrash(task.id);
-            if (task.cwd) db.bindTaskExecutionWorkspaceCwd(task.id, task.cwd);
+            if (task.cwd) await db.bindTaskExecutionWorkspaceCwdAsync(task.id, task.cwd);
             if (task.archived) await lifecycle.writeArchive(task.id, true);
           } catch (recoveryError) {
             fail("task", task.id, `恢复归档以便重试失败：${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`);
@@ -145,7 +171,7 @@ export class ArchivedContentDeletion {
         }
       }
       // Post-DB cleanup failures must not resurrect a task in the renderer.
-      if (!db.getTask(task.id) && !db.getTaskExecutionWorkspaceState(task.id)) {
+      if (!(await db.readTask(task.id, { includeExpertBinding: false })) && !(await db.readTaskExecutionWorkspaceState(task.id))) {
         result.deletedTaskIds.push(task.id);
         if (task.projectId) projectIds.add(task.projectId);
         try { await this.options.afterDeleteTask?.(task, sessionFiles); }
@@ -161,21 +187,23 @@ export class ArchivedContentDeletion {
       return count;
     };
     for (const id of [...selectedSpaces].sort((a, b) => depth(b) - depth(a))) {
-      const assertEmptyArchived = () => {
-        if (!db.getSpace(id) || !isInSelectedArchivedTree(id)) throw new Error("空间已恢复或移动，已停止彻底删除");
-        if (db.hasSpaceDeleteBlockers(id) || db.hasTasksInSpace(id)) {
+      const assertEmptyArchived = async () => {
+        const currentSpaces = new Map((await db.readSpaces()).map((s) => [s.id, s]));
+        const delStatus = await db.readSpaceDeleteStatus(id);
+        if (!delStatus.exists || !isInSelectedArchivedTree(id, currentSpaces)) throw new Error("空间已恢复或移动，已停止彻底删除");
+        if (delStatus.hasBlockersTasks || delStatus.hasTasks) {
           throw new Error("空间仍有未删除的任务、子空间或自有资料，请处理失败项后重试");
         }
       };
       try {
-        assertEmptyArchived();
+        await assertEmptyArchived();
         await this.options.beforeDeleteSpace?.(id);
-        assertEmptyArchived();
+        await assertEmptyArchived();
         await db.writeWorkspaceDelete(id, selectedRoots);
-        if (db.getSpace(id)) throw new Error("空间永久删除后校验失败");
+        if (await db.readSpace(id)) throw new Error("空间永久删除后校验失败");
         await this.options.afterDeleteSpace?.(id);
       } catch (error) { fail("space", id, error); }
-      if (!db.getSpace(id)) result.deletedSpaceIds.push(id);
+      if (!(await db.readSpace(id))) result.deletedSpaceIds.push(id);
     }
     return { result, projectIds: [...projectIds] };
   }
@@ -193,16 +221,23 @@ function validateRequest(request: ArchivedContentDeletionRequest): ArchivedConte
 }
 
 /** Remove only Pi-owned JSONL history; linked user files and shared branch sources remain intact. */
-export function removeManagedTaskSession(db: AppDatabase, task: Pick<TaskDto, "id" | "sessionFile">, sessionsRoot: string): void {
+export async function removeManagedTaskSession(db: AppDatabase, task: Pick<TaskDto, "id" | "sessionFile">, sessionsRoot: string): Promise<void> {
   if (!task.sessionFile || extname(task.sessionFile).toLowerCase() !== ".jsonl") return;
   const file = resolve(task.sessionFile);
   const root = resolve(sessionsRoot);
   if (!isPathInsideOrEqual(root, file) || file === root || !existsSync(file)) return;
   if (!existsSync(root) || !isPathInsideOrEqual(realpathSync.native(root), realpathSync.native(file))) return;
   const samePath = (candidate?: string) => Boolean(candidate && normalizePathForComparison(candidate) === normalizePathForComparison(file));
-  if (db.listTasks().some((other) => samePath(other.sessionFile))) return;
-  const branches = db.connection.prepare("SELECT source_session_file FROM conversation_branches").all() as Array<{ source_session_file: string }>;
-  if (branches.some((branch) => samePath(branch.source_session_file))) return;
+  if (db.coreIdentity) {
+    const tasks = await db.readNonTrashedTasks({ includeExpertBindings: false });
+    if (tasks.some((other) => samePath(other.sessionFile))) return;
+    const branches = await db.readConversationBranchSessionFiles();
+    if (branches.some((branch) => samePath(branch.sourceSessionFile))) return;
+  } else {
+    if (db.listTasks().some((other) => samePath(other.sessionFile))) return;
+    const branches = db.connection.prepare("SELECT source_session_file FROM conversation_branches").all() as Array<{ source_session_file: string }>;
+    if (branches.some((branch) => samePath(branch.source_session_file))) return;
+  }
   rmSync(file, { force: true });
 }
 

@@ -451,6 +451,9 @@ enum Request {
         task_id: String,
         after: Option<external_agent_history_data::Cursor>,
     },
+    ExternalAgentData {
+        query: external_agent_history_data::Query,
+    },
     ReadLoadoutObservations {
         task_id: String,
         limit: i64,
@@ -2946,6 +2949,9 @@ fn read(
         Request::ExternalAgentHistoryPage { task_id, after } => {
             Data::Json(serde_json::to_value(external_agent_history_data::read(&snapshot, &task_id, after)?)?)
         }
+        Request::ExternalAgentData { query } => {
+            Data::Json(external_agent_history_data::read_query(&snapshot, query)?)
+        }
         Request::ReadLoadoutObservations { task_id, limit } => {
             Data::Json(loadout_observation_data::read(&snapshot, &task_id, limit)?)
         }
@@ -3539,6 +3545,7 @@ fn classify_request(request: &Request) -> RequestClassification {
         | Request::TaskList { .. }
         | Request::TaskRecord { .. }
         | Request::ExternalAgentHistoryPage { .. }
+        | Request::ExternalAgentData { .. }
         | Request::ReadLoadoutObservations { .. }
         | Request::ApplicationDatabaseIdentity
         | Request::TaskWorkspacePaths

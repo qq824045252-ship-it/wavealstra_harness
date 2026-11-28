@@ -1,4 +1,4 @@
-import { botMemorySource } from "./BotMemorySource";
+import { botMemorySource, readBotMemorySource } from "./BotMemorySource";
 import { createHash, randomUUID } from "node:crypto";
 import type { AppDatabase } from "../db/AppDatabase";
 import { LOCAL_USER_ID } from "../../shared/bot-work";
@@ -50,7 +50,8 @@ export type RuntimeMemoryTurnQuery =
   | ({ kind: "extractionCurrent" } & MemoryExtractionLease)
   | (RuntimeMemoryExtractionBasisRequest & MemoryExtractionLease)
   | { kind: "tasks" }
-  | { kind: "skillLearningStatus" };
+  | { kind: "skillLearningStatus" }
+  | { kind: "undistilledTurns" };
 
 type RuntimeMemoryTurnRow = Omit<MemoryTurnDto, "metadata"> & { metadataJson: string };
 type SkillLearningCounts = Omit<MemorySkillLearningStatusDto, "distillation" | "blockedSkills">;
@@ -62,7 +63,8 @@ export type RuntimeMemoryTurnData =
   | { kind: "extractionCurrent"; current: boolean }
   | RuntimeMemoryExtractionBasis
   | { kind: "tasks"; tasks: MemoryTurnTaskDto[] }
-  | ({ kind: "skillLearningStatus"; latestError: string | null } & Omit<SkillLearningCounts, "latestError">);
+  | ({ kind: "skillLearningStatus"; latestError: string | null } & Omit<SkillLearningCounts, "latestError">)
+  | { kind: "undistilledTurns"; rows: Array<{ id: string; taskId: string; userText: string; assistantText: string }> };
 
 function projectRuntimeTurn({ metadataJson, ...turn }: RuntimeMemoryTurnRow): MemoryTurnDto {
   return { ...turn, metadata: parseObject(metadataJson) };
@@ -445,6 +447,37 @@ export class MemoryTurnRepository {
       if (!project || project.archived) return false;
     }
     return true;
+  }
+
+  async canExtractTaskAsync(taskId: string): Promise<boolean> {
+    if (!this.db.coreIdentity) return this.canExtractTask(taskId);
+    const bot = await readBotMemorySource(this.db, taskId);
+    if (bot) return bot.status === "active";
+    const [task, wsState] = await Promise.all([
+      this.db.readTask(taskId, { includeExpertBinding: false }),
+      this.db.readTaskExecutionWorkspaceState(taskId),
+    ]);
+    if (!task || wsState?.state === "trashed") return false;
+    if (task.projectId) {
+      const res = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "projects", includeArchived: true });
+      const project = res?.kind === "projects" ? res.projects.find(p => p.id === task.projectId) : undefined;
+      if (!project || project.archived) return false;
+    }
+    return true;
+  }
+
+  async allExistAsync(ids: readonly string[]): Promise<boolean> {
+    if (!this.db.coreIdentity) return this.allExist(ids);
+    if (!ids.length) return true;
+    const items = await Promise.all(ids.map(id => this.readDetail(id)));
+    return items.every(Boolean);
+  }
+
+  async readUndistilledTurns(limit = 2000): Promise<Array<{ id: string; taskId: string }>> {
+    if (!this.db.coreIdentity) return [];
+    const data = await this.db.runtimeAuditReader?.memoryTurnData({ kind: "undistilledTurns" }, LOCAL_USER_ID);
+    if (data?.kind !== "undistilledTurns") return [];
+    return data.rows.slice(0, limit).map(row => ({ id: row.id, taskId: row.taskId }));
   }
 
   async readSkillLearningCounts(): Promise<SkillLearningCounts> {

@@ -6,6 +6,7 @@ import { getMyBuddyDir } from "../paths";
 import { isPathInsideOrEqual, normalizePathForComparison } from "./TaskExecutionWorkspace";
 import type { PrepareTaskWorktreeRequest } from "../../shared/agent-ipc";
 import { isTaskWorktreeId } from "../../shared/task-worktree";
+import { resolveBoundWorkspaceCwd } from "../terminal/TerminalHost";
 
 function worktreeBase(): string {
   return join(getMyBuddyDir(), "task-worktrees");
@@ -37,15 +38,33 @@ export async function prepareTaskGitWorktree(db: AppDatabase, { taskId, spaceId 
   if (!isTaskWorktreeId(taskId) || typeof spaceId !== "string" || !spaceId) {
     throw new Error("新任务工作树参数无效");
   }
-  if (db.getTask(taskId) || preparing.has(taskId)) throw new Error("只能为尚未发送的新对话创建工作树");
-  if (db.isSpaceEffectiveArchived(spaceId)) throw new Error("请选择未归档的 Git 工作空间");
-  const cwd = db.resolveWorkspaceExecutionPath(spaceId, { requireExisting: true });
+  if (await db.readTask(taskId, { includeExpertBinding: false }) || preparing.has(taskId)) throw new Error("只能为尚未发送的新对话创建工作树");
+  const space = await db.readSpace(spaceId);
+  if (!space || space.effectiveArchived) throw new Error("请选择未归档的 Git 工作空间");
+  const cwd = !db.coreIdentity
+    ? db.resolveWorkspaceExecutionPath(spaceId, { requireExisting: true })
+    : (() => {
+        try {
+          return resolveBoundWorkspaceCwd(space, (p: string) => statSync(p).isDirectory());
+        } catch {
+          return undefined;
+        }
+      })();
   if (!cwd) throw new Error("请选择绑定 Git 仓库的工作空间");
   const policy = {
     // This request is sent only when the user enables Git worktree for the new conversation.
     explicitWorktreeRequest: true,
-    authorizeGitIsolation: () => !db.getTask(taskId) && !db.isSpaceEffectiveArchived(spaceId)
-      && db.resolveWorkspaceExecutionPath(spaceId, { requireExisting: true }) === cwd,
+    authorizeGitIsolation: async () => {
+      if (await db.readTask(taskId, { includeExpertBinding: false })) return false;
+      const current = await db.readSpace(spaceId);
+      if (!current || current.effectiveArchived) return false;
+      if (!db.coreIdentity) return db.resolveWorkspaceExecutionPath(spaceId, { requireExisting: true }) === cwd;
+      try {
+        return resolveBoundWorkspaceCwd(current, (p: string) => statSync(p).isDirectory()) === cwd;
+      } catch {
+        return false;
+      }
+    },
   };
   preparing.add(taskId);
   try {

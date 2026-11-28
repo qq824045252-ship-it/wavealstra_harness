@@ -415,7 +415,10 @@ mod tests {
         fs::write(&pending, "interrupted stamp").unwrap();
         let cutover = init().unwrap();
         assert!(!cutover.rebuilt);
-        assert_eq!(cutover.deleted_files, [old.display().to_string()]);
+        assert_eq!(
+            cutover.deleted_files,
+            [data.canonicalize().unwrap().join("app.db").display().to_string()]
+        );
         assert!(!old.exists() && !pending.exists());
         assert_eq!(fs::read(&unrelated).unwrap(), b"not associated with a legacy app.duckdb");
         let saved: database_release::Stamp = serde_json::from_slice(&fs::read(&stamp).unwrap()).unwrap();
@@ -428,20 +431,30 @@ mod tests {
     #[test]
     fn stamped_upgrade_recovers_committed_duckdb_wal() {
         let s = Sandbox::new("release-wal");
+        if let Ok(target) = std::env::var("MYBUDDY_TEST_UNCHECKPOINTED_WAL_DIR") {
+            let live = PathBuf::from(target).join("live.duckdb");
+            let writer = Connection::open(&live).unwrap();
+            writer.execute_batch("CHECKPOINT").unwrap();
+            writer.execute(
+                "INSERT INTO tasks (id, title, updated_at) VALUES ('from-wal', 'Keep', 1)", [],
+            ).unwrap();
+            // Exit immediately without running DuckDB shutdown checkpoint so the uncommitted WAL stays on disk.
+            std::mem::forget(writer);
+            std::process::exit(0);
+        }
         let data = s.0.join(".mybuddy");
         fs::create_dir(&data).unwrap();
         let live = s.0.join("live.duckdb");
         let db = data.join("app.duckdb");
         let (_, generation) = open_and_materialize(&live).unwrap();
-        let writer = Connection::open(&live).unwrap();
-        writer.execute_batch("CHECKPOINT").unwrap();
-        writer.execute(
-            "INSERT INTO tasks (id, title, updated_at) VALUES ('from-wal', 'Keep', 1)", [],
-        ).unwrap();
-        // Snapshot an idle writer before the clean close checkpoints its WAL.
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "db_schema::tests::stamped_upgrade_recovers_committed_duckdb_wal", "--nocapture"])
+            .env("MYBUDDY_TEST_UNCHECKPOINTED_WAL_DIR", &s.0)
+            .status()
+            .unwrap();
+        assert!(status.success());
         fs::copy(&live, &db).unwrap();
         fs::copy(s.0.join("live.duckdb.wal"), data.join("app.duckdb.wal")).unwrap();
-        drop(writer);
         fs::write(
             data.join("database-release.json"),
             serde_json::to_vec(&database_release::Stamp {

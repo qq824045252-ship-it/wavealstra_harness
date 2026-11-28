@@ -14,6 +14,17 @@ pub enum Query {
     Spaces,
     VisibleSpaces { user_id: String },
     Navigation { user_id: String },
+    SpaceDeleteStatus { space_id: String },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceDeleteStatus {
+    exists: bool,
+    has_children: bool,
+    has_blockers_tasks: bool,
+    has_tasks: bool,
+    has_owned_materials: bool,
 }
 
 #[derive(Serialize)]
@@ -21,6 +32,8 @@ pub struct WorkspaceData {
     spaces: Vec<Space>,
     #[serde(skip_serializing_if = "Option::is_none")]
     navigation: Option<Navigation>,
+    #[serde(rename = "deleteStatus", skip_serializing_if = "Option::is_none")]
+    delete_status: Option<SpaceDeleteStatus>,
 }
 
 #[derive(Serialize)]
@@ -79,9 +92,47 @@ const RECEIPTS: &str = "FROM bot_send_receipts r
 
 pub fn read(db: &mut Connection, query: Query) -> Result<WorkspaceData> {
     let snapshot = db.transaction()?;
+    if let Query::SpaceDeleteStatus { space_id } = query {
+        let exists: bool = snapshot.query_row(
+            "SELECT EXISTS(SELECT 1 FROM spaces WHERE id=?1)",
+            [&space_id],
+            |r| r.get(0),
+        )?;
+        let has_children: bool = snapshot.query_row(
+            "SELECT EXISTS(SELECT 1 FROM spaces WHERE parent_id=?1)",
+            [&space_id],
+            |r| r.get(0),
+        )?;
+        let has_blockers_tasks: bool = snapshot.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks t WHERE t.space_id=?1 AND (EXISTS (SELECT 1 FROM gateway_sidebar_conversations g WHERE g.task_id=t.id) OR NOT EXISTS (SELECT 1 FROM task_execution_workspace_state s WHERE s.task_id=t.id AND s.state='trashed')))",
+            [&space_id],
+            |r| r.get(0),
+        )?;
+        let has_tasks: bool = snapshot.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE space_id=?1 AND id!='mybuddy-dots')",
+            [&space_id],
+            |r| r.get(0),
+        )?;
+        let has_owned_materials: bool = snapshot.query_row(
+            "SELECT EXISTS(SELECT 1 FROM library_spaces l JOIN library_items i ON i.space_id=l.id WHERE l.workspace_id=?1)",
+            [&space_id],
+            |r| r.get(0),
+        )?;
+        return Ok(WorkspaceData {
+            spaces: Vec::new(),
+            navigation: None,
+            delete_status: Some(SpaceDeleteStatus {
+                exists,
+                has_children,
+                has_blockers_tasks,
+                has_tasks,
+                has_owned_materials,
+            }),
+        });
+    }
     let mut spaces = read_spaces(&snapshot)?;
     let navigation = match query {
-        Query::Spaces => None,
+        Query::Spaces | Query::SpaceDeleteStatus { .. } => None,
         Query::VisibleSpaces { user_id } => {
             if has_generated_spaces(&snapshot)? {
                 let history = read_history_spaces(&snapshot, &user_id)?;
@@ -128,7 +179,11 @@ pub fn read(db: &mut Connection, query: Query) -> Result<WorkspaceData> {
             });
         }
     }
-    Ok(WorkspaceData { spaces, navigation })
+    Ok(WorkspaceData {
+        spaces,
+        navigation,
+        delete_status: None,
+    })
 }
 
 fn read_spaces(db: &Connection) -> Result<Vec<Space>> {

@@ -53,6 +53,22 @@ pub enum Query {
     Report {
         export_week: Option<String>,
     },
+    SubagentDiagnostics {
+        task: String,
+        id: String,
+    },
+    SourceContext {
+        task: String,
+        conversation: String,
+        generation: i64,
+        actor: String,
+        assistant_message_id: Option<String>,
+        operation: Option<String>,
+        goal_id: Option<String>,
+        goal_revision: Option<i64>,
+        evidence_refs_json: Option<String>,
+        input_snapshot_id: Option<String>,
+    },
 }
 
 #[derive(Deserialize)]
@@ -317,7 +333,211 @@ fn read_inner(db: &Connection, query: Query) -> Result<Value> {
             Ok(json!({ "durationMs": duration, "modelRequests": requests, "corrections": corrections }))
         }
         Query::Report { export_week } => report(db, export_week),
+        Query::SubagentDiagnostics { task, id } => subagent_diagnostics(db, &task, &id),
+        Query::SourceContext {
+            task,
+            conversation,
+            generation,
+            actor,
+            assistant_message_id,
+            operation,
+            goal_id,
+            goal_revision,
+            evidence_refs_json,
+            input_snapshot_id,
+        } => source_context(
+            db,
+            &task,
+            &conversation,
+            generation,
+            &actor,
+            assistant_message_id.as_deref(),
+            operation.as_deref(),
+            goal_id.as_deref(),
+            goal_revision,
+            evidence_refs_json.as_deref(),
+            input_snapshot_id.as_deref(),
+        ),
     }
+}
+
+fn subagent_diagnostics(db: &Connection, task: &str, id: &str) -> Result<Value> {
+    let row = db.query_row(
+        "WITH requests AS (
+            SELECT record_json AS r FROM task_request_diagnostics
+            WHERE task_id = ?1
+              AND json_extract_string(try_cast(record_json AS JSON), '$.sourceKind') = 'subagent'
+              AND json_extract_string(try_cast(record_json AS JSON), '$.executionScope') = ?1
+              AND json_extract_string(try_cast(record_json AS JSON), '$.conversationId') = ?2
+         ), execution_ids AS (
+            SELECT COALESCE(
+                json_extract_string(try_cast(r AS JSON), '$.executionId'),
+                'durable:' || ?1 || ':' || ?2 || ':' || COALESCE(json_extract_string(try_cast(r AS JSON), '$.generationTaskId'), '')
+            ) AS id FROM requests
+            UNION
+            SELECT json_extract_string(try_cast(record_json AS JSON), '$.executionId') AS id
+            FROM task_tool_diagnostics
+            WHERE task_id = ?1
+              AND json_extract_string(try_cast(record_json AS JSON), '$.sourceKind') = 'subagent'
+              AND json_extract_string(try_cast(record_json AS JSON), '$.conversationId') = ?2
+         ), waits AS (
+            SELECT i.* FROM conversation_interactions i
+            WHERE i.task_id = ?1 AND i.execution_id IN (SELECT id FROM execution_ids WHERE id IS NOT NULL)
+         )
+         SELECT
+            count(*)::BIGINT,
+            CASE WHEN count(TRY_CAST(json_extract_string(try_cast(r AS JSON), '$.usage.input') AS DOUBLE)) = count(*)
+                 THEN CAST(sum(TRY_CAST(json_extract_string(try_cast(r AS JSON), '$.usage.input') AS DOUBLE)) AS BIGINT) END,
+            CASE WHEN count(TRY_CAST(json_extract_string(try_cast(r AS JSON), '$.usage.output') AS DOUBLE)) = count(*)
+                 THEN CAST(sum(TRY_CAST(json_extract_string(try_cast(r AS JSON), '$.usage.output') AS DOUBLE)) AS BIGINT) END,
+            CASE WHEN count(TRY_CAST(json_extract_string(try_cast(r AS JSON), '$.usage.cacheRead') AS DOUBLE)) = count(*)
+                 THEN CAST(sum(TRY_CAST(json_extract_string(try_cast(r AS JSON), '$.usage.cacheRead') AS DOUBLE)) AS BIGINT) END,
+            (SELECT count(*)::BIGINT FROM waits),
+            (SELECT count(*)::BIGINT FROM waits WHERE status = 'resolved'),
+            (SELECT CAST(sum(GREATEST(0, resolved_at - created_at)) AS BIGINT) FROM waits WHERE resolved_at IS NOT NULL)
+         FROM requests",
+        params![task, id],
+        |r| {
+            Ok(json!({
+                "requests": r.get::<_, i64>(0)?,
+                "inputTokens": r.get::<_, Option<i64>>(1)?,
+                "outputTokens": r.get::<_, Option<i64>>(2)?,
+                "cacheReadTokens": r.get::<_, Option<i64>>(3)?,
+                "waits": r.get::<_, i64>(4)?,
+                "answered": r.get::<_, i64>(5)?,
+                "waitMs": r.get::<_, Option<i64>>(6)?,
+            }))
+        },
+    )?;
+    Ok(row)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn source_context(
+    db: &Connection,
+    task: &str,
+    conversation: &str,
+    generation: i64,
+    actor: &str,
+    assistant_message_id: Option<&str>,
+    operation: Option<&str>,
+    goal_id: Option<&str>,
+    goal_revision: Option<i64>,
+    evidence_refs_json: Option<&str>,
+    input_snapshot_id: Option<&str>,
+) -> Result<Value> {
+    let gen_str = generation.to_string();
+    let read_diag = |table: &str| -> Result<Vec<Value>> {
+        let sql = format!(
+            "SELECT record_json FROM {table}
+             WHERE task_id = ?1
+               AND json_extract_string(try_cast(record_json AS JSON), '$.conversationId') = ?2
+               AND json_extract_string(try_cast(record_json AS JSON), '$.generationTaskId') = ?3
+               AND json_extract_string(try_cast(record_json AS JSON), '$.sourceKind') = ?4
+               AND (json_extract_string(try_cast(record_json AS JSON), '$.executionScope') = ?1
+                    OR json_extract_string(try_cast(record_json AS JSON), '$.executionScope') IS NULL)
+             ORDER BY started_at LIMIT 64"
+        );
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt
+            .query_map(params![task, conversation, gen_str, actor], |r| r.get::<_, String>(0))?
+            .collect::<duckdb::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .collect())
+    };
+    let requests = read_diag("task_request_diagnostics")?;
+    let tools = read_diag("task_tool_diagnostics")?;
+    let mut exec_ids: Vec<String> = requests
+        .iter()
+        .chain(tools.iter())
+        .filter_map(|r| r.get("executionId").and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    exec_ids.sort();
+    exec_ids.dedup();
+    let mut interactions = Vec::new();
+    for eid in &exec_ids {
+        interactions.extend(records(
+            db,
+            "SELECT id, execution_id, kind, status, created_at, resolved_at
+             FROM conversation_interactions WHERE task_id = ?1 AND execution_id = ?2
+             ORDER BY created_at LIMIT 100",
+            params![task, eid],
+        )?);
+    }
+    let loadout = match assistant_message_id {
+        Some(mid) => records(
+            db,
+            "SELECT actual_json, blocked_json, used_skill_ids_json, outcome
+             FROM agent_loadout_observations WHERE task_id = ?1 AND assistant_message_id = ?2",
+            params![task, mid],
+        )?
+        .pop()
+        .unwrap_or(Value::Null),
+        None => Value::Null,
+    };
+    let work_outcome = match operation {
+        Some(op) if actor == "main" && !op.is_empty() => {
+            let binding = records(
+                db,
+                "SELECT binding_id, work_id, intent_revision, owner_epoch, input_snapshot_id, status
+                 FROM work_execution_bindings WHERE task_id = ?1 AND conversation_id = ?2 AND operation_id = ?3",
+                params![task, conversation, op],
+            )?
+            .pop();
+            match binding {
+                Some(b) => {
+                    let bid = b["binding_id"].as_str().unwrap_or_default().to_owned();
+                    let wid = b["work_id"].as_str().unwrap_or_default().to_owned();
+                    let irev = b["intent_revision"].as_i64().unwrap_or_default();
+                    let epoch = b["owner_epoch"].as_i64().unwrap_or_default();
+                    let snap = b["input_snapshot_id"].as_str().unwrap_or_default().to_owned();
+                    let deliveries = records(
+                        db,
+                        "SELECT deliverable_id, status, artifact_refs_json, evidence_refs_json, is_speculation, has_write_conflicts
+                         FROM work_deliverables
+                         WHERE execution_id = ?1 AND work_id = ?2 AND intent_revision = ?3 AND owner_epoch = ?4 AND input_snapshot_id = ?5
+                         ORDER BY created_at LIMIT 64",
+                        params![bid, wid, irev, epoch, snap],
+                    )?;
+                    json!({ "binding": b, "deliveries": deliveries })
+                }
+                None => Value::Null,
+            }
+        }
+        _ => Value::Null,
+    };
+    let goal_evidence = match (goal_id, goal_revision, input_snapshot_id) {
+        (Some(gid), Some(rev), Some(snap)) => match evidence_refs_json {
+            Some(refs) => records(
+                db,
+                "SELECT evidence_id, kind, provenance, source_ref, criterion_ids_json
+                 FROM work_evidence
+                 WHERE work_id = ?1 AND intent_revision = ?2 AND input_snapshot_id = ?3
+                   AND evidence_id IN (SELECT json_extract_string(value, '$') FROM json_each(?4))
+                 ORDER BY recorded_at",
+                params![gid, rev, snap, refs],
+            )?,
+            None => records(
+                db,
+                "SELECT evidence_id, kind, provenance, source_ref, criterion_ids_json
+                 FROM work_evidence
+                 WHERE work_id = ?1 AND intent_revision = ?2 AND input_snapshot_id = ?3
+                 ORDER BY recorded_at LIMIT 64",
+                params![gid, rev, snap],
+            )?,
+        },
+        _ => Vec::new(),
+    };
+    Ok(json!({
+        "requests": requests,
+        "tools": tools,
+        "interactions": interactions,
+        "loadout": loadout,
+        "workOutcome": work_outcome,
+        "goalEvidence": goal_evidence,
+    }))
 }
 
 pub fn read(db: &mut Connection, query: Query) -> Result<Value> {

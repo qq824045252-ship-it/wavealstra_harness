@@ -303,6 +303,7 @@ import { TaskExecutionWorkspaceLifecycle } from "./task/TaskExecutionWorkspaceLi
 import { ArchivedContentDeletion, artifactPurgeCleanupWarning, removeManagedTaskSession } from "./task/ArchivedContentDeletion";
 import { ArchivedContentDeletionIpc, TRASH_RETENTION_DAYS, TrashIpc, type ArchivedContentDeletionRequest } from "../shared/archive-deletion";
 import { TaskExecutionWorkspace } from "./task/TaskExecutionWorkspace";
+import { resolveTaskWorkspaceCwdAsync } from "./task/TaskWorkspaceResolver";
 import { prepareTaskGitWorktree, resolveTaskWorktreeCwd } from "./task/TaskGitWorktree";
 import { isTaskWorktreeId } from "../shared/task-worktree";
 import { McpConfigService } from "./mcp/McpConfigService";
@@ -825,7 +826,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     }),
   }, taskBoard);
   const actions = dotsActions;
-  const activity = new DotsActivity(db.fixtureConnection, id => actions.allowsResult(id) && !db.isTaskEffectiveArchived(id)
+  const activity = new DotsActivity(db.fixtureConnection, id => !db.coreIdentity && actions.allowsResult(id) && !db.isTaskEffectiveArchived(id)
     && db.getTaskExecutionWorkspaceState(id)?.state !== "trashed", id => dots.taskLiveOutput(id), db.runtimeAuditReader);
   const reporting = new DotsReporting(db.fixtureConnection, () => agentService.isTaskBusy(DOTS_TASK_ID),
     (prompt, signal, onText) => agentService.generateDotsReport(prompt, signal, onText),
@@ -1268,7 +1269,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     if (!id) return { ok: false as const, error: "任务无效" };
     if (!paths.length) return { ok: false as const, error: "没有可复制的文件" };
     try {
-      const destRoot = agentService.resolveTaskExecutionWorkspaceCwd(id);
+      const destRoot = await agentService.resolveTaskExecutionWorkspaceCwdAsync(id);
       const items: Array<{ source: string; relativePath: string; alreadyThere: boolean }> = [];
       for (const src of paths) {
         const result = await copyExternalIntoWorkspace(destRoot, src);
@@ -1405,7 +1406,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     agentService.stopConsultWorker(req),
   );
   ipcMain.handle(AgentIpc.setPermissionMode, (_e, req) => {
-    return agentService.setPermissionMode(req);
+    return agentService.setPermissionModeAsync(req);
   });
   ipcMain.handle(AgentIpc.listBackups, (_e, taskId?: string) => agentService.listBackups(taskId));
   ipcMain.handle(CodeReviewIpc.list, (_e, taskId: string) => agentService.listCodeReview(taskId));
@@ -1813,7 +1814,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     agentService.saveSubagentConfig(config),
   );
   ipcMain.handle(AgentIpc.getContextUsage, (_e, taskId: string) =>
-    agentService.getContextUsage(taskId),
+    agentService.getContextUsageAsync(taskId),
   );
   // 用量统计（账户面板）：主进程 usage_events 事实表查询
   const clampRange = (rangeDays: number): number => Math.max(1, Math.min(3650, Math.round(rangeDays) || 7));
@@ -2891,6 +2892,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   );
 
   /* ------------------- 扩展栏终端（Terminal P0） ------------------- */
+  const taskWorkspace = new TaskExecutionWorkspace();
   const prepareExternalCliMemory = async (owner: { taskId?: string; workspaceId?: string }): Promise<void> => {
     // Skill-first sharing: every terminal launch refreshes the one-way Skill projection,
     // so direct Codex/Claude/Hermes launches do not need Herdr to see MyBuddy Skills.
@@ -2911,12 +2913,12 @@ function registerIpc(memoryKernel: MemoryService): void {
       let cwd: string | undefined;
       if (owner.taskId?.trim()) {
         const taskId = owner.taskId.trim();
-        const taskBeforeResolve = db.getTask(taskId);
-        cwd = agentService.resolveTaskExecutionWorkspaceCwd(taskId);
-        const task = db.getTask(taskId) ?? taskBeforeResolve;
+        const taskBeforeResolve = await db.readTask(taskId, { includeExpertBinding: false });
+        cwd = await resolveTaskWorkspaceCwdAsync(db, taskWorkspace, taskId);
+        const task = (await db.readTask(taskId, { includeExpertBinding: false })) ?? taskBeforeResolve;
         workspaceId = task?.spaceId?.trim() || undefined;
         if (!workspaceId && task && cwd) {
-          const prepared = externalCliMemoryBridge.ensureTaskAccess({
+          const prepared = await externalCliMemoryBridge.ensureTaskAccess({
             taskId,
             taskName: task.title || taskId,
             cwd,
@@ -2928,14 +2930,14 @@ function registerIpc(memoryKernel: MemoryService): void {
         }
       }
       if (!workspaceId) return;
-      const space = db.getSpace(workspaceId);
+      const space = await db.readSpace(workspaceId);
       if (!space) return;
       if (!cwd) {
         cwd = resolveBoundWorkspaceCwd(space, (p) => {
           try { return existsSync(p) && statSync(p).isDirectory(); } catch { return false; }
         });
       }
-      const prepared = externalCliMemoryBridge.ensureWorkspaceAccess({
+      const prepared = await externalCliMemoryBridge.ensureWorkspaceAccess({
         workspaceId,
         workspaceName: space.name || basename(cwd),
         cwd,
@@ -3000,15 +3002,32 @@ function registerIpc(memoryKernel: MemoryService): void {
     if (!externalAgentRuntime) return { ok: false, message: "External Agent Runtime 未初始化" };
     return externalAgentRuntime.resolvePermission(req);
   });
+  const resolveTerminalOwnerCwd = async (req: TerminalOpenRequest): Promise<string | undefined> => {
+    const taskId = req.taskId?.trim();
+    if (taskId) return resolveTaskWorkspaceCwdAsync(db, taskWorkspace, taskId);
+    const workspaceId = req.workspaceId?.trim();
+    if (!workspaceId) return undefined;
+    const space = await db.readSpace(workspaceId);
+    if (!space) throw new Error(`工作空间不存在：${workspaceId}`);
+    return resolveBoundWorkspaceCwd(space, (p) => {
+      try {
+        return existsSync(p) && statSync(p).isDirectory();
+      } catch {
+        return false;
+      }
+    });
+  };
   ipcMain.handle(TerminalIpc.open, async (_e, req: TerminalOpenRequest) => {
     if (!terminalHost) throw new Error("terminalHost 未初始化");
+    const resolvedCwd = await resolveTerminalOwnerCwd(req);
     await prepareExternalCliMemory(req);
-    return terminalHost.open(req);
+    return terminalHost.open(req, undefined, resolvedCwd);
   });
   ipcMain.handle(TerminalIpc.restart, async (_e, req: TerminalOpenRequest) => {
     if (!terminalHost) throw new Error("terminalHost 未初始化");
+    const resolvedCwd = await resolveTerminalOwnerCwd(req);
     await prepareExternalCliMemory(req);
-    return terminalHost.restart(req);
+    return terminalHost.restart(req, undefined, resolvedCwd);
   });
   ipcMain.handle(TerminalIpc.tail, (_e, req: TerminalTailRequest) => {
     if (!terminalHost) return { sessionId: null, text: "", truncated: false };
@@ -3019,7 +3038,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     async (_e, req: TerminalPrepareHerdrRequest): Promise<TerminalPrepareHerdrResult> => {
       const workspaceId = req.workspaceId?.trim();
       if (!workspaceId) return { ok: false, error: "缺少 workspaceId" };
-      const space = db.getSpace(workspaceId);
+      const space = await db.readSpace(workspaceId);
       if (!space) return { ok: false, error: `工作空间不存在：${workspaceId}` };
       let cwd: string;
       try {
@@ -3409,7 +3428,7 @@ app.whenReady().then(async () => {
   });
   externalAgentRuntime = new ExternalAgentRuntime(
     db,
-    (taskId) => agentService.resolveTaskExecutionWorkspaceCwd(taskId),
+    (taskId) => agentService.resolveTaskExecutionWorkspaceCwdAsync(taskId),
     (taskId, messageId, before) =>
       agentService.emitExternalAgentWorkspaceChanges(taskId, messageId, before),
     () => agentService.getAppSettings().disabledExternalAgentIds ?? [],
@@ -3476,8 +3495,12 @@ app.whenReady().then(async () => {
   // · 空间终端 cwd = 空间绑定的真实文件夹（未绑定/不可用直接抛错，不静默回退）
   // Interactive terminal preferences are independent of Pi's Bash shellPath.
   terminalHost = new TerminalHost({
-    resolveCwd: (taskId) => agentService.resolveTaskExecutionWorkspaceCwd(taskId),
+    resolveCwd: (taskId) => {
+      if (db.coreIdentity) throw new Error("Core 数据库要求使用异步终端任务目录解析");
+      return agentService.resolveTaskExecutionWorkspaceCwd(taskId);
+    },
     resolveWorkspaceCwd: (workspaceId) => {
+      if (db.coreIdentity) throw new Error("Core 数据库要求使用异步终端空间目录解析");
       const space = db.getSpace(workspaceId);
       if (!space) throw new Error(`工作空间不存在：${workspaceId}`);
       return resolveBoundWorkspaceCwd(space, (p) => {
@@ -3554,10 +3577,10 @@ app.whenReady().then(async () => {
       workGraphService.cleanupByNode("workspace", spaceId);
       await gadgetService.deleteByWorkspace(spaceId);
     },
-    afterDeleteTask: (task, sessionFiles) => {
+    afterDeleteTask: async (task, sessionFiles) => {
       memoryKernel.detachAllInScope("task", task.id);
       for (const sessionFile of sessionFiles) {
-        removeManagedTaskSession(db, { ...task, sessionFile }, join(process.env.PI_CODING_AGENT_DIR || getMyBuddyDir(), "sessions"));
+        await removeManagedTaskSession(db, { ...task, sessionFile }, join(process.env.PI_CODING_AGENT_DIR || getMyBuddyDir(), "sessions"));
       }
     },
   });
@@ -3756,12 +3779,31 @@ app.whenReady().then(async () => {
     storage: gadgetStorage,
     registry: gadgetRegistry,
     runtime: gadgetRuntime,
-    workspaceExists: (id) => Boolean(db.getSpace(id)),
-    workspaceEffectiveArchived: (id) => db.getSpace(id)?.effectiveArchived === true,
-    taskExists: (id) => Boolean(db.getTask(id)),
-    taskWorkspaceId: (id) => db.getTask(id)?.spaceId ?? null,
-    resolveTaskDirectory: (id) => agentService.resolveTaskExecutionWorkspaceCwd(id),
-    workspaceAncestors: (id) => db.getSpaceAncestors(id).filter((space) => !space.effectiveArchived).map((space) => space.id),
+    workspaceExists: (id) => {
+      if (db.coreIdentity) throw new Error("Core 数据库要求使用异步 Gadget 工作空间查询");
+      return Boolean(db.getSpace(id));
+    },
+    workspaceEffectiveArchived: (id) => {
+      if (db.coreIdentity) throw new Error("Core 数据库要求使用异步 Gadget 工作空间查询");
+      return db.getSpace(id)?.effectiveArchived === true;
+    },
+    taskExists: (id) => {
+      if (db.coreIdentity) throw new Error("Core 数据库要求使用异步 Gadget 任务查询");
+      return Boolean(db.getTask(id));
+    },
+    taskWorkspaceId: (id) => {
+      if (db.coreIdentity) throw new Error("Core 数据库要求使用异步 Gadget 任务查询");
+      return db.getTask(id)?.spaceId ?? null;
+    },
+    resolveTaskDirectory: (id) => {
+      if (db.coreIdentity) throw new Error("Core 数据库要求使用异步 Gadget 目录解析");
+      return agentService.resolveTaskExecutionWorkspaceCwd(id);
+    },
+    resolveTaskDirectoryAsync: (id) => agentService.resolveTaskExecutionWorkspaceCwdAsync(id),
+    workspaceAncestors: (id) => {
+      if (db.coreIdentity) throw new Error("Core 数据库要求使用异步 Gadget 祖先查询");
+      return db.getSpaceAncestors(id).filter((space) => !space.effectiveArchived).map((space) => space.id);
+    },
     onChanged: (event) => {
       if (event.type === "updated" && event.sourceChanged) browserHost.markGadgetUpdated(event.gadgetId);
       broadcastToWindows(GadgetIpc.changed, event);

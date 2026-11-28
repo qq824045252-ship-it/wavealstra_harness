@@ -1,5 +1,5 @@
 use crate::{Result, business_protocol::ClientContext};
-use duckdb::{Connection, Row};
+use duckdb::{Connection, OptionalExt, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 pub enum Query {
     Info { task_id: String },
     Children { task_id: String },
+    ByRequestId { request_id: String },
+    SessionFiles,
 }
 
 #[derive(Serialize)]
@@ -37,6 +39,28 @@ pub fn read(db: &Connection, query: Query, client: Option<&ClientContext>) -> Re
     let (task_id, filter) = match query {
         Query::Info { task_id } => (task_id, "b.child_task_id = ?1"),
         Query::Children { task_id } => (task_id, "b.parent_task_id = ?1"),
+        Query::ByRequestId { request_id } => {
+            let child_task_id: Option<String> = db
+                .prepare("SELECT child_task_id FROM conversation_branches WHERE request_id = ?1")?
+                .query_row([&request_id], |row| row.get(0))
+                .optional()?;
+            return Ok(json!({ "childTaskId": child_task_id }));
+        }
+        Query::SessionFiles => {
+            let mut stmt = db.prepare(
+                "SELECT child_task_id, source_session_file FROM conversation_branches
+                 WHERE NULLIF(source_session_file, '') IS NOT NULL",
+            )?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(json!({
+                        "childTaskId": row.get::<_, String>(0)?,
+                        "sourceSessionFile": row.get::<_, String>(1)?,
+                    }))
+                })?
+                .collect::<duckdb::Result<Vec<_>>>()?;
+            return Ok(json!({ "rows": rows }));
+        }
     };
     let mut statement = db.prepare(&format!(
         "SELECT b.child_task_id, b.parent_task_id, b.root_task_id, b.parent_title_snapshot,

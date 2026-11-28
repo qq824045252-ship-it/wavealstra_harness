@@ -1,5 +1,5 @@
 use crate::{MAX_REPLY_BYTES, Result};
-use duckdb::{Connection, params_from_iter, types::Value};
+use duckdb::{Connection, OptionalExt, params_from_iter, types::Value};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 
@@ -49,6 +49,57 @@ pub enum Query {
         source_memory_ids: Vec<String>,
     },
     Stats,
+    DistinctProjectionScopes,
+    Projects { include_archived: bool },
+    CandidateById { id: String },
+    CaptureReceipt { source_key: String },
+    Revisions { memory_id: String },
+    UserWorks { user_id: String },
+    WorkCaptureFacts { work_id: String, user_id: String },
+    AssistantScopeContext {
+        task_id: Option<String>,
+        work_id: Option<String>,
+        conversation_id: Option<String>,
+        user_id: String,
+    },
+    DotsDueProjection { now: i64 },
+    SkillEffectivenessQuery {
+        #[serde(flatten)]
+        query: SkillEffectivenessQueryKind,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum SkillEffectivenessQueryKind {
+    ById { id: String },
+    ByTurnSkill {
+        task_id: String,
+        assistant_message_id: String,
+        skill_id: String,
+    },
+    InvokedForTurn {
+        task_id: String,
+        assistant_message_id: String,
+    },
+    LatestInvocationAfter {
+        skill_id: String,
+        candidate_id: String,
+        after: i64,
+    },
+    Recent { limit: i64, invoked_only: bool },
+    Summaries { limit: i64 },
+    RevisionById { id: String },
+    RevisionList { status: Option<String>, limit: i64 },
+    RevisionRefreshFacts {
+        skill_id: String,
+        candidate_id: Option<String>,
+    },
+    RevisionStaleCount {
+        skill_id: String,
+        candidate_id: Option<String>,
+        keep_id: String,
+    },
 }
 
 pub fn read(db: &Connection, query: Query) -> Result<Json> {
@@ -132,6 +183,358 @@ pub fn read(db: &Connection, query: Query) -> Result<Json> {
             candidate_id,
             source_memory_ids,
         } => skill_grounding::read(db, &installed_skill_id, &candidate_id, source_memory_ids),
+        Query::DistinctProjectionScopes => {
+            let rows = crate::sqlite_rows::records(
+                db,
+                "SELECT DISTINCT scope_type AS \"scopeType\", scope_id AS \"scopeId\"
+                 FROM memory_scopes WHERE scope_type IN ('global','workspace','project')",
+                [],
+            )?;
+            Ok(json!({ "kind": "distinctProjectionScopes", "scopes": rows }))
+        }
+        Query::Projects { include_archived } => {
+            let sql = if include_archived {
+                "SELECT id, name, archived FROM projects ORDER BY updated_at DESC, id"
+            } else {
+                "SELECT id, name, archived FROM projects WHERE archived = 0 ORDER BY updated_at DESC, id"
+            };
+            Ok(json!({ "kind": "projects", "projects": crate::sqlite_rows::records(db, sql, [])? }))
+        }
+        Query::CandidateById { id } => {
+            let candidate = crate::sqlite_rows::records(
+                db,
+                "SELECT id, task_id, kind, title, content, scope_type, scope_id, confidence, importance, explicit,
+                        operation_hint, replaces, status, raw_json, created_at, resolved_at, resolved_memory_id
+                 FROM memory_candidates WHERE id = ?1",
+                [&id],
+            )?
+            .pop();
+            Ok(json!({ "kind": "candidateById", "candidate": candidate }))
+        }
+        Query::CaptureReceipt { source_key } => {
+            let receipt = crate::sqlite_rows::records(
+                db,
+                "SELECT source_key, memory_id, content_hash, suppressed, updated_at
+                 FROM memory_capture_receipts WHERE source_key = ?1",
+                [&source_key],
+            )?
+            .pop();
+            Ok(json!({ "kind": "captureReceipt", "receipt": receipt }))
+        }
+        Query::Revisions { memory_id } => {
+            let revisions = crate::sqlite_rows::records(
+                db,
+                "SELECT revision, changed_by, change_reason, content, title
+                 FROM memory_revisions WHERE memory_id = ?1 ORDER BY revision DESC",
+                [&memory_id],
+            )?;
+            Ok(json!({ "kind": "revisions", "revisions": revisions }))
+        }
+        Query::UserWorks { user_id } => {
+            let mut stmt = db.prepare("SELECT work_id FROM works WHERE user_id = ?1 ORDER BY work_id")?;
+            let work_ids = stmt
+                .query_map([&user_id], |r| r.get::<_, String>(0))?
+                .collect::<duckdb::Result<Vec<_>>>()?;
+            Ok(json!({ "kind": "userWorks", "workIds": work_ids }))
+        }
+        Query::WorkCaptureFacts { work_id, user_id } => work_capture_facts(db, &work_id, &user_id),
+        Query::AssistantScopeContext {
+            task_id,
+            work_id,
+            conversation_id,
+            user_id,
+        } => assistant_scope_context(
+            db,
+            task_id.as_deref(),
+            work_id.as_deref(),
+            conversation_id.as_deref(),
+            &user_id,
+        ),
+        Query::DotsDueProjection { now } => dots_due_projection(db, now),
+        Query::SkillEffectivenessQuery { query } => skill_effectiveness_query(db, query),
+    }
+}
+
+fn work_capture_facts(db: &Connection, work_id: &str, user_id: &str) -> Result<Json> {
+    let work = crate::sqlite_rows::records(
+        db,
+        "SELECT title, progress_summary, lifecycle, mode, closure_conclusion, intent_revision, input_snapshot_id
+         FROM works WHERE work_id = ?1 AND user_id = ?2",
+        duckdb::params![work_id, user_id],
+    )?
+    .pop();
+    let Some(work_val) = work else {
+        return Ok(json!({ "kind": "workCaptureFacts", "work": Json::Null }));
+    };
+    let intent_rev = work_val["intent_revision"].as_i64().unwrap_or_default();
+    let snap_id = work_val["input_snapshot_id"].as_str().unwrap_or_default().to_owned();
+    let deliverables = crate::sqlite_rows::records(
+        db,
+        "SELECT deliverable_id, status, summary FROM work_deliverables
+         WHERE work_id = ?1 AND intent_revision = ?2 AND input_snapshot_id = ?3 AND status IN ('accepted','proposed')
+         ORDER BY created_at DESC, deliverable_id DESC LIMIT 6",
+        duckdb::params![work_id, intent_rev, &snap_id],
+    )?;
+    let deliverable_total: i64 = db.query_row(
+        "SELECT COUNT(*) FROM work_deliverables
+         WHERE work_id = ?1 AND intent_revision = ?2 AND input_snapshot_id = ?3 AND status IN ('accepted','proposed')",
+        duckdb::params![work_id, intent_rev, &snap_id],
+        |r| r.get(0),
+    )?;
+    let blockers = crate::sqlite_rows::records(
+        db,
+        "SELECT reason FROM work_blockers
+         WHERE work_id = ?1 AND status = 'open'
+         ORDER BY waiting_for_user_input DESC, created_at DESC, blocker_id DESC LIMIT 6",
+        [work_id],
+    )?;
+    let blocker_total: i64 = db.query_row(
+        "SELECT COUNT(*) FROM work_blockers WHERE work_id = ?1 AND status = 'open'",
+        [work_id],
+        |r| r.get(0),
+    )?;
+    Ok(json!({
+        "kind": "workCaptureFacts",
+        "work": work_val,
+        "deliverables": deliverables,
+        "deliverableTotal": deliverable_total,
+        "blockers": blockers,
+        "blockerTotal": blocker_total,
+    }))
+}
+
+fn work_has_shared_origin(db: &Connection, work_id: &str) -> Result<bool> {
+    let origin: Option<String> = db
+        .query_row(
+            "SELECT json_extract_string(try_cast(o.origin_json AS JSON), '$.audience')
+             FROM works w
+             JOIN bot_turn_origins o ON o.user_message_id = w.source_message_id AND o.user_id = w.user_id
+             WHERE w.work_id = ?1",
+            [work_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    if let Some(audience) = origin {
+        return Ok(audience != "private");
+    }
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM works w JOIN gateway_work_targets t ON t.user_id = w.user_id AND t.source_message_id = w.source_message_id WHERE w.work_id = ?1)",
+        [work_id],
+        |r| r.get(0),
+    )?)
+}
+
+fn assistant_scope_context(
+    db: &Connection,
+    task_id: Option<&str>,
+    work_id: Option<&str>,
+    conversation_id: Option<&str>,
+    user_id: &str,
+) -> Result<Json> {
+    let work_scope = match task_id {
+        Some(tid) => {
+            let row = crate::sqlite_rows::records(
+                db,
+                "SELECT w.owner_bot_id AS bot_id, b.work_id, w.project_id,
+                        (SELECT team_id FROM work_team_ownership WHERE work_id = b.work_id LIMIT 1) AS team_id,
+                        EXISTS(SELECT 1 FROM work_teams WHERE work_id = b.work_id) AS is_team
+                 FROM work_execution_bindings b
+                 JOIN works w ON w.work_id = b.work_id
+                 WHERE b.task_id = ?1 AND w.user_id = ?2
+                 ORDER BY b.admitted_at DESC, b.binding_id DESC LIMIT 1",
+                duckdb::params![tid, user_id],
+            )?
+            .pop();
+            match row {
+                Some(mut val) => {
+                    let wid = val["work_id"].as_str().unwrap_or_default().to_owned();
+                    val["shared"] = json!(work_has_shared_origin(db, &wid)?);
+                    Some(val)
+                }
+                None => None,
+            }
+        }
+        None => None,
+    };
+    let effective_conv_id = conversation_id.or_else(|| if work_scope.is_none() { task_id } else { None });
+    let bot_source = match effective_conv_id {
+        Some(cid) => {
+            let row = crate::sqlite_rows::records(
+                db,
+                "SELECT c.conversation_id, c.bot_id, c.team_id, c.user_id, c.source_kind, b.status,
+                        EXISTS(SELECT 1 FROM bot_gateway_conversations g WHERE g.conversation_id = c.conversation_id AND g.audience = 'shared') AS shared,
+                        (c.source_kind = 'peer' OR EXISTS(SELECT 1 FROM bot_peer_inputs p JOIN bot_messages m ON m.message_id = p.user_message_id WHERE m.conversation_id = c.conversation_id AND json_extract_string(try_cast(p.origin_json AS JSON), '$.kind') = 'request')) AS peer
+                 FROM bot_conversations c
+                 JOIN bots b ON b.bot_id = c.bot_id AND b.user_id = c.user_id
+                 WHERE c.conversation_id = ?1 AND c.user_id = ?2",
+                duckdb::params![cid, user_id],
+            )?
+            .pop();
+            row
+        }
+        None => None,
+    };
+    let direct_work = match work_id {
+        Some(wid) => {
+            let row = crate::sqlite_rows::records(
+                db,
+                "SELECT w.work_id, w.owner_bot_id, w.project_id,
+                        (SELECT team_id FROM work_team_ownership WHERE work_id = w.work_id LIMIT 1) AS team_id,
+                        EXISTS(SELECT 1 FROM work_teams WHERE work_id = w.work_id) AS is_team
+                 FROM works w WHERE w.work_id = ?1 AND w.user_id = ?2",
+                duckdb::params![wid, user_id],
+            )?
+            .pop();
+            match row {
+                Some(mut val) => {
+                    let id = val["work_id"].as_str().unwrap_or_default().to_owned();
+                    val["shared"] = json!(work_has_shared_origin(db, &id)?);
+                    Some(val)
+                }
+                None => None,
+            }
+        }
+        None => None,
+    };
+    let has_gateway_dots_memory = match task_id {
+        Some(tid) => db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM gateway_dots_tasks WHERE task_id = ?1)",
+            [tid],
+            |r| r.get(0),
+        )?,
+        None => false,
+    };
+    Ok(json!({
+        "kind": "assistantScopeContext",
+        "workScope": work_scope,
+        "botSource": bot_source,
+        "directWork": direct_work,
+        "hasGatewayDotsMemory": has_gateway_dots_memory,
+    }))
+}
+
+fn dots_due_projection(db: &Connection, now: i64) -> Result<Json> {
+    let next_due: Option<i64> = db
+        .query_row(
+            "SELECT valid_from FROM memory_records
+             WHERE (source_task_id = 'mybuddy-dots' OR json_extract_string(try_cast(metadata_json AS JSON), '$.dotsPrivateGateway') IN ('true','1'))
+               AND status = 'active' AND valid_until IS NULL AND valid_from > ?1
+             ORDER BY valid_from LIMIT 1",
+            [now],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let records_list = crate::sqlite_rows::records(
+        db,
+        // `memory_projection_dismissals` 只按 scenario/profile 的 id 记录，没有 `memory_id`
+        // 列（SQLite 与 DuckDB 两套 schema 都没有），所以这里不能按记忆行过滤——原先的
+        // `NOT EXISTS (... d.memory_id = m.id)` 会让整条查询在 DuckDB 绑定阶段失败。
+        "SELECT m.id, (SELECT MAX(revision) FROM memory_revisions WHERE memory_id = m.id) AS revision
+         FROM memory_records m
+         WHERE (m.source_task_id = 'mybuddy-dots' OR json_extract_string(try_cast(m.metadata_json AS JSON), '$.dotsPrivateGateway') IN ('true','1'))
+           AND m.status = 'active' AND (m.valid_from IS NULL OR m.valid_from <= ?1) AND m.valid_until IS NULL
+         ORDER BY m.explicit DESC, m.importance DESC, m.updated_at DESC, m.id LIMIT 120",
+        [now],
+    )?;
+    Ok(json!({
+        "kind": "dotsDueProjection",
+        "nextDue": next_due,
+        "records": records_list,
+    }))
+}
+
+fn skill_effectiveness_query(db: &Connection, query: SkillEffectivenessQueryKind) -> Result<Json> {
+    use crate::sqlite_rows::records;
+    match query {
+        SkillEffectivenessQueryKind::ById { id } => Ok(json!({
+            "kind": "skillEffectiveness",
+            "row": records(db, "SELECT e.*, t.title AS task_title FROM memory_skill_effectiveness e LEFT JOIN tasks t ON t.id = e.task_id WHERE e.id = ?1", [&id])?.pop(),
+        })),
+        SkillEffectivenessQueryKind::ByTurnSkill { task_id, assistant_message_id, skill_id } => Ok(json!({
+            "kind": "skillEffectiveness",
+            "row": records(db, "SELECT e.*, t.title AS task_title FROM memory_skill_effectiveness e LEFT JOIN tasks t ON t.id = e.task_id WHERE e.task_id = ?1 AND e.assistant_message_id = ?2 AND e.skill_id = ?3", duckdb::params![task_id, assistant_message_id, skill_id])?.pop(),
+        })),
+        SkillEffectivenessQueryKind::InvokedForTurn { task_id, assistant_message_id } => Ok(json!({
+            "kind": "skillEffectivenessList",
+            "rows": records(db, "SELECT * FROM memory_skill_effectiveness WHERE task_id = ?1 AND assistant_message_id = ?2 AND invoked_at IS NOT NULL ORDER BY invoked_at, id", duckdb::params![task_id, assistant_message_id])?,
+        })),
+        SkillEffectivenessQueryKind::LatestInvocationAfter { skill_id, candidate_id, after } => {
+            let latest: Option<i64> = db.query_row(
+                "SELECT MAX(invoked_at) FROM memory_skill_effectiveness WHERE skill_id = ?1 AND candidate_id = ?2 AND invoked_at > ?3",
+                duckdb::params![skill_id, candidate_id, after],
+                |r| r.get(0),
+            ).optional()?.flatten();
+            Ok(json!({ "kind": "skillEffectivenessLatest", "latest": latest }))
+        }
+        SkillEffectivenessQueryKind::Recent { limit, invoked_only } => {
+            let capped = limit.clamp(1, 1000);
+            let sql = if invoked_only {
+                "SELECT e.*, t.title AS task_title FROM memory_skill_effectiveness e LEFT JOIN tasks t ON t.id = e.task_id WHERE e.invoked_at IS NOT NULL ORDER BY e.invoked_at DESC, e.id DESC LIMIT ?1"
+            } else {
+                "SELECT e.*, t.title AS task_title FROM memory_skill_effectiveness e LEFT JOIN tasks t ON t.id = e.task_id ORDER BY e.exposed_at DESC, e.id DESC LIMIT ?1"
+            };
+            Ok(json!({ "kind": "skillEffectivenessList", "rows": records(db, sql, [capped])? }))
+        }
+        SkillEffectivenessQueryKind::Summaries { limit } => {
+            let capped = limit.clamp(1, 500);
+            let rows = records(db,
+                "SELECT skill_id, candidate_id,
+                    COUNT(*)::BIGINT AS exposures,
+                    SUM(CASE WHEN invoked_at IS NOT NULL THEN 1 ELSE 0 END)::BIGINT AS invocations,
+                    SUM(CASE WHEN invoked_at IS NOT NULL AND outcome = 'completed' THEN 1 ELSE 0 END)::BIGINT AS completed_invocations,
+                    SUM(CASE WHEN invoked_at IS NOT NULL AND outcome = 'failed' THEN 1 ELSE 0 END)::BIGINT AS failed_invocations,
+                    SUM(CASE WHEN invoked_at IS NOT NULL AND feedback_kind = 'helpful' THEN 1 ELSE 0 END)::BIGINT AS helpful_count,
+                    SUM(CASE WHEN invoked_at IS NOT NULL AND feedback_kind = 'needs_revision' THEN 1 ELSE 0 END)::BIGINT AS needs_revision_count,
+                    SUM(CASE WHEN invoked_at IS NOT NULL AND feedback_kind = 'incorrect' THEN 1 ELSE 0 END)::BIGINT AS incorrect_count,
+                    MAX(invoked_at) AS last_invoked_at
+                 FROM memory_skill_effectiveness
+                 GROUP BY skill_id, candidate_id
+                 ORDER BY MAX(exposed_at) DESC, skill_id ASC
+                 LIMIT ?1",
+                [capped],
+            )?;
+            Ok(json!({ "kind": "skillEffectivenessSummaries", "rows": rows }))
+        }
+        SkillEffectivenessQueryKind::RevisionById { id } => Ok(json!({
+            "kind": "skillRevisionCandidate",
+            "row": records(db, "SELECT * FROM memory_skill_revision_candidates WHERE id = ?1", [&id])?.pop(),
+        })),
+        SkillEffectivenessQueryKind::RevisionList { status, limit } => {
+            let capped = limit.clamp(1, 1000);
+            let rows = match status {
+                Some(st) => records(db, "SELECT * FROM memory_skill_revision_candidates WHERE status = ?1 ORDER BY updated_at DESC, id ASC LIMIT ?2", duckdb::params![st, capped])?,
+                None => records(db, "SELECT * FROM memory_skill_revision_candidates ORDER BY updated_at DESC, id ASC LIMIT ?1", [capped])?,
+            };
+            Ok(json!({ "kind": "skillRevisionCandidateList", "rows": rows }))
+        }
+        SkillEffectivenessQueryKind::RevisionRefreshFacts { skill_id, candidate_id } => {
+            let cid = candidate_id.unwrap_or_default();
+            let negative_rows = records(db,
+                "SELECT id, feedback_kind, feedback_note, outcome, updated_at
+                 FROM memory_skill_effectiveness
+                 WHERE skill_id = ?1 AND coalesce(candidate_id, '') = ?2 AND invoked_at IS NOT NULL
+                   AND feedback_kind IN ('needs_revision','incorrect')
+                 ORDER BY updated_at DESC, id ASC",
+                duckdb::params![skill_id, cid],
+            )?;
+            let failed_count: i64 = db.query_row(
+                "SELECT COUNT(*) FROM memory_skill_effectiveness WHERE skill_id = ?1 AND coalesce(candidate_id, '') = ?2 AND invoked_at IS NOT NULL AND outcome = 'failed'",
+                duckdb::params![skill_id, cid],
+                |r| r.get(0),
+            )?;
+            Ok(json!({ "kind": "skillRevisionRefreshFacts", "negativeRows": negative_rows, "failedCount": failed_count }))
+        }
+        SkillEffectivenessQueryKind::RevisionStaleCount { skill_id, candidate_id, keep_id } => {
+            let cid = candidate_id.unwrap_or_default();
+            let staled: i64 = db.query_row(
+                "SELECT COUNT(*) FROM memory_skill_revision_candidates WHERE skill_id = ?1 AND coalesce(base_candidate_id, '') = ?2 AND id <> ?3 AND status IN ('draft','ready')",
+                duckdb::params![skill_id, cid, keep_id],
+                |r| r.get(0),
+            )?;
+            Ok(json!({ "kind": "skillRevisionStaleCount", "count": staled }))
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AppDatabase } from "../db/AppDatabase";
+import { LOCAL_USER_ID } from "../../shared/bot-work";
 import type {
   MemoryRecordDto,
   MemorySkillCandidateDto,
@@ -188,6 +189,215 @@ export class MemorySkillLearningService {
     return rows.map(mapRow);
   }
 
+  async getAsync(id: string): Promise<MemorySkillCandidateDto | undefined> {
+    if (!this.db.coreIdentity) return this.get(id);
+    const cached = this.pendingCandidates.get(id);
+    if (cached) return cached;
+    const res = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "candidateById", id });
+    return res?.kind === "candidateById" && res.candidate ? mapRow(res.candidate as unknown as CandidateRow) : undefined;
+  }
+
+  async listAsync(status?: MemorySkillCandidateStatus, limit = 200): Promise<MemorySkillCandidateDto[]> {
+    if (!this.db.coreIdentity) return this.list(status, limit);
+    // skillCandidateList Core IPC is pending in remaining Step 6 work; return cached pending candidates without touching SQLite.
+    const cap = Math.max(1, Math.min(1000, limit));
+    return [...this.pendingCandidates.values()]
+      .filter(candidate => !status || candidate.status === status)
+      .slice(0, cap);
+  }
+
+  async refreshAsync(): Promise<MemorySkillRefreshResult> {
+    if (!this.db.coreIdentity) return this.refresh();
+    const procedures = await this.memories.readFiltered({ kind: "procedure", status: "active", limit: 1000 });
+    const now = Date.now();
+    let created = 0;
+    let updated = 0;
+    let ready = 0;
+    for (const memory of procedures) {
+      const scope = await this.chooseScopeAsync(memory);
+      if (!scope || memory.content.trim().length < 12) {
+        await this.invalidateByMemoryIdsAsync([memory.id], now);
+        continue;
+      }
+      const support = await this.supportStatsAsync(memory);
+      const score = this.score(memory, scope, support.completedTaskCount, support.evidenceCount);
+      const proposedStatus: MemorySkillCandidateStatus = this.isReady(memory, scope, support.completedTaskCount, support.evidenceCount) ? "ready" : "draft";
+      const sourceSignature = hash([memory.id, memory.contentHash, scope.scopeType, scope.scopeId ?? ""].join("\n"));
+      const id = `mskill_${hash(`${memory.id}\n${memory.contentHash}\n${scope.scopeType}:${scope.scopeId ?? ""}`).slice(0, 28)}`;
+      const existing = await this.getAsync(id);
+      const preserveTerminal = existing?.status === "rejected" || existing?.status === "materialized";
+      const status = preserveTerminal ? existing!.status : proposedStatus;
+      const candidateDto: MemorySkillCandidateDto = {
+        id,
+        slug: makeSlug(memory),
+        title: memory.title.slice(0, 180),
+        description: buildDescription(memory),
+        instructions: buildInstructions(memory),
+        status,
+        scopeType: scope.scopeType,
+        scopeId: scope.scopeId,
+        sourceMemoryIds: [memory.id],
+        sourceSignature,
+        supportCount: support.completedTaskCount,
+        distinctTaskCount: support.distinctTaskCount,
+        completedTaskCount: support.completedTaskCount,
+        evidenceCount: support.evidenceCount,
+        confidence: memory.confidence,
+        score,
+        installedSkillId: existing?.installedSkillId,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        resolvedAt: existing?.resolvedAt,
+      };
+      this.enqueueBatch3("保存技能候选", {
+        kind: "memorySkillCandidateUpsert",
+        id: candidateDto.id,
+        slug: candidateDto.slug,
+        title: candidateDto.title,
+        description: candidateDto.description,
+        instructions: candidateDto.instructions,
+        status: candidateDto.status,
+        scopeType: candidateDto.scopeType,
+        scopeId: candidateDto.scopeId ?? null,
+        sourceMemoryIdsJson: JSON.stringify(candidateDto.sourceMemoryIds),
+        sourceSignature: candidateDto.sourceSignature,
+        supportCount: candidateDto.supportCount,
+        distinctTaskCount: candidateDto.distinctTaskCount,
+        completedTaskCount: candidateDto.completedTaskCount,
+        evidenceCount: candidateDto.evidenceCount,
+        confidence: candidateDto.confidence,
+        score: candidateDto.score,
+        installedSkillId: candidateDto.installedSkillId ?? null,
+        createdAt: candidateDto.createdAt,
+        updatedAt: candidateDto.updatedAt,
+        resolvedAt: candidateDto.resolvedAt ?? null,
+      });
+      this.pendingCandidates.set(id, candidateDto);
+      if (!existing) created += 1;
+      else updated += 1;
+      if (candidateDto.status === "ready") ready += 1;
+    }
+    const active = [
+      ...await this.listAsync("draft", 1000),
+      ...await this.listAsync("ready", 1000),
+      ...await this.listAsync("materialized", 1000),
+    ];
+    const ungroundedIds: string[] = [];
+    for (const row of active) {
+      if (!await this.isCandidateGroundedAsync(row)) ungroundedIds.push(row.id);
+    }
+    if (ungroundedIds.length > 0) {
+      this.enqueueBatch3("清理失效技能候选", {
+        kind: "memorySkillCandidateStatus",
+        candAction: "staleUngroundedIds",
+        id: null,
+        ids: ungroundedIds,
+        installedSkillId: null,
+        now,
+      });
+      for (const rowId of ungroundedIds) {
+        const prev = this.pendingCandidates.get(rowId) ?? active.find(r => r.id === rowId);
+        if (prev) this.pendingCandidates.set(rowId, { ...prev, status: "stale", updatedAt: now });
+      }
+    }
+    return { evaluated: procedures.length, created, updated, staled: ungroundedIds.length, ready };
+  }
+
+  async invalidateByMemoryIdsAsync(memoryIds: readonly string[], now = Date.now()): Promise<number> {
+    if (!this.db.coreIdentity) return this.invalidateByMemoryIds(memoryIds, now);
+    const ids = [...new Set(memoryIds.filter(Boolean))];
+    if (ids.length === 0) return 0;
+    const active = [
+      ...await this.listAsync("draft", 1000),
+      ...await this.listAsync("ready", 1000),
+      ...await this.listAsync("materialized", 1000),
+    ];
+    const matched = active.filter(c => c.sourceMemoryIds.some(sid => ids.includes(sid)));
+    if (matched.length > 0) {
+      this.enqueueBatch3("按记忆失效技能候选", {
+        kind: "memorySkillCandidateStatus",
+        candAction: "invalidateByMemoryIds",
+        id: null,
+        ids,
+        installedSkillId: null,
+        now,
+      });
+      for (const item of matched) this.pendingCandidates.set(item.id, { ...item, status: "stale", updatedAt: now });
+    }
+    return matched.length;
+  }
+
+  async rejectAsync(id: string): Promise<MemorySkillCandidateDto> {
+    if (!this.db.coreIdentity) return this.reject(id);
+    const candidate = await this.getAsync(id);
+    if (!candidate) throw new Error(`Skill Candidate 不存在：${id}`);
+    if (!["draft", "ready"].includes(candidate.status)) {
+      throw new Error(`Skill Candidate 当前状态不可拒绝：${candidate.status}`);
+    }
+    const now = Date.now();
+    this.enqueueBatch3("拒绝技能候选", {
+      kind: "memorySkillCandidateStatus",
+      candAction: "reject",
+      id,
+      ids: [],
+      installedSkillId: null,
+      now,
+    });
+    const updated = { ...candidate, status: "rejected" as const, resolvedAt: now, updatedAt: now };
+    this.pendingCandidates.set(id, updated);
+    return updated;
+  }
+
+  async markMaterializedAsync(id: string, installedSkillId: string): Promise<MemorySkillCandidateDto> {
+    if (!this.db.coreIdentity) return this.markMaterialized(id, installedSkillId);
+    const candidate = await this.getAsync(id);
+    if (!candidate) throw new Error(`Skill Candidate 不存在：${id}`);
+    if (!["draft", "ready"].includes(candidate.status)) {
+      throw new Error(`Skill Candidate 当前状态不可物化：${candidate.status}`);
+    }
+    const now = Date.now();
+    if (!await this.isCandidateGroundedAsync(candidate)) {
+      this.enqueueBatch3("过期技能候选", {
+        kind: "memorySkillCandidateStatus",
+        candAction: "staleOne",
+        id,
+        ids: [],
+        installedSkillId: null,
+        now,
+      });
+      this.pendingCandidates.set(id, { ...candidate, status: "stale", updatedAt: now });
+      throw new Error("Skill Candidate 来源 Procedure 已变化，请刷新候选后重新审批");
+    }
+    this.enqueueBatch3("物化技能候选", {
+      kind: "memorySkillCandidateStatus",
+      candAction: "materialize",
+      id,
+      ids: [],
+      installedSkillId,
+      now,
+    });
+    const updated = {
+      ...candidate,
+      status: "materialized" as const,
+      installedSkillId,
+      resolvedAt: now,
+      updatedAt: now,
+    };
+    this.pendingCandidates.set(id, updated);
+    return updated;
+  }
+
+  async findByInstalledSkillIdAsync(installedSkillId: string): Promise<MemorySkillCandidateDto | undefined> {
+    if (!this.db.coreIdentity) return this.findByInstalledSkillId(installedSkillId);
+    const normalized = installedSkillId.trim().toLowerCase();
+    if (!normalized) return undefined;
+    for (const cached of this.pendingCandidates.values()) {
+      if (cached.installedSkillId?.toLowerCase() === normalized) return cached;
+    }
+    const list = await this.listAsync(undefined, 1000);
+    return list.find(c => c.installedSkillId?.toLowerCase() === normalized);
+  }
+
   refreshMemory(memoryId: string): MemorySkillRefreshResult {
     const memory = this.memories.get(memoryId);
     const now = Date.now();
@@ -238,7 +448,7 @@ export class MemorySkillLearningService {
       .filter((row) => !this.isCandidateGrounded(mapRow(row)))
       .map((row) => row.id);
     if (this.requiresRustWrites) {
-      if (ungroundedIds.length > 0) {
+      if (ungroundedIds.length > 0 && !this.db.coreIdentity) {
         this.enqueueBatch3("清理失效技能候选", {
           kind: "memorySkillCandidateStatus",
           candAction: "staleUngroundedIds",
@@ -392,7 +602,7 @@ export class MemorySkillLearningService {
       ungroundedIds.push(row.id);
     }
     if (this.requiresRustWrites) {
-      if (ungroundedIds.length > 0) {
+      if (ungroundedIds.length > 0 && !this.db.coreIdentity) {
         this.enqueueBatch3("失效陈旧技能候选", {
           kind: "memorySkillCandidateStatus",
           candAction: "staleUngroundedIds",
@@ -640,6 +850,57 @@ export class MemorySkillLearningService {
         ? { scopeType: "project", scopeId: rows[0].project_id } : null;
     }
     return { scopeType: "bot", scopeId: rows[0].bot_id };
+  }
+
+  async isCandidateGroundedAsync(candidate: MemorySkillCandidateDto): Promise<boolean> {
+    if (candidate.sourceMemoryIds.length !== 1) return false;
+    const memories = await Promise.all(candidate.sourceMemoryIds.map(id => this.memories.readDetail(id)));
+    if (memories.some(memory => !memory || memory.status !== "active" || memory.kind !== "procedure")) return false;
+    const memory = memories[0]!;
+    const scope = await this.chooseScopeAsync(memory);
+    if (!scope || scope.scopeType !== candidate.scopeType || (scope.scopeId ?? "") !== (candidate.scopeId ?? "")) return false;
+    const signature = hash([memory.id, memory.contentHash, scope.scopeType, scope.scopeId ?? ""].join("\n"));
+    return signature === candidate.sourceSignature;
+  }
+
+  private async chooseScopeAsync(memory: MemoryRecordDto): Promise<LearnableScope | null> {
+    const now = Date.now();
+    if (memory.validUntil !== undefined && memory.validUntil <= now
+      || memory.validFrom !== undefined && memory.validFrom > now) return null;
+    const workScopes = memory.scopes.filter(scope => scope.scopeType === "work" && scope.scopeId);
+    if (!workScopes.length) return chooseScope(memory);
+    const project = memory.scopes.find(scope => scope.scopeType === "project" && scope.scopeId);
+    if (project) return { scopeType: "project", scopeId: project.scopeId };
+    if (workScopes.length !== 1 || !memory.sourceTaskId) return null;
+    const ctx = await this.db.runtimeAuditReader?.memoryRecordsData({
+      kind: "assistantScopeContext", taskId: memory.sourceTaskId, workId: workScopes[0].scopeId, userId: LOCAL_USER_ID,
+    });
+    if (ctx?.kind !== "assistantScopeContext") return null;
+    const work = ctx.workScope as { work_id?: string; bot_id?: string; project_id?: string | null; is_team?: boolean } | null;
+    if (!work || work.work_id !== workScopes[0].scopeId || work.is_team) return null;
+    if (work.project_id) {
+      return memory.scopes.some(scope => scope.scopeType === "project" && scope.scopeId === work.project_id)
+        ? { scopeType: "project", scopeId: work.project_id } : null;
+    }
+    return work.bot_id ? { scopeType: "bot", scopeId: work.bot_id } : null;
+  }
+
+  private async supportStatsAsync(memory: MemoryRecordDto): Promise<{ distinctTaskCount: number; completedTaskCount: number; evidenceCount: number }> {
+    const taskIds = new Set<string>();
+    if (memory.sourceTaskId) taskIds.add(memory.sourceTaskId);
+    for (const evidence of memory.evidence) {
+      if (evidence.evidenceKind === "task") taskIds.add(evidence.refId);
+      else if (evidence.evidenceKind === "conversation") {
+        const turn = await this.db.runtimeAuditReader?.memoryTurnData({ kind: "detail", id: evidence.refId }, LOCAL_USER_ID);
+        if (turn?.kind === "detail" && turn.turn?.taskId) taskIds.add(turn.turn.taskId);
+      }
+    }
+    let completedTaskCount = 0;
+    await Promise.all([...taskIds].map(async taskId => {
+      const task = await this.db.readTask(taskId, { includeExpertBinding: false });
+      if (task?.status === "completed") completedTaskCount += 1;
+    }));
+    return { distinctTaskCount: taskIds.size, completedTaskCount, evidenceCount: memory.evidence.length };
   }
 
   private supportStats(memory: MemoryRecordDto): { distinctTaskCount: number; completedTaskCount: number; evidenceCount: number } {

@@ -631,7 +631,7 @@ export class GatewayService {
       agent: {
         runGatewayTurn: async request => {
           // The router has already resolved the authorized sender's canonical conversation ID.
-          if (this.restoreTrashedWorkspace && this.db.getTaskExecutionWorkspaceState(request.taskId)?.state === "trashed") {
+          if (this.restoreTrashedWorkspace && (await this.db.readTaskExecutionWorkspaceState(request.taskId))?.state === "trashed") {
             await this.restoreTrashedWorkspace(request.taskId);
           }
           return this.agent.runGatewayTurn(request);

@@ -49,7 +49,7 @@ type VerifyCompletion = (
 export function createDurableDotsWorker(
   taskId: string,
   isActive: (taskId: string, operationId: string) => boolean | Promise<boolean>,
-  validateDependency: (taskId: string, operationId: string, dependencyOperationId: string) => DotsTerminalDependency,
+  validateDependency: (taskId: string, operationId: string, dependencyOperationId: string) => DotsTerminalDependency | Promise<DotsTerminalDependency>,
   verifyCompletion: VerifyCompletion,
 ): ToolRegistration {
   return {
@@ -96,7 +96,7 @@ export function createDurableDotsWorker(
         if (args.action === "wait") {
           if (!args.progress.trim()) return toolError("请说明已经完成的进展和正在等待什么。");
           terminal = { action: "wait", progress: args.progress.trim(),
-            dependencyWait: validateDependency(taskId, source.id, args.dependencyOperationId) };
+            dependencyWait: await validateDependency(taskId, source.id, args.dependencyOperationId) };
         } else {
           if (!args.result.trim() && !args.deliveryText.trim()) return toolError("请提供执行结果或交付正文。");
           const proof = await verifyCompletion(args, api, context, source.id);

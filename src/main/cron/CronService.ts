@@ -358,8 +358,38 @@ export class CronService {
   }
 
   private scheduleOwner(jobId: string) {
+    if (this.coreOwnsScheduling) throw new Error("Core 模式下禁止同步读取 dots_schedule_scopes");
     return this.db.connection.prepare("SELECT task_id AS taskId, space_id AS spaceId FROM dots_schedule_scopes WHERE job_id=?")
       .get(jobId) as { taskId?: string; spaceId?: string } | undefined;
+  }
+
+  async readDotsScheduleOwnerTask(jobId: string): Promise<string | undefined> {
+    if (!this.coreOwnsScheduling) return this.dotsScheduleOwnerTask(jobId);
+    const state = await this.db.readCronJobState(jobId);
+    return state?.owner?.taskId ?? undefined;
+  }
+
+  async readDotsScheduleIds(enabledOnly = false, scope?: { taskId?: string; spaceId?: string }): Promise<string[]> {
+    if (!this.coreOwnsScheduling) {
+      const running = new Set(this.db.listRunningCronRuns().map(run => run.jobId));
+      return this.listForTask(DOTS_TASK_ID).filter(job => !job.cancelledAt && (!enabledOnly || job.enabled)
+        && (job.maxRuns === undefined || (job.runCount ?? 0) < job.maxRuns || running.has(job.id))
+        && (!scope || this.inDotsScope(job.id, scope))).map(job => job.id);
+    }
+    const [jobs, runningRuns] = await Promise.all([this.db.readCronJobs(), this.db.readRunningCronRuns()]);
+    const running = new Set(runningRuns.map(run => run.jobId));
+    const candidates = jobs.filter(job => job.sourceTaskId === DOTS_TASK_ID && !job.cancelledAt
+      && (!enabledOnly || job.enabled)
+      && (job.maxRuns === undefined || (job.runCount ?? 0) < job.maxRuns || running.has(job.id)));
+    if (!scope) return candidates.map(job => job.id);
+    const matched: string[] = [];
+    for (const job of candidates) {
+      const owner = (await this.db.readCronJobState(job.id))?.owner;
+      if (owner && (!scope.taskId || owner.taskId === scope.taskId) && (!scope.spaceId || owner.spaceId === scope.spaceId)) {
+        matched.push(job.id);
+      }
+    }
+    return matched;
   }
 
   inDotsScope(jobId: string, scope: { taskId?: string; spaceId?: string }) {
@@ -378,6 +408,15 @@ export class CronService {
     return Boolean(spaceId && scope.includes(spaceId));
   }
 
+  async dotsScheduleVisibleAsync(jobId: string): Promise<boolean> {
+    if (!this.coreOwnsScheduling) return this.dotsScheduleVisible(jobId);
+    const scope = resolveDotsPreferences(this.agent.getAppSettings().dotsSettings).spaceIds;
+    if (scope === null) return true;
+    const state = await this.db.readCronJobState(jobId);
+    const spaceId = state?.owner?.spaceId;
+    return Boolean(spaceId && scope.includes(spaceId));
+  }
+
   private dotsPolicy(job: CronJobDto): DotsSettings["followupMode"] {
     if (job.sourceTaskId !== DOTS_TASK_ID) return "continue";
     return this.dotsScheduleVisible(job.id) ? resolveDotsPreferences(this.agent.getAppSettings().dotsSettings).followupMode : "paused";
@@ -390,6 +429,7 @@ export class CronService {
   }
 
   private hasScheduleHold(jobId: string, ignoreManualHold = false): boolean {
+    if (this.coreOwnsScheduling) throw new Error("Core 模式下禁止同步读取 dots_schedule_holds");
     const pending = this.pendingScheduleHolds.get(jobId);
     if (pending !== undefined) {
       for (const holder of pending) {
@@ -426,12 +466,43 @@ export class CronService {
 
   private dotsFollowupPaused(taskId?: string, jobId?: string, spaceId?: string, ignoreManualHold = false): boolean {
     if (taskId !== DOTS_TASK_ID) return false;
+    if (this.coreOwnsScheduling) throw new Error("Core 模式下禁止同步检查 dotsFollowupPaused");
     const owner = jobId ? this.scheduleOwner(jobId) : undefined;
     if (jobId && this.hasScheduleHold(jobId, ignoreManualHold)) return true;
     if (owner?.taskId && this.db.connection.prepare("SELECT 1 FROM sqlite_master WHERE name='dots_target_controls'").get()
       && this.db.connection.prepare("SELECT 1 FROM dots_target_controls WHERE task_id=?").get(owner.taskId)) return true;
     return !!this.db.connection.prepare("SELECT 1 FROM sqlite_master WHERE name='dots_proactive_pauses'").get() &&
       !!this.db.connection.prepare("SELECT 1 FROM dots_proactive_pauses WHERE scope IN ('',?)").get(spaceId ?? owner?.spaceId ?? "");
+  }
+
+  async holdDotsScheduleAsync(id: string, holder: string, pause: boolean): Promise<string> {
+    if (!this.coreOwnsScheduling) return this.holdDotsSchedule(id, holder, pause);
+    return this.queuePlanWrite(id, async () => {
+      const state = await this.db.readCronJobState(id);
+      if (!state || state.job.sourceTaskId !== DOTS_TASK_ID || state.job.reminder) {
+        throw new Error("Automation does not belong to the current task");
+      }
+      const reader = this.db.runtimeAuditReader;
+      if (!reader) throw new Error("Core 模式下缺少 Cron Dots 暂停状态写入通道");
+      const now = Date.now();
+      let setEnabled: boolean | null = null;
+      if (pause && state.job.cancelledAt === undefined && state.job.enabled) {
+        setEnabled = false;
+      } else if (!pause && state.job.cancelledAt === undefined && !state.job.enabled && !state.unavailableReason) {
+        setEnabled = true;
+      }
+      await reader.batch4aWrite({ kind: "cronHoldDotsSchedule", id, holder, pause, now, setEnabled });
+      return (await this.readForTask(DOTS_TASK_ID, id)).status;
+    });
+  }
+
+  async controlDotsScheduleAsync(id: string, action: "pause" | "stop" | "resume"): Promise<string> {
+    if (!this.coreOwnsScheduling) {
+      this.changeForTask(DOTS_TASK_ID, id, action === "stop" ? "cancel" : action);
+      return this.getForTask(DOTS_TASK_ID, id).status;
+    }
+    await this.changeTaskPlan(DOTS_TASK_ID, id, action === "stop" ? "cancel" : action);
+    return (await this.readForTask(DOTS_TASK_ID, id)).status;
   }
 
   holdDotsSchedule(id: string, holder: string, pause: boolean) {
@@ -496,10 +567,18 @@ export class CronService {
       (current.spaceIds === null || state.ownerSpaceId !== null && current.spaceIds.includes(state.ownerSpaceId));
   }
 
-  async runsForTask(taskId: string, limit = 50, allowed = (_jobId: string) => true): Promise<CronRunDto[]> {
+  async runsForTask(taskId: string, limit = 50, allowed: (jobId: string) => boolean | Promise<boolean> = () => true): Promise<CronRunDto[]> {
     const jobs = await this.db.readCronJobs();
-    const ids = jobs.filter(job => job.sourceTaskId === taskId && allowed(job.id)).map(job => job.id);
-    return (await this.db.readCronRuns(Math.max(1, Math.min(200, limit)), ids)).filter(run => allowed(run.jobId));
+    const ids: string[] = [];
+    for (const job of jobs) {
+      if (job.sourceTaskId === taskId && await allowed(job.id)) ids.push(job.id);
+    }
+    const runs = await this.db.readCronRuns(Math.max(1, Math.min(200, limit)), ids);
+    const visible: CronRunDto[] = [];
+    for (const run of runs) {
+      if (await allowed(run.jobId)) visible.push(run);
+    }
+    return visible;
   }
 
   private requireTaskJob(taskId: string, id: string): CronJobDto {
@@ -548,8 +627,15 @@ export class CronService {
     };
   }
 
-  async runPageForTask(taskId: string, id: string, limit = 25, cursor?: string, allowed = (_jobId: string) => true) {
-    this.requireTaskJob(taskId, id);
+  async runPageForTask(taskId: string, id: string, limit = 25, cursor?: string, allowed: (jobId: string) => boolean | Promise<boolean> = () => true) {
+    if (this.coreOwnsScheduling) {
+      const state = await this.db.readCronJobState(id);
+      if (!state || state.job.sourceTaskId !== taskId || state.job.reminder) {
+        throw new Error("Automation does not belong to the current task");
+      }
+    } else {
+      this.requireTaskJob(taskId, id);
+    }
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error("Invalid run page size");
     const schema = z.tuple([z.literal(id), z.number().int().nonnegative(), z.string().min(1).max(256)]);
     let before: { startedAt: number; id: string } | undefined;
@@ -561,8 +647,15 @@ export class CronService {
       } catch { throw new Error("Invalid automation run cursor"); }
     }
     const rows = await this.db.readCronJobRuns(id, limit + 1, before);
-    this.requireTaskJob(taskId, id);
-    if (!allowed(id)) throw new Error("计划不在 Dots 已授权的空间内");
+    if (this.coreOwnsScheduling) {
+      const state = await this.db.readCronJobState(id);
+      if (!state || state.job.sourceTaskId !== taskId || state.job.reminder) {
+        throw new Error("Automation does not belong to the current task");
+      }
+    } else {
+      this.requireTaskJob(taskId, id);
+    }
+    if (!await allowed(id)) throw new Error("计划不在 Dots 已授权的空间内");
     const runs = rows.slice(0, limit);
     const last = runs.at(-1);
     return {
@@ -943,6 +1036,7 @@ export class CronService {
   }
 
   removeProjectData(projectId: string): string[] {
+    if (this.coreOwnsScheduling) throw new Error("Core 模式下由 Rust 项目删除事务负责清理自动化计划");
     const ids = this.db.listCronJobs().filter(job => job.projectId === projectId).map(job => job.id);
     for (const id of ids) this.db.removeCronJob(id);
     return ids;

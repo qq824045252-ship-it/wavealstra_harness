@@ -79,6 +79,89 @@ export interface CoreMemoryRecallAuthority {
   witness: string;
 }
 
+type WorkScopeInfo = { bot_id: string; work_id: string; project_id: string | null; team_id: string | null; is_team: boolean; shared: boolean };
+type BotSourceInfo = { conversation_id: string; bot_id: string; team_id: string | null; user_id: string; source_kind: string; status: string; shared: boolean; peer: boolean };
+type DirectWorkInfo = { work_id: string; owner_bot_id: string; project_id: string | null; team_id: string | null; is_team: boolean; shared: boolean };
+
+export async function resolveWorkMemoryScopeAsync(db: AppDatabase, taskId: string): Promise<WorkScopeInfo | undefined> {
+  if (!db.coreIdentity) return resolveWorkMemoryScope(db, taskId);
+  const ctx = await db.runtimeAuditReader?.memoryRecordsData({ kind: "assistantScopeContext", taskId, userId: LOCAL_USER_ID });
+  if (!ctx || ctx.kind !== "assistantScopeContext") throw new Error("Core 未确认 Work 记忆作用域");
+  return (ctx.workScope as WorkScopeInfo | null) ?? undefined;
+}
+
+export async function resolveAssistantScopeChainAsync(
+  db: AppDatabase,
+  request: MemorySearchRequest,
+  channelBotIdAsync: (taskId: string) => Promise<string | undefined> | string | undefined,
+): Promise<Array<{ scopeType: MemoryScopeType; scopeId?: string; distance: number }>> {
+  if (!db.coreIdentity) return resolveAssistantScopeChain(db, request, taskId => {
+    const res = channelBotIdAsync(taskId);
+    return typeof res === "string" || res === undefined ? res : undefined;
+  });
+  const task = request.taskId ? await db.readTask(request.taskId, { includeExpertBinding: false }) : undefined;
+  const ctx = await db.runtimeAuditReader?.memoryRecordsData({
+    kind: "assistantScopeContext",
+    taskId: request.taskId,
+    workId: request.workId,
+    conversationId: request.conversationId ?? request.taskId,
+    userId: LOCAL_USER_ID,
+  });
+  if (!ctx || ctx.kind !== "assistantScopeContext") throw new Error("Core 未确认助手记忆作用域");
+  if (request.taskId && isGatewayConversation(request.taskId)) {
+    return !request.scopeTypes?.length || request.scopeTypes.includes("task")
+      ? [{ scopeType: "task", scopeId: request.taskId, distance: 0 },
+        ...(ctx.hasGatewayDotsMemory ? [{ scopeType: "task" as const, scopeId: DOTS_TASK_ID, distance: 1 }] : [])] : [];
+  }
+  const work = (request.taskId ? ctx.workScope : null) as WorkScopeInfo | null;
+  const conversation = (!work && (request.taskId || request.conversationId) ? ctx.botSource : null) as BotSourceInfo | null;
+  const taskId = request.taskId ?? task?.id;
+  const directWork = (!taskId && !conversation && request.workId ? ctx.directWork : null) as DirectWorkInfo | null;
+  const projectId = work ? work.project_id ?? undefined : directWork ? directWork.project_id ?? undefined
+    : conversation ? undefined : task ? task.projectId ?? undefined : request.taskId ? undefined : request.projectId;
+  const workspaceId = work || conversation || directWork ? undefined
+    : task ? task.spaceId ?? undefined : request.taskId ? undefined : request.workspaceId;
+  const out: Array<{ scopeType: MemoryScopeType; scopeId?: string; distance: number }> = [];
+  const teamId = work?.team_id ?? conversation?.team_id ?? directWork?.team_id ?? (!taskId && !conversation && !directWork ? request.teamId : undefined);
+  const isTeam = Boolean(teamId || work?.is_team || directWork?.is_team);
+  const shared = conversation?.shared || work?.shared || directWork?.shared || false;
+  const botId = isTeam || shared ? undefined : work?.bot_id ?? conversation?.bot_id ?? directWork?.owner_bot_id ?? (taskId ? await channelBotIdAsync(taskId) : request.botId);
+  if (conversation) out.push({ scopeType: "conversation", scopeId: conversation.conversation_id, distance: 0 });
+  if (work || directWork) out.push({ scopeType: "work", scopeId: work?.work_id ?? directWork!.work_id, distance: 0 });
+  if (teamId) out.push({ scopeType: "team", scopeId: teamId, distance: 1 });
+  if (botId) out.push({ scopeType: "bot", scopeId: botId, distance: 1 });
+  if (taskId && !conversation) out.push({ scopeType: "task", scopeId: taskId, distance: 0 });
+  if (projectId) out.push({ scopeType: "project", scopeId: projectId, distance: 1 });
+  if (workspaceId) {
+    out.push({ scopeType: "workspace", scopeId: workspaceId, distance: 2 });
+    if (request.includeInherited !== false) {
+      const spaces = await db.readSpaces();
+      const byId = new Map(spaces.map(s => [s.id, s]));
+      const visited = new Set([workspaceId]);
+      let parent = byId.get(workspaceId)?.parentId;
+      let idx = 0;
+      while (parent && !visited.has(parent)) {
+        visited.add(parent);
+        const anc = byId.get(parent);
+        if (!anc) break;
+        if (!anc.effectiveArchived) out.push({ scopeType: "workspace", scopeId: anc.id, distance: 3 + idx });
+        idx += 1;
+        parent = anc.parentId;
+      }
+    }
+  }
+  if (!shared) out.push({ scopeType: "global", distance: 10 });
+  const allowed = request.scopeTypes?.length ? new Set(request.scopeTypes) : null;
+  const seen = new Set<string>();
+  return out.filter(scope => {
+    if (shared && !["work", "task", "conversation"].includes(scope.scopeType)) return false;
+    if (allowed && !allowed.has(scope.scopeType)) return false;
+    const key = `${scope.scopeType}:${scope.scopeId ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+}
+
 /** Ordinary desktop recall derives scope from Core. Other conversation owners need their own authority. */
 export async function readCoreRecallAuthority(db: AppDatabase, request: MemorySearchRequest): Promise<CoreMemoryRecallAuthority | undefined> {
   const native = db.runtimeAuditReader;

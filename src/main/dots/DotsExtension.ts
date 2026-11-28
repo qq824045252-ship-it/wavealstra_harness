@@ -268,7 +268,7 @@ export function dotsExtension(actions: DotsActions, settings: () => Partial<Dots
         if (approval && input.action === "resume")
           throw new Error("当前确认没有对应的原任务重试问题。请使用 task 读取原任务的执行诊断，或明确指定要重试的原任务。");
       }
-      if (actions.requiresResumeInstruction(input)) {
+      if (await actions.requiresResumeInstructionAsync(input)) {
         const received = invocation.foregroundInputs ?? [];
         const resume = dotsResumeInput(received, input.assignmentQuote);
         if (!resume && (received.length || !invocation.sourceUserMessageId || isDotsAutomaticInput(invocation.sourceUserMessageId)

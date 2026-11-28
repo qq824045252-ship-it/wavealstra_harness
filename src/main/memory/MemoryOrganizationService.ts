@@ -105,7 +105,7 @@ export class MemoryOrganizationService {
   }
 
   private read(id: string): State | undefined {
-    if (!this.db.connection.open) return undefined;
+    if (!this.db.isOpen) return undefined;
     const row = this.db.connection.prepare("SELECT state_json FROM memory_organization_runs WHERE id=?").get(id) as { state_json: string } | undefined;
     return row ? JSON.parse(row.state_json) as State : undefined;
   }
@@ -126,17 +126,17 @@ export class MemoryOrganizationService {
       .run(state.run.id, state.run.createdAt, state.run.updatedAt, JSON.stringify(state));
   }
   private exists(id: string): boolean {
-    return this.db.connection.open && Boolean(this.db.connection.prepare("SELECT 1 FROM memory_organization_runs WHERE id=?").get(id));
+    return this.db.isOpen && Boolean(this.db.connection.prepare("SELECT 1 FROM memory_organization_runs WHERE id=?").get(id));
   }
   private async saveProgress(run: MemoryOrganizationRun, scanId: string): Promise<boolean> {
-    if (!this.db.connection.open) return false;
+    if (!this.db.isOpen) return false;
     run.updatedAt = Date.now();
     const runtime = this.db.runtimeAuditReader;
     const runJson = JSON.stringify(run);
     const result = runtime && await runtime.writeMemoryOrganizationProgress({ id: run.id, scanId, updatedAt: run.updatedAt, runJson });
     if (result !== undefined) return result;
     if (this.requiresRustWrites) return false;
-    if (!this.db.connection.open) return false;
+    if (!this.db.isOpen) return false;
     return this.db.connection.prepare(`UPDATE memory_organization_runs
       SET updated_at=@at,state_json=json_set(state_json,'$.run',json(@runJson))
       WHERE id=@id AND json_extract(state_json,'$.scanId')=@scanId AND json_extract(state_json,'$.run.status')='scanning'`)
@@ -159,6 +159,46 @@ export class MemoryOrganizationService {
       if (page.length < 250) break;
     }
     return records;
+  }
+  private async activeRecordsAsync(): Promise<MemoryRecordDto[]> {
+    const records: MemoryRecordDto[] = [];
+    for (let offset = 0;; offset += 250) {
+      const page = await this.memory.repository.readFiltered({ status: "active", offset, limit: 250 });
+      records.push(...page);
+      if (page.length < 250) break;
+    }
+    return records;
+  }
+
+  private async eligibleAsync(record: MemoryRecordDto, projectsById?: Map<string, number>): Promise<boolean> {
+    if (!this.db.coreIdentity) return this.eligible(record);
+    const now = Date.now();
+    if ((record.validFrom !== undefined && record.validFrom > now) || (record.validUntil !== undefined && record.validUntil <= now)) return false;
+    if (!record.scopes.length) return false;
+    let projects = projectsById;
+    const loadProjects = async () => {
+      if (projects) return projects;
+      const res = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "projects", includeArchived: true });
+      projects = new Map(res?.kind === "projects" ? res.projects.map(p => [p.id, p.archived]) : []);
+      return projects;
+    };
+    for (const scope of record.scopes) {
+      if (scope.scopeType === "workspace") {
+        const space = scope.scopeId ? await this.db.readSpace(scope.scopeId) : undefined;
+        if (!space || space.effectiveArchived) return false;
+      } else if (scope.scopeType === "task") {
+        const task = scope.scopeId ? await this.db.readTask(scope.scopeId, { includeExpertBinding: false }) : undefined;
+        if (!task || await this.db.isTaskEffectiveArchivedAsync(task.id) || (await this.db.readTaskExecutionWorkspaceState(task.id))?.state === "trashed") return false;
+        if (task.projectId) {
+          const archived = (await loadProjects()).get(task.projectId);
+          if (archived === undefined || archived) return false;
+        }
+      } else if (scope.scopeType === "project") {
+        const archived = (await loadProjects()).get(scope.scopeId ?? "");
+        if (archived === undefined || archived) return false;
+      }
+    }
+    return true;
   }
   private eligible(record: MemoryRecordDto): boolean {
     const now = Date.now();
@@ -229,7 +269,77 @@ export class MemoryOrganizationService {
       sourceIds: records.map(r => r.id), snapshots: Object.fromEntries(eligible.map(record => [record.id, { record, stamp: stamp(record) }])), batches, checkedGroups: checks,
     };
   }
+  async readAsync(id: string): Promise<State | undefined> {
+    if (!this.db.isOpen) return undefined;
+    if (!this.db.coreIdentity) return this.read(id);
+    const raw = await this.db.runtimeAuditReader?.memoryOrganizationLatest();
+    if (!raw) return undefined;
+    const run = JSON.parse(raw) as MemoryOrganizationRun;
+    return run.id === id ? undefined : undefined;
+  }
+
+  private async prepareAsync(): Promise<State> {
+    const records = await this.activeRecordsAsync();
+    const res = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "projects", includeArchived: true });
+    const projects = new Map(res?.kind === "projects" ? res.projects.map(p => [p.id, p.archived]) : []);
+    const eligible: MemoryRecordDto[] = [];
+    for (const record of records) {
+      if (await this.eligibleAsync(record, projects)) eligible.push(record);
+    }
+    const checks = this.groupChecks(eligible);
+    const groups = new Map<string, MemoryRecordDto[]>();
+    const batches: string[][] = [];
+    for (const record of eligible) {
+      const key = groupKey(record);
+      groups.set(key, [...(groups.get(key) ?? []), record]);
+    }
+    for (const group of groups.values()) {
+      const remaining = [...group].sort((a, b) => a.id.localeCompare(b.id));
+      const tokens = new Map(group.map(r => [r.id, grams(r)]));
+      while (remaining.length) {
+        const seed = remaining.shift()!;
+        remaining.sort((a, b) => similarity(tokens.get(seed.id)!, tokens.get(b.id)!) - similarity(tokens.get(seed.id)!, tokens.get(a.id)!) || a.id.localeCompare(b.id));
+        const batch = [seed];
+        let size = chars(batch);
+        while (remaining.length && batch.length < BATCH_SIZE && size + chars([remaining[0]!]) <= BATCH_CHARS) {
+          const record = remaining.shift()!;
+          batch.push(record); size += chars([record]);
+        }
+        batches.push(batch.map(r => r.id));
+      }
+    }
+    const now = Date.now();
+    return {
+      run: { id: `morg_${randomUUID()}`, status: "scanning", createdAt: now, updatedAt: now,
+        total: records.length, scanned: 0, skipped: records.length - eligible.length, unchanged: 0,
+        completedBatches: 0, totalBatches: batches.length, proposals: [], beforeChars: chars(eligible), afterChars: chars(eligible) },
+      sourceIds: records.map(r => r.id), snapshots: Object.fromEntries(eligible.map(record => [record.id, { record, stamp: stamp(record) }])), batches, checkedGroups: checks,
+    };
+  }
+
   /** Returns immediately; progress and preview survive navigation and process restarts. */
+  async startAsync(input: OrganizationModelInput, resumeId?: string): Promise<MemoryOrganizationRun> {
+    if (!this.db.coreIdentity) return this.start(input, resumeId);
+    if (this.runningId) throw new Error("记忆整理正在进行，请等待或暂停当前任务。");
+    if (!input.isEnabled()) throw new Error("请先开启记忆功能。");
+    if (resumeId) throw new Error("Core 模式下暂不支持跨会话恢复，请重新发起整理");
+    const latest = await this.readLatest();
+    if (latest && ["scanning", "paused", "ready"].includes(latest.status) && (latest.status !== "ready" || latest.proposals.length)) {
+      throw new Error("请先应用或放弃当前整理结果。");
+    }
+    const state = await this.prepareAsync();
+    const scanId = randomUUID();
+    state.scanId = scanId;
+    state.run.status = "scanning"; delete state.run.error;
+    this.paused = false;
+    this.abort = new AbortController();
+    this.runningId = state.run.id;
+    this.save(state);
+    const started = { ...state.run, proposals: [...state.run.proposals] };
+    void this.run(state, input, scanId).finally(() => { this.runningId = undefined; this.abort = undefined; this.changed(); });
+    return started;
+  }
+
   start(input: OrganizationModelInput, resumeId?: string): MemoryOrganizationRun {
     if (this.runningId) throw new Error("记忆整理正在进行，请等待或暂停当前任务。");
     if (!input.isEnabled()) throw new Error("请先开启记忆功能。");
@@ -285,8 +395,29 @@ export class MemoryOrganizationService {
     this.changed();
     return JSON.parse(row.run_json) as MemoryOrganizationRun;
   }
+  async pauseAsync(id: string): Promise<MemoryOrganizationRun> {
+    if (!this.db.coreIdentity) return this.pause(id);
+    const at = Date.now();
+    const latest = await this.readLatest();
+    if (!latest || latest.id !== id || !["scanning", "paused"].includes(latest.status)) {
+      throw new Error("整理任务不存在或状态已改变，请刷新。");
+    }
+    this.enqueueBatch3("暂停记忆整理", { kind: "memoryOrganizationPauseRun", id, at });
+    if (id === this.runningId) { this.paused = true; this.abort?.abort(); }
+    this.changed();
+    return { ...latest, status: "paused", updatedAt: at };
+  }
+
   pauseActive(): void {
-    if (this.runningId && this.db.connection.open) this.pauseSaved(this.runningId);
+    if (!this.runningId || !this.db.isOpen) return;
+    if (this.db.coreIdentity) {
+      const id = this.runningId;
+      this.paused = true;
+      this.abort?.abort();
+      this.enqueueBatch3("暂停记忆整理", { kind: "memoryOrganizationPauseRun", id, at: Date.now() });
+      return;
+    }
+    this.pauseSaved(this.runningId);
   }
   private async run(state: State, input: OrganizationModelInput, scanId: string): Promise<void> {
     try {

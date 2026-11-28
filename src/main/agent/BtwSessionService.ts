@@ -5,6 +5,7 @@ import { normalizeSingleExpertId } from "../../shared/expert-id";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { AppSettingsStore } from "../AppSettingsStore";
 import type { TaskExecutionWorkspace } from "../task/TaskExecutionWorkspace";
+import { resolveTaskWorkspaceCwdAsync } from "../task/TaskWorkspaceResolver";
 import type { LibraryWorkspaceContextService } from "./LibraryWorkspaceContextService";
 import type { DurableBotRuntime } from "./durable/DurableBotRuntime";
 import type { DurableBotSnapshot } from "../../shared/durable-bot";
@@ -63,8 +64,8 @@ export class BtwSessionService {
     return formatBtwSnapshot(messages);
   }
 
-  private baseContext(parentTaskId: string, cwd: string): string[] {
-    const task = this.deps.db.getTask(parentTaskId);
+  private async baseContextAsync(parentTaskId: string, cwd: string): Promise<string[]> {
+    const task = await this.deps.db.readTask(parentTaskId, { includeExpertBinding: false });
     if (!task) throw new Error("BTW 父任务不存在");
     const assembly = this.deps.assembleModePreview({
       welcomeMode: task.welcomeMode ?? DEFAULT_WELCOME_MODE, projectId: task.projectId,
@@ -72,7 +73,7 @@ export class BtwSessionService {
       connectorIds: this.deps.settings.read().taskConnectorIds?.[parentTaskId] ?? [],
       permissionMode: "readonly", spaceId: task.spaceId, cwd, libraryToolsAvailable: false,
     });
-    return this.deps.libraryWorkspace.renderBtwProjectContextSegments(assembly.segments, parentTaskId);
+    return await this.deps.libraryWorkspace.renderBtwProjectContextSegmentsAsync(assembly.segments, parentTaskId);
   }
 
   async start(request: BtwStartRequest): Promise<void> {
@@ -93,11 +94,13 @@ export class BtwSessionService {
 
   private async open(request: BtwStartRequest): Promise<void> {
     if (!canStartBtwSession(this.sessions.size + this.opening.size, false)) throw new Error(`BTW 会话数量已达上限（${BTW_MAX_SESSIONS}）`);
-    if (!this.deps.db.getTask(request.parentTaskId)) throw new Error("BTW 父任务不存在");
-    const cwd = this.deps.resolveTaskExecutionWorkspaceCwd(request.parentTaskId);
+    if (!await this.deps.db.readTask(request.parentTaskId, { includeExpertBinding: false })) throw new Error("BTW 父任务不存在");
+    const cwd = this.deps.db.coreIdentity
+      ? await resolveTaskWorkspaceCwdAsync(this.deps.db, this.deps.taskWorkspace, request.parentTaskId)
+      : this.deps.resolveTaskExecutionWorkspaceCwd(request.parentTaskId);
     let previous: DurableBotSnapshot | undefined;
     const runtime = await this.deps.openRuntime({ ...request, cwd,
-      segments: [...this.baseContext(request.parentTaskId, cwd), `## 当前任务工作目录\n${cwd}`, BTW_SYSTEM_ROLE],
+      segments: [...await this.baseContextAsync(request.parentTaskId, cwd), `## 当前任务工作目录\n${cwd}`, BTW_SYSTEM_ROLE],
       snapshot: await this.snapshot(request.parentTaskId),
       onSnapshot: snapshot => {
         const { epoch: _epoch, revision: _revision, messages: _messages, ...state } = snapshot;

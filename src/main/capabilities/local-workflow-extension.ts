@@ -25,7 +25,7 @@ async function result(run: () => unknown | Promise<unknown>) {
 export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool">, context: {
   currentTaskOnly?: boolean; sourceOperation?: () => string | undefined;
   sourceOrigin?: () => import("../../shared/dots").DotsReplyOrigin | undefined;
-  scheduleScope?: (source: string, taskId?: string, spaceId?: string) => { taskId?: string; spaceId?: string } | undefined;
+  scheduleScope?: (source: string, taskId?: string, spaceId?: string) => { taskId?: string; spaceId?: string } | undefined | Promise<{ taskId?: string; spaceId?: string } | undefined>;
   canChangeSchedules?: (action: "create" | "update" | "resume") => boolean;
   taskId: string; taskRoot: string; services: LocalWorkflowBridge; terminalEnabled: boolean;
 }): void {
@@ -60,7 +60,7 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
       signal?.throwIfAborted();
       const source = context.sourceOperation?.();
       if (context.currentTaskOnly && source && /^cron-[0-9a-f-]{36}-input$/i.test(source))
-        services.cron.assertDotsInputCurrent(source);
+        await services.cron.assertDotsInputCurrent(source);
       if ((input.owner_task_id || input.owner_space_id) && (!context.currentTaskOnly || input.action !== "create"))
         throw new Error("只有 Dots 新建跟进计划时可以指定归属");
       if (!allowed(input.action)) throw new Error("Dots 设置已关闭「定时计划和文件订阅」");
@@ -68,9 +68,16 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
         if (!input.id) throw new Error("get requires id");
         return services.cron.readForTask(taskId, input.id, context.currentTaskOnly);
       }
-      const visible = (id: string) => !context.currentTaskOnly || services.cron.dotsScheduleVisible(id);
-      const visibleJobs = async () => (await services.cron.readJobs()).filter(job => job.sourceTaskId === taskId && visible(job.id));
-      if (input.id && input.action !== "pause" && input.action !== "cancel" && input.action !== "update" && !visible(input.id))
+      const visible = async (id: string) => !context.currentTaskOnly || await services.cron.dotsScheduleVisibleAsync(id);
+      const visibleJobs = async () => {
+        const jobs = await services.cron.readJobs();
+        const matched: typeof jobs = [];
+        for (const job of jobs) {
+          if (job.sourceTaskId === taskId && await visible(job.id)) matched.push(job);
+        }
+        return matched;
+      };
+      if (input.id && input.action !== "pause" && input.action !== "cancel" && input.action !== "update" && !await visible(input.id))
         throw new Error("计划不在 Dots 已授权的空间内");
       if (input.action === "list") return { jobs: await visibleJobs(), localOnly: true, missedRuns: context.currentTaskOnly ? "per-job" : "skip" };
       if (input.action === "runs") {
@@ -89,7 +96,7 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
         const ownerSpace = typeof input.owner_space_id === "string" ? input.owner_space_id : undefined;
         if ((ownerTask || ownerSpace) && (!source || !context.sourceOrigin?.() || !context.scheduleScope))
           throw new Error("找不到定时跟进对应的原始 Dots 消息");
-        const owner = source ? context.scheduleScope?.(source, ownerTask, ownerSpace) : undefined;
+        const owner = source ? await context.scheduleScope?.(source, ownerTask, ownerSpace) : undefined;
         const operation = source ? createHash("sha256").update(JSON.stringify([taskId, source, input.name, input.prompt,
           input.schedule_type, input.schedule_expr, input.timezone, input.max_runs, effectiveTo, input.restart_policy,
           ...(input.missed_runs ? [input.missed_runs] : []), ...(input.owner_task_id || input.owner_space_id ? [input.owner_task_id,input.owner_space_id] : [])])).digest("hex") : undefined;

@@ -71,7 +71,7 @@ export async function reflectionEvidence(directory: string, source: ObservationS
 }
 export type ReflectionInput = Awaited<ReturnType<typeof reflectionEvidence>>;
 export interface Reviewer {
-  scope(task: string): string | undefined;
+  scope(task: string): string | undefined | Promise<string | undefined>;
   complete(task: string, input: ReflectionInput, signal: AbortSignal): Promise<string>;
 }
 export function parseReflection(text: string, input: ReflectionInput) {

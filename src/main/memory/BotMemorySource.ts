@@ -5,11 +5,13 @@ import { MemoryInstructionDocument, memoryRememberClause } from "./MemoryIntent"
 
 /** Rechecked at write/extraction time, including delayed L0 turns. */
 export function botPeerMemoryInput(db: AppDatabase, messageId: string | undefined): boolean {
+  if (db.coreIdentity) throw new Error("Core 数据库禁止同步读取 bot_peer_inputs");
   return Boolean(messageId && db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_peer_inputs'").get()
     && db.connection.prepare("SELECT 1 FROM bot_peer_inputs WHERE user_message_id=? OR assistant_message_id=?").get(messageId, messageId));
 }
 
 export function botWorkHasSharedOrigin(db: AppDatabase, workId: string): boolean {
+  if (db.coreIdentity) throw new Error("Core 数据库禁止同步读取 bot_turn_origins");
   if (!db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_turn_origins'").get()) return false;
   const origin = db.connection.prepare(`SELECT json_extract(o.origin_json,'$.audience') audience FROM works w
     JOIN bot_turn_origins o ON o.user_message_id=w.source_message_id AND o.user_id=w.user_id WHERE w.work_id=?`)
@@ -22,7 +24,45 @@ export function botWorkHasSharedOrigin(db: AppDatabase, workId: string): boolean
 }
 
 /** A foreground conversation is a real memory source, never a fabricated Task row. */
+export interface BotMemorySourceRecord {
+  conversation_id: string;
+  bot_id: string;
+  team_id: string | null;
+  user_id: string;
+  source_kind: string;
+  status: string;
+  shared: boolean;
+  peer: boolean;
+}
+
+export async function readBotMemorySource(
+  db: AppDatabase,
+  conversationId: string,
+  userId = LOCAL_USER_ID,
+): Promise<BotMemorySourceRecord | undefined> {
+  if (!db.coreIdentity) return botMemorySource(db, conversationId, userId);
+  const ctx = await db.runtimeAuditReader?.memoryRecordsData({
+    kind: "assistantScopeContext",
+    conversationId,
+    userId,
+  });
+  if (!ctx || ctx.kind !== "assistantScopeContext") throw new Error("Core 未确认 Bot 对话来源读取");
+  const raw = ctx.botSource as Record<string, unknown> | null;
+  if (!raw) return undefined;
+  return {
+    conversation_id: String(raw.conversation_id),
+    bot_id: String(raw.bot_id),
+    team_id: typeof raw.team_id === "string" ? raw.team_id : null,
+    user_id: String(raw.user_id),
+    source_kind: String(raw.source_kind),
+    status: String(raw.status),
+    shared: Boolean(raw.shared),
+    peer: Boolean(raw.peer),
+  };
+}
+
 export function botMemorySource(db: AppDatabase, conversationId: string, userId = LOCAL_USER_ID) {
+  if (db.coreIdentity) throw new Error("Core 数据库要求使用异步 readBotMemorySource 读取");
   const source = db.connection.prepare(`SELECT c.conversation_id,c.bot_id,c.team_id,c.user_id,c.source_kind,b.status
     FROM bot_conversations c JOIN bots b ON b.bot_id=c.bot_id AND b.user_id=c.user_id
     WHERE c.conversation_id=? AND c.user_id=?`).get(conversationId, userId) as {
@@ -74,6 +114,7 @@ export function botMemoryWriteEvidenceAllowed(userText: string, evidence: string
 
 /** Resolve a single real input to its Work, never from candidate text or a model-selected ID. */
 export function botMemoryWorkForSource(db: AppDatabase, conversationId: string, userMessageId: string, userId = LOCAL_USER_ID): string | undefined {
+  if (db.coreIdentity) throw new Error("Core 数据库禁止同步读取 works");
   const source = db.connection.prepare(`SELECT 1 FROM bot_send_receipts r JOIN bot_messages m ON m.message_id=r.user_message_id
     JOIN bot_conversations c ON c.conversation_id=r.conversation_id AND c.user_id=r.user_id
     WHERE r.user_id=? AND r.conversation_id=? AND r.user_message_id=? AND m.role='user'
@@ -106,6 +147,7 @@ export function botMemoryDurableEvidence(userText: string, evidence: string): bo
 /** Narrow legacy automatic atoms at read time; preserve stored records and their evidence for audit. */
 export function botMemoryAutomaticBoundary(db: AppDatabase, memory: import("../../shared/memory-kernel").MemoryRecordDto):
   { scopeType: "work" | "conversation"; scopeId: string } | undefined {
+  if (db.coreIdentity) return undefined;
   if (memory.explicit || memory.sourceType !== "agent" || !memory.sourceId
     || !["fact", "constraint", "decision"].includes(memory.kind)
     || !memory.scopes.some(scope => ["bot", "team", "global"].includes(scope.scopeType))) return;

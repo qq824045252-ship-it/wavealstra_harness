@@ -29,7 +29,7 @@ export function gatewayConversationDirectory(db: AppDatabase, taskId: string, ch
     return target;
   }
   if (resolve(previousDirectory) !== resolve(originalDirectory)) throw new Error("渠道会话存储不属于原会话");
-  if (db.connection.readonly) {
+  if (db.readonly || db.coreIdentity) {
     throw new Error("渠道会话目录绑定需要通过主写入核心同步");
   }
   db.connection.transaction(() => {

@@ -23,9 +23,20 @@ export class DurableWorkspaceMoves {
   constructor(private readonly db: AppDatabase) {}
 
   read(taskId: string): DurableWorkspaceMove | undefined {
+    if (this.db.runtimeAuditReader?.supervised) {
+      throw new Error("Core 模式下请使用异步 readAsync 读取 Durable 工作目录搬迁状态");
+    }
     return this.db.connection.prepare<[string], DurableWorkspaceMove>(`
       SELECT from_cwd AS fromCwd, to_cwd AS toCwd FROM durable_bot_workspace_moves WHERE task_id = ?
     `).get(taskId);
+  }
+
+  async readAsync(taskId: string): Promise<DurableWorkspaceMove | undefined> {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader?.supervised) return this.read(taskId);
+    const move = await reader.readDurableWorkspaceMove(taskId);
+    if (move === undefined) throw new Error("Core 未确认 Durable 工作目录搬迁读取");
+    return move ?? undefined;
   }
 
   async write(request: RuntimeDurableWorkspaceMoveRequest): Promise<void> {

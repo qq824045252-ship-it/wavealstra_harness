@@ -2347,13 +2347,13 @@ function botExtension(
         let recorded = false;
         validate = async providerMessages => {
           await validateEvidence?.();
-          route?.validate();
+          await route?.validate();
           await validateGoal();
           if (providerMessages && recordRecall) {
             recordRecall(providerMessages);
             recordRecall = undefined;
           }
-          if (route && !recorded) { route.record(); recorded = true; }
+          if (route && !recorded) { await route.record(); recorded = true; }
         };
         return changed || hookNote ? { messages: requestWithHook(messages) } : undefined;
       } catch (error) {

@@ -135,12 +135,12 @@ export interface DurableBotServiceOptions {
   instructions: (task: TaskDto) => string | Promise<string>;
   evidence?: (task: TaskDto, messages: readonly Message[]) => string;
   evidenceProjection?: (task: TaskDto) => DurableEvidenceOptions | undefined;
-  canReadAnswerEvidence?: (taskId: string, resource: "read" | "library_read") => boolean;
+  canReadAnswerEvidence?: (taskId: string, resource: "read" | "library_read") => boolean | Promise<boolean>;
   answerRouting?: Pick<AnswerRoutingService, "prepare" | "hasRulesForTask" | "clearPreparedTurns">;
   dotsAnswerRoutingEnabled?: () => boolean;
   nativeHooks?: NativeHookStore;
   nativeImprovement?: import("../hooks/NativeImprovementService").NativeImprovementService;
-  improvementSkillAllowed?: (taskId: string, name: string) => boolean;
+  improvementSkillAllowed?: (taskId: string, name: string, task?: TaskDto) => boolean;
   readHints?: import("../hooks/ReadRecoveryHints").ReadRecoveryHints;
   tools?: (task: TaskDto, cwd: string, recovery: ExternalEffectRecovery) => Promise<DurableDomainTools>;
   mcpSelection?: (task: TaskDto) => readonly string[] | undefined | Promise<readonly string[] | undefined>;
@@ -176,7 +176,7 @@ export interface DurableBotServiceOptions {
   onContextStatus?: (taskId: string, status: ContextManagementStatusDto) => void;
   emit: (patch: AgentUiPatch) => void;
   projectArtifacts?: (taskId: string, snapshot: DurableBotSnapshot, before: Map<string, string>, cwd: string, messageWorkspaces?: ReadonlyMap<string, string>) => Promise<void>;
-  thinking?: (task: TaskDto, request: AgentPromptRequest) => ModelThinkingLevel | undefined;
+  thinking?: (task: TaskDto, request: AgentPromptRequest) => ModelThinkingLevel | undefined | Promise<ModelThinkingLevel | undefined>;
   prepareInput?: (request: AgentPromptRequest) => Promise<string> | string;
   auditInput?: (request: AgentPromptRequest, origin?: DurableInputOrigin) => import("./DurableSkillProjection").DurableInputAudit | undefined
     | Promise<import("./DurableSkillProjection").DurableInputAudit | undefined>;
@@ -323,6 +323,7 @@ export class DurableBotService {
   }
 
   private binding(taskId: string): BotBinding | undefined {
+    if (this.core) throw new Error("Core 模式下请使用异步 readBinding");
     return this.options.db.connection.prepare("SELECT * FROM durable_bot_bindings WHERE task_id = ?").get(taskId) as BotBinding | undefined;
   }
 
@@ -745,14 +746,14 @@ export class DurableBotService {
       const runtime = await DurableBotRuntime.open({ directory, cwd, models, initialHistory,
         codeReview: this.options.codeReview && { taskId, workspace: cwd, review: this.options.codeReview },
         nativeHooks: this.options.nativeHooks && { store: this.options.nativeHooks, readHints: this.options.readHints, cwd, directory,
-          improvement: this.options.nativeImprovement, skillAllowed: name => toolGate.allowed("read") && Boolean(this.options.improvementSkillAllowed?.(taskId, name)),
+          improvement: this.options.nativeImprovement, skillAllowed: name => toolGate.allowed("read") && Boolean(this.options.improvementSkillAllowed?.(taskId, name, core ? permissionTask : undefined)),
           toolAllowed: name => toolGate.allowed(name), scope: () => {
           const current = core ? permissionTask : db.getTask(taskId);
           if (!current) throw new Error("Hook 所属任务已不可用");
           return { taskId, projectId: current.projectId, spaceId: current.spaceId };
         } },
         answerRouting: routing && {
-          enabled: () => this.options.dotsAnswerRoutingEnabled?.() !== false && routing.hasRulesForTask(taskId),
+          enabled: () => this.options.dotsAnswerRoutingEnabled?.() !== false && (!!core || routing.hasRulesForTask(taskId)),
           prepare: (inputId, query, appended) => routing.prepare({ taskId, inputId, query, cwd, appended,
             canRead: () => this.options.canReadAnswerEvidence?.(taskId, "read") ?? toolGate.allowed("read"),
             canReadLibrary: () => this.options.canReadAnswerEvidence?.(taskId, "library_read") ?? toolGate.allowed("library_read") }),
@@ -1024,7 +1025,7 @@ export class DurableBotService {
         }
       } : undefined;
       await open.refreshPermissions(current);
-      await open.runtime.configure(resolvedModel.target, this.toolMode(current), this.options.thinking?.(current, configuredRequest),
+      await open.runtime.configure(resolvedModel.target, this.toolMode(current), await this.options.thinking?.(current, configuredRequest),
         [...mcp.tools, ...domain?.tools ?? []], domain?.contextHooks ?? [], domain?.toolHooks, domain?.foregroundHooks, verifyTools);
       mark?.("configure");
       return resolvedModel.target;
@@ -1296,6 +1297,7 @@ export class DurableBotService {
   }
 
   private hasDotsDelegation(taskId: string, requestId?: string): boolean {
+    if (this.core) throw new Error("Core 模式下禁止同步读取 dots_delegations");
     const db = this.options.db.connection;
     if (taskId === DOTS_TASK_ID || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dots_delegations'").get()) return false;
     return requestId === undefined
@@ -1304,6 +1306,7 @@ export class DurableBotService {
   }
 
   private deliveredDotsInput(taskId: string): string | undefined {
+    if (this.core) throw new Error("Core 模式下禁止同步读取 dots_reply_events");
     const db = this.options.db.connection;
     if (!this.hasDotsDelegation(taskId) || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dots_reply_events'").get()) return;
     return db.prepare(`SELECT latest.operation_id FROM (
@@ -1641,10 +1644,11 @@ export class DurableBotService {
   }
 
   commitBranch(taskId: string, cwd: string, branch: MaterializedDurableBranch): void {
-    const projection = new DurableTaskProjection(this.options.db.connection, this.options.db.runtimeAuditReader);
-    if (!this.options.db.connection.readonly) {
-      this.options.db.connection.prepare("INSERT INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, branch.directory, cwd);
-      this.options.db.connection.prepare("INSERT INTO durable_bot_memory_projection(task_id, entry_id) VALUES (?, ?)").run(taskId, branch.inheritedLastEntryId);
+    const fixture = this.options.db.fixtureConnection;
+    const projection = new DurableTaskProjection(fixture, this.options.db.runtimeAuditReader);
+    if (fixture && !this.options.db.readonly && !this.options.db.runtimeAuditReader?.supervised) {
+      fixture.prepare("INSERT INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, branch.directory, cwd);
+      fixture.prepare("INSERT INTO durable_bot_memory_projection(task_id, entry_id) VALUES (?, ?)").run(taskId, branch.inheritedLastEntryId);
       return;
     }
     void projection.commitBranch(taskId, branch.directory, cwd, branch.inheritedLastEntryId).catch(error => {
@@ -1762,13 +1766,21 @@ export class DurableBotService {
         join(gatewayChannelDirectory(this.options.db, channel, false), digest),
       );
       // A new inbound turn can recreate this exact task ID after release. Exclude admission during cleanup.
-      this.options.db.connection.transaction(() => {
-        if (this.options.db.getTask(taskId)) throw new Error("网关会话已重新创建，不能清理存储");
+      if (this.core) {
+        if (await this.options.db.readTask(taskId, { includeExpertBinding: false })) throw new Error("网关会话已重新创建，不能清理存储");
         rmSync(directory, { recursive: true, force: true });
         for (const channelDir of channelDirs) {
           rmSync(channelDir, { recursive: true, force: true });
         }
-      }).immediate();
+      } else {
+        this.options.db.connection.transaction(() => {
+          if (this.options.db.getTask(taskId)) throw new Error("网关会话已重新创建，不能清理存储");
+          rmSync(directory, { recursive: true, force: true });
+          for (const channelDir of channelDirs) {
+            rmSync(channelDir, { recursive: true, force: true });
+          }
+        }).immediate();
+      }
       await purgeDurableStorage(directory, this.options.db.runtimeAuditReader);
       for (const channelDir of channelDirs) {
         await purgeDurableStorage(channelDir, this.options.db.runtimeAuditReader);

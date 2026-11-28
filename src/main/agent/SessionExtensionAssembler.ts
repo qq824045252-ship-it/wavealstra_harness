@@ -109,6 +109,9 @@ export class SessionExtensionAssembler {
 
   domainExtensions(taskId: string, memoryEnabled: boolean, gadgetService: GadgetService | null,
     policy: Pick<SessionExtensionAssemblyInput, "getPermissionMode" | "requestApproval">): InlineExtension[] {
+    if (this.deps.db.coreIdentity) {
+      throw new Error("Core 数据库要求传入 taskScope");
+    }
     return this.domainFactories({ taskId, memoryEnabled, gadgetService, ...policy }, () => this.deps.db.getTask(taskId)?.projectId ?? null,
     () => this.deps.db.getTask(taskId)?.spaceId ?? null);
   }
@@ -127,8 +130,15 @@ export class SessionExtensionAssembler {
   }
 
   async build(input: SessionExtensionAssemblyInput): Promise<InlineExtension[]> {
-    const resolveProjectId = () => this.deps.db.getTask(input.taskId)?.projectId ?? null;
-    const resolveWorkspaceId = () => this.deps.db.getTask(input.taskId)?.spaceId ?? null;
+    const coreTask = this.deps.db.coreIdentity
+      ? await this.deps.db.readTask(input.taskId, { includeExpertBinding: false })
+      : undefined;
+    const resolveProjectId = this.deps.db.coreIdentity
+      ? () => coreTask?.projectId ?? null
+      : () => this.deps.db.getTask(input.taskId)?.projectId ?? null;
+    const resolveWorkspaceId = this.deps.db.coreIdentity
+      ? () => coreTask?.spaceId ?? null
+      : () => this.deps.db.getTask(input.taskId)?.spaceId ?? null;
 
     return [
       ...this.conversationCapabilityFactories(input),
@@ -148,6 +158,7 @@ export class SessionExtensionAssembler {
         const current = currentDurableInvocation()?.taskScope;
         if (current?.id === input.taskId) return current.permissionMode ?? input.getPermissionMode();
         if (input.taskScope) return input.taskScope.permissionMode ?? input.getPermissionMode();
+        if (this.deps.db.coreIdentity) return input.getPermissionMode();
         return this.deps.db.getTask(input.taskId)?.permissionMode ?? input.getPermissionMode();
       }
       : input.getPermissionMode;

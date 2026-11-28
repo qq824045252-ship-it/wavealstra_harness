@@ -1,6 +1,7 @@
 import type { AppDatabase } from '../db/AppDatabase';
 import type { MemoryService } from './MemoryService';
-import { resolveWorkMemoryScope } from './AssistantMemoryScopes';
+import { resolveWorkMemoryScope, resolveWorkMemoryScopeAsync } from './AssistantMemoryScopes';
+import { memoryRecordFromWire } from './MemoryRecordsData';
 
 /** Repair only a provable automatic-candidate takeover, never a user edit/delete/unbind. */
 export function repairWorkMemorySnapshot(db: AppDatabase, memory: MemoryService, workId: string, memoryId: string): boolean {
@@ -26,5 +27,38 @@ export function repairWorkMemorySnapshot(db: AppDatabase, memory: MemoryService,
   }
   db.connection.prepare("UPDATE memory_records SET source_type='event',source_id=NULL,source_task_id=NULL WHERE id=?").run(memoryId);
   db.connection.prepare("UPDATE memory_capture_receipts SET suppressed=0,content_hash='',updated_at=? WHERE memory_id=? AND source_key=?").run(Date.now(),memoryId,`work-summary:${workId}`);
+  return true;
+}
+
+export async function repairWorkMemorySnapshotAsync(db: AppDatabase, memory: MemoryService, workId: string, memoryId: string): Promise<boolean> {
+  if (!db.coreIdentity) return repairWorkMemorySnapshot(db, memory, workId, memoryId);
+  const reader = db.runtimeAuditReader;
+  if (!reader) return false;
+  const detail = await reader.memoryRecordsData({ kind: 'detail', id: memoryId });
+  const record = detail?.kind === 'detail' && detail.record ? memoryRecordFromWire(detail.record) : undefined;
+  if (!record || record.status !== 'active' || record.metadata.factualSnapshot !== true
+    || record.metadata.captureSource !== `work-summary:${workId}`
+    || record.scopes.length !== 1 || record.scopes[0].scopeType !== 'work' || record.scopes[0].scopeId !== workId) return false;
+  const revData = await reader.memoryRecordsData({ kind: 'revisions', memoryId });
+  if (revData?.kind !== 'revisions') return false;
+  const revisions = revData.revisions as Array<{ revision: number; changedBy: string; changeReason: string | null; content: string; title: string }>;
+  const lastEvent = revisions.findIndex(row => row.changedBy === 'event');
+  if (lastEvent <= 0) return false;
+  for (const row of revisions.slice(0, lastEvent)) {
+    const candidateId = /^candidate:(.+)$/.exec(row.changeReason ?? '')?.[1];
+    if (!candidateId) return false;
+    const candData = await reader.memoryRecordsData({ kind: 'candidateById', id: candidateId });
+    const candidate = candData?.kind === 'candidateById'
+      ? candData.candidate as { task_id: string; status: string; resolved_memory_id: string } | null
+      : null;
+    if (!candidate || candidate.status !== 'committed' || candidate.resolved_memory_id !== memoryId) return false;
+    const scope = await resolveWorkMemoryScopeAsync(db, candidate.task_id);
+    if (scope?.work_id !== workId) return false;
+  }
+  await memory.updateSettingsMemory({
+    id: memoryId, title: revisions[lastEvent].title, content: revisions[lastEvent].content,
+    changedBy: 'event', changeReason: 'Repair verified automatic candidate overwrite',
+  });
+  memory.queueWorkSnapshotRepairMeta(memoryId, `work-summary:${workId}`);
   return true;
 }

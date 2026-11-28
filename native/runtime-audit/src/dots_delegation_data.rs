@@ -50,6 +50,44 @@ pub enum Query {
         space_ids: Option<Vec<String>>,
         host_generation: Option<String>,
     },
+    ActionData {
+        #[serde(flatten)]
+        query: ActionQuery,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ActionQuery {
+    PendingInputs,
+    ControlState { task_id: String },
+    PausedTasks,
+    ControlReceipt { operation_id: String, target_task_id: Option<String> },
+    ControlBatch { id: String },
+    ProactivePause { scope: String },
+    IsProactivePaused { space_id: Option<String> },
+    LatestDelegationMeta { task_id: String },
+    DelegationReplay { operation_id: String, task_id: String },
+    DelegationStatus { operation_id: String },
+    DelegationActiveExists { operation_id: String, task_id: String },
+    HasAnyDelegation { task_id: String },
+    SourceLinks { source_message_id: String },
+    TaskLinkCount { source_message_id: String },
+    LatestStatusCheck { task_id: String, key: String, input_key: String },
+    ContinuationTarget { source: String, task_id: String },
+    OtherContinuationTargets { source: String, excluding_task_id: String },
+    AutoWaitMatch { task_id: String, prerequisite_id: String },
+    ScopeMatches { operation_id: String, task_id: String },
+    UnsettledReplyOps,
+    TerminalDeliveryReceipt { task_id: String, seq: i64 },
+    PendingSteerCheck {
+        task_id: String,
+        goal_id: Option<String>,
+        operation_id: Option<String>,
+        continue_plan: bool,
+        follow_up: bool,
+    },
+    BranchPersistenceCheck { child_task_id: String },
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -138,6 +176,283 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
         Query::Active { task_id, before_seq, limit } => active(db, task_id, before_seq, limit),
         Query::Worker { task_id, operation_id, space_ids, host_generation } => {
             worker(db, &task_id, &operation_id, space_ids.as_deref(), host_generation.as_deref())
+        }
+        Query::ActionData { query } => action_data(db, query),
+    }
+}
+
+fn action_data(db: &Connection, query: ActionQuery) -> Result<Value> {
+    use crate::sqlite_rows::records;
+    match query {
+        ActionQuery::PendingInputs => Ok(records(
+            db,
+            "SELECT task_id, operation_id FROM dots_target_controls WHERE starts_with(operation_id, 'dots-input-')",
+            [],
+        )?
+        .into()),
+        ActionQuery::ControlState { task_id } => Ok(records(
+            db,
+            "SELECT state, operation_id FROM dots_target_controls WHERE task_id = ?1",
+            [&task_id],
+        )?
+        .pop()
+        .unwrap_or(Value::Null)),
+        ActionQuery::PausedTasks => Ok(records(
+            db,
+            "SELECT task_id FROM dots_target_controls WHERE state = 'paused'",
+            [],
+        )?
+        .into()),
+        ActionQuery::ControlReceipt {
+            operation_id,
+            target_task_id,
+        } => {
+            let row = match target_task_id {
+                Some(tid) => records(
+                    db,
+                    "SELECT operation_id, target_task_id, outcome FROM dots_control_receipts WHERE operation_id = ?1 AND target_task_id = ?2",
+                    params![operation_id, tid],
+                )?,
+                None => records(
+                    db,
+                    "SELECT operation_id, target_task_id, outcome FROM dots_control_receipts WHERE operation_id = ?1",
+                    [&operation_id],
+                )?,
+            }
+            .pop();
+            Ok(row.unwrap_or(Value::Null))
+        }
+        ActionQuery::ControlBatch { id } => {
+            let selection: Option<String> = db
+                .query_row(
+                    "SELECT selection FROM dots_control_batches WHERE id = ?1",
+                    [&id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(json!({ "selection": selection }))
+        }
+        ActionQuery::ProactivePause { scope } => {
+            let timer_ids: Option<String> = db
+                .query_row(
+                    "SELECT timer_ids FROM dots_proactive_pauses WHERE scope = ?1",
+                    [&scope],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(json!({ "timerIds": timer_ids }))
+        }
+        ActionQuery::IsProactivePaused { space_id } => {
+            let paused: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM dots_proactive_pauses WHERE scope IN ('', ?1))",
+                [space_id.as_deref().unwrap_or("")],
+                |r| r.get(0),
+            )?;
+            Ok(json!({ "paused": paused }))
+        }
+        ActionQuery::LatestDelegationMeta { task_id } => Ok(records(
+            db,
+            "SELECT operation_id, status, goal_id, source_message_id, seq
+             FROM dots_delegations WHERE task_id = ?1 ORDER BY seq DESC LIMIT 1",
+            [&task_id],
+        )?
+        .pop()
+        .unwrap_or(Value::Null)),
+        ActionQuery::DelegationReplay {
+            operation_id,
+            task_id,
+        } => Ok(records(
+            db,
+            "SELECT status, request_json, text, goal_id
+             FROM dots_delegations WHERE operation_id = ?1 AND task_id = ?2",
+            params![operation_id, task_id],
+        )?
+        .pop()
+        .unwrap_or(Value::Null)),
+        ActionQuery::DelegationStatus { operation_id } => {
+            let status: Option<String> = db
+                .query_row(
+                    "SELECT status FROM dots_delegations WHERE operation_id = ?1",
+                    [&operation_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(json!({ "status": status }))
+        }
+        ActionQuery::DelegationActiveExists {
+            operation_id,
+            task_id,
+        } => {
+            let exists: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM dots_delegations WHERE operation_id = ?1 AND task_id = ?2 AND status NOT IN ('failed','superseded'))",
+                params![operation_id, task_id],
+                |r| r.get(0),
+            )?;
+            Ok(json!({ "exists": exists }))
+        }
+        ActionQuery::HasAnyDelegation { task_id } => {
+            let exists: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM dots_delegations WHERE task_id = ?1)",
+                [&task_id],
+                |r| r.get(0),
+            )?;
+            Ok(json!({ "exists": exists }))
+        }
+        ActionQuery::SourceLinks { source_message_id } => Ok(records(
+            db,
+            "SELECT DISTINCT task_id FROM dots_delegations WHERE source_message_id = ?1",
+            [&source_message_id],
+        )?
+        .into()),
+        ActionQuery::TaskLinkCount { source_message_id } => Ok(records(
+            db,
+            "SELECT DISTINCT task_id FROM dots_delegations WHERE source_message_id = ?1 LIMIT 2",
+            [&source_message_id],
+        )?
+        .into()),
+        ActionQuery::LatestStatusCheck {
+            task_id,
+            key,
+            input_key,
+        } => {
+            let latest = records(
+                db,
+                "SELECT d.operation_id, d.status, d.source_message_id,
+                    EXISTS(SELECT 1 FROM dots_dependency_waits w WHERE w.operation_id = d.operation_id) AS has_wait
+                 FROM dots_delegations d WHERE d.task_id = ?1 ORDER BY d.seq DESC LIMIT 1",
+                [&task_id],
+            )?
+            .pop()
+            .unwrap_or(Value::Null);
+            let answered: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM dots_control_receipts WHERE operation_id IN (?1, ?2) AND outcome = 'answered')",
+                params![key, input_key],
+                |r| r.get(0),
+            )?;
+            Ok(json!({ "latest": latest, "answered": answered }))
+        }
+        ActionQuery::ContinuationTarget { source, task_id } => Ok(records(
+            db,
+            "SELECT prior_operation_id, assignment_quote FROM dots_continuation_targets WHERE source = ?1 AND task_id = ?2",
+            params![source, task_id],
+        )?
+        .pop()
+        .unwrap_or(Value::Null)),
+        ActionQuery::OtherContinuationTargets {
+            source,
+            excluding_task_id,
+        } => Ok(records(
+            db,
+            "SELECT task_id, assignment_quote FROM dots_continuation_targets WHERE source = ?1 AND task_id IS DISTINCT FROM ?2",
+            params![source, excluding_task_id],
+        )?
+        .into()),
+        ActionQuery::AutoWaitMatch {
+            task_id,
+            prerequisite_id,
+        } => {
+            let matches: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM dots_dependency_waits w JOIN dots_delegations d ON d.operation_id = w.operation_id WHERE d.task_id = ?1 AND w.prerequisite_id = ?2)",
+                params![task_id, prerequisite_id],
+                |r| r.get(0),
+            )?;
+            Ok(json!({ "matches": matches }))
+        }
+        ActionQuery::ScopeMatches {
+            operation_id,
+            task_id,
+        } => Ok(records(
+            db,
+            "SELECT (t.space_id IS NOT DISTINCT FROM d.space_id
+                     AND s.path IS NOT DISTINCT FROM d.space_path
+                     AND (t.cwd IS NOT DISTINCT FROM d.cwd OR (d.cwd IS NULL AND t.cwd IS NOT DISTINCT FROM d.space_path))) AS matches,
+                    d.source_message_id,
+                    (SELECT p.assignment FROM (SELECT json_extract_string(try_cast(plan AS JSON), '$.assignment') AS assignment FROM dots_followup_plans WHERE operation_id = d.operation_id) p) AS assignment
+             FROM dots_delegations d
+             JOIN tasks t ON t.id = d.task_id
+             LEFT JOIN spaces s ON s.id = t.space_id
+             WHERE d.operation_id = ?1 AND d.task_id = ?2",
+            params![operation_id, task_id],
+        )?
+        .pop()
+        .unwrap_or(Value::Null)),
+        ActionQuery::UnsettledReplyOps => Ok(records(
+            db,
+            "SELECT DISTINCT operation_id FROM dots_reply_events WHERE settled = 0",
+            [],
+        )?
+        .into()),
+        ActionQuery::TerminalDeliveryReceipt { task_id, seq } => Ok(records(
+            db,
+            "SELECT json_extract_string(try_cast(snapshot AS JSON), '$.delivered') AS kind,
+                    json_extract_string(try_cast(snapshot AS JSON), '$.summary') AS summary,
+                    json_extract_string(try_cast(snapshot AS JSON), '$.deliveryKey') AS delivery_key
+             FROM dots_reply_events r
+             JOIN dots_delegations d ON d.operation_id = r.operation_id AND d.task_id = r.task_id
+             WHERE r.task_id = ?1 AND d.seq = ?2 AND r.settled = 1
+               AND (json_extract_string(try_cast(snapshot AS JSON), '$.delivered') IN ('question','conclusion')
+                    OR (r.status IN ('completed','failed') AND json_extract_string(try_cast(snapshot AS JSON), '$.delivered') = 'progress'))
+             ORDER BY r.rowid DESC LIMIT 1",
+            params![task_id, seq],
+        )?
+        .pop()
+        .unwrap_or(Value::Null)),
+        ActionQuery::PendingSteerCheck {
+            task_id,
+            goal_id,
+            operation_id,
+            continue_plan,
+            follow_up,
+        } => {
+            let prior = records(
+                db,
+                "SELECT d.operation_id,
+                        json_extract_string(try_cast(p.plan AS JSON), '$.assignment') AS assignment,
+                        d.text, d.status, d.goal_id
+                 FROM dots_delegations d
+                 LEFT JOIN dots_followup_plans p ON p.operation_id = d.operation_id
+                 WHERE d.task_id = ?1
+                 ORDER BY d.seq DESC LIMIT 1",
+                [&task_id],
+            )?
+            .pop()
+            .unwrap_or(Value::Null);
+            let same_goal_exists: Option<String> = match goal_id.as_deref() {
+                Some(gid) => db
+                    .query_row(
+                        "SELECT operation_id FROM dots_delegations WHERE goal_id = ?1 AND task_id = ?2 AND (status IN ('pending','active','blocked') OR ?3) ORDER BY seq DESC LIMIT 1",
+                        params![gid, task_id, continue_plan && !follow_up],
+                        |r| r.get(0),
+                    )
+                    .optional()?,
+                None => None,
+            };
+            let op_exists = match operation_id.as_deref() {
+                Some(op) => db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM dots_delegations WHERE operation_id = ?1)",
+                    [op],
+                    |r| r.get(0),
+                )?,
+                None => false,
+            };
+            Ok(json!({
+                "prior": prior,
+                "sameGoalOperationId": same_goal_exists,
+                "operationExists": op_exists,
+            }))
+        }
+        ActionQuery::BranchPersistenceCheck { child_task_id } => {
+            let linked: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM dots_delegations WHERE task_id = ?1)",
+                [&child_task_id],
+                |r| r.get(0),
+            )?;
+            let settled_reply: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM dots_reply_events r JOIN dots_delegations d ON d.operation_id = r.operation_id AND d.task_id = r.task_id WHERE r.task_id = ?1 AND r.settled = 1)",
+                [&child_task_id],
+                |r| r.get(0),
+            )?;
+            Ok(json!({ "linked": linked, "settledReply": settled_reply }))
         }
     }
 }

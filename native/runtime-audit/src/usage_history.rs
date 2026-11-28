@@ -208,7 +208,111 @@ fn scan_jsonl(
     }
 }
 
-fn overhead_time(db: &Connection, input: Option<Value>, captured: i64) -> Result<f64> {
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = year - i64::from(month <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+            if leap { 29 } else { 28 }
+        }
+        _ => 0,
+    }
+}
+
+fn parse_u32_exact(bytes: &[u8]) -> Option<u32> {
+    if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(bytes).ok()?.parse::<u32>().ok()
+}
+
+fn parse_iso_timestamp_ms(text: &str) -> Result<f64> {
+    let raw = text.as_bytes();
+    if raw.len() < 10 || raw[4] != b'-' || raw[7] != b'-' {
+        return Err("usage timestamp needs JavaScript parsing".into());
+    }
+    let year = parse_u32_exact(&raw[0..4]).ok_or("usage timestamp needs JavaScript parsing")? as i64;
+    let month = parse_u32_exact(&raw[5..7]).ok_or("usage timestamp needs JavaScript parsing")? as i64;
+    let day = parse_u32_exact(&raw[8..10]).ok_or("usage timestamp needs JavaScript parsing")? as i64;
+    if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
+        return Err("usage timestamp needs JavaScript parsing".into());
+    }
+    let days = days_from_civil(year, month, day);
+    if raw.len() == 10 {
+        return Ok((days * 86_400_000) as f64);
+    }
+    if raw[10] != b'T' {
+        return Err("usage timestamp needs local calendar parsing".into());
+    }
+    let rest = &raw[11..];
+    let (time_part, offset_secs): (&[u8], i64) = if rest.last() == Some(&b'Z') {
+        (&rest[..rest.len() - 1], 0)
+    } else if rest.len() >= 6
+        && matches!(rest[rest.len() - 6], b'+' | b'-')
+        && rest[rest.len() - 3] == b':'
+    {
+        let sign: i64 = if rest[rest.len() - 6] == b'-' { -1 } else { 1 };
+        let oh = parse_u32_exact(&rest[rest.len() - 5..rest.len() - 3])
+            .ok_or("usage timestamp needs JavaScript parsing")? as i64;
+        let om = parse_u32_exact(&rest[rest.len() - 2..])
+            .ok_or("usage timestamp needs JavaScript parsing")? as i64;
+        if oh > 23 || om > 59 {
+            return Err("usage timestamp needs JavaScript parsing".into());
+        }
+        (&rest[..rest.len() - 6], sign * (oh * 3600 + om * 60))
+    } else {
+        return Err("usage timestamp needs local calendar parsing".into());
+    };
+
+    // Accepts HH:MM or HH:MM:SS or HH:MM:SS.fff...
+    if time_part.len() < 5 || time_part[2] != b':' {
+        return Err("usage timestamp needs JavaScript parsing".into());
+    }
+    let hour = parse_u32_exact(&time_part[0..2]).ok_or("usage timestamp needs JavaScript parsing")? as i64;
+    let minute = parse_u32_exact(&time_part[3..5]).ok_or("usage timestamp needs JavaScript parsing")? as i64;
+    if hour > 23 || minute > 59 {
+        return Err("usage timestamp needs JavaScript parsing".into());
+    }
+    let (second, millis): (i64, i64) = if time_part.len() == 5 {
+        (0, 0)
+    } else {
+        if time_part.len() < 8 || time_part[5] != b':' {
+            return Err("usage timestamp needs JavaScript parsing".into());
+        }
+        let sec = parse_u32_exact(&time_part[6..8]).ok_or("usage timestamp needs JavaScript parsing")? as i64;
+        if sec > 59 {
+            return Err("usage timestamp needs JavaScript parsing".into());
+        }
+        if time_part.len() == 8 {
+            (sec, 0)
+        } else {
+            if time_part[8] != b'.' || time_part.len() == 9 || !time_part[9..].iter().all(u8::is_ascii_digit) {
+                return Err("usage timestamp needs JavaScript parsing".into());
+            }
+            let frac = &time_part[9..];
+            let mut ms_digits = [b'0'; 3];
+            for (idx, byte) in frac.iter().take(3).enumerate() {
+                ms_digits[idx] = *byte;
+            }
+            let ms = parse_u32_exact(&ms_digits).ok_or("usage timestamp needs JavaScript parsing")? as i64;
+            (sec, ms)
+        }
+    };
+    let utc_ms = (days * 86_400 + hour * 3600 + minute * 60 + second - offset_secs) * 1000 + millis;
+    Ok(utc_ms as f64)
+}
+
+fn overhead_time(_db: &Connection, input: Option<Value>, captured: i64) -> Result<f64> {
     let Some(value) = input else {
         return Ok(captured as f64);
     };
@@ -218,48 +322,7 @@ fn overhead_time(db: &Connection, input: Option<Value>, captured: i64) -> Result
     let Some(text) = value.as_str() else {
         return Ok(captured as f64);
     };
-    let Some(date) = text.get(..10) else {
-        return Err("usage timestamp needs JavaScript parsing".into());
-    };
-    let bytes = date.as_bytes();
-    if bytes[4] != b'-'
-        || bytes[7] != b'-'
-        || !bytes
-            .iter()
-            .enumerate()
-            .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
-    {
-        return Err("usage timestamp needs JavaScript parsing".into());
-    }
-    let Some(rest) = text.get(10..) else {
-        return Err("usage timestamp missing date".into());
-    };
-    let time = if rest.is_empty() {
-        text.to_owned()
-    } else {
-        let tail = rest.as_bytes();
-        let offset = tail.last() == Some(&b'Z')
-            || tail
-                .get(tail.len().saturating_sub(6))
-                .is_some_and(|value| *value == b'+' || *value == b'-');
-        if !rest.starts_with('T') || !offset {
-            return Err("usage timestamp needs local calendar parsing".into());
-        }
-        if let Some(dot) = text.find('.') {
-            let digits = text[dot + 1..]
-                .bytes()
-                .take_while(u8::is_ascii_digit)
-                .count();
-            let split = dot + 1 + digits.min(3);
-            format!("{}{}", &text[..split], &text[dot + 1 + digits..])
-        } else {
-            text.to_owned()
-        }
-    };
-    let millis: Option<f64> = db
-        .prepare("SELECT round(unixepoch(?1,'subsec')*1000)")?
-        .query_row([time], |row| row.get(0))?;
-    millis.ok_or_else(|| "usage timestamp needs JavaScript parsing".into())
+    parse_iso_timestamp_ms(text)
 }
 
 fn session_rows(db: &Connection, file: File, stamp: FileStamp, captured: i64) -> Result<Session> {
@@ -727,4 +790,40 @@ pub fn run(db: &mut Connection, job: Job) -> Result<Value> {
         }
     };
     Ok(json!(saved))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_iso_timestamp_ms;
+    use duckdb::Connection;
+
+    #[test]
+    fn parses_iso_timestamps_without_sqlite_unixepoch() {
+        assert_eq!(parse_iso_timestamp_ms("1970-01-01").unwrap(), 0.0);
+        assert_eq!(parse_iso_timestamp_ms("2026-11-28T00:00:00Z").unwrap(), 1_795_824_000_000.0);
+        assert_eq!(parse_iso_timestamp_ms("2026-11-28T08:00:00+08:00").unwrap(), 1_795_824_000_000.0);
+        assert_eq!(parse_iso_timestamp_ms("2026-11-28T00:00:00.123456Z").unwrap(), 1_795_824_000_123.0);
+        assert_eq!(parse_iso_timestamp_ms("2026-11-28T00:00:00.5Z").unwrap(), 1_795_824_000_500.0);
+        assert!(parse_iso_timestamp_ms("2026-11-28T00:00:00").is_err());
+    }
+
+    #[test]
+    fn duckdb_supports_json_and_string_functions_used_across_core() {
+        let db = Connection::open_in_memory().unwrap();
+        let n: i64 = db.query_row("SELECT count(*) FROM json_each('[\"a\",\"b\"]')", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+        let pos: i64 = db.query_row("SELECT instr(lower('Hello World'), lower('world'))", [], |r| r.get(0)).unwrap();
+        assert_eq!(pos, 7);
+        let obj: String = db.query_row("SELECT CAST(json_object('a', 1, 'b', 'x') AS VARCHAR)", [], |r| r.get(0)).unwrap();
+        assert!(obj.contains("\"a\""));
+        let ts: String = db.query_row("SELECT strftime(epoch_ms(1795824000123), '%Y-%m-%dT%H:%M:%S.%gZ')", [], |r| r.get(0)).unwrap();
+        assert!(ts.starts_with("2026-11-28T"));
+        // Verify 2-arg json_each used in conversation_runtime_data.rs
+        let two_arg: i64 = db.query_row(
+            "SELECT count(*) FROM json_each('{\"assistantMessageIds\":[\"m1\",\"m2\"]}', '$.assistantMessageIds') j WHERE json_extract_string(j.value,'$')='m2'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(two_arg, 1);
+    }
 }

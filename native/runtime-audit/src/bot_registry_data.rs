@@ -24,6 +24,12 @@ pub enum Query {
         channel_type: String,
         channel_identifier: String,
     },
+    ExportMessage {
+        user_id: String,
+        bot_id: String,
+        conversation_id: String,
+        message_id: String,
+    },
 }
 
 pub fn bot(db: &Connection, id: &str) -> Result<Value> {
@@ -60,5 +66,28 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
         )?
         .pop()
         .unwrap_or(Value::Null)),
+        Query::ExportMessage {
+            user_id,
+            bot_id,
+            conversation_id,
+            message_id,
+        } => {
+            let conversation = records(
+                db,
+                "SELECT conversation_id, bot_id, team_id, source_kind FROM bot_conversations WHERE conversation_id = ?1 AND user_id = ?2",
+                params![conversation_id, user_id],
+            )?
+            .pop()
+            .unwrap_or(Value::Null);
+            let message = records(
+                db,
+                "SELECT * FROM bot_messages WHERE message_id = ?1",
+                [&message_id],
+            )?
+            .pop()
+            .unwrap_or(Value::Null);
+            let bot = bot(db, &bot_id)?;
+            Ok(json!({ "bot": bot, "conversation": conversation, "message": message }))
+        }
     }
 }

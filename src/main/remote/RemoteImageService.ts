@@ -41,10 +41,10 @@ export function remoteRasterMime(bytes: Buffer): string | null {
 
 /** Same Artifact Domain as desktop; no URL proxy and no caller-supplied file paths. */
 export class RemoteImageService {
-  constructor(private readonly db: Pick<AppDatabase, 'getTask' | 'runtimeAuditReader'>, private readonly source: () => RemoteArtifactReader | null | undefined) {}
+  constructor(private readonly db: Pick<AppDatabase, 'getTask' | 'readTask' | 'runtimeAuditReader'>, private readonly source: () => RemoteArtifactReader | null | undefined) {}
 
-  enrichHistory(taskId: string, history: RemoteTaskHistory): RemoteTaskHistory {
-    const task = this.db.getTask(taskId);
+  async enrichHistory(taskId: string, history: RemoteTaskHistory): Promise<RemoteTaskHistory> {
+    const task = await this.db.readTask(taskId, { includeExpertBinding: false });
     const source = this.source();
     if (!task || !source) return { ...history, imageArtifacts: [] };
     const descriptors = source.getSnapshot(taskId).artifacts.filter(d => d.taskId === taskId && rasterCandidate(d));
@@ -78,7 +78,7 @@ export class RemoteImageService {
   ): Promise<{ body: Buffer | ReadableStream<Uint8Array> | null; byteLength: number; mimeType: string; version: number }> {
     const source = this.source();
     const d = source?.get(artifactId);
-    if (!this.db.getTask(taskId) || !source || !d || d.taskId !== taskId || !rasterCandidate(d)) throw new RemoteImageError(404, '图片产物不存在');
+    if (!(await this.db.readTask(taskId, { includeExpertBinding: false })) || !source || !d || d.taskId !== taskId || !rasterCandidate(d)) throw new RemoteImageError(404, '图片产物不存在');
     if (version !== undefined && version !== d.version) throw new RemoteImageError(409, '图片版本已变化，请刷新');
     const entry = source.entryPathOf(d.id);
     if (!entry || !inside(d.source.rootDir, entry)) throw new RemoteImageError(404, '图片文件不可用');

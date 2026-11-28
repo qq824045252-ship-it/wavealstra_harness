@@ -64,6 +64,10 @@ pub enum Query {
     },
     RestoreReceipt { root: String, operation_id: String },
     TextReceipt { id: String, operation_id: String },
+    ProjectArchived { id: String },
+    ArtifactScope { id: String },
+    ArtifactById { id: String },
+    ArtifactsList,
     NoteWritesSupported,
     NoteRestoresSupported,
     TextSavesSupported,
@@ -226,6 +230,39 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
             Ok(match receipt { Some(value) => serde_json::from_str(&value)?, None => Value::Null })
         }
         Query::TextReceipt { id, operation_id } => Ok(json!(db.query_row("SELECT EXISTS(SELECT 1 FROM library_text_saves WHERE item_id=? AND operation_id=? AND committed=1)", params![id,operation_id], |row| row.get::<_,bool>(0))?)),
+        Query::ProjectArchived { id } => {
+            let archived: Option<bool> = db
+                .query_row("SELECT archived <> 0 FROM projects WHERE id = ?1", [&id], |r| r.get(0))
+                .optional()?;
+            Ok(serde_json::to_value(archived)?)
+        }
+        Query::ArtifactScope { id } => {
+            let row = db
+                .query_row(
+                    "SELECT a.task_id, t.project_id FROM artifacts a LEFT JOIN tasks t ON t.id = a.task_id WHERE a.id = ?1",
+                    [&id],
+                    |r| Ok(serde_json::json!({ "taskId": r.get::<_, Option<String>>(0)?, "projectId": r.get::<_, Option<String>>(1)? })),
+                )
+                .optional()?;
+            Ok(row.unwrap_or(Value::Null))
+        }
+        Query::ArtifactById { id } => {
+            let row = records(
+                db,
+                "SELECT id, task_id, kind, title, mime_type, source_type, entry_file, root_dir, storage_path FROM artifacts WHERE id = ?1",
+                [&id],
+            )?
+            .pop();
+            Ok(row.unwrap_or(Value::Null))
+        }
+        Query::ArtifactsList => Ok(records(
+            db,
+            "SELECT a.id, a.task_id, a.space_id, a.kind, a.title, a.updated_at, t.title AS task_title, s.name AS space_name
+             FROM artifacts a LEFT JOIN tasks t ON t.id = a.task_id LEFT JOIN spaces s ON s.id = a.space_id
+             ORDER BY a.updated_at DESC, a.id LIMIT 200",
+            [],
+        )?
+        .into()),
         Query::NoteWritesSupported
         | Query::NoteRestoresSupported
         | Query::TextSavesSupported

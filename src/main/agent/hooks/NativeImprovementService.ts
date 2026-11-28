@@ -347,7 +347,7 @@ export class NativeImprovementService {
     for (const candidate of pending) {
       signal.throwIfAborted();
       const s = JSON.parse(candidate.source) as ObservationSource;
-      const stamp = reviewer.scope(s.taskId);
+      const stamp = await reviewer.scope(s.taskId);
       const binding = await this.ledger.binding(s.taskId);
       if (!stamp || !binding) continue;
       const reserved = await this.ledger.write<boolean>(owner, { kind: "reserveAssessment", ...candidate, week });
@@ -355,16 +355,16 @@ export class NativeImprovementService {
       try {
         const input = await this.evidence(binding.directory, s);
         signal.throwIfAborted();
-        if (reviewer.scope(s.taskId) !== stamp) continue;
+        if (await reviewer.scope(s.taskId) !== stamp) continue;
         await this.ledger.write(owner, { kind: "assessmentStarted", week });
         const reviewSignal = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
         const analysis = parseReflection(await reviewer.complete(s.taskId, input, reviewSignal), input);
         signal.throwIfAborted();
-        if (reviewer.scope(s.taskId) !== stamp) continue;
+        if (await reviewer.scope(s.taskId) !== stamp) continue;
         await this.ledger.write(owner, { kind: "assessmentResult", ...candidate, week, assessment: JSON.stringify(analysis) });
       } catch (error) {
         signal.throwIfAborted();
-        if (reviewer.scope(s.taskId) !== stamp) continue;
+        if (await reviewer.scope(s.taskId) !== stamp) continue;
         await this.ledger.write(owner, { kind: "assessmentResult", ...candidate, week, error: String(error instanceof Error ? error.message : error).slice(0, 240) });
       }
     }

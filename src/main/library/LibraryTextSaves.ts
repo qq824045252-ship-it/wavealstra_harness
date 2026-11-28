@@ -64,7 +64,7 @@ export class LibraryTextSaves {
   }
 
   recoverItem(id: string): void {
-    if (this.db.connection.readonly || this.db.runtimeAuditReader?.supervised) {
+    if (this.db.readonly || this.db.runtimeAuditReader?.supervised) {
       const intent = this.db.connection.prepare(
         "SELECT * FROM library_text_saves WHERE item_id=? AND root=? AND committed=0",
       ).get(id, this.root) as Intent | undefined;
@@ -111,7 +111,7 @@ export class LibraryTextSaves {
       else atomicWriteFileSync(path, old_content);
     }
     rmSync(join(dirname(path), `.mybuddy-note-${operation_id}.tmp`), { force: true });
-    if (this.db.connection.readonly || this.db.runtimeAuditReader?.supervised) {
+    if (this.db.readonly || this.db.runtimeAuditReader?.supervised) {
       void this.db.runtimeAuditReader?.batch3Write({
         kind: "libraryDeleteTextSaveIntent",
         itemId: item_id,

@@ -3,7 +3,8 @@ import type { AppDatabase } from "../db/AppDatabase";
 import type { MemoryService } from "./MemoryService";
 import { botMemoryTextEligible } from "./BotMemorySource";
 import { MEMORY_CONTENT_MAX_CHARS } from "../../shared/memory-kernel";
-import { repairWorkMemorySnapshot } from "./WorkMemorySnapshotRepair";
+import { repairWorkMemorySnapshot, repairWorkMemorySnapshotAsync } from "./WorkMemorySnapshotRepair";
+import { memoryRecordFromWire } from "./MemoryRecordsData";
 import { LOCAL_USER_ID } from "../../shared/bot-work";
 
 /** Facts-only bridge into the existing Kernel. Never consumes execution/outbox events. */
@@ -33,21 +34,92 @@ export class WorkMemoryCapture {
   /** Lightweight startup scan; yields between small batches so foreground remains responsive. */
   async catchUp(isActive: () => boolean): Promise<{ processed: number; failed: number }> {
     const result = { processed: 0, failed: 0 };
-    if (!isActive() || !this.db.connection.open) return result;
-    const rows = this.db.connection.prepare('SELECT work_id FROM works WHERE user_id=? ORDER BY work_id')
-      .all(LOCAL_USER_ID) as Array<{ work_id: string }>;
-    for (let index = 0; index < rows.length; index++) {
+    if (!isActive() || !this.db.isOpen) return result;
+    const workIds = this.db.coreIdentity
+      ? (await (async () => {
+          const res = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "userWorks", userId: LOCAL_USER_ID });
+          return res?.kind === "userWorks" ? res.workIds : [];
+        })())
+      : (this.db.connection.prepare('SELECT work_id FROM works WHERE user_id=? ORDER BY work_id')
+          .all(LOCAL_USER_ID) as Array<{ work_id: string }>).map(r => r.work_id);
+    for (let index = 0; index < workIds.length; index++) {
       if (index % 20 === 0) await new Promise<void>(resolve => setImmediate(resolve));
-      if (!isActive() || !this.db.connection.open) break;
+      if (!isActive() || !this.db.isOpen) break;
       try {
-        this.capture(rows[index].work_id);
+        if (this.db.coreIdentity) await this.captureAsync(workIds[index]);
+        else this.capture(workIds[index]);
         result.processed++;
       } catch (error) {
         result.failed++;
-        console.warn('[WorkMemoryCapture] startup catch-up skipped one Work', rows[index].work_id, error);
+        console.warn('[WorkMemoryCapture] startup catch-up skipped one Work', workIds[index], error);
       }
     }
     return result;
+  }
+
+  async captureAsync(workId: string): Promise<string | undefined> {
+    if (!this.db.coreIdentity) return this.capture(workId);
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) return undefined;
+    const key = `work-summary:${workId}`;
+    const recRes = await reader.memoryRecordsData({ kind: "captureReceipt", sourceKey: key });
+    const receipt = recRes?.kind === "captureReceipt"
+      ? recRes.receipt as { memory_id: string; content_hash: string; suppressed: number } | null
+      : null;
+    const repaired = receipt ? await repairWorkMemorySnapshotAsync(this.db, this.memory, workId, receipt.memory_id) : false;
+    if (repaired && receipt) { receipt.suppressed = 0; receipt.content_hash = ""; }
+    if (receipt?.suppressed) return undefined;
+    const existingDetail = receipt ? await reader.memoryRecordsData({ kind: "detail", id: receipt.memory_id }) : undefined;
+    const existing = existingDetail?.kind === "detail" && existingDetail.record ? memoryRecordFromWire(existingDetail.record) : undefined;
+    const revRes = existing ? await reader.memoryRecordsData({ kind: "revisions", memoryId: existing.id }) : undefined;
+    const revisions = revRes?.kind === "revisions" ? revRes.revisions as Array<{ changedBy: string }> : [];
+    const latestRevision = revisions[0];
+    if (receipt && !repaired && (!existing
+      || (latestRevision && latestRevision.changedBy !== 'event')
+      || createHash('sha256').update(existing.content).digest('hex') !== receipt.content_hash
+      || !existing.scopes.some(scope => scope.scopeType === 'work' && scope.scopeId === workId))) {
+      this.enqueueBatch3("抑制工作记忆回执", { kind: "workMemorySuppressReceipt", sourceKey: key, updatedAt: Date.now() });
+      return undefined;
+    }
+    const facts = await reader.memoryRecordsData({ kind: "workCaptureFacts", workId, userId: LOCAL_USER_ID });
+    if (facts?.kind !== "workCaptureFacts" || !facts.work) return undefined;
+    const work = facts.work as {
+      title: string; progress_summary: string | null; lifecycle: string; mode: string;
+      closure_conclusion: string | null;
+    };
+    const deliverables = (facts.deliverables ?? []) as Array<{ deliverable_id: string; status: string; summary: string; evidence_count?: number }>;
+    const blockers = (facts.blockers ?? []) as Array<{ reason: string }>;
+    const deliverableTotal = facts.deliverableTotal ?? deliverables.length;
+    const blockerTotal = facts.blockerTotal ?? blockers.length;
+    const safe = (value: string | null, limit = 350): string => value && botMemoryTextEligible(value) ? value.slice(0, limit) : "";
+    const lines = [
+      `事项：${safe(work.title, 160) || '标题含私密内容，未收录'}`,
+      `模式：${work.mode === 'watch' ? '持续追踪（单轮产出不代表结束）' : '一次性委托'}；状态：${work.lifecycle}；结论：${work.closure_conclusion ?? '尚未结案'}`,
+      safe(work.progress_summary, 700) && `事实进展：${safe(work.progress_summary, 700)}`,
+      `未决事项 ${blockerTotal} 条（展示 ${blockers.length} 条；其余 ${blockerTotal - blockers.length} 条保留在事项记录）`,
+      ...blockers.map(b => safe(b.reason, 250) ? `未决事项：${safe(b.reason, 250)}` : ''),
+      `当前版本成果 ${deliverableTotal} 条（展示最近 ${deliverables.length} 条；其余 ${deliverableTotal - deliverables.length} 条保留在事项记录）`,
+      ...deliverables.map(d => `${d.status === 'accepted' ? `已采纳（关联有效证据 ${Number(d.evidence_count ?? 0)} 条，不代表整个事项完成）` : '待核验成果（非已验证事实）'}：${safe(d.summary) || '摘要含私密字样，未复制到记忆；详情保留在原成果中'}`),
+    ].filter(Boolean);
+    const content = lines.join('\n').replace(/\r\n?/g, '\n').replace(/[^\S\n]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, MEMORY_CONTENT_MAX_CHARS);
+    const hash = createHash('sha256').update(content).digest('hex');
+    if (receipt?.content_hash === hash) return receipt.memory_id;
+    const record = receipt
+      ? await this.memory.updateSettingsMemory({ id: receipt.memory_id, content, changedBy: 'event', changeReason: 'Work facts refreshed' })
+      : await this.memory.createSettingsMemory({
+          kind: 'progress', title: 'Work 事实与未决事项', content, scopeType: 'work', scopeId: workId,
+          sourceType: 'event', confidence: 1, metadata: { captureSource: key, factualSnapshot: true },
+        });
+    const contentHash = createHash('sha256').update(record.content).digest('hex');
+    this.enqueueBatch3("保存工作记忆回执", {
+      kind: "workMemoryUpsertReceipt",
+      sourceKey: key,
+      memoryId: record.id,
+      contentHash,
+      updatedAt: Date.now(),
+    });
+    this.onChanged?.();
+    return record.id;
   }
 
   capture(workId: string): string | undefined {

@@ -151,12 +151,223 @@ export class MemorySkillRevisionService {
     return row ? mapRow(row) : undefined;
   }
 
+  async getAsync(id: string): Promise<MemorySkillRevisionCandidateDto | undefined> {
+    if (!this.db.coreIdentity) return this.get(id);
+    const res = await this.db.runtimeAuditReader?.memoryRecordsData({
+      kind: "skillEffectivenessQuery", action: "revisionById", id,
+    });
+    if (res?.kind !== "skillRevisionCandidate") throw new Error("Core 未确认技能修订候选读取");
+    return res.row ? mapRow(res.row as unknown as RevisionRow) : undefined;
+  }
+
   list(status?: MemorySkillRevisionStatus, limit = 200): MemorySkillRevisionCandidateDto[] {
     const capped = Math.max(1, Math.min(1000, limit));
     const rows = (status
       ? this.conn.prepare("SELECT * FROM memory_skill_revision_candidates WHERE status=? ORDER BY updated_at DESC,id ASC LIMIT ?").all(status, capped)
       : this.conn.prepare("SELECT * FROM memory_skill_revision_candidates ORDER BY updated_at DESC,id ASC LIMIT ?").all(capped)) as RevisionRow[];
     return rows.map(mapRow);
+  }
+
+  async listAsync(status?: MemorySkillRevisionStatus, limit = 200): Promise<MemorySkillRevisionCandidateDto[]> {
+    if (!this.db.coreIdentity) return this.list(status, limit);
+    const capped = Math.max(1, Math.min(1000, limit));
+    const res = await this.db.runtimeAuditReader?.memoryRecordsData({
+      kind: "skillEffectivenessQuery", action: "revisionList", status, limit: capped,
+    });
+    if (res?.kind !== "skillRevisionCandidateList") throw new Error("Core 未确认技能修订候选列表");
+    return res.rows.map(r => mapRow(r as unknown as RevisionRow));
+  }
+
+  async refreshAsync(source: LearnedSkillRevisionSource): Promise<{ candidate?: MemorySkillRevisionCandidateDto; created: boolean; staled: number }> {
+    if (!this.db.coreIdentity) return this.refresh(source);
+    if (!source.skillId.trim() || !source.instructions.trim()) return { created: false, staled: 0 };
+    const facts = await this.db.runtimeAuditReader?.memoryRecordsData({
+      kind: "skillEffectivenessQuery", action: "revisionRefreshFacts", skillId: source.skillId, candidateId: source.candidateId,
+    });
+    if (facts?.kind !== "skillRevisionRefreshFacts") throw new Error("Core 未确认技能反馈依据");
+    const rows = facts.negativeRows as Array<{
+      id: string; feedback_kind: "needs_revision" | "incorrect"; feedback_note: string | null; outcome: string; updated_at: number;
+    }>;
+    const now = Date.now();
+    if (rows.length === 0) {
+      return { created: false, staled: await this.staleOpenForBaseAsync(source.skillId, source.candidateId, now) };
+    }
+    const notes = [...new Set(rows.map((row) => cleanNote(row.feedback_note)).filter(Boolean))];
+    const feedbackIds = rows.map((row) => row.id);
+    const needsRevisionCount = rows.filter((row) => row.feedback_kind === "needs_revision").length;
+    const incorrectCount = rows.filter((row) => row.feedback_kind === "incorrect").length;
+    const failedInvocationCount = facts.failedCount;
+    const feedbackSignature = hash(rows.map((row) => `${row.id}:${row.feedback_kind}:${cleanNote(row.feedback_note)}`).join("\n"));
+    const id = `msrev_${hash(`${source.skillId}\n${source.candidateId ?? ""}\n${source.contentHash}\n${feedbackSignature}`).slice(0, 28)}`;
+    const existing = await this.getAsync(id);
+    const proposedStatus: MemorySkillRevisionStatus = notes.length > 0 ? "ready" : "draft";
+    const preserveTerminal = existing?.status === "rejected" || existing?.status === "materialized";
+    const status = preserveTerminal ? existing!.status : proposedStatus;
+    const issueSummary = buildIssueSummary({ needsRevisionCount, incorrectCount, failedInvocationCount, notes });
+    const proposedInstructions = buildProposedInstructions(source.instructions, notes);
+    const negativeFeedbackIds = [...feedbackIds];
+    const sourceMemoryIds = [...new Set(source.sourceMemoryIds)];
+    const titleText = source.title.slice(0, 180);
+    this.enqueueBatch3("保存技能修订候选", {
+      kind: "memorySkillRevisionUpsert",
+      id,
+      skillId: source.skillId,
+      baseCandidateId: source.candidateId ?? null,
+      baseVersion: source.version,
+      baseContentHash: source.contentHash,
+      title: titleText,
+      status,
+      issueSummary,
+      baseDescription: source.description,
+      baseInstructions: source.instructions,
+      proposedDescription: source.description,
+      proposedInstructions,
+      negativeFeedbackIdsJson: JSON.stringify(negativeFeedbackIds),
+      sourceMemoryIdsJson: JSON.stringify(sourceMemoryIds),
+      feedbackSignature,
+      needsRevisionCount,
+      incorrectCount,
+      failedInvocationCount,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      resolvedAt: existing?.resolvedAt ?? null,
+      materializedCandidateId: existing?.materializedCandidateId ?? null,
+      materializedVersion: existing?.materializedVersion ?? null,
+    });
+    const staled = await this.staleOpenForBaseAsync(source.skillId, source.candidateId, now, id);
+    const candidate: MemorySkillRevisionCandidateDto = {
+      id,
+      skillId: source.skillId,
+      baseCandidateId: source.candidateId,
+      baseVersion: source.version,
+      baseContentHash: source.contentHash,
+      title: titleText,
+      status,
+      issueSummary,
+      baseDescription: source.description,
+      baseInstructions: source.instructions,
+      proposedDescription: source.description,
+      proposedInstructions,
+      negativeFeedbackIds,
+      sourceMemoryIds,
+      feedbackSignature,
+      needsRevisionCount,
+      incorrectCount,
+      failedInvocationCount,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      resolvedAt: existing?.resolvedAt,
+      materializedCandidateId: existing?.materializedCandidateId,
+      materializedVersion: existing?.materializedVersion,
+    };
+    return { candidate, created: !existing, staled };
+  }
+
+  async rejectAsync(id: string): Promise<MemorySkillRevisionCandidateDto> {
+    if (!this.db.coreIdentity) return this.reject(id);
+    const candidate = await this.getAsync(id);
+    if (!candidate) throw new Error(`Skill Revision Candidate 不存在：${id}`);
+    if (!["draft", "ready"].includes(candidate.status)) throw new Error(`Skill Revision Candidate 当前状态不可拒绝：${candidate.status}`);
+    const now = Date.now();
+    this.enqueueBatch3("拒绝技能修订候选", {
+      kind: "memorySkillRevisionStatus",
+      revAction: "reject",
+      id,
+      ids: [],
+      materializedCandidateId: null,
+      materializedVersion: null,
+      skillId: null,
+      baseCandidateId: null,
+      now,
+    });
+    return { ...candidate, status: "rejected", resolvedAt: now, updatedAt: now };
+  }
+
+  async markStaleAsync(id: string): Promise<MemorySkillRevisionCandidateDto> {
+    if (!this.db.coreIdentity) return this.markStale(id);
+    const candidate = await this.getAsync(id);
+    if (!candidate) throw new Error(`Skill Revision Candidate 不存在：${id}`);
+    if (candidate.status === "materialized" || candidate.status === "rejected") return candidate;
+    const now = Date.now();
+    this.enqueueBatch3("过期技能修订候选", {
+      kind: "memorySkillRevisionStatus",
+      revAction: "staleOne",
+      id,
+      ids: [],
+      materializedCandidateId: null,
+      materializedVersion: null,
+      skillId: null,
+      baseCandidateId: null,
+      now,
+    });
+    return { ...candidate, status: "stale", updatedAt: now };
+  }
+
+  async markMaterializedAsync(id: string, materializedCandidateId: string, version: string): Promise<MemorySkillRevisionCandidateDto> {
+    if (!this.db.coreIdentity) return this.markMaterialized(id, materializedCandidateId, version);
+    const candidate = await this.getAsync(id);
+    if (!candidate) throw new Error(`Skill Revision Candidate 不存在：${id}`);
+    if (candidate.status !== "ready") throw new Error(`Skill Revision Candidate 当前状态不可物化：${candidate.status}`);
+    const now = Date.now();
+    this.enqueueBatch3("物化技能修订候选", {
+      kind: "memorySkillRevisionStatus",
+      revAction: "materialize",
+      id,
+      ids: [],
+      materializedCandidateId,
+      materializedVersion: version,
+      skillId: null,
+      baseCandidateId: null,
+      now,
+    });
+    return {
+      ...candidate,
+      status: "materialized",
+      materializedCandidateId,
+      materializedVersion: version,
+      resolvedAt: now,
+      updatedAt: now,
+    };
+  }
+
+  async staleMissingSkillsAsync(activeSkillIds: ReadonlySet<string>, now = Date.now()): Promise<number> {
+    if (!this.db.coreIdentity) return this.staleMissingSkills(activeSkillIds, now);
+    const open = [...await this.listAsync("draft", 1000), ...await this.listAsync("ready", 1000)];
+    const missingIds = open.filter(row => !activeSkillIds.has(row.skillId)).map(row => row.id);
+    if (missingIds.length === 0) return 0;
+    this.enqueueBatch3("失效缺失技能的修订候选", {
+      kind: "memorySkillRevisionStatus",
+      revAction: "staleIds",
+      id: null,
+      ids: missingIds,
+      materializedCandidateId: null,
+      materializedVersion: null,
+      skillId: null,
+      baseCandidateId: null,
+      now,
+    });
+    return missingIds.length;
+  }
+
+  private async staleOpenForBaseAsync(skillId: string, candidateId: string | undefined, now: number, keepId = ""): Promise<number> {
+    const res = await this.db.runtimeAuditReader?.memoryRecordsData({
+      kind: "skillEffectivenessQuery", action: "revisionStaleCount", skillId, candidateId, keepId,
+    });
+    const count = res?.kind === "skillRevisionStaleCount" ? res.count : 0;
+    if (count > 0) {
+      this.enqueueBatch3("清理旧修订候选", {
+        kind: "memorySkillRevisionStatus",
+        revAction: "staleForBase",
+        id: keepId || null,
+        ids: [],
+        materializedCandidateId: null,
+        materializedVersion: null,
+        skillId,
+        baseCandidateId: candidateId ?? null,
+        now,
+      });
+    }
+    return count;
   }
 
   refresh(source: LearnedSkillRevisionSource): { candidate?: MemorySkillRevisionCandidateDto; created: boolean; staled: number } {

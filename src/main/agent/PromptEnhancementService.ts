@@ -111,7 +111,7 @@ export class PromptEnhancementService {
     if (!input) throw new Error("提示词增强需要非空输入");
     if (surface === "chat") {
       if (!req.taskId) throw new Error("chat surface 需要有效 taskId");
-      if (!this.deps.db.getTask(req.taskId)) throw new Error(`任务不存在：${req.taskId}`);
+      if (!await this.deps.db.readTask(req.taskId, { includeExpertBinding: false })) throw new Error(`任务不存在：${req.taskId}`);
     } else if (req.taskId) {
       throw new Error("new-task surface 不应携带 taskId");
     }
@@ -122,11 +122,11 @@ export class PromptEnhancementService {
     this.inflight += 1;
     try {
       const cwd = surface === "chat"
-        ? this.resolveWorkspaceCwd(req.taskId!)
-        : this.resolveWorkspaceCwdForNewTask(req.spaceId);
+        ? await this.resolveWorkspaceCwdAsync(req.taskId!)
+        : await this.resolveWorkspaceCwdForNewTaskAsync(req.spaceId);
       const environment = surface === "chat"
         ? await this.buildEnvironmentContext(req.taskId!)
-        : this.buildEnvironmentContextForNewTask({
+        : await this.buildEnvironmentContextForNewTaskAsync({
             projectId: req.projectId,
             spaceId: req.spaceId,
             cwd,
@@ -143,12 +143,12 @@ export class PromptEnhancementService {
     }
   }
 
-  private resolveWorkspaceCwd(taskId: string): string {
-    const task = this.deps.db.getTask(taskId);
+  private async resolveWorkspaceCwdAsync(taskId: string): Promise<string> {
+    const task = await this.deps.db.readTask(taskId, { includeExpertBinding: false });
     const fromTask = task?.cwd?.trim();
     if (fromTask) return fromTask;
     if (task?.spaceId) {
-      const raw = this.deps.db.getSpace(task.spaceId)?.path?.trim();
+      const raw = (await this.deps.db.readSpace(task.spaceId))?.path?.trim();
       if (raw) {
         try {
           const abs = resolve(raw);
@@ -159,8 +159,8 @@ export class PromptEnhancementService {
     return this.deps.taskWorkspace.resolveTaskExecutionWorkspaceDir(taskId);
   }
 
-  private resolveWorkspaceCwdForNewTask(spaceId: string | undefined): string {
-    const raw = spaceId ? this.deps.db.getSpace(spaceId)?.path?.trim() : undefined;
+  private async resolveWorkspaceCwdForNewTaskAsync(spaceId: string | undefined): Promise<string> {
+    const raw = spaceId ? (await this.deps.db.readSpace(spaceId))?.path?.trim() : undefined;
     if (raw) {
       try {
         const abs = resolve(raw);
@@ -172,7 +172,7 @@ export class PromptEnhancementService {
 
   private async buildEnvironmentContext(taskId: string): Promise<string[]> {
     await this.deps.runtimeSnapshots.flush();
-    const task = this.deps.db.getTask(taskId);
+    const task = await this.deps.db.readTask(taskId, { includeExpertBinding: false });
     if (!task) return [];
     const connectorIds =
       this.deps.registry.get(taskId)?.connectorIds ??
@@ -187,19 +187,21 @@ export class PromptEnhancementService {
       projectId: task.projectId,
       spaceId: task.spaceId,
       tag: this.deps.runtimeSnapshots.list(taskId, 1)[0]?.tagId ?? null,
-      cwd: this.resolveWorkspaceCwd(taskId),
-      projectContext: task.projectId ? this.deps.projectContextResolver.resolveTask(taskId) : null,
+      cwd: await this.resolveWorkspaceCwdAsync(taskId),
+      projectContext: task.projectId
+        ? await this.deps.projectContextResolver.readResolvedProject(task.projectId)
+        : null,
     });
   }
 
-  private buildEnvironmentContextForNewTask(input: {
+  private async buildEnvironmentContextForNewTaskAsync(input: {
     projectId?: string;
     spaceId?: string;
     cwd: string;
     mode?: string;
     tag?: string;
     expertId?: string;
-  }): string[] {
+  }): Promise<string[]> {
     const { projectId, spaceId, cwd } = input;
     let explicitMode: WelcomeMode | null = null;
     const normalizedMode = normalizeWelcomeMode(input.mode);
@@ -224,8 +226,9 @@ export class PromptEnhancementService {
     let projectContext: ResolvedProjectContext | null = null;
     if (projectId) {
       try {
-        projectContext = this.deps.projectContextResolver.resolveProject(projectId);
-        const projectTasks = this.deps.db.listTasks().filter((task) => task.projectId === projectId);
+        projectContext = await this.deps.projectContextResolver.readResolvedProject(projectId);
+        const allTasks = await this.deps.db.readNonTrashedTasks({ includeExpertBindings: false });
+        const projectTasks = allTasks.filter((task) => task.projectId === projectId);
         const taskCandidates: ProjectTaskDefaultCandidate[] = projectTasks.map((task) => ({
           projectId: task.projectId ?? undefined,
           spaceId: task.spaceId ?? undefined,

@@ -9,7 +9,7 @@ export type SubagentIsolation = "auto" | "shared" | "worktree";
 interface GitIsolationPolicyOptions {
   explicitWorktreeRequest?: boolean;
   /** Rechecked at the actual side-effect boundary, including recovered receipts. */
-  authorizeGitIsolation?: () => boolean;
+  authorizeGitIsolation?: () => boolean | Promise<boolean>;
 }
 
 export interface PrepareSubagentWorkspaceOptions extends GitIsolationPolicyOptions {
@@ -54,7 +54,7 @@ const explicitRequestException = /\bdo\s+not\s+create\s+additional\s+branches\s+
  * turn that refusal into a silent shared batch.
  */
 export async function repositoryAllowsGitIsolation(cwd: string, options: GitIsolationPolicyOptions = {}): Promise<boolean> {
-  if (options.authorizeGitIsolation?.() === false) return false;
+  if ((await options.authorizeGitIsolation?.()) === false) return false;
   let directory = path.resolve(cwd);
   for (;;) {
     try {

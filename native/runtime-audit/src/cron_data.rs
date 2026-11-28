@@ -21,6 +21,7 @@ pub enum Query {
         limit: i64,
         job_ids: Option<Vec<String>>,
     },
+    Running,
     JobRuns {
         job_id: String,
         limit: i64,
@@ -104,6 +105,12 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
             Ok(json!({ "jobs": jobs(db, None)?, "runs": runs(db, limit, None)? }))
         }
         Query::Runs { limit, job_ids } => Ok(runs(db, limit, job_ids)?.into()),
+        Query::Running => Ok(records(
+            db,
+            "SELECT id, job_id AS \"jobId\", started_at AS \"startedAt\" FROM cron_runs WHERE status = 'running' ORDER BY started_at DESC, id DESC",
+            [],
+        )?
+        .into()),
         Query::JobRuns {
             job_id,
             limit,

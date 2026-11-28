@@ -79,7 +79,7 @@ try {
     return child;
   };
 
-  const first = runtime.prompt({
+  const first = await runtime.prompt({
     taskId: "task-1",
     agentId: "devin",
     text: "first prompt",
@@ -110,7 +110,7 @@ try {
   assert.match(firstMessage.text, /permission-selected-allow/);
 
   events.length = 0;
-  const second = runtime.prompt({
+  const second = await runtime.prompt({
     taskId: "task-1",
     agentId: "devin",
     text: "second prompt",
@@ -138,7 +138,7 @@ try {
   // --- tool_call / tool_call_update stream -----------------------------------
   events.length = 0;
   currentBehavior = "toolcall";
-  const toolRun = runtime.prompt({
+  const toolRun = await runtime.prompt({
     taskId: "task-1", agentId: "devin", text: "tool run",
     userMessageId: "u-3", assistantMessageId: "a-3",
   });
@@ -157,7 +157,7 @@ try {
 
   // --- session/load continuation (no resume capability) ----------------------
   currentBehavior = "load";
-  const loadRun = runtime.prompt({
+  const loadRun = await runtime.prompt({
     taskId: "task-1", agentId: "devin", text: "load run",
     userMessageId: "u-4", assistantMessageId: "a-4",
     continueFromRunId: first.runId,
@@ -172,7 +172,7 @@ try {
 
   // --- fallback_new when agent supports neither resume nor load ---------------
   currentBehavior = "neither";
-  const fallbackRun = runtime.prompt({
+  const fallbackRun = await runtime.prompt({
     taskId: "task-1", agentId: "devin", text: "fallback run",
     userMessageId: "u-5", assistantMessageId: "a-5",
     continueFromRunId: first.runId,
@@ -188,7 +188,7 @@ try {
   // --- authenticate retry: session/new rejects once, then succeeds ------------
   events.length = 0;
   currentBehavior = "auth";
-  const authRun = runtime.prompt({
+  const authRun = await runtime.prompt({
     taskId: "task-1", agentId: "devin", text: "auth run",
     userMessageId: "u-6", assistantMessageId: "a-6",
   });
@@ -207,7 +207,7 @@ try {
 
   // --- cancel a hung prompt ---------------------------------------------------
   currentBehavior = "hang";
-  const hangRun = runtime.prompt({
+  const hangRun = await runtime.prompt({
     taskId: "task-1", agentId: "devin", text: "hang run",
     userMessageId: "u-7", assistantMessageId: "a-7",
   });
@@ -232,7 +232,7 @@ try {
   assert.equal(evidence()?.cancellation, "agent-confirmed", "the working process can update evidence after a concurrent handshake");
 
   currentBehavior = "ignore-cancel";
-  const ignored = runtime.prompt({
+  const ignored = await runtime.prompt({
     taskId: "task-1", agentId: "devin", text: "ignore cancel",
     userMessageId: "u-ignore", assistantMessageId: "a-ignore",
   });
@@ -253,7 +253,7 @@ try {
 
   // --- process crash becomes a failed run with recovery state -----------------
   currentBehavior = "crash";
-  const crashRun = runtime.prompt({
+  const crashRun = await runtime.prompt({
     taskId: "task-1", agentId: "devin", text: "crash run",
     userMessageId: "u-8", assistantMessageId: "a-8",
   });
@@ -282,7 +282,7 @@ try {
   // --- ACP management: disabled agent is rejected + failed launch surfaces ---
   const disabledRuntime = new ExternalAgentRuntime(db, () => cwd, async () => [], () => ["devin"]);
   try {
-    assert.throws(
+    await assert.rejects(
       () => disabledRuntime.prompt({
         taskId: "task-1",
         agentId: "devin",
@@ -366,7 +366,7 @@ try {
     // prompt path applies the selection via session/set_config_option before session/prompt.
     // "toolcall" behavior skips the permission request so the run completes unattended.
     currentBehavior = "toolcall";
-    const cfgRun = configRuntime.prompt({
+    const cfgRun = await configRuntime.prompt({
       taskId: "task-1", agentId: "devin", text: "config run",
       userMessageId: "u-10", assistantMessageId: "a-10",
     });

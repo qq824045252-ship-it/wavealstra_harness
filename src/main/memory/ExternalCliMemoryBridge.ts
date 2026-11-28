@@ -70,7 +70,7 @@ export class ExternalCliMemoryBridge {
     this.profileRoot = profileRoot;
   }
 
-  ensureWorkspaceAccess(input: { workspaceId: string; workspaceName: string; cwd: string }): ExternalCliMemoryBridgeResult {
+  async ensureWorkspaceAccess(input: { workspaceId: string; workspaceName: string; cwd: string }): Promise<ExternalCliMemoryBridgeResult> {
     const workspaceId = input.workspaceId.trim();
     const workspaceName = input.workspaceName.trim() || workspaceId;
     const cwd = resolve(input.cwd);
@@ -100,7 +100,7 @@ export class ExternalCliMemoryBridge {
       const grants = this.controller.listGrants();
       const reusable = grants.find((grant) => grant.name === dedicatedName && grant.scopeType === "workspace" && grant.scopeId === workspaceId);
       if (reusable) {
-        this.controller.updateGrant({
+        await this.controller.updateGrantAsync({
           id: reusable.id,
           enabled: true,
           mode,
@@ -111,7 +111,7 @@ export class ExternalCliMemoryBridge {
         grantId = issued.grant.id;
         token = issued.token;
       } else {
-        const issued = this.controller.createGrant({
+        const issued = await this.controller.createGrantAsync({
           name: dedicatedName,
           mode,
           scopeType: "workspace",
@@ -163,7 +163,7 @@ export class ExternalCliMemoryBridge {
   }
 
   /** Prepare a task-scoped delegated profile for an independent Task cwd. */
-  ensureTaskAccess(input: { taskId: string; taskName: string; cwd: string }): ExternalCliMemoryBridgeResult {
+  async ensureTaskAccess(input: { taskId: string; taskName: string; cwd: string }): Promise<ExternalCliMemoryBridgeResult> {
     const taskId = input.taskId.trim();
     const taskName = input.taskName.trim() || taskId;
     const cwd = resolve(input.cwd);
@@ -198,7 +198,7 @@ export class ExternalCliMemoryBridge {
         grant.name === dedicatedName && grant.scopeType === "task" && grant.scopeId === taskId,
       );
       if (reusable) {
-        this.controller.updateGrant({
+        await this.controller.updateGrantAsync({
           id: reusable.id,
           enabled: true,
           mode,
@@ -209,7 +209,7 @@ export class ExternalCliMemoryBridge {
         grantId = issued.grant.id;
         token = issued.token;
       } else {
-        const issued = this.controller.createGrant({
+        const issued = await this.controller.createGrantAsync({
           name: dedicatedName,
           mode,
           scopeType: "task",

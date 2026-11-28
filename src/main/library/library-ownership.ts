@@ -107,6 +107,6 @@ export function ensureOwnedLibrarySpace(
     }
     throw new Error("未知资料归属类型");
   };
-  if (db.connection.readonly || db.runtimeAuditReader?.supervised) return run();
+  if (db.readonly || db.runtimeAuditReader?.supervised) return run();
   return db.connection.transaction(run).immediate();
 }

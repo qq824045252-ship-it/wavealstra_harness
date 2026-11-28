@@ -117,10 +117,22 @@ export class MemoryGatewayController {
     return this.accessControl.create(request);
   }
 
+  async createGrantAsync(request: MemoryGatewayCreateGrantRequest): Promise<MemoryGatewayIssuedGrantDto> {
+    await this.validateScopeExistsAsync(request.scopeType, request.scopeId);
+    return this.accessControl.create(request);
+  }
+
   updateGrant(request: MemoryGatewayUpdateGrantRequest): MemoryGatewayAccessGrantDto {
     const current = this.accessControl.list().find((item) => item.id === request.id);
     if (!current) throw new Error(`授权不存在：${request.id}`);
     this.validateScopeExists(request.scopeType ?? current.scopeType, request.scopeId === undefined ? current.scopeId : request.scopeId ?? undefined);
+    return this.accessControl.update(request);
+  }
+
+  async updateGrantAsync(request: MemoryGatewayUpdateGrantRequest): Promise<MemoryGatewayAccessGrantDto> {
+    const current = this.accessControl.list().find((item) => item.id === request.id);
+    if (!current) throw new Error(`授权不存在：${request.id}`);
+    await this.validateScopeExistsAsync(request.scopeType ?? current.scopeType, request.scopeId === undefined ? current.scopeId : request.scopeId ?? undefined);
     return this.accessControl.update(request);
   }
 
@@ -200,6 +212,20 @@ export class MemoryGatewayController {
     if (scopeType === "project") {
       const row = this.db.connection.prepare("SELECT 1 FROM projects WHERE id=?").get(id);
       if (!row) throw new Error(`项目不存在：${id}`);
+    }
+  }
+
+  private async validateScopeExistsAsync(scopeType: MemoryGatewayCreateGrantRequest["scopeType"], scopeId?: string): Promise<void> {
+    if (!this.db.coreIdentity) { this.validateScopeExists(scopeType, scopeId); return; }
+    const id = scopeId?.trim();
+    if (scopeType === "all" || scopeType === "global") return;
+    if (!id) throw new Error(`${scopeType} 授权必须选择具体范围`);
+    if (scopeType === "task" && !await this.db.readTask(id, { includeExpertBinding: false })) throw new Error(`任务不存在：${id}`);
+    if (scopeType === "workspace" && !await this.db.readSpace(id)) throw new Error(`工作空间不存在：${id}`);
+    if (scopeType === "project") {
+      const res = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "projects", includeArchived: true });
+      const found = res?.kind === "projects" && res.projects.some(p => p.id === id);
+      if (!found) throw new Error(`项目不存在：${id}`);
     }
   }
 }

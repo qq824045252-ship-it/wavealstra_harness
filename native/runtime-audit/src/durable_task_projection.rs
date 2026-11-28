@@ -25,6 +25,15 @@ pub enum Query {
         tool_call_id: String,
     },
     WorkMetrics { task_id: String, include_facts: bool },
+    TaskContextUsage { task_id: String },
+    RuntimeBotForTask { task_id: String, user_id: String },
+    WorkspaceMove { task_id: String },
+    TaskContinuation { task_id: String },
+    BotTaskWorkspace { task_id: String },
+    BotExecutionSettings {
+        bot_id: String,
+        message_id: Option<String>,
+    },
 }
 
 pub fn read(db: &Connection, query: Query) -> crate::Result<Value> {
@@ -89,7 +98,141 @@ pub fn read(db: &Connection, query: Query) -> crate::Result<Value> {
             record.map_or(Ok(Value::Null), |raw| Ok(serde_json::from_str(&raw)?))
         }
         Query::WorkMetrics { task_id, include_facts } => work_metrics(db, &task_id, include_facts),
+        Query::TaskContextUsage { task_id } => task_context_usage(db, &task_id),
+        Query::RuntimeBotForTask { task_id, user_id } => runtime_bot_for_task(db, &task_id, &user_id),
+        Query::WorkspaceMove { task_id } => workspace_move(db, &task_id),
+        Query::TaskContinuation { task_id } => task_continuation(db, &task_id),
+        Query::BotTaskWorkspace { task_id } => bot_task_workspace(db, &task_id),
+        Query::BotExecutionSettings { bot_id, message_id } => {
+            bot_execution_settings(db, &bot_id, message_id.as_deref())
+        }
     }
+}
+
+fn task_context_usage(db: &Connection, task_id: &str) -> crate::Result<Value> {
+    let row = db
+        .query_row(
+            "SELECT context_used_tokens, context_window_tokens, context_cache_hit_rate
+             FROM tasks WHERE id = ?1",
+            [task_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<f64>>(0)?,
+                    row.get::<_, Option<f64>>(1)?,
+                    row.get::<_, Option<f64>>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    Ok(match row {
+        Some((used_tokens, Some(context_window), cache_hit_rate)) => json!({
+            "usedTokens": used_tokens,
+            "contextWindow": context_window,
+            "cacheHitRate": cache_hit_rate,
+        }),
+        _ => Value::Null,
+    })
+}
+
+fn runtime_bot_for_task(db: &Connection, task_id: &str, user_id: &str) -> crate::Result<Value> {
+    let has_binding: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM work_execution_bindings WHERE task_id = ?1)",
+        [task_id],
+        |row| row.get(0),
+    )?;
+    let bot_id: Option<String> = db
+        .query_row(
+            "SELECT b.bot_id
+             FROM work_execution_bindings b
+             JOIN works w ON w.work_id = b.work_id
+             LEFT JOIN work_team_ownership o ON o.work_id = b.work_id
+             WHERE b.task_id = ?1 AND w.user_id = ?2
+               AND o.work_id IS NULL
+               AND NOT EXISTS (SELECT 1 FROM work_teams wt WHERE wt.work_id = b.work_id)
+             ORDER BY b.admitted_at DESC, b.binding_id DESC
+             LIMIT 1",
+            params![task_id, user_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(json!({ "hasBinding": has_binding, "botId": bot_id }))
+}
+
+fn workspace_move(db: &Connection, task_id: &str) -> crate::Result<Value> {
+    let row = db
+        .query_row(
+            "SELECT from_cwd, to_cwd FROM durable_bot_workspace_moves WHERE task_id = ?1",
+            [task_id],
+            |row| Ok(json!({ "fromCwd": row.get::<_, String>(0)?, "toCwd": row.get::<_, String>(1)? })),
+        )
+        .optional()?;
+    Ok(row.unwrap_or(Value::Null))
+}
+
+fn task_continuation(db: &Connection, task_id: &str) -> crate::Result<Value> {
+    let row = db
+        .query_row(
+            "SELECT work_id, continuation_plan_id, intent_revision, input_snapshot_id, state
+             FROM work_dispatch_requests WHERE task_id = ?1",
+            [task_id],
+            |row| {
+                Ok(json!({
+                    "workId": row.get::<_, String>(0)?,
+                    "continuationPlanId": row.get::<_, Option<String>>(1)?,
+                    "intentRevision": row.get::<_, i64>(2)?,
+                    "inputSnapshotId": row.get::<_, String>(3)?,
+                    "state": row.get::<_, String>(4)?,
+                }))
+            },
+        )
+        .optional()?;
+    Ok(row.unwrap_or(Value::Null))
+}
+
+fn bot_task_workspace(db: &Connection, task_id: &str) -> crate::Result<Value> {
+    let settings_json: Option<String> = db
+        .query_row(
+            "SELECT s.settings_json FROM bot_work_settings s
+             JOIN work_dispatch_requests d ON d.work_id = s.work_id WHERE d.task_id = ?1
+             UNION ALL
+             SELECT s.settings_json FROM bot_work_settings s
+             JOIN work_team_executions t ON t.work_id = s.work_id WHERE t.task_id = ?1
+             LIMIT 1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(settings_json.map_or(Value::Null, Value::String))
+}
+
+fn bot_execution_settings(
+    db: &Connection,
+    bot_id: &str,
+    message_id: Option<&str>,
+) -> crate::Result<Value> {
+    let settings_json: Option<String> = db
+        .query_row(
+            "SELECT settings_json FROM bot_execution_settings WHERE bot_id = ?1",
+            [bot_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let msg = match message_id {
+        Some(mid) => db
+            .query_row(
+                "SELECT settings_json, profile_json
+                 FROM bot_message_execution_settings WHERE message_id = ?1 AND bot_id = ?2",
+                params![mid, bot_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?,
+        None => None,
+    };
+    Ok(json!({
+        "settingsJson": settings_json,
+        "messageSettingsJson": msg.as_ref().map(|(s, _)| s),
+        "messageProfileJson": msg.as_ref().map(|(_, p)| p),
+    }))
 }
 
 fn open_state(db: &Connection, task_id: &str) -> crate::Result<Value> {
@@ -518,6 +661,176 @@ mod read_tests {
             )?,
             Value::Null
         );
+        Ok(())
+    }
+
+    #[test]
+    fn new_core_read_queries_are_duckdb_compatible() -> crate::Result<()> {
+        let mut db = Connection::open_in_memory()?;
+        db.execute_batch(include_str!("duckdb_schema.sql"))?;
+
+        // Seed minimal rows to exercise non-empty result paths as well as empty paths.
+        // `tasks` has no `created_at` column (see duckdb_schema.sql); only `updated_at`.
+        db.execute_batch(
+            "INSERT INTO spaces(id, name, created_at, updated_at) VALUES ('sp-1', 'Workspace 1', 1, 1);
+             INSERT INTO tasks(id, title, space_id, updated_at, context_used_tokens, context_window_tokens, context_cache_hit_rate)
+             VALUES ('t-1', 'Task 1', 'sp-1', 2, 100, 8192, 0.5);",
+        )?;
+
+        // workspace_data
+        let ws = crate::workspace_data::read(
+            &mut db,
+            crate::workspace_data::Query::SpaceDeleteStatus { space_id: "sp-1".into() },
+        )?;
+        let ws_val = serde_json::to_value(ws)?;
+        assert_eq!(ws_val["deleteStatus"]["exists"], json!(true));
+        assert_eq!(ws_val["deleteStatus"]["hasTasks"], json!(true));
+
+        // durable_task_projection new queries
+        assert_eq!(
+            read(&db, Query::TaskContextUsage { task_id: "t-1".into() })?,
+            json!({"usedTokens": 100.0, "contextWindow": 8192.0, "cacheHitRate": 0.5})
+        );
+        let rbot = read(&db, Query::RuntimeBotForTask { task_id: "t-1".into(), user_id: "local".into() })?;
+        assert_eq!(rbot["hasBinding"], json!(false));
+        assert!(read(&db, Query::WorkspaceMove { task_id: "t-1".into() })?.is_null());
+        assert!(read(&db, Query::TaskContinuation { task_id: "t-1".into() })?.is_null());
+        assert!(read(&db, Query::BotTaskWorkspace { task_id: "t-1".into() })?.is_null());
+        let bsettings = read(&db, Query::BotExecutionSettings { bot_id: "b-1".into(), message_id: Some("m-1".into()) })?;
+        assert!(bsettings["settingsJson"].is_null());
+
+        // conversation_branch_data new queries
+        let ui = Some(crate::business_protocol::ClientContext {
+            epoch: 0,
+            role: "ui".into(),
+            client_id: "test".into(),
+            generation: "test".into(),
+        });
+        assert!(crate::conversation_branch_data::read(
+            &db,
+            crate::conversation_branch_data::Query::ByRequestId { request_id: "req-1".into() },
+            ui.as_ref(),
+        )?["childTaskId"].is_null());
+        assert!(crate::conversation_branch_data::read(
+            &db,
+            crate::conversation_branch_data::Query::SessionFiles,
+            ui.as_ref(),
+        )?["rows"].is_array());
+
+        // cron_data
+        assert!(crate::cron_data::read(&db, crate::cron_data::Query::Running)?.is_array());
+
+        // external_agent_history_data
+        assert!(crate::external_agent_history_data::read_query(
+            &db,
+            crate::external_agent_history_data::Query::Run { run_id: "r-1".into() },
+        )?.is_null());
+        assert!(crate::external_agent_history_data::read_query(
+            &db,
+            crate::external_agent_history_data::Query::Tools { run_id: "r-1".into() },
+        )?.is_null());
+
+        // bot_registry_data
+        let exp = crate::bot_registry_data::read(
+            &db,
+            crate::bot_registry_data::Query::ExportMessage {
+                user_id: "local".into(),
+                bot_id: "b-1".into(),
+                conversation_id: "c-1".into(),
+                message_id: "m-1".into(),
+            },
+        )?;
+        assert!(exp["bot"].is_null());
+
+        // improvement_review
+        let diag = crate::improvement_review::read(
+            &mut db,
+            crate::improvement_review::Query::SubagentDiagnostics { task: "t-1".into(), id: "1".into() },
+        )?;
+        assert_eq!(diag["data"]["requests"], json!(0));
+        let src = crate::improvement_review::read(
+            &mut db,
+            crate::improvement_review::Query::SourceContext {
+                task: "t-1".into(),
+                conversation: "1".into(),
+                generation: 1,
+                actor: "main".into(),
+                assistant_message_id: Some("m-1".into()),
+                operation: Some("op-1".into()),
+                goal_id: Some("g-1".into()),
+                goal_revision: Some(1),
+                evidence_refs_json: Some("[]".into()),
+                input_snapshot_id: Some("s-1".into()),
+            },
+        )?;
+        assert!(src["data"]["requests"].is_array());
+
+        // memory_turn_data & memory_records_data
+        assert!(crate::memory_turn_data::read(
+            &db,
+            crate::memory_turn_data::Query::UndistilledTurns,
+            "local",
+        )?["rows"].is_array());
+        assert!(crate::memory_records_data::read(&db, crate::memory_records_data::Query::DistinctProjectionScopes)?["scopes"].is_array());
+        assert!(crate::memory_records_data::read(&db, crate::memory_records_data::Query::Projects { include_archived: true })?["projects"].is_array());
+        assert!(crate::memory_records_data::read(&db, crate::memory_records_data::Query::CandidateById { id: "c-1".into() })?["candidate"].is_null());
+        assert!(crate::memory_records_data::read(&db, crate::memory_records_data::Query::CaptureReceipt { source_key: "k-1".into() })?["receipt"].is_null());
+        assert!(crate::memory_records_data::read(&db, crate::memory_records_data::Query::Revisions { memory_id: "m-1".into() })?["revisions"].is_array());
+        assert!(crate::memory_records_data::read(&db, crate::memory_records_data::Query::UserWorks { user_id: "local".into() })?["workIds"].is_array());
+        assert!(crate::memory_records_data::read(&db, crate::memory_records_data::Query::WorkCaptureFacts { work_id: "w-1".into(), user_id: "local".into() })?["work"].is_null());
+        assert!(crate::memory_records_data::read(&db, crate::memory_records_data::Query::AssistantScopeContext {
+            task_id: Some("t-1".into()),
+            work_id: Some("w-1".into()),
+            conversation_id: Some("c-1".into()),
+            user_id: "local".into(),
+        })?["hasGatewayDotsMemory"] == json!(false));
+        assert!(crate::memory_records_data::read(&db, crate::memory_records_data::Query::DotsDueProjection { now: 1000 })?["records"].is_array());
+        assert!(crate::memory_records_data::read(&db, crate::memory_records_data::Query::SkillEffectivenessQuery {
+            query: crate::memory_records_data::SkillEffectivenessQueryKind::Summaries { limit: 10 },
+        })?["rows"].is_array());
+        assert!(crate::memory_records_data::read(&db, crate::memory_records_data::Query::SkillEffectivenessQuery {
+            query: crate::memory_records_data::SkillEffectivenessQueryKind::RevisionRefreshFacts { skill_id: "sk-1".into(), candidate_id: None },
+        })?["failedCount"] == json!(0));
+
+        // library_metadata
+        assert!(crate::library_metadata::read(&db, crate::library_metadata::Query::ProjectArchived { id: "p-1".into() })?.is_null());
+        assert!(crate::library_metadata::read(&db, crate::library_metadata::Query::ArtifactScope { id: "a-1".into() })?.is_null());
+        assert!(crate::library_metadata::read(&db, crate::library_metadata::Query::ArtifactById { id: "a-1".into() })?.is_null());
+        assert!(crate::library_metadata::read(&db, crate::library_metadata::Query::ArtifactsList)?.is_array());
+
+        // dots_delegation_data ActionData queries
+        use crate::dots_delegation_data::ActionQuery;
+        for aq in [
+            ActionQuery::PendingInputs,
+            ActionQuery::ControlState { task_id: "t-1".into() },
+            ActionQuery::PausedTasks,
+            ActionQuery::ControlReceipt { operation_id: "op-1".into(), target_task_id: Some("t-1".into()) },
+            ActionQuery::ControlBatch { id: "b-1".into() },
+            ActionQuery::ProactivePause { scope: "".into() },
+            ActionQuery::IsProactivePaused { space_id: Some("sp-1".into()) },
+            ActionQuery::LatestDelegationMeta { task_id: "t-1".into() },
+            ActionQuery::DelegationReplay { operation_id: "op-1".into(), task_id: "t-1".into() },
+            ActionQuery::DelegationStatus { operation_id: "op-1".into() },
+            ActionQuery::DelegationActiveExists { operation_id: "op-1".into(), task_id: "t-1".into() },
+            ActionQuery::HasAnyDelegation { task_id: "t-1".into() },
+            ActionQuery::SourceLinks { source_message_id: "m-1".into() },
+            ActionQuery::TaskLinkCount { source_message_id: "m-1".into() },
+            ActionQuery::LatestStatusCheck { task_id: "t-1".into(), key: "k-1".into(), input_key: "ik-1".into() },
+            ActionQuery::ContinuationTarget { source: "s-1".into(), task_id: "t-1".into() },
+            ActionQuery::OtherContinuationTargets { source: "s-1".into(), excluding_task_id: "t-1".into() },
+            ActionQuery::AutoWaitMatch { task_id: "t-1".into(), prerequisite_id: "p-1".into() },
+            ActionQuery::ScopeMatches { operation_id: "op-1".into(), task_id: "t-1".into() },
+            ActionQuery::UnsettledReplyOps,
+            ActionQuery::TerminalDeliveryReceipt { task_id: "t-1".into(), seq: 1 },
+            ActionQuery::PendingSteerCheck { task_id: "t-1".into(), goal_id: Some("g-1".into()), operation_id: Some("op-1".into()), continue_plan: true, follow_up: false },
+            ActionQuery::BranchPersistenceCheck { child_task_id: "t-1".into() },
+        ] {
+            let _ = crate::dots_delegation_data::read(
+                &db,
+                crate::dots_delegation_data::Query::ActionData { query: aq },
+            )?;
+        }
+
         Ok(())
     }
 }

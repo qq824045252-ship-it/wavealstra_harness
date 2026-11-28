@@ -803,7 +803,7 @@ export class TaskExecutionWorkspaceLifecycle {
     this.assertTaskId(taskId);
     if (taskId === DOTS_TASK_ID) throw new TaskLifecycleError("Dots 对话不能作为普通任务删除");
     options?.assertAllowed?.();
-    const state = this.db.getTaskExecutionWorkspaceState(taskId);
+    const state = await this.readState(taskId);
     if (!state || state.state !== "trashed") {
       throw new TaskLifecycleError(`仅可 purge 回收区任务：${taskId} state=${state?.state ?? "none"}`);
     }
@@ -815,8 +815,11 @@ export class TaskExecutionWorkspaceLifecycle {
     }
 
     // A torn 渠道restore may have moved bytes already. Never delete the task row over that copy.
-    if (isGatewayConversation(taskId) && (isPlainDirectory(this.activeWorkspaceDir(taskId)) ||
-      isPlainDirectory(gatewayTaskWorkspace(this.db, taskId).resolveTaskExecutionWorkspaceDir(taskId)))) {
+    const activeDir = await this.activeWorkspaceDirAsync(taskId);
+    const gatewayDir = this.db.coreIdentity && isGatewayConversation(taskId)
+      ? (await coreGatewayLifecyclePaths(this.db, this.workspace, taskId)).legacy
+      : gatewayTaskWorkspace(this.db, taskId).resolveTaskExecutionWorkspaceDir(taskId);
+    if (isGatewayConversation(taskId) && (isPlainDirectory(activeDir) || isPlainDirectory(gatewayDir))) {
       throw new TaskLifecycleConflictError("渠道任务仍有原位数据，拒绝永久清理");
     }
     let removedTrashDir = false;
@@ -902,7 +905,7 @@ export class TaskExecutionWorkspaceLifecycle {
    * 扫描 task-workspaces root 下无对应合法 task 的目录。
    * 不自动删除；可 adopt（绑定 task）或 moveOrphanToTrash。
    */
-  scanOrphans(): OrphanDirectoryReport[] {
+  async scanOrphans(): Promise<OrphanDirectoryReport[]> {
     const workspacesRoot = this.workspace.getTaskExecutionWorkspacesRoot();
     if (!existsSync(workspacesRoot)) return [];
 
@@ -947,7 +950,7 @@ export class TaskExecutionWorkspaceLifecycle {
         continue;
       }
 
-      const task = this.db.getTask(taskId);
+      const task = await this.db.readTask(taskId, { includeExpertBinding: false });
       if (!task) {
         reports.push({
           directoryName,
@@ -968,7 +971,7 @@ export class TaskExecutionWorkspaceLifecycle {
    * 将孤儿目录移入回收区（不自动 purge）。
    * 要求：仍是 task-workspaces 直接子目录；若有 manifest 则记录 taskId。
    */
-  moveOrphanToTrash(directoryName: string): { trashPath: string; manifestTaskId?: string } {
+  async moveOrphanToTrash(directoryName: string): Promise<{ trashPath: string; manifestTaskId?: string }> {
     const workspacesRoot = this.workspace.getTaskExecutionWorkspacesRoot();
     const path = join(workspacesRoot, directoryName);
     if (!existsSync(path) || !statSync(path).isDirectory()) {
@@ -984,10 +987,10 @@ export class TaskExecutionWorkspaceLifecycle {
     renameSync(path, trashPath);
 
     // 若能关联 taskId 且无 state，可记 orphaned/trashed
-    if (manifestTaskId && this.db.getTask(manifestTaskId)) {
+    if (manifestTaskId && await this.db.readTask(manifestTaskId, { includeExpertBinding: false })) {
       const now = Date.now();
-      const existing = this.db.getTaskExecutionWorkspaceState(manifestTaskId);
-      this.db.upsertTaskExecutionWorkspaceState({
+      const existing = await this.db.readTaskExecutionWorkspaceState(manifestTaskId);
+      await this.db.upsertTaskExecutionWorkspaceStateAsync({
         taskId: manifestTaskId,
         directoryName: getTaskDirectoryName(manifestTaskId),
         state: "trashed",
@@ -997,7 +1000,7 @@ export class TaskExecutionWorkspaceLifecycle {
         purgeAfter: now + this.purgeAfterMs,
         trashPath,
       });
-      this.db.archiveTask(manifestTaskId, true);
+      await this.db.archiveTaskAsync(manifestTaskId, true);
     }
 
     return { trashPath, manifestTaskId };

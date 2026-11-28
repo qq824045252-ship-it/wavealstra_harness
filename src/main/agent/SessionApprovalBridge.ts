@@ -51,7 +51,7 @@ export class SessionApprovalBridge {
       taskId,
       taskRoot,
       isolatedSourceRoots,
-      writeGrants: this.deps.db.listTaskWriteGrants(taskId).map((grant) => ({
+      writeGrants: (this.deps.db.coreIdentity ? [] : this.deps.db.listTaskWriteGrants(taskId)).map((grant) => ({
         path: grant.path,
         source: "user-approval",
         createdAt: grant.createdAt,

@@ -353,6 +353,154 @@ export class MemorySkillEffectivenessService {
     return this.setFeedback(input.id, input.kind, input.note);
   }
 
+  async getAsync(id: string): Promise<MemorySkillEffectivenessDto | undefined> {
+    if (!this.db.coreIdentity) return this.get(id);
+    const res = await this.db.runtimeAuditReader?.memoryRecordsData({
+      kind: "skillEffectivenessQuery", action: "byId", id,
+    });
+    if (res?.kind !== "skillEffectiveness") throw new Error("Core 未确认技能效果读取");
+    if (!res.row) return undefined;
+    const row = res.row as unknown as EffectivenessRow;
+    const task = await this.db.readTask(row.task_id, { includeExpertBinding: false });
+    return mapRow(row, task?.title);
+  }
+
+  async getByTurnSkillAsync(taskId: string, assistantMessageId: string, skillId: string): Promise<MemorySkillEffectivenessDto | undefined> {
+    if (!this.db.coreIdentity) return this.getByTurnSkill(taskId, assistantMessageId, skillId);
+    const res = await this.db.runtimeAuditReader?.memoryRecordsData({
+      kind: "skillEffectivenessQuery", action: "byTurnSkill", taskId, assistantMessageId, skillId,
+    });
+    if (res?.kind !== "skillEffectiveness") throw new Error("Core 未确认轮次技能效果读取");
+    if (!res.row) return undefined;
+    const row = res.row as unknown as EffectivenessRow;
+    const task = await this.db.readTask(row.task_id, { includeExpertBinding: false });
+    return mapRow(row, task?.title);
+  }
+
+  async listInvokedForTurnAsync(taskId: string, assistantMessageId: string): Promise<MemorySkillEffectivenessDto[]> {
+    if (!this.db.coreIdentity) return this.listInvokedForTurn(taskId, assistantMessageId);
+    const res = await this.db.runtimeAuditReader?.memoryRecordsData({
+      kind: "skillEffectivenessQuery", action: "invokedForTurn", taskId, assistantMessageId,
+    });
+    if (res?.kind !== "skillEffectivenessList") throw new Error("Core 未确认轮次调用技能列表");
+    return res.rows.map(r => mapRow(r as unknown as EffectivenessRow));
+  }
+
+  async latestInvocationAfterAsync(skillId: string, candidateId: string, after: number): Promise<number | undefined> {
+    if (!this.db.coreIdentity) return this.latestInvocationAfter(skillId, candidateId, after);
+    const res = await this.db.runtimeAuditReader?.memoryRecordsData({
+      kind: "skillEffectivenessQuery", action: "latestInvocationAfter", skillId, candidateId, after,
+    });
+    if (res?.kind !== "skillEffectivenessLatest") throw new Error("Core 未确认技能最近调用时间");
+    return res.latest ?? undefined;
+  }
+
+  async listRecentAsync(limit = 200, invokedOnly = true): Promise<MemorySkillEffectivenessDto[]> {
+    if (!this.db.coreIdentity) return this.listRecent(limit, invokedOnly);
+    const capped = Math.max(1, Math.min(1000, limit));
+    const res = await this.db.runtimeAuditReader?.memoryRecordsData({
+      kind: "skillEffectivenessQuery", action: "recent", limit: capped, invokedOnly,
+    });
+    if (res?.kind !== "skillEffectivenessList") throw new Error("Core 未确认技能效果列表");
+    const rows = res.rows as unknown as EffectivenessRow[];
+    const taskIds = [...new Set(rows.map(r => r.task_id))];
+    const titles = new Map<string, string | undefined>();
+    await Promise.all(taskIds.map(async tid => {
+      const task = await this.db.readTask(tid, { includeExpertBinding: false });
+      titles.set(tid, task?.title);
+    }));
+    return rows.map(row => mapRow(row, titles.get(row.task_id)));
+  }
+
+  async summariesAsync(limit = 100): Promise<MemorySkillEffectivenessSummaryDto[]> {
+    if (!this.db.coreIdentity) return this.summaries(limit);
+    const capped = Math.max(1, Math.min(500, limit));
+    const res = await this.db.runtimeAuditReader?.memoryRecordsData({
+      kind: "skillEffectivenessQuery", action: "summaries", limit: capped,
+    });
+    if (res?.kind !== "skillEffectivenessSummaries") throw new Error("Core 未确认技能效果汇总");
+    return (res.rows as Array<{
+      skill_id: string;
+      candidate_id: string | null;
+      exposures: number;
+      invocations: number;
+      completed_invocations: number;
+      failed_invocations: number;
+      aborted_invocations: number;
+      helpful_feedback: number;
+      revision_feedback: number;
+      incorrect_feedback: number;
+      last_invoked_at: number | null;
+    }>).map(row => {
+      const outcomes = row.completed_invocations + row.failed_invocations + row.aborted_invocations;
+      const feedbackTotal = row.helpful_feedback + row.revision_feedback + row.incorrect_feedback;
+      return {
+        skillId: row.skill_id,
+        candidateId: row.candidate_id ?? undefined,
+        exposures: row.exposures,
+        invocations: row.invocations,
+        completedInvocations: row.completed_invocations,
+        failedInvocations: row.failed_invocations,
+        abortedInvocations: row.aborted_invocations,
+        helpfulFeedback: row.helpful_feedback,
+        needsRevisionFeedback: row.revision_feedback,
+        incorrectFeedback: row.incorrect_feedback,
+        adoptionRate: row.exposures > 0 ? row.invocations / row.exposures : 0,
+        completionRate: outcomes > 0 ? row.completed_invocations / outcomes : 0,
+        correctionRate: feedbackTotal > 0 ? (row.revision_feedback + row.incorrect_feedback) / feedbackTotal : 0,
+        lastInvokedAt: row.last_invoked_at ?? undefined,
+      };
+    });
+  }
+
+  async setFeedbackAsync(id: string, kind: MemorySkillFeedbackKind | null, note?: string): Promise<MemorySkillEffectivenessDto> {
+    if (!this.db.coreIdentity) return this.setFeedback(id, kind, note);
+    const existing = await this.getAsync(id);
+    if (!existing) throw new Error(`Skill effectiveness 记录不存在：${id}`);
+    if (!existing.invokedAt) throw new Error("只有实际调用过的 Skill 才能记录效果反馈");
+    const at = Date.now();
+    const cleanNote = typeof note === "string" ? note.trim().slice(0, 1000) : "";
+    this.enqueueBatch3("记录技能效果反馈", {
+      kind: "memorySkillEffectivenessOp",
+      effAction: "setFeedback",
+      taskId: null,
+      assistantMessageId: null,
+      exposures: [],
+      skillId: null,
+      invKind: null,
+      toolCallId: null,
+      outcome: null,
+      id,
+      feedbackKind: kind,
+      feedbackNote: kind ? (cleanNote || null) : null,
+      at,
+    });
+    return {
+      ...existing,
+      feedbackKind: kind ?? undefined,
+      feedbackNote: kind ? (cleanNote || undefined) : undefined,
+      feedbackAt: kind ? at : undefined,
+      updatedAt: at,
+    };
+  }
+
+  async setWorkFeedbackAsync(input: { id: string; workId: string; executorBotId: string; candidateId: string;
+    kind: MemorySkillFeedbackKind; note: string }): Promise<MemorySkillEffectivenessDto> {
+    if (!this.db.coreIdentity) return this.setWorkFeedback(input);
+    const exposure = await this.getAsync(input.id);
+    if (!exposure?.invokedAt || exposure.candidateId !== input.candidateId) {
+      throw new Error("反馈未关联实际调用的 Skill 版本");
+    }
+    const workScope = await this.db.runtimeAuditReader?.memoryRecordsData({
+      kind: "assistantScopeContext", taskId: exposure.taskId, workId: input.workId, userId: "local-user",
+    });
+    const scopeInfo = workScope?.kind === "assistantScopeContext" ? workScope.workScope as { work_id?: string; bot_id?: string } | null : null;
+    if (!scopeInfo || scopeInfo.work_id !== input.workId || scopeInfo.bot_id !== input.executorBotId) {
+      throw new Error("反馈不属于已关联 Work 的执行 Bot");
+    }
+    return this.setFeedbackAsync(input.id, input.kind, input.note);
+  }
+
   get(id: string): MemorySkillEffectivenessDto | undefined {
     const row = this.conn.prepare("SELECT * FROM memory_skill_effectiveness WHERE id=?").get(id) as EffectivenessRow | undefined;
     if (!row) return undefined;

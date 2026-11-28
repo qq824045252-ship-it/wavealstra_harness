@@ -2959,6 +2959,21 @@ export class LibraryService {
     if (!reply?.ok) throw new Error(reply?.error ?? "Core 未确认资料引用已移除");
   }
 
+  async readTaskItem(taskId: string, id: string) {
+    if (!this.db.coreIdentity) {
+      const item = this.getItem(id);
+      return item && this.isItemVisibleInScope(item, this.resolveTaskScope(taskId))
+        ? { item, workspaceId: this.getSpace(item.spaceId)?.workspaceId } : undefined;
+    }
+    const scope = await this.db.runtimeAuditReader?.libraryMetadata<Pick<LibraryCatalogRows, "spaces" | "items"> | null>({
+      kind: "taskScope", taskId, itemIds: [id],
+    });
+    if (scope === undefined) throw new Error("Core 未确认当前任务的资料权限");
+    const row = scope?.items.find(item => item.id === id);
+    const space = row && scope?.spaces.find(space => space.id === row.space_id);
+    return row && space ? { item: toItem(row), workspaceId: space.workspace_id } : undefined;
+  }
+
   async readTaskReferences(taskId:string): Promise<LibraryTaskReferencesDto> {
     if (!this.db.coreIdentity) return this.listTaskReferences(taskId);
     const scope = await this.db.runtimeAuditReader?.libraryMetadata<{

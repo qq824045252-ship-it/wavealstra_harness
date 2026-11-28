@@ -36,7 +36,7 @@ function previewDecision(text: string): "open" | "decline" | undefined {
 interface PreviewOptions {
   preview: DotsDesktopPreview;
   enabled: () => boolean;
-  workspace: (spaceId: string) => string;
+  workspace: (spaceId: string) => string | Promise<string>;
   artifactService: () => ArtifactService | null;
   vision: () => VisionCapabilityProvider | null;
 }
@@ -61,11 +61,11 @@ export function dotsDesktopPreviewExtension(options: PreviewOptions): ExtensionF
         throw new Error("本轮没有打开或查看桌面预览的用户指令。");
       }
       if (!options.enabled()) throw new Error("Dots 设置已关闭「桌面预览」。");
-      const workspaceRoot = options.workspace(input.spaceId);
+      const workspaceRoot = await options.workspace(input.spaceId);
       const check = async () => {
         signal?.throwIfAborted();
         await checkCurrentToolInput();
-        if (!options.enabled() || options.workspace(input.spaceId) !== workspaceRoot) {
+        if (!options.enabled() || await options.workspace(input.spaceId) !== workspaceRoot) {
           throw new Error("桌面预览的工作空间或授权已变更。");
         }
       };

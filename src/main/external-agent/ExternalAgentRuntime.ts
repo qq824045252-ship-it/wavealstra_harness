@@ -234,7 +234,7 @@ export class ExternalAgentRuntime {
 
   constructor(
     private readonly db: AppDatabase,
-    private readonly resolveCwd: (taskId: string) => string,
+    private readonly resolveCwd: (taskId: string) => string | Promise<string>,
     private readonly emitWorkspaceChanges?: (
       taskId: string,
       messageId: string,
@@ -455,7 +455,7 @@ export class ExternalAgentRuntime {
     return [...this.activeRuns.values()].some((run) => run.dto.taskId === taskId);
   }
 
-  prompt(request: ExternalAgentPromptRequest): ExternalAgentPromptResult {
+  async prompt(request: ExternalAgentPromptRequest): Promise<ExternalAgentPromptResult> {
     const manifest = MANIFESTS.find((item) => item.id === request.agentId);
     if (!manifest) throw new Error(`不支持的外部 Agent：${request.agentId}`);
     if (!this.isAgentEnabled(request.agentId)) {
@@ -464,7 +464,7 @@ export class ExternalAgentRuntime {
     const descriptor = this.listAgents().find((item) => item.id === request.agentId);
     if (!descriptor?.available) throw new Error(descriptor?.detail || `${manifest.name} ACP Runtime 不可用`);
 
-    const cwd = this.resolveCwd(request.taskId);
+    const cwd = await this.resolveCwd(request.taskId);
     let continuation: ActiveRun["continuation"];
     if (request.continueFromRunId?.trim()) {
       const source = this.db.connection.prepare(`

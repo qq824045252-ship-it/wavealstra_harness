@@ -86,6 +86,8 @@ export type RuntimeAnswerRoutingRequest =
   | { kind: "preview"; projectId: string | null }
   | { kind: "versions"; id: string }
   | HistoryRequest
+  | { kind: "turnState"; taskId: string; inputId: string }
+  | { kind: "previousEvidence"; taskId: string; inputId: string; ruleId: string; at: number }
   | { kind: "save"; draft: {
       id: string; expectedRevision?: number; projectId: string | null; sourceId?: string | null; title: string;
       enabled: boolean; config: string; at: number; maxVersions: number; source: "save" | "restore";
@@ -97,6 +99,11 @@ export type RuntimeAnswerRoutingRequest =
       scope: string; status: string; snapshot: string };
 export type RuntimeAnswerRoutingReply =
   | { status: "rules"; rows: RuleRow[] }
+  | { status: "turnState"; rows: RuleRow[]; prior: {
+      rule_id: string; revision: number; at: number; detail: string; phrase: string; evidence: string | null;
+      scope: string; status: NonNullable<AnswerRuleUse["routeStatus"]>; snapshot: string | null;
+    } | null }
+  | { status: "previousEvidence"; evidence: string | null }
   | { status: "versions"; rows: VersionRow[] }
   | { status: "history"; rows: UseRow[] }
   | { status: "saved"; revision: number }
@@ -181,7 +188,7 @@ function evidenceFailure(error: unknown): EvidenceFailure {
   return new EvidenceFailure("failed", "读取失败，资料可能正在变更或无法解码");
 }
 
-function readEvidence(cwd: string, filename: string, inputId: string, canReadPath?: (path: string) => boolean) {
+function readEvidence(cwd: string, filename: string, inputId: string, canReadPath?: (path: string) => boolean | Promise<boolean>) {
   const finish = startAnswerRoutingTiming("readEvidence");
   const read = readEvidenceFile(cwd, filename, canReadPath);
   if (!finish) return read;
@@ -194,11 +201,11 @@ function readEvidence(cwd: string, filename: string, inputId: string, canReadPat
   });
 }
 
-async function readEvidenceFile(cwd: string, filename: string, canReadPath?: (path: string) => boolean) {
+async function readEvidenceFile(cwd: string, filename: string, canReadPath?: (path: string) => boolean | Promise<boolean>) {
   const root = await realpath(cwd);
   const requestedPath = resolve(cwd, filename);
   const path = assertPathInsideTask(root, await realpath(requestedPath));
-  if (canReadPath && !canReadPath(path)) throw new EvidenceFailure("denied", "资料超出 Dots 获准的工作空间");
+  if (canReadPath && !await canReadPath(path)) throw new EvidenceFailure("denied", "资料超出 Dots 获准的工作空间");
   const fd = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
   try {
     const info = await fd.stat();
@@ -219,8 +226,8 @@ async function readEvidenceFile(cwd: string, filename: string, canReadPath?: (pa
     if (currentPath !== path || current.dev !== info.dev || current.ino !== info.ino || current.size !== info.size || current.mtimeMs !== info.mtimeMs)
       throw new EvidenceFailure("failed", "资料在读取期间已更换");
     return { body, path, contentHash: createHash("sha256").update(bytes).digest("hex"), readAt: Date.now(),
-      available: () => {
-        if (canReadPath && !canReadPath(path)) return false;
+      available: async () => {
+        if (canReadPath && !await canReadPath(path)) return false;
         if (realpathSync(requestedPath) !== path) return false;
         accessSync(path, constants.R_OK);
         return true;
@@ -228,14 +235,14 @@ async function readEvidenceFile(cwd: string, filename: string, canReadPath?: (pa
   } finally { await fd.close(); }
 }
 
-type Turn = { taskId: string; inputId: string; query: string; cwd: string; appended?: boolean; canRead: () => boolean; canReadLibrary?: () => boolean };
+type Turn = { taskId: string; inputId: string; query: string; cwd: string; appended?: boolean; canRead: () => boolean | Promise<boolean>; canReadLibrary?: () => boolean | Promise<boolean> };
 export type AnswerEvidenceScope = { kind: "file"; path: string } | { kind: "library"; item: LibraryItemDto };
 type PreparedRoute = {
   text: string;
   render: (instruction: string) => string;
   rule: AnswerRule;
-  validate: () => void;
-  record: () => void;
+  validate: () => Promise<void>;
+  record: () => void | Promise<void>;
 };
 
 export class AnswerRoutingService {
@@ -246,7 +253,12 @@ export class AnswerRoutingService {
   constructor(private readonly db: AppDatabase, private readonly source: (id: string, taskId?: string) => MemoryRecordDto | undefined,
     private readonly memoryEnabled: () => boolean = () => true,
     private readonly library?: () => LibraryService,
-    private readonly canAccessEvidence?: (taskId: string, evidence: AnswerEvidenceScope) => boolean) {
+    private readonly canAccessEvidence?: (taskId: string, evidence: AnswerEvidenceScope) => boolean,
+    private readonly coreAccess?: {
+      readSource(id: string, taskId: string): Promise<MemoryRecordDto | undefined>;
+      canAccessEvidence(taskId: string, evidence: AnswerEvidenceScope): Promise<boolean>;
+      readLibraryItem(taskId: string, id: string): Promise<LibraryItemDto | undefined>;
+    }) {
     const fixture = db.fixtureConnection;
     this.foreground = new DotsForegroundReads(fixture, db.coreIdentity ? db.runtimeAuditReader : undefined);
     if (!fixture || fixture.readonly) return;
@@ -313,6 +325,10 @@ export class AnswerRoutingService {
     const rule = decode(row);
     if (!rule.sourceMemoryId) return rule;
     const memory = this.memoryEnabled() ? this.source(rule.sourceMemoryId, taskId) : undefined;
+    return this.withSource(rule, memory);
+  }
+
+  private withSource(rule: AnswerRule, memory?: MemoryRecordDto): AnswerRule {
     const extra = rule.instruction;
     if (!memory || !this.validSource(memory)) return { ...rule, instruction: extra, sourceUnavailable: true };
     return { ...rule, instruction: extra ? memory.content + "\n" + extra : memory.content,
@@ -326,7 +342,7 @@ export class AnswerRoutingService {
 
   async readList(): Promise<AnswerRule[]> {
     const result = await this.db.runtimeAuditReader?.answerRoutingData({ kind: "list" });
-    if (result?.status === "rules") return result.rows.map(row => this.currentRule(row));
+    if (result?.status === "rules") return Promise.all(result.rows.map(row => this.readTurnRule(row, DOTS_TASK_ID)));
     if (this.db.coreIdentity) throw new Error("回答调度规则读取未获 Rust Core 确认");
     return this.list();
   }
@@ -348,7 +364,7 @@ export class AnswerRoutingService {
   }
 
   private get rustRequired(): boolean {
-    return Boolean(this.db.connection.readonly || this.db.runtimeAuditReader?.supervised);
+    return Boolean(this.db.coreIdentity || this.db.fixtureConnection?.readonly || this.db.runtimeAuditReader?.supervised);
   }
 
   private resolveSaveForTaskDraft(taskId: string, input: unknown): { draft: AnswerRuleDraft; updating: { id: string; revision: number } | undefined } {
@@ -380,7 +396,7 @@ export class AnswerRoutingService {
   }
 
   saveForTask(taskId: string, input: unknown): AnswerRule {
-    if (this.db.connection.readonly) throw new Error("只读数据库模式下请使用 saveForTaskAsync");
+    if (this.db.readonly || this.db.coreIdentity) throw new Error("只读数据库模式下请使用 saveForTaskAsync");
     return this.db.connection.transaction(() => {
       const { draft, updating } = this.resolveSaveForTaskDraft(taskId, input);
       return this.save(draft, updating);
@@ -404,9 +420,9 @@ export class AnswerRoutingService {
     return this.persistSettings(input, expected, "save");
   }
 
-  private prepareStoredDraft(draft: AnswerRuleDraft): { stored: AnswerRuleDraft } {
+  private async prepareStoredDraft(draft: AnswerRuleDraft): Promise<{ stored: AnswerRuleDraft }> {
     if (!draft.sourceMemoryId) return { stored: draft };
-    const memory = this.source(draft.sourceMemoryId);
+    const memory = await this.readTurnSource(draft.sourceMemoryId, DOTS_TASK_ID);
     if (!memory || !this.validSource(memory) || !this.memoryEnabled() || memory.contentHash !== draft.sourceHash)
       throw new Error("来源记忆已变化，请刷新后再编辑");
     const extra = draft.instruction === memory.content ? "" : draft.instruction.startsWith(memory.content + "\n")
@@ -419,7 +435,7 @@ export class AnswerRoutingService {
     source: "save" | "restore"): Promise<AnswerRule> {
     const rust = this.db.runtimeAuditReader;
     const rustRequired = this.rustRequired;
-    if (!rust || this.db.connection.inTransaction) {
+    if (!rust || this.db.fixtureConnection?.inTransaction) {
       if (rustRequired) throw new Error("只读数据库模式下无法通过宿主机保存回答规则");
       return this.save(input, expected, source);
     }
@@ -430,7 +446,7 @@ export class AnswerRoutingService {
       if (rustRequired) throw new Error("回答规则包含无效字段");
       return this.save(input, expected, source);
     }
-    const { stored } = this.prepareStoredDraft(draft);
+    const { stored } = await this.prepareStoredDraft(draft);
     const result = await rust.answerRoutingData({ kind: "save", draft: {
       id, expectedRevision: version?.revision, projectId: stored.projectId, sourceId: stored.sourceMemoryId,
       title: stored.title, enabled: stored.enabled, config: JSON.stringify(stored), at: Date.now(), maxVersions: maxAnswerRuleVersions, source,
@@ -559,7 +575,7 @@ export class AnswerRoutingService {
     const text = z.string().trim().max(120, "备注最多 120 字").parse(note);
     const rust = this.db.runtimeAuditReader;
     const rustRequired = this.rustRequired;
-    if (!rust || this.db.connection.inTransaction) {
+    if (!rust || this.db.fixtureConnection?.inTransaction) {
       if (rustRequired) throw new Error("只读数据库模式下无法备注规则版本");
       return this.annotate(id, revision, note);
     }
@@ -644,7 +660,7 @@ export class AnswerRoutingService {
     if (id === defaultAnswerRuleId) throw new Error("默认调度策略不可删除");
     const rust = this.db.runtimeAuditReader;
     const rustRequired = this.rustRequired;
-    if (!rust || this.db.connection.inTransaction || !Number.isSafeInteger(revision) || hasLoneSurrogate(id)) {
+    if (!rust || this.db.fixtureConnection?.inTransaction || !Number.isSafeInteger(revision) || hasLoneSurrogate(id)) {
       if (rustRequired) throw new Error("只读数据库模式下无法删除回答规则");
       return this.remove(id, revision);
     }
@@ -675,11 +691,20 @@ export class AnswerRoutingService {
 
   async readPreview(query: string, projectId: string | null): Promise<AnswerRuleMatch | null> {
     const result = await this.db.runtimeAuditReader?.answerRoutingData({ kind: "preview", projectId });
-    return result?.status === "rules" ? this.previewRows(query, projectId, result.rows) : this.preview(query, projectId);
+    if (result?.status === "rules") {
+      const rules = await Promise.all(result.rows.map(row => this.readTurnRule(row, DOTS_TASK_ID)));
+      return this.matchRules(query, projectId, rules);
+    }
+    if (this.db.coreIdentity) throw new Error("回答调度预览未获 Rust Core 确认");
+    return this.preview(query, projectId);
   }
 
   private previewRows(query: string, projectId: string | null, rows: readonly RuleRow[], taskId?: string): AnswerRuleMatch | null {
     const rules = rows.map(row => this.currentRule(row, taskId));
+    return this.matchRules(query, projectId, rules, taskId);
+  }
+
+  private matchRules(query: string, projectId: string | null, rules: AnswerRule[], taskId?: string): AnswerRuleMatch | null {
     const fallback = !taskId || taskId === DOTS_TASK_ID ? rules.find(rule => rule.id === defaultAnswerRuleId) : undefined;
     const legacy = () => matchAnswerRule(query, projectId, rules, rule => !rule.sourceUnavailable, !taskId)
       ?? (fallback && !query.trimStart().startsWith("/") ? { rule: fallback, phrase: "" } : null);
@@ -721,27 +746,53 @@ export class AnswerRoutingService {
     if (!turns.size) this.turns.delete(taskId);
   }
 
+  private async readTurnState(taskId: string, inputId: string): Promise<Extract<RuntimeAnswerRoutingReply, {status: "turnState"}>> {
+    if (!this.db.coreIdentity) {
+      const fixture = this.db.connection;
+      const rows = fixture.prepare(`SELECT id,revision,config FROM answer_rules WHERE enabled=1 AND
+        (project_id IS NULL OR project_id=(SELECT project_id FROM tasks WHERE id=?))`).all(taskId) as RuleRow[];
+      const prior = fixture.prepare(`SELECT rule_id,revision,at,detail,phrase,evidence,scope,status,snapshot
+        FROM answer_rule_turns WHERE task_id=? AND input_id=?`).get(taskId, inputId) as
+        Extract<RuntimeAnswerRoutingReply, {status: "turnState"}>["prior"] | undefined;
+      return {status: "turnState", rows, prior: prior ?? null};
+    }
+    const result = await this.db.runtimeAuditReader?.answerRoutingData({ kind: "turnState", taskId, inputId });
+    if (result?.status !== "turnState") throw new Error("回答调度状态读取未获 Rust Core 确认");
+    return result;
+  }
+
+  private async readTurnSource(id: string, taskId: string) {
+    if (!this.db.coreIdentity) return this.source(id, taskId);
+    if (!this.coreAccess) throw new Error("回答调度来源授权服务不可用");
+    return this.coreAccess.readSource(id, taskId);
+  }
+
+  private async readTurnRule(row: RuleRow, taskId: string) {
+    const rule = decode(row);
+    if (!rule.sourceMemoryId) return rule;
+    return this.withSource(rule, this.memoryEnabled() ? await this.readTurnSource(rule.sourceMemoryId, taskId) : undefined);
+  }
+
   private async prepareFirstRequest(input: Turn): Promise<PreparedRoute | undefined> {
-    const task = this.db.getTask(input.taskId);
+    const core = Boolean(this.db.coreIdentity);
+    const readTask = () => core ? this.db.readTask(input.taskId, { includeExpertBinding: false }) : this.db.getTask(input.taskId);
+    const task = await readTask();
     if (!task) return;
-    const prior = this.db.connection.prepare(`SELECT rule_id,revision,at,detail,phrase,evidence,scope,status,snapshot FROM answer_rule_turns
-      WHERE task_id=? AND input_id=?`).get(input.taskId, input.inputId) as
-      { rule_id: string; revision: number; at: number; detail: string; phrase: string; evidence: string | null; scope: string;
-        status: AnswerRuleUse["routeStatus"]; snapshot: string | null } | undefined;
+    const { rows, prior } = await this.readTurnState(input.taskId, input.inputId);
     const cannotRestore = () => new Error("无法恢复这轮回答的原始调度快照，请重新提问");
-    const priorRule = prior ? this.db.connection.prepare("SELECT * FROM answer_rules WHERE id=? AND enabled=1")
-      .get(prior.rule_id) as Row | undefined : undefined;
+    const priorRule = prior && rows.find(row => row.id === prior.rule_id);
     if (prior && (!priorRule || prior.status === "revoked" || (!prior.snapshot && prior.revision !== priorRule.revision))) throw cannotRestore();
     const finishMatch = startAnswerRoutingTiming("ruleMatch");
     const match: AnswerRuleMatch | null = prior && priorRule
-      ? { rule: prior.snapshot ? JSON.parse(prior.snapshot) as AnswerRule : this.currentRule(priorRule, input.taskId), phrase: prior.phrase }
-      : this.preview(input.query, task.projectId ?? null, input.taskId);
+      ? { rule: prior.snapshot ? JSON.parse(prior.snapshot) as AnswerRule : await this.readTurnRule(priorRule, input.taskId), phrase: prior.phrase }
+      : this.matchRules(input.query, task.projectId ?? null,
+          await Promise.all(rows.map(row => this.readTurnRule(row, input.taskId))), input.taskId);
     finishMatch?.(() => ({ inputId: input.inputId, method: prior && priorRule ? "restore" : "match", matched: !!match, ruleId: match?.rule.id }));
     if (!match) return;
     const { phrase } = match;
     // The original snapshot owns the policy for retries. A new input takes the current default even when a rule matches.
     const fallback = !prior?.snapshot && match.rule.id !== defaultAnswerRuleId
-      ? this.db.connection.prepare("SELECT * FROM answer_rules WHERE id=?").get(defaultAnswerRuleId) as Row | undefined
+      ? rows.find(row => row.id === defaultAnswerRuleId)
       : undefined;
     const { flow: _flow, ...basePolicy } = (fallback ? decode(fallback).policy : match.rule.policy) ?? defaultDotsSchedulingPolicy();
     const rule = { ...match.rule, policy: { ...basePolicy, routeMode: match.flow?.routeMode ?? basePolicy.routeMode } };
@@ -762,11 +813,18 @@ export class AnswerRoutingService {
     let detail = prior?.detail ?? flowDecision ?? (phrase ? `已提供做法，匹配“${phrase}”` : "采用默认调度策略");
     const priorEvidence = prior?.evidence ? JSON.parse(prior.evidence) as AnswerRuleEvidence : undefined;
     let evidence = priorEvidence;
-    let available: (() => boolean) | undefined;
+    let available: (() => Promise<boolean>) | undefined;
     let revocationReason: string | undefined;
     const reference = rule.evidenceLibraryItemId || rule.evidenceFile;
     const isLibrary = !!rule.evidenceLibraryItemId;
-    const canRead = isLibrary ? () => input.canReadLibrary?.() === true : input.canRead;
+    const canRead = isLibrary ? async () => await input.canReadLibrary?.() === true : input.canRead;
+    const readItem = async () => {
+      if (!core) return this.readableLibraryItem(input.taskId, reference!);
+      if (!this.coreAccess) throw new EvidenceFailure("denied", "本轮没有资料库读取权限");
+      const item = await this.coreAccess.readLibraryItem(input.taskId, reference!);
+      if (!item) throw new EvidenceFailure("denied", "资料不在当前任务可读取的范围");
+      return item;
+    };
     const addFailure = () => evidenceParts.push(`${detail}。以往对话里引用的版本只说明当时的情况，本轮尚未核实。` + (rule.evidenceFailure === "mark-unverified"
       ? "请直接标注待核实，勿发起替代资料读取。"
       : "可用获准的其他来源核实，证据不足时标注待核实。"));
@@ -789,8 +847,8 @@ export class AnswerRoutingService {
       addFailure();
     } else if (evidence) {
       try {
-        if (!canRead()) throw new EvidenceFailure("denied", "本轮没有读取该资料的权限");
-        const item = isLibrary ? this.readableLibraryItem(input.taskId, reference) : undefined;
+        if (!await canRead()) throw new EvidenceFailure("denied", "本轮没有读取该资料的权限");
+        const item = isLibrary ? await readItem() : undefined;
         if (item && !prior) evidence.label = item.title;
         const library = item ? this.library?.() : undefined;
         const path = item && library?.absolutePath(item);
@@ -801,7 +859,10 @@ export class AnswerRoutingService {
           await lstat(path);
           throw new EvidenceFailure("denied", "资料路径未通过受管资料安全检查");
         }
-        const canReadPath = (file: string) => this.canAccessEvidence?.(input.taskId, item ? { kind: "library", item } : { kind: "file", path: file }) !== false;
+        const canReadPath = (file: string) => {
+          const resource: AnswerEvidenceScope = item ? { kind: "library", item } : { kind: "file", path: file };
+          return core ? this.coreAccess?.canAccessEvidence(input.taskId, resource) ?? false : this.canAccessEvidence?.(input.taskId, resource) !== false;
+        };
         const read = await (library && path ? readEvidence(library.root, path, input.inputId, canReadPath)
           : readEvidence(input.cwd, reference, input.inputId, canReadPath));
         if (priorEvidence && (priorEvidence.contentHash !== read.contentHash || priorEvidence.path !== read.path)) throw cannotRestore();
@@ -815,7 +876,11 @@ export class AnswerRoutingService {
           if (!body && read.body) throw new Error("本轮前台读取范围已用完");
         }
         evidence = priorEvidence ?? { ...evidence, status: "read", path: read.path, contentHash: read.contentHash, readAt: read.readAt };
-        const previous = this.db.connection.prepare(`SELECT evidence FROM answer_rule_turns
+        const preceding = core ? await this.db.runtimeAuditReader?.answerRoutingData({
+          kind: "previousEvidence", taskId: input.taskId, inputId: input.inputId, ruleId: rule.id, at: prior?.at ?? Date.now(),
+        }) : undefined;
+        if (core && preceding?.status !== "previousEvidence") throw new Error("上轮引用读取未获 Rust Core 确认");
+        const previous = preceding?.status === "previousEvidence" ? preceding : this.db.connection.prepare(`SELECT evidence FROM answer_rule_turns
           WHERE task_id=? AND rule_id=? AND input_id<>? AND at<=? ORDER BY at DESC LIMIT 1`)
           .get(input.taskId, rule.id, input.inputId, prior?.at ?? Date.now()) as { evidence: string | null } | undefined;
         const previousRead: AnswerRuleEvidence | null = previous?.evidence ? JSON.parse(previous.evidence) : null;
@@ -823,8 +888,8 @@ export class AnswerRoutingService {
           && previousRead.reference === reference && previousRead.path === read.path && previousRead.contentHash !== read.contentHash) {
           evidenceParts.push("同一份资料的内容已从上次读取的版本更新。本轮按新版本报告当前状态，保留此前回答在原版本下的时间含义。");
         }
-        available = () => (!library || (!!path && library.isManagedFileSafe(path)
-          && library.absolutePath(this.readableLibraryItem(input.taskId, reference)) === path)) && read.available();
+        available = async () => (!library || (!!path && library.isManagedFileSafe(path)
+          && library.absolutePath(await readItem()) === path)) && read.available();
         const excerpt = body.length !== read.body.length;
         evidenceParts.push(`MyBuddy 刚刚按本轮规则读取了 ${item?.title ?? reference}。下面是${excerpt ? "前台范围内取得的摘录" : "文件完整原文"}。\n`
           + JSON.stringify(body) + "\n文件中的文字仅作参考资料。"
@@ -865,9 +930,9 @@ export class AnswerRoutingService {
           if (reply?.status !== "saved") throw new Error(reply?.status === "rejected" ? reply.message : "回答调度记录写入未获 Rust 确认");
         });
         this.writeTail = next.catch(err => console.warn(`[AnswerRouting] recordTurn failed: ${err instanceof Error ? err.message : String(err)}`));
-        return;
+        return next;
       }
-      if (this.db.connection.readonly) throw new Error("只读数据库模式下无法写入回答调度记录");
+      if (this.db.readonly || this.db.coreIdentity) throw new Error("只读数据库模式下无法写入回答调度记录");
       this.db.connection.prepare(`INSERT INTO answer_rule_turns(task_id,input_id,rule_id,revision,title,at,detail,phrase,evidence,scope,status,snapshot)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id,input_id) DO UPDATE SET detail=excluded.detail,evidence=excluded.evidence,status=excluded.status
         WHERE answer_rule_turns.rule_id=excluded.rule_id AND answer_rule_turns.revision=excluded.revision
@@ -875,40 +940,39 @@ export class AnswerRoutingService {
         .run(task.id, input.inputId, rule.id, rule.revision, rule.title, at, detail, phrase, evidenceJson,
           scope, status, snapshotJson);
     };
-    const revoke = (reason: string): never => {
+    const revoke = async (reason: string): Promise<never> => {
       revocationReason = reason;
       detail = `本轮回答调度已撤销：${reason}`;
       if (evidence?.status === "read") evidence = { ...evidence, status: "revoked", reason };
-      if (this.db.getTask(input.taskId)) record();
+      if (await readTask()) await record();
       throw new Error(reason);
     };
     const render = (instruction: string) => [introduction, instruction, ...evidenceParts].join("\n");
-    const prepared = { rule, text: render(rule.instruction), render, validate: () => {
-      const current = this.db.getTask(input.taskId);
+    const prepared = { rule, text: render(rule.instruction), render, validate: async () => {
       if (revocationReason) throw new Error(revocationReason);
-      const recorded = this.db.connection.prepare("SELECT status FROM answer_rule_turns WHERE task_id=? AND input_id=?")
-        .get(input.taskId, input.inputId) as { status: string } | undefined;
-      if (recorded?.status === "revoked") revoke("回答规则已撤销");
+      const current = await readTask();
+      const latest = await this.readTurnState(input.taskId, input.inputId);
+      if (latest.prior?.status === "revoked") return revoke("回答规则已撤销");
       if (!current || current.projectId !== task.projectId || (!isLibrary && reference && current.cwd !== task.cwd))
-        revoke("回答调度作用域已变化");
+        return revoke("回答调度作用域已变化");
       if (available) {
         let accessible = false;
-        try { accessible = canRead() && available(); } catch { /* Source was removed or access was revoked. */ }
-        if (!accessible) revoke("资料权限或来源已撤销");
+        try { accessible = await canRead() && await available(); } catch { /* Source was removed or access was revoked. */ }
+        if (!accessible) return revoke("资料权限或来源已撤销");
       }
-      const row = this.db.connection.prepare("SELECT * FROM answer_rules WHERE id=? AND enabled=1").get(rule.id) as Row | undefined;
+      const row = latest.rows.find(row => row.id === rule.id);
       if (!row) return revoke("回答规则已停用或删除");
       const currentRule = decode(row);
       if (currentRule.projectId !== rule.projectId || currentRule.sourceMemoryId !== rule.sourceMemoryId)
-        revoke("回答规则的适用范围或来源记忆已变化");
+        return revoke("回答规则的适用范围或来源记忆已变化");
       if (rule.sourceMemoryId) {
-        const memory = this.source(rule.sourceMemoryId, input.taskId);
+        const memory = await this.readTurnSource(rule.sourceMemoryId, input.taskId);
         if (!this.memoryEnabled() || !this.validSource(memory) || memory?.contentHash !== rule.sourceHash)
-          revoke("回答规则来源记忆已变化");
+          return revoke("回答规则来源记忆已变化");
       }
     }, record };
-    prepared.validate();
-    prepared.record();
+    await prepared.validate();
+    await prepared.record();
     return prepared;
   }
 

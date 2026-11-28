@@ -81,7 +81,7 @@ export class GatewayRouter {
     if (route.taskId !== route.currentTaskId) {
       const prior = core ? undefined : db?.getTask(route.taskId);
       const available = assignment?.status === "assigned" ? assignment.oldTaskAvailable
-        : prior && !prior.archived && db?.getTaskExecutionWorkspaceState(route.taskId)?.state !== "trashed";
+        : prior && !prior.archived && (core ? undefined : db?.getTaskExecutionWorkspaceState(route.taskId))?.state !== "trashed";
       if (!available) return "这条旧消息所属会话不可用，未转入当前新会话。";
     }
     if (!core && origin.personalMemoryBindingId) this.options.dotsBindings!.bindTask(route.taskId, origin.personalMemoryBindingId);

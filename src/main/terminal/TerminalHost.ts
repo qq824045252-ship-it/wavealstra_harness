@@ -245,14 +245,14 @@ export class TerminalHost {
    * - 死亡/不存在 → spawn 新会话
    * resolveCwd / resolveWorkspaceCwd 抛错（任务已删除 / 空间未绑定文件夹）→ 异常向上抛，invoke 拒绝。
    */
-  open(req: TerminalOpenRequest, trackScreen?: boolean): TerminalSessionInfo {
+  open(req: TerminalOpenRequest, trackScreen?: boolean, resolvedCwdOverride?: string): TerminalSessionInfo {
     const owner = ownerFromRequest(req);
     if (!owner) throw new Error("terminal:open 必须提供 taskId 或 workspaceId");
     const key = ownerKeyOf(owner);
     const existing = this.sessions.get(key);
     // Workspace 可以被重新绑定到另一真实目录。不能仅按 workspaceId 复用旧 PTY，
     // 否则 UI 已指向新项目而 shell 仍停在旧仓库。每次 attach 都重新解析权威 cwd。
-    const resolvedCwd = this.resolveOwnerCwd(owner);
+    const resolvedCwd = resolvedCwdOverride ?? this.resolveOwnerCwd(owner);
     if (existing?.alive && existing.pty && sameTerminalCwd(existing.cwd, resolvedCwd)) {
       this.resizePty(existing, req.cols, req.rows);
       this.replay(existing);
@@ -264,13 +264,13 @@ export class TerminalHost {
   }
 
   /** 杀当前会话并 spawn 新会话（新 sessionId、清空 ring） */
-  restart(req: TerminalOpenRequest, trackScreen?: boolean): TerminalSessionInfo {
+  restart(req: TerminalOpenRequest, trackScreen?: boolean, resolvedCwdOverride?: string): TerminalSessionInfo {
     const owner = ownerFromRequest(req);
     if (!owner) throw new Error("terminal:restart 必须提供 taskId 或 workspaceId");
     const key = ownerKeyOf(owner);
     const existing = this.sessions.get(key);
     if (existing) this.killSession(existing, "killed");
-    return this.toInfo(this.spawn(owner, req.cols, req.rows, undefined, trackScreen));
+    return this.toInfo(this.spawn(owner, req.cols, req.rows, resolvedCwdOverride, trackScreen));
   }
 
   input(req: TerminalInputRequest): boolean {

@@ -1,6 +1,18 @@
 use crate::{MAX_REPLY_BYTES, Result};
-use duckdb::{Connection, params};
+use duckdb::{Connection, OptionalExt, Row, params};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+#[derive(Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum Query {
+    Run { run_id: String },
+    Tools { run_id: String },
+}
 
 const PAGE_SIZE: usize = 64;
 
@@ -120,4 +132,65 @@ pub fn read(db: &Connection, task_id: &str, after: Option<Cursor>) -> Result<Pag
         run_id: row.id.clone(),
     });
     Ok(Page { rows, next_cursor })
+}
+
+fn map_row(row: &Row<'_>) -> duckdb::Result<HistoryRow> {
+    Ok(HistoryRow {
+        id: row.get("id")?,
+        task_id: row.get("task_id")?,
+        agent_id: row.get("agent_id")?,
+        agent_name: row.get("agent_name")?,
+        status: row.get("status")?,
+        cwd: row.get("cwd")?,
+        session_id: row.get("session_id")?,
+        user_message_id: row.get("user_message_id")?,
+        assistant_message_id: row.get("assistant_message_id")?,
+        prompt: row.get("prompt")?,
+        display_text: row.get("display_text")?,
+        attachments_json: row.get("attachments_json")?,
+        final_text: row.get("final_text")?,
+        thinking_text: row.get("thinking_text")?,
+        tools_json: row.get("tools_json")?,
+        started_at: row.get("started_at")?,
+        completed_at: row.get("completed_at")?,
+        error: row.get("error")?,
+        continued_from_run_id: row.get("continued_from_run_id")?,
+        continuation_mode: row.get("continuation_mode")?,
+        output_cursor: row.get("output_cursor")?,
+        artifact_refs_json: row.get("artifact_refs_json")?,
+        resume_supported: row.get("resume_supported")?,
+        cancel_supported: row.get("cancel_supported")?,
+        cancellation_evidence: row.get("cancellation_evidence")?,
+        verification_status: row.get("verification_status")?,
+        recovery_state: row.get("recovery_state")?,
+        recovery_message: row.get("recovery_message")?,
+    })
+}
+
+pub fn read_query(db: &Connection, query: Query) -> Result<Value> {
+    match query {
+        Query::Run { run_id } => {
+            let row = db
+                .prepare(
+                    "SELECT id,task_id,agent_id,agent_name,status,cwd,session_id,user_message_id,assistant_message_id,
+                         prompt,display_text,attachments_json,final_text,thinking_text,tools_json,started_at,completed_at,
+                         error,continued_from_run_id,continuation_mode,output_cursor,artifact_refs_json,resume_supported,
+                         cancel_supported,cancellation_evidence,verification_status,recovery_state,recovery_message
+                     FROM external_agent_runs WHERE id = ?1",
+                )?
+                .query_row([&run_id], map_row)
+                .optional()?;
+            Ok(row.map(serde_json::to_value).transpose()?.unwrap_or(Value::Null))
+        }
+        Query::Tools { run_id } => {
+            let tools: Option<String> = db
+                .query_row(
+                    "SELECT tools_json FROM external_agent_runs WHERE id = ?1",
+                    [&run_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(json!(tools))
+        }
+    }
 }

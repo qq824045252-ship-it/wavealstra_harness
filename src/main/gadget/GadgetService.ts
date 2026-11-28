@@ -41,6 +41,7 @@ export interface GadgetServiceDependencies {
   taskExists(id: string): boolean;
   taskWorkspaceId(id: string): string | null;
   resolveTaskDirectory?(id: string): string;
+  resolveTaskDirectoryAsync?(id: string): Promise<string>;
   workspaceAncestors(id: string): string[];
   artifacts?: GadgetArtifactReader;
   onChanged?(event: GadgetChangedEvent): void;
@@ -671,8 +672,10 @@ export class GadgetService {
         return this.saveToTaskDirectory(input);
       }
       const gadget = await this.readForTask(input.gadgetId, input.taskId);
-      if (!this.deps.resolveTaskDirectory) throw new Error("任务工作目录尚未连接");
-      const directory = this.deps.resolveTaskDirectory(input.taskId);
+      if (!this.deps.resolveTaskDirectoryAsync && !this.deps.resolveTaskDirectory) throw new Error("任务工作目录尚未连接");
+      const directory = this.deps.resolveTaskDirectoryAsync
+        ? await this.deps.resolveTaskDirectoryAsync(input.taskId)
+        : this.deps.resolveTaskDirectory!(input.taskId);
       return this.deps.storage.exportNative(directory, gadget, source, input.taskId);
     });
   }

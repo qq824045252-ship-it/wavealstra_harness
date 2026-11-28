@@ -21,7 +21,7 @@ import { HistoricalBotReader } from "./work/HistoricalBotReader";
 import { createBotComposerSkillAccess } from "./work/BotComposerSkillAccess";
 import { connectorRuntimeContext } from "../connectors/ConnectorRuntimeContext";
 import { BotWorkspaceNavigationService } from "./work/BotWorkspaceNavigationService";
-import { botMemorySource } from "../memory/BotMemorySource";
+import { botMemorySource, readBotMemorySource } from "../memory/BotMemorySource";
 
 import { parseSubagentExecutionPolicy, SUBAGENT_POLICY_KEYS } from "../../shared/subagent-execution-policy";
 import { computerUseRunCoordinator } from "../capabilities/ComputerUseRunCoordinator";
@@ -356,6 +356,22 @@ function imageMimeFromPath(filePath: string, name?: string): string {
  * 把附件中的图片读成 pi ImageContent（base64），供 session.prompt({ images }) 多模态发送。
  * 单张上限约 12MB 原始字节，避免撑爆 prompt。
  */
+function dotsFileInAllowedSpaces(file: string, spaceIds: readonly string[], spaces: ReturnType<AppDatabase["listSpaces"]>): boolean {
+  let target: string;
+  try { target = realpathSync(file); } catch { return false; }
+  const owners = spaces.flatMap(space => {
+    const path = space.path?.trim();
+    if (!path || !isAbsolute(path)) return [];
+    try {
+      const root = realpathSync(path);
+      return statSync(root).isDirectory() && isPathInsideOrEqual(root, target)
+        ? [{ depth: root.length, allowed: spaceIds.includes(space.id) && !space.effectiveArchived }] : [];
+    } catch { return []; }
+  });
+  const deepest = Math.max(...owners.map(owner => owner.depth));
+  return owners.length > 0 && owners.filter(owner => owner.depth === deepest).every(owner => owner.allowed);
+}
+
 async function loadAttachmentImages(
   attachments: Array<{ name: string; path: string }>,
 ): Promise<Array<{ type: "image"; data: string; mimeType: string }>> {
@@ -661,8 +677,20 @@ export class AgentService {
       (!scope || cron.inDotsScope(job.id, scope))).map(job => job.id);
   }
 
+  dotsScheduleIdsAsync(enabledOnly = false, scope?: { taskId?: string; spaceId?: string }): Promise<string[]> {
+    const cron = this.localWorkflow?.cron;
+    if (!cron) return Promise.resolve([]);
+    return cron.readDotsScheduleIds(enabledOnly, scope);
+  }
+
   dotsScheduleOwnerTask(id: string) {
     return this.localWorkflow?.cron.dotsScheduleOwnerTask(id);
+  }
+
+  dotsScheduleOwnerTaskAsync(id: string): Promise<string | undefined> {
+    const cron = this.localWorkflow?.cron;
+    if (!cron) return Promise.resolve(undefined);
+    return cron.readDotsScheduleOwnerTask(id);
   }
 
   controlDotsSchedule(id: string, action: "pause" | "stop" | "resume") {
@@ -671,9 +699,19 @@ export class AgentService {
     return this.localWorkflow.cron.getForTask(DOTS_TASK_ID, id).status;
   }
 
+  controlDotsScheduleAsync(id: string, action: "pause" | "stop" | "resume"): Promise<string> {
+    if (!this.localWorkflow) return Promise.reject(new Error("定时调度尚未就绪"));
+    return this.localWorkflow.cron.controlDotsScheduleAsync(id, action);
+  }
+
   holdDotsSchedule(id: string, holder: string, pause: boolean) {
     if (!this.localWorkflow) throw new Error("定时调度尚未就绪");
     return this.localWorkflow.cron.holdDotsSchedule(id, holder, pause);
+  }
+
+  holdDotsScheduleAsync(id: string, holder: string, pause: boolean): Promise<string> {
+    if (!this.localWorkflow) return Promise.reject(new Error("定时调度尚未就绪"));
+    return this.localWorkflow.cron.holdDotsScheduleAsync(id, holder, pause);
   }
 
   assertDotsScheduleInput(source: string | undefined, request?: AgentPromptRequest) {
@@ -684,6 +722,12 @@ export class AgentService {
   }
 
   isDotsOrdinaryTask(taskId: string): boolean { return !this.workService.repo.bindingForTask(taskId); }
+
+  async isDotsOrdinaryTaskAsync(taskId: string): Promise<boolean> {
+    if (!this.db.coreIdentity) return this.isDotsOrdinaryTask(taskId);
+    const access = await this.runtimeAuditReader?.readWorkTaskAccess(taskId);
+    return !access?.hasWorkBinding;
+  }
 
   private boundedLocalTask(taskId: string, work?: WorkTaskAccess): boolean {
     return taskId !== DOTS_TASK_ID && !isGatewayConversation(taskId) && !isGatewayBotTaskId(taskId)
@@ -839,20 +883,45 @@ export class AgentService {
         ?? (evidence.item.sourceTaskId ? this.db.getTask(evidence.item.sourceTaskId)?.spaceId : undefined);
       return Boolean(workspaceId && spaceIds.includes(workspaceId) && !this.db.isSpaceEffectiveArchived(workspaceId));
     }
-    let target: string;
-    try { target = realpathSync(evidence.path); } catch { return false; }
-    const owners = this.db.listSpaces().flatMap(space => {
-      if (!space.path?.trim()) return [];
-      try {
-        const path = this.db.resolveWorkspaceExecutionPath(space.id, { requireExisting: true });
-        if (!path) return [];
-        const root = realpathSync(path);
-        return isPathInsideOrEqual(root, target) ? [{ allowed: !space.effectiveArchived && spaceIds.includes(space.id), depth: root.length }] : [];
-      } catch { return []; }
-    });
-    const deepest = Math.max(...owners.map(owner => owner.depth));
-    return owners.length > 0 && owners.filter(owner => owner.depth === deepest).every(owner => owner.allowed);
+    return dotsFileInAllowedSpaces(evidence.path, spaceIds, this.db.listSpaces());
   }
+  private async readDotsAnswerEvidenceAllowed(evidence: AnswerEvidenceScope): Promise<boolean> {
+    if (evidence.kind === "library") {
+      const visible = await this.libraryWorkspaceContext.library().readTaskItem(DOTS_TASK_ID, evidence.item.id);
+      if (!visible || visible.item.spaceId !== evidence.item.spaceId) return false;
+      const workspaceId = visible.workspaceId ?? (visible.item.sourceTaskId
+        ? (await this.db.readTask(visible.item.sourceTaskId, { includeExpertBinding: false }))?.spaceId : undefined);
+      const spaces = await this.db.readSpaces();
+      const { spaceIds } = resolveDotsPreferences(this.settingsStore.read().dotsSettings);
+      return spaceIds === null || Boolean(workspaceId && spaceIds.includes(workspaceId)
+        && spaces.some(space => space.id === workspaceId && !space.effectiveArchived));
+    }
+    const { spaceIds } = resolveDotsPreferences(this.settingsStore.read().dotsSettings);
+    if (spaceIds === null) return true;
+    if (!spaceIds.length) return false;
+    const spaces = await this.db.readSpaces();
+    const allowed = resolveDotsPreferences(this.settingsStore.read().dotsSettings).spaceIds;
+    return allowed === null || dotsFileInAllowedSpaces(evidence.path, allowed, spaces);
+  }
+
+  dotsAnswerEvidenceAllowedAsync(evidence: AnswerEvidenceScope): Promise<boolean> {
+    if (!this.db.coreIdentity) return Promise.resolve(this.dotsAnswerEvidenceAllowed(evidence));
+    return this.readDotsAnswerEvidenceAllowed(evidence);
+  }
+
+  private async readDotsAnswerPermission(taskId: string, resource: "read" | "library_read"): Promise<boolean> {
+    if (taskId !== DOTS_TASK_ID) return false;
+    const authority = await this.db.runtimeAuditReader?.readTaskWorkspaceAuthority(taskId);
+    if (!authority || authority.archived || authority.trashed) return false;
+    let parent = authority.spaceId;
+    for (const space of authority.spaceChain) {
+      if (space.id !== parent || space.archived) return false;
+      parent = space.parentId;
+    }
+    return parent === null && dotsOperationEnabled(this.settingsStore.read().dotsSettings,
+      resource === "library_read" ? "read_material" : "read_file");
+  }
+
   private memoryCognitionQueue: Promise<void> = Promise.resolve();
   private memoryDisposed = false;
   private readonly pendingMemoryTurns = new Map<string, {
@@ -906,20 +975,22 @@ export class AgentService {
       () => durableSandboxAssets(typeof __dirname === "string" ? __dirname : undefined));
     let improvementKnowledge: ImprovementKnowledge | undefined;
     this.nativeImprovement = new NativeImprovementService(db, this.nativeHooks, getMyBuddyDir(), Date.now, {
-      scope: taskId => {
-        const settings = this.settingsStore.read(), task = this.db.getTask(taskId);
+      scope: async taskId => {
+        const settings = this.settingsStore.read(), task = await this.db.readTask(taskId, { includeExpertBinding: false });
         if (!settings.memoryEnabled || taskId === DOTS_TASK_ID && this.dotsMemoryMode(settings) !== "readWrite"
           || !task || !this.modelRuntime || this.memoryDisposed) return;
-        const bot = botMemorySource(this.db,taskId);
+        const bot = await readBotMemorySource(this.db, taskId);
         if (bot && !this.workHostAuthority.isAuthority()) return;
+        const botModel = bot ? (await this.botSettings.read(bot.bot_id)).modelId : undefined;
         const model = taskId === DOTS_TASK_ID ? this.configuredDotsModelId()
-          : (bot && this.botSettings.get(bot.bot_id).modelId) || task.modelId || settings.defaultModelId;
-        return model ? JSON.stringify([taskId,task.projectId,task.spaceId,bot,model,this.memorySourceEpoch]) : undefined;
+          : botModel || task.modelId || settings.defaultModelId;
+        return model ? JSON.stringify([taskId, task.projectId, task.spaceId, bot, model, this.memorySourceEpoch]) : undefined;
       },
       complete: async (taskId, input, signal) => {
-        const bot = botMemorySource(this.db,taskId);
+        const bot = await readBotMemorySource(this.db, taskId);
+        const botModel = bot ? (await this.botSettings.read(bot.bot_id)).modelId : undefined;
         const id = taskId === DOTS_TASK_ID ? this.configuredDotsModelId()
-          : (bot && this.botSettings.get(bot.bot_id).modelId) || this.db.getTask(taskId)?.modelId || this.settingsStore.read().defaultModelId;
+          : botModel || (await this.db.readTask(taskId, { includeExpertBinding: false }))?.modelId || this.settingsStore.read().defaultModelId;
         const model = id && await this.resolveEnabledModel(id);
         if (!model || !this.modelRuntime) throw new Error("来源会话的模型尚未启用");
         const settings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
@@ -978,6 +1049,11 @@ export class AgentService {
       () => this.dotsMemoryMode() !== "off",
       () => this.libraryWorkspaceContext.library(),
       (taskId, evidence) => taskId !== DOTS_TASK_ID || this.dotsAnswerEvidenceAllowed(evidence),
+      {
+        readSource: (id, taskId) => this.memoryService.readAnswerRuleSource(id, taskId),
+        canAccessEvidence: async (taskId, evidence) => taskId !== DOTS_TASK_ID || this.readDotsAnswerEvidenceAllowed(evidence),
+        readLibraryItem: async (taskId, id) => (await this.libraryWorkspaceContext.library().readTaskItem(taskId, id))?.item,
+      },
     );
     this.projectService = new ProjectService(projectRepository, this.memoryService);
     this.runtimeSnapshots = new RuntimeContextSnapshotRepository(db.fixtureConnection, this.runtimeAuditReader);
@@ -1296,9 +1372,30 @@ export class AgentService {
     return resolveTaskWorkspaceCwd(this.db, this.taskWorkspace, taskId);
   }
 
+  async resolveTaskExecutionWorkspaceCwdAsync(taskId: string): Promise<string> {
+    if (!this.db.coreIdentity) return this.resolveTaskExecutionWorkspaceCwd(taskId);
+    if (isTaskWorktreeId(taskId)) return resolveTaskWorkspaceCwdAsync(this.db, this.taskWorkspace, taskId);
+    const bound = this.durableBots?.cwd(taskId);
+    if (bound) {
+      if ((await this.db.readTask(taskId, { includeExpertBinding: false }))?.cwd !== bound) {
+        await this.db.bindTaskExecutionWorkspaceCwdAsync(taskId, bound);
+      }
+      return bound;
+    }
+    const continuation = await this.db.runtimeAuditReader?.readTaskContinuation(taskId);
+    if (continuation?.continuationPlanId) {
+      throw new Error("补跑原执行目录或授权身份已失效，不能改用新目录重跑");
+    }
+    const botWorkspace = await this.botSettings?.readTaskWorkspace(taskId);
+    if (botWorkspace) {
+      await this.db.bindTaskExecutionWorkspaceCwdAsync(taskId, botWorkspace);
+      return botWorkspace;
+    }
+    return resolveTaskWorkspaceCwdAsync(this.db, this.taskWorkspace, taskId);
+  }
+
   private resolveTaskWorkspaceForAdmission(taskId: string): Promise<string> {
-    return this.db.coreIdentity ? resolveTaskWorkspaceCwdAsync(this.db, this.taskWorkspace, taskId)
-      : Promise.resolve(this.resolveTaskExecutionWorkspaceCwd(taskId));
+    return this.resolveTaskExecutionWorkspaceCwdAsync(taskId);
   }
 
   matchesDotsInitialPrivateWorkspace(taskId: string, cwd: string): boolean {
@@ -1308,6 +1405,21 @@ export class AgentService {
       this.db.getTaskExecutionWorkspaceState(taskId)?.state === "trashed") return false;
     try {
       if (this.db.resolveWorkspaceExecutionPath(task.spaceId, { requireExisting: true })) return false;
+      return this.matchesDotsPrivateWorkspaceFiles(taskId, cwd);
+    } catch {
+      return false;
+    }
+  }
+
+  async matchesDotsInitialPrivateWorkspaceAsync(taskId: string, cwd: string): Promise<boolean> {
+    if (!this.db.coreIdentity) return this.matchesDotsInitialPrivateWorkspace(taskId, cwd);
+    const task = await this.db.readTask(taskId, { includeExpertBinding: false });
+    if (task?.cwd !== cwd || this.durableBots?.cwd(taskId) !== cwd || task.externalAgentPin ||
+      !await this.isDotsOrdinaryTaskAsync(taskId) || await this.db.isTaskEffectiveArchivedAsync(taskId) ||
+      (await this.db.readTaskExecutionWorkspaceState(taskId))?.state === "trashed") return false;
+    try {
+      const space = task.spaceId ? await this.db.readSpace(task.spaceId) : undefined;
+      if (space?.path?.trim() && existsSync(space.path.trim()) && statSync(space.path.trim()).isDirectory()) return false;
       return this.matchesDotsPrivateWorkspaceFiles(taskId, cwd);
     } catch {
       return false;
@@ -1334,13 +1446,17 @@ export class AgentService {
     messageId: string,
     before: Map<string, string>,
   ): Promise<string[]> {
-    const taskRoot = this.resolveTaskExecutionWorkspaceCwd(taskId);
+    const taskRoot = await this.resolveTaskExecutionWorkspaceCwdAsync(taskId);
     await this.emitChangedArtifacts(taskId, messageId, taskRoot, before);
     return (await this.artifactService?.readMessageRefs(taskId, { messageId }))?.map(ref => ref.artifactId) ?? [];
   }
   /** Artifact/快照/guard 用权威 taskRoot（与 resolveTaskExecutionWorkspaceCwd 同一规则） */
   private getTaskRoot(taskId: string): string {
     return this.resolveTaskExecutionWorkspaceCwd(taskId);
+  }
+
+  private getTaskRootAsync(taskId: string): Promise<string> {
+    return this.resolveTaskExecutionWorkspaceCwdAsync(taskId);
   }
 
   /**
@@ -1721,10 +1837,13 @@ export class AgentService {
   createConversationGoal(request: ConversationGoalCreateRequest & { sourceMessage?: undefined }): ConversationGoalMutationResult;
   createConversationGoal(request: ConversationGoalCreateRequest): ConversationGoalMutationResult | Promise<ConversationGoalMutationResult>;
   createConversationGoal(request: ConversationGoalCreateRequest): ConversationGoalMutationResult | Promise<ConversationGoalMutationResult> {
+    const reference = request.sourceMessage;
+    if (!this.db.fixtureConnection) {
+      return reference ? this.createConversationGoalFromMessage(request, reference) : this.createCoreConversationGoal({ ...request, createdBy: "user" });
+    }
     if (!this.db.getTask(request.taskId) || this.workService.repo.bindingForTask(request.taskId)) {
       return { ok: false, code: "not_found", message: "找不到可以建立 Goal 的对话" };
     }
-    const reference = request.sourceMessage;
     if (!reference) return this.conversationGoals.create({ ...request, createdBy: "user" });
     return this.createConversationGoalFromMessage(request, reference);
   }
@@ -1786,6 +1905,7 @@ export class AgentService {
   }
 
   private goalMutationAllowed(goalId: string, taskId?: string): boolean {
+    if (!this.db.fixtureConnection) return false;
     if (taskId !== undefined) return Boolean(this.db.getTask(taskId) && !this.workService.repo.bindingForTask(taskId)
       && this.conversationGoals.scopedWork(taskId, goalId));
     return this.workService.getWork(goalId)?.userId === LOCAL_USER_ID;
@@ -2300,28 +2420,31 @@ export class AgentService {
       passiveReader: this.runtimeAuditReader,
       nativeHooks: this.runtimeAuditReader ? this.nativeHooks : undefined,
       nativeImprovement: this.nativeImprovement,
-      improvementSkillAllowed: (taskId, name) => {
-        const task = this.db.getTask(taskId);
+      improvementSkillAllowed: (taskId, name, currentTask) => {
+        const coreAssembly = currentTask ? this.coreDurableAssemblies.get(currentTask) : undefined;
+        const task = currentTask ?? (this.db.coreIdentity ? undefined : this.db.getTask(taskId));
         if (!task) return false;
         const welcomeMode = resolveWelcomeMode(task.welcomeMode);
         const profile = this.modeProfiles.getProfile(welcomeMode);
         const preset = resolveModePreset(profile.policy, task.modePresetId, profile.id);
-        const resolved = resolveRuntimeContextPolicy({ welcomeMode, profile, projectContext: this.projectContextResolver.resolveTask(taskId), preset,
-          expertId: this.expertBindings.active(taskId)?.sourceExpertId ?? task.expertId,
-          connectorIds: this.expertConnectorIds(taskId),
-          ...this.runtimeCapabilityAvailability(task.expertId, undefined, taskId) });
+        const projectContext = coreAssembly?.projectContext ?? (this.db.coreIdentity ? null : this.projectContextResolver.resolveTask(taskId));
+        const resolved = resolveRuntimeContextPolicy({ welcomeMode, profile, projectContext, preset,
+          expertId: (coreAssembly?.identity ?? (this.db.coreIdentity ? undefined : this.expertBindings.active(taskId)))?.sourceExpertId ?? task.expertId,
+          connectorIds: coreAssembly?.connectorIds ?? this.expertConnectorIds(taskId),
+          ...this.runtimeCapabilityAvailability(task.expertId, undefined, taskId, coreAssembly?.identity) });
         return resolveSkillCapability(name, resolved.skillPolicySources, { welcomeMode }).enabled;
       },
       readHints: this.nativeImprovement.readHints,
       answerRouting: this.answerRouting,
       dotsAnswerRoutingEnabled: () => this.settingsStore.read().dotsSettings?.answerRouting !== false,
-      canReadAnswerEvidence: (taskId, resource) => taskId === DOTS_TASK_ID && Boolean(this.db.getTask(taskId))
+      canReadAnswerEvidence: (taskId, resource) => this.db.coreIdentity ? this.readDotsAnswerPermission(taskId, resource)
+        : taskId === DOTS_TASK_ID && Boolean(this.db.getTask(taskId))
         && dotsOperationEnabled(this.settingsStore.read().dotsSettings, resource === "library_read" ? "read_material" : "read_file")
         && !this.db.isTaskEffectiveArchived(taskId) && this.db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed",
       expertBindings: this.expertBindings,
       db: this.db, codeReview: this.codeReview, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
       assetsDir: typeof __dirname === "string" ? __dirname : undefined,
-      resolveCwd: id => this.db.coreIdentity ? resolveTaskWorkspaceCwdAsync(this.db, this.taskWorkspace, id) : this.resolveTaskExecutionWorkspaceCwd(id),
+      resolveCwd: id => this.resolveTaskExecutionWorkspaceCwdAsync(id),
       createDotsWorkspace: () => {
         const selected = this.settingsStore.read().dotsSettings?.workspaceRoot;
         const root = selected ?? this.defaultDotsWorkspaceRoot();
@@ -2552,14 +2675,15 @@ export class AgentService {
           ? `图片识别结果：\n${vision.descriptions?.map(item => `${item.imagePath}\n${item.text}`).join("\n")}`
           : `当前模型未接收图片，图片识别不可用：${vision.error ?? "未配置识别模型"}。请勿声称看到了图片内容。` };
       },
-      thinking: (task, request) => {
+      thinking: async (task, request) => {
         const id = request.modelId ?? task.modelId ?? this.settingsStore.read().defaultModelId;
         if (!id) return undefined;
         const slash = id.indexOf("/");
         const model = this.durableModels!.getModel(id.slice(0, slash), id.slice(slash + 1));
         if (!model) return undefined;
         if (request.reasoningPreference && request.reasoningPreferenceModelId === id) return this.nativeReasoningLevel(model, request.reasoningPreference);
-        return createAgentSettingsManager(task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id), getMyBuddyDir()).getModelThinkingLevel(model.provider, model.id);
+        const dir = task.cwd ?? await this.resolveTaskExecutionWorkspaceCwdAsync(task.id);
+        return createAgentSettingsManager(dir, getMyBuddyDir()).getModelThinkingLevel(model.provider, model.id);
       },
       projectArtifacts: async (taskId, snapshot, before, cwd, messageWorkspaces) => {
         const messageId = snapshot.messages.filter(message => message.role === "assistant" && !message.dotsProactive).at(-1)?.id;
@@ -2886,7 +3010,7 @@ export class AgentService {
         ...(preview ? [dotsDesktopPreviewExtension({
           preview,
           enabled: () => dotsOperationEnabled(this.settingsStore.read().dotsSettings, DOTS_DESKTOP_PREVIEW),
-          workspace: spaceId => actions.previewWorkspace(spaceId),
+          workspace: spaceId => actions.previewWorkspaceAsync(spaceId),
           artifactService: () => this.artifactService,
           vision: () => this.builtinCapabilities.visionProvider(),
         })] : []),
@@ -2894,7 +3018,7 @@ export class AgentService {
           taskId: task.id, taskRoot: cwd, services: workflow, terminalEnabled: false,
           currentTaskOnly: true, sourceOperation: () => currentDurableInvocation()?.sourceUserMessageId,
           sourceOrigin: () => currentDurableInvocation()?.sourceOrigin,
-          scheduleScope: (source, taskId, spaceId) => this.dotsActions?.scheduleScope(source, taskId, spaceId),
+          scheduleScope: (source, taskId, spaceId) => this.dotsActions?.scheduleScopeAsync(source, taskId, spaceId),
           canChangeSchedules: action => dotsOperationEnabled(this.settingsStore.read().dotsSettings, "schedule." + action),
         })] : []),
         ...(this.dotsMemoryMode() !== "off" ? [createMemoryExtension({ taskId: task.id, service: this.memoryService,
@@ -2907,6 +3031,9 @@ export class AgentService {
           sourceInput: () => currentDurableInvocation()?.memorySource })] : []),
       ], { cwd, models: this.durableModels!, taskId: task.id });
     }
+    const core = this.coreDurableAssemblies.get(task);
+    const providerIds = (await this.prepareDurableAssembly(task)).mcpFilter.enabled;
+    const worktreeSnapshotTasks = this.db.coreIdentity ? await this.db.readNonTrashedTasks({ includeExpertBindings: false }) : undefined;
     const codingPolicy = task.welcomeMode === "coding"
       ? this.modeProfiles.getProfile("coding").policy : undefined;
     const codingPreset = codingPolicy && resolveModePreset(codingPolicy, task.modePresetId, "coding");
@@ -2914,17 +3041,15 @@ export class AgentService {
     const workflow = workflowSettings && (await import("./pstack/PstackWorkflow")).createPstackWorkflow({
       taskId: task.id, cwd, settings: () => workflowSettings,
       tag: codingPreset,
-      active: () => this.pstackActive(this.db.getTask(task.id)),
-      githubAvailable: () => this.durableAssembly(this.db.getTask(task.id) ?? task).mcpFilter.enabled.includes("github"),
-      worktreeActivity: () => this.db.listTasks().flatMap(item => {
+      active: () => this.pstackActive(this.db.coreIdentity ? task : this.db.getTask(task.id)),
+      githubAvailable: () => this.db.coreIdentity ? providerIds.includes("github") : this.durableAssembly(this.db.getTask(task.id) ?? task).mcpFilter.enabled.includes("github"),
+      worktreeActivity: () => (worktreeSnapshotTasks ?? this.db.listTasks()).flatMap(item => {
         const directory = this.durableBots?.cwd(item.id) ?? this.registry.get(item.id)?.cwd ?? item.cwd;
         return directory ? [{ id: item.id, cwd: directory, updatedAt: item.updatedAt,
           pinned: Boolean(item.isFavorited), active: this.isTaskBusy(item.id) }] : [];
       }),
     });
     const getPermissionMode = (): PermissionMode => "auto";
-    const providerIds = (await this.prepareDurableAssembly(task)).mcpFilter.enabled;
-    const core = this.coreDurableAssemblies.get(task);
     const sessionPolicy = new TaskFileAccessPolicy({ taskId: task.id, taskRoot: cwd });
     const readOnlyTag = readOnlyCodingTag(codingPreset?.id);
     const policy = createDurableToolPolicy({ taskId: task.id, taskRoot: cwd, getPermissionMode,
@@ -3023,7 +3148,7 @@ export class AgentService {
     const dots = this.dotsActions;
     const workerTools = dots && (core?.workerActive ?? this.dotsWorkerActive(task.id)) ? [createDurableDotsWorker(task.id,
       (id, operation) => this.readDotsWorkerActive(id, operation),
-      (id, operation, dependency) => dots.validateWorkerDependency(id, operation, dependency),
+      (id, operation, dependency) => dots.validateWorkerDependencyAsync(id, operation, dependency),
       async ({ checks, commitSha, completedItems }, api, context, operationId) => {
         const contract = await dots.readCompletionRequirements(task.id, operationId);
         const required = [...new Set([...(contract?.checks ?? []), ...(checks ?? [])])];
@@ -4568,7 +4693,7 @@ export class AgentService {
   }
 
   installExpertByPath(path: string): ExpertDto {
-    for (const task of this.db.listTasks()) if (task.expertId) this.expertBindings.ensureLegacy(task.id);
+    if (!this.db.coreIdentity) for (const task of this.db.listTasks()) if (task.expertId) this.expertBindings.ensureLegacy(task.id);
     return this.expertsService.installByPath(path);
   }
 
@@ -4594,7 +4719,7 @@ export class AgentService {
   }
 
   importExpertZip(zipPath: string): Promise<ExpertDto> {
-    for (const task of this.db.listTasks()) if (task.expertId) this.expertBindings.ensureLegacy(task.id);
+    if (!this.db.coreIdentity) for (const task of this.db.listTasks()) if (task.expertId) this.expertBindings.ensureLegacy(task.id);
     return this.expertsService.importZip(zipPath);
   }
 
@@ -4629,6 +4754,7 @@ export class AgentService {
   }
 
   private preserveExpertBindings(expertId: string): void {
+    if (this.db.coreIdentity) return;
     for (const task of this.db.listTasks()) {
       if (task.expertId === expertId) this.expertBindings.ensureLegacy(task.id);
     }
@@ -4763,6 +4889,20 @@ export class AgentService {
       { projectId: req.projectId, workspaceId: req.spaceId, taskId: req.taskId ?? undefined },
     );
     return this.renderModeAssembly(mode, runtimeSkills, loadoutSelection);
+  }
+
+  private assembleModePreviewFromAuthority(
+    req: AssembleModePreviewRequest,
+    authority: {
+      identity: TaskExpertSnapshot | null;
+      projectContext: ResolvedProjectContext | null;
+      runtimeSkills: ReturnType<AgentService["resolveSkillsForContext"]>;
+      soul: SoulDto;
+    },
+    loadoutSelection?: AgentLoadoutEffectiveSelectionDto,
+  ): AssemblyTraceDto {
+    const mode = this.modeAssembly(req, loadoutSelection, authority);
+    return this.renderModeAssembly(mode, authority.runtimeSkills, loadoutSelection);
   }
 
   private modeAssembly(req: AssembleModePreviewRequest, loadoutSelection?: AgentLoadoutEffectiveSelectionDto,
@@ -5016,6 +5156,66 @@ export class AgentService {
    * Read-only Task inspection. Renderer supplies only taskId; all runtime
    * inputs are reloaded from authoritative main-process state.
    */
+  private async runtimeBotIdAsync(taskId?: string): Promise<string | undefined> {
+    if (!taskId) return undefined;
+    if (!this.db.coreIdentity) return this.runtimeBotId(taskId);
+    const bot = await this.db.readRuntimeBotForTask(taskId, LOCAL_USER_ID);
+    return bot.botId ?? undefined;
+  }
+
+  private async learnedSkillScopeAllowedAsync(
+    learned: import("../skills/SkillsService").LearnedSkillRevisionSource,
+    context: { projectId?: string | null; workspaceId?: string | null; botId?: string },
+  ): Promise<boolean> {
+    const projectId = context.projectId?.trim() || undefined;
+    const workspaceId = context.workspaceId?.trim() || undefined;
+    if (learned.scopeType === "global") return true;
+    if (learned.scopeType === "bot") return Boolean(context.botId && learned.scopeId === context.botId);
+    if (learned.scopeType === "project") return Boolean(learned.scopeId && projectId && learned.scopeId === projectId);
+    if (learned.scopeType === "workspace") {
+      if (!learned.scopeId || !workspaceId) return false;
+      const ancestors = await this.db.readSpaceAncestors(workspaceId);
+      return ancestors.some(space => space.id === learned.scopeId);
+    }
+    return false;
+  }
+
+  private async learnedSkillVisibleInContextAsync(
+    skill: Pick<SkillDto, "filePath"> & Partial<Pick<SkillDto, "id">>,
+    context: { projectId?: string | null; workspaceId?: string | null; botId?: string; taskId?: string },
+  ): Promise<boolean> {
+    if (!skill.filePath) return true;
+    const directory = dirname(resolve(skill.filePath));
+    const frozen = context.taskId && !this.db.coreIdentity ? this.expertBindings.activeSkillPackages(context.taskId)
+      .find(pack => resolve(pack.directory) === directory) : undefined;
+    const learned = this.skillsService.getLearnedSkillMetadataForFile(skill.filePath);
+    if (!frozen && !learned && !this.skillsService.hasLearnedSkillProvenance(skill.filePath)) return true;
+    const id = frozen?.id ?? learned?.skillId ?? skill.id ?? basename(directory);
+    const current = this.skillsService.getLearnedSkillRevisionSource(id);
+    if (!current || !(await this.learnedSkillScopeAllowedAsync(current, context))) return false;
+    const grounded = current.candidateId && await this.memoryService.learning.readInstalledSkillRunnable(
+      current.skillId, current.sourceMemoryIds, { candidateId: current.candidateId, scopeType: current.scopeType, scopeId: current.scopeId });
+    return createBotComposerSkillAccess({ identity: { botId: context.botId ?? "", shared: !context.botId },
+      current: skillId => skillId === id ? current : undefined,
+      runnable: (_skillId, sourceIds) => Boolean(grounded && JSON.stringify([...sourceIds].sort()) === JSON.stringify([...current.sourceMemoryIds].sort())),
+      scopeAllowed: () => true,
+    }).canRead({ id, directory });
+  }
+
+  private async resolveSkillsForContextAsync(
+    cwd: string | undefined,
+    extraSkillPaths: string[],
+    context: { projectId?: string | null; workspaceId?: string | null; botId?: string; taskId?: string },
+  ) {
+    const identity = { ...context, botId: context.botId ?? await this.runtimeBotIdAsync(context.taskId) };
+    return this.skillsService.readRuntimeSkills(
+      cwd,
+      this.runtimeSkillPaths(extraSkillPaths),
+      skill => this.learnedSkillVisibleInContextAsync(skill, identity),
+      { botId: identity.botId },
+    );
+  }
+
   inspectRuntimeContext(taskId: string): RuntimeContextInspectionDto {
     const task = this.db.getTask(taskId);
     if (!task) throw new Error(`任务不存在：${taskId}`);
@@ -5118,9 +5318,117 @@ export class AgentService {
     return this.executionFailures.list(taskId, { includeDismissed: true, limit: 5 });
   }
 
+  async inspectRuntimeContextAsync(taskId: string): Promise<RuntimeContextInspectionDto> {
+    if (!this.db.coreIdentity) return this.inspectRuntimeContext(taskId);
+    const task = await this.db.readTask(taskId);
+    if (!task) throw new Error(`任务不存在：${taskId}`);
+    const welcomeMode = resolveWelcomeMode(task.welcomeMode);
+    const profile = this.modeProfiles.getProfile(welcomeMode);
+    const preset = resolveModePreset(profile.policy, task.modePresetId, profile.id);
+    const projectContext = task.projectId ? await this.projectContextResolver.readResolvedProject(task.projectId) : null;
+    const connectorIds =
+      this.registry.get(taskId)?.connectorIds ??
+      this.settingsStore.read().taskConnectorIds?.[taskId] ??
+      [];
+    const space = task.spaceId ? await this.db.readSpace(task.spaceId) : undefined;
+    const cwd =
+      task.cwd ??
+      space?.path ??
+      await this.resolveTaskExecutionWorkspaceCwdAsync(taskId);
+    const activeExpert = task.expertBinding?.active ?? null;
+    const effectiveExpertId = activeExpert?.sourceExpertId ?? normalizeSingleExpertId(task.expertId);
+    const [runtimeSkills, soul] = await Promise.all([
+      this.resolveSkillsForContextAsync(
+        cwd,
+        this.expertSkillPaths(taskId, effectiveExpertId, connectorIds),
+        { projectId: task.projectId, workspaceId: task.spaceId, taskId },
+      ),
+      readSoulProfile(this.db),
+    ]);
+    const assembly = this.assembleModePreviewFromAuthority({
+      welcomeMode,
+      projectId: task.projectId,
+      modePresetId: task.modePresetId,
+      expertId: effectiveExpertId,
+      connectorIds,
+      permissionMode: task.permissionMode,
+      spaceId: task.spaceId,
+      taskId,
+      cwd,
+    }, { identity: activeExpert, projectContext, runtimeSkills, soul });
+    const assemblyHash = fingerprintRuntimeAssembly(assembly);
+    const live = this.registry.get(taskId);
+    const [observation, latestExecution] = await Promise.all([
+      this.loadoutObservations.readList(taskId, 1).then(rows => rows[0]),
+      this.runtimeSnapshots.readList(taskId, 1).then(rows => rows[0]),
+    ]);
+    const changes = latestExecution ? diffRuntimeAssembly(assembly, latestExecution) : [];
+    const memoryContext = await this.readLoadoutMemory(task, task.title);
+    const loadout = this.loadoutService.resolveSnapshot(
+      { task, projectContext, runtimeSkills, effectiveness: [], memoryContext },
+      task.title,
+      assembly,
+      effectiveExpertId,
+    );
+    return {
+      taskId,
+      generatedAt: Date.now(),
+      sessionDiagnostics: live ? {
+        basis: "live_session",
+        cwd: live.cwd,
+        model: live.modelDiagnostic ? {
+          ...live.modelDiagnostic,
+          provider: live.session.model?.provider, model: live.session.model?.id,
+          actualId: this.sessionModelKey(live.session), reasoning: live.session.thinkingLevel,
+        } : diagnoseSessionModel({ actual: live.session.model, source: "restored_or_sdk", reasoning: live.session.thinkingLevel }),
+        mode: live.welcomeMode, preset: live.runtimeTagId,
+        activeTools: live.session.getActiveToolNames(), mcpIds: live.mcpProviderIds ?? [],
+        skillReadiness: (live.skillReadiness ?? []).map(skill => ({
+          ...skill,
+          readThisTurn: live.skillReads?.assistantMessageId === observation?.assistantMessageId
+            && (live.skillReads?.ids.includes(skill.id) ?? false),
+          dependency: skill.whitelisted && ["meeting-transcribe", "npu-ocr", "dimagent-debug"].includes(skill.id)
+            ? probeSkillDependency(skill.id, live.session.getActiveToolNames(), this.builtinCapabilities) : skill.dependency,
+        })),
+        vision: modelSupportsImageInput(live.session.model) ? "native_image"
+          : this.builtinCapabilities.visionProvider() ? "description_delegate" : "unavailable",
+        toolBoundaries: "browser_exec 仅 MyBuddy 自有浏览器；ui_exec 仅本应用；computer_exec 为跨应用桌面后端，受平台支持限制。",
+        codingSwitch: live.welcomeMode === "working" ? "编程任务请在场景选择器切换到 coding；working 的 deny 不会自动放开。" : "",
+      } : undefined,
+      basis: "current_configuration",
+      effectiveAt: "next_resolution",
+      mode: { id: welcomeMode, label: profile.labelZh },
+      project: projectContext
+        ? {
+            id: projectContext.project.id,
+            name: projectContext.project.name,
+            updatedAt: projectContext.project.updatedAt,
+            archived: Boolean(projectContext.project.archived),
+          }
+        : undefined,
+      tag: preset ? { id: preset.id, label: preset.label } : undefined,
+      instructions: assembly.segments,
+      capabilities: assembly.capabilities ?? [],
+      warnings: assembly.warnings,
+      assembly,
+      assemblyHash,
+      loadout,
+      mcpContext: this.durableBots?.mcpContext(taskId) ?? null,
+      latestExecution: latestExecution
+        ? {
+            executionId: latestExecution.executionId,
+            status: latestExecution.status,
+            assemblyHash: latestExecution.assemblyHash,
+            differsFromCurrent: latestExecution.assemblyHash !== assemblyHash,
+            changes,
+          }
+        : undefined,
+    };
+  }
+
   async inspectSavedRuntimeContext(taskId: string): Promise<RuntimeContextInspectionDto> {
     await this.runtimeSnapshots.flush();
-    return this.inspectRuntimeContext(taskId);
+    return this.db.coreIdentity ? this.inspectRuntimeContextAsync(taskId) : this.inspectRuntimeContext(taskId);
   }
 
   async clearRuntimeContextSnapshots(taskId?: string): Promise<number> {
@@ -6099,26 +6407,32 @@ export class AgentService {
           if (pendingTurns.length === 0) break;
           const sourceIds = pendingTurns.map((turn) => turn.id);
           const sourcesExist = (): boolean => this.memoryPipeline.turns.allExist(sourceIds);
-          const botSource = botMemorySource(this.db, taskId);
-          const task = this.db.getTask(taskId);
+          const botSource = await readBotMemorySource(this.db, taskId);
+          const task = await this.db.readTask(taskId, { includeExpertBinding: false });
           const sourceIdentity = JSON.stringify(botSource ?? null);
+          let invalidated = false;
           const canContinue = (): boolean => {
-            if (this.memoryDisposed || sourceEpoch !== this.memorySourceEpoch || !this.settingsStore.read().memoryEnabled || !canCapture()) return false;
-            const current = this.db.getTask(taskId);
+            if (invalidated || this.memoryDisposed || sourceEpoch !== this.memorySourceEpoch || !this.settingsStore.read().memoryEnabled || !canCapture()) return false;
+            if (!this.db.coreIdentity) {
+              const current = this.db.getTask(taskId);
+              if (current?.projectId !== task?.projectId || current?.spaceId !== task?.spaceId) return false;
+              if (JSON.stringify(botMemorySource(this.db, taskId) ?? null) !== sourceIdentity) return false;
+            }
             return this.memoryPipeline.turns.canExtractTask(taskId)
-              && current?.projectId === task?.projectId && current?.spaceId === task?.spaceId && sourcesExist()
-              && JSON.stringify(botMemorySource(this.db, taskId) ?? null) === sourceIdentity
+              && sourcesExist()
               && (!botSource || this.workHostAuthority.isAuthority());
           };
           this.memoryPipeline.beginL1(pendingTurns);
           this.notifyMemoryChanged({ scope: "settings" });
           try {
-            const settings = createAgentSettingsManager(botSource ? join(getMyBuddyDir(), "bot-conversations", taskId) : this.resolveTaskExecutionWorkspaceCwd(taskId), getMyBuddyDir());
+            const cwd = botSource ? join(getMyBuddyDir(), "bot-conversations", taskId) : await this.resolveTaskExecutionWorkspaceCwdAsync(taskId);
+            const settings = createAgentSettingsManager(cwd, getMyBuddyDir());
             const provider = settings.getDefaultProvider();
             const id = settings.getDefaultModel();
             const defaultModelId = provider && id ? `${provider}/${id}` : this.settingsStore.read().defaultModelId;
+            const botModelId = botSource ? (await this.botSettings.read(botSource.bot_id)).modelId : undefined;
             const modelId = taskId === DOTS_TASK_ID ? this.configuredDotsModelId()
-              : (botSource ? this.botSettings.get(botSource.bot_id).modelId : task?.modelId) || defaultModelId;
+              : botModelId || task?.modelId || defaultModelId;
             // Historical chats can reference a retired model. Background extraction
             // may use the current enabled default without changing that chat's model.
             const model = capturedModel ?? (modelId ? await this.resolveEnabledModel(modelId, settings) : undefined)
@@ -6130,6 +6444,13 @@ export class AgentService {
               userText: pendingTurns[pendingTurns.length - 1].userText, assistantText: "",
               sourceTurns: pendingTurns, modelRuntime: this.modelRuntime!, model, isEnabled: canContinue,
             }));
+            if (this.db.coreIdentity) {
+              const current = await this.db.readTask(taskId, { includeExpertBinding: false });
+              if (current?.projectId !== task?.projectId || current?.spaceId !== task?.spaceId
+                || JSON.stringify((await readBotMemorySource(this.db, taskId)) ?? null) !== sourceIdentity) {
+                invalidated = true;
+              }
+            }
             if (this.memoryDisposed || sourceEpoch !== this.memorySourceEpoch) { summary.interrupted = true; return summary; }
             if (!canCapture()) { this.memoryPipeline.turns.requeueProcessing(sourceIds); summary.skippedTasks++; break; }
             if (!sourcesExist()) { this.memoryPipeline.turns.requeueProcessing(sourceIds); continue; }
@@ -6193,16 +6514,26 @@ export class AgentService {
     let modelPromise: ReturnType<typeof this.resolveCognitionModel> | undefined;
     return this.skillDistillation.start({
       enabled: () => !this.memoryDisposed && epoch === this.memorySourceEpoch && this.settingsStore.read().memoryEnabled,
-      scopeStamp: taskId => JSON.stringify([botMemorySource(this.db, taskId), this.memoryService.resolveScopeChain({ taskId }),
-        this.db.getTask(taskId)?.spaceId, this.db.getTask(taskId)?.projectId]),
+      scopeStamp: async taskId => {
+        if (!this.db.coreIdentity) {
+          return JSON.stringify([botMemorySource(this.db, taskId), this.memoryService.resolveScopeChain({ taskId }),
+            this.db.getTask(taskId)?.spaceId, this.db.getTask(taskId)?.projectId]);
+        }
+        const [bot, task, authority] = await Promise.all([
+          readBotMemorySource(this.db, taskId),
+          this.db.readTask(taskId, { includeExpertBinding: false }),
+          this.memoryService.readCoreRecallAuthority({ taskId, query: "", includeInherited: true }),
+        ]);
+        return JSON.stringify([bot, authority.scopes, task?.spaceId, task?.projectId]);
+      },
       extract: async (turns, enabled, skillBatch) => {
         const taskId = turns[0].taskId;
-        const bot = botMemorySource(this.db, taskId);
+        const bot = await readBotMemorySource(this.db, taskId);
         const allowed = () => enabled() && (!bot || this.workHostAuthority.isAuthority());
         if (!allowed()) throw new Error("当前无法读取来源对话，请在拥有该对话的设备继续提炼。");
         const model = await (modelPromise ??= this.resolveCognitionModel());
         if (!allowed()) throw new Error("来源对话或归属已改变，提炼已停止。");
-        const task = this.db.getTask(taskId);
+        const task = await this.db.readTask(taskId, { includeExpertBinding: false });
         const settings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
         return withModelInvocationSettings(settings, () => this.memoryService.extractAndStore({
           taskId, spaceId: task?.spaceId ?? undefined, projectBound: Boolean(task?.projectId),
@@ -6414,7 +6745,7 @@ export class AgentService {
 
   async compactTask(taskId: string): Promise<TaskCompactionResultDto> {
     if (this.executionMode === "isolated-client") {
-      if (!this.db.getTask(taskId)) return { ok: false, code: "NO_SESSION", state: { taskId, status: "skipped", message: "当前任务没有可压缩的会话" } };
+      if (!await this.db.readTask(taskId, { includeExpertBinding: false })) return { ok: false, code: "NO_SESSION", state: { taskId, status: "skipped", message: "当前任务没有可压缩的会话" } };
       return await this.submitCorePiExecution<TaskCompactionResultDto>({
         executionId: `pi-compact:${taskId}:${randomUUID()}`,
         idempotencyKey: `compact:${taskId}:${randomUUID()}`,
@@ -6423,7 +6754,7 @@ export class AgentService {
         payload: { taskId },
       });
     }
-    if (!this.durableBots || !this.db.getTask(taskId)) return { ok: false, code: "NO_SESSION", state: { taskId, status: "skipped", message: "当前任务没有可压缩的会话" } };
+    if (!this.durableBots || !await this.db.readTask(taskId, { includeExpertBinding: false })) return { ok: false, code: "NO_SESSION", state: { taskId, status: "skipped", message: "当前任务没有可压缩的会话" } };
     if (this.manualCompactions.has(taskId) || this.durableBots.busy(taskId)) return { ok: false, code: "TASK_BUSY", state: { taskId, status: "skipped", message: "任务正在执行" } };
     const operationId = randomUUID();
     const operation = { cancelled: false };
@@ -6458,6 +6789,44 @@ export class AgentService {
       return { ok: false, code: "COMPACTION_FAILED", state };
     } finally { this.manualCompactions.delete(taskId); }
   }
+  async getContextUsageAsync(taskId: string): Promise<ContextUsageDto | null> {
+    if (!this.db.coreIdentity) return this.getContextUsage(taskId);
+    if (this.durableBots?.owns(taskId)) return this.durableBots.contextUsage(taskId);
+    const entry = this.registry.get(taskId);
+    try {
+      if (entry) {
+        const usage = entry.session.getContextUsage();
+        if (!usage) return null;
+        const totals = this.sessionTokenTotals(entry.session);
+        return {
+          taskId,
+          ...resolveContextTokenEstimate(usage.tokens, entry.session.sessionManager.getLeafId(), this.compactionEstimates.get(taskId)),
+          contextWindow: usage.contextWindow || 128_000,
+          percent: usage.percent ?? null,
+          cacheHitRate: this.sessionCacheHitRate(totals),
+          inputTokens: totals?.input ?? null,
+          cacheReadTokens: totals?.cacheRead ?? null,
+          outputTokens: totals?.output ?? null,
+        };
+      }
+      const snapshot = this.contextUsageWrites.latest(taskId) ?? await this.db.readTaskContextUsage(taskId);
+      if (snapshot?.usedTokens == null) return null;
+      return {
+        taskId,
+        usedTokens: snapshot.usedTokens,
+        estimated: true,
+        contextWindow: snapshot.contextWindow,
+        percent: null,
+        cacheHitRate: snapshot.cacheHitRate,
+        inputTokens: null,
+        cacheReadTokens: null,
+        outputTokens: null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   getContextUsage(taskId: string): ContextUsageDto | null {
     if (this.durableBots?.owns(taskId)) return this.durableBots.contextUsage(taskId);
     const entry = this.registry.get(taskId);
@@ -6600,7 +6969,7 @@ export class AgentService {
         payload: { controlAction: "generateTaskTitle", taskId, maxTokens },
       });
     }
-    const task = this.db.getTask(taskId);
+    const task = await this.db.readTask(taskId, { includeExpertBinding: false });
     if (!task) throw new Error("任务不存在");
     const head = await this.conversationHeadForTitle(taskId, maxTokens);
     if (!head.trim()) throw new Error("任务还没有可读取的对话内容");
@@ -6924,7 +7293,7 @@ export class AgentService {
     if (!models) throw new Error("模型运行时尚未初始化");
     const opened = await openDurableAuxiliary({ agentDir: getMyBuddyDir(), id: input.id, models,
       initialize: async () => {
-        const parent = input.parentTaskId ? this.db.getTask(input.parentTaskId) : undefined;
+        const parent = input.parentTaskId ? await this.db.readTask(input.parentTaskId, { includeExpertBinding: false }) : undefined;
         if (input.parentTaskId && !parent) throw new Error("辅助会话所属任务已移除");
         const settings = createAgentSettingsManager(input.cwd, getMyBuddyDir());
         const selection = await this.resolvePiModelSelection(input.modelId ?? parent?.modelId, settings);
@@ -6936,7 +7305,7 @@ export class AgentService {
           ? this.nativeReasoningLevel(model, input.reasoningPreference)
           : input.thinking ?? settings.getModelThinkingLevel(model.provider, model.id) ?? settings.getDefaultThinkingLevel();
         return { id: input.id, kind: input.kind, parentTaskId: input.parentTaskId,
-          parentCwd: parent ? this.resolveTaskExecutionWorkspaceCwd(parent.id) : undefined,
+          parentCwd: parent ? await this.resolveTaskExecutionWorkspaceCwdAsync(parent.id) : undefined,
           projectId: parent?.projectId ?? undefined, workspaceId: parent?.spaceId ?? undefined,
           cwd: input.cwd, instructions: input.instructions, snapshot: input.snapshot, input: input.prompt,
           model: { provider: model.provider, modelId: model.id },
@@ -6946,20 +7315,20 @@ export class AgentService {
       runtime: async binding => {
         if (binding.kind !== input.kind || binding.parentTaskId !== input.parentTaskId) throw new Error("辅助会话身份与请求不一致");
         if (binding.kind === "authoring" && binding.input !== input.prompt) throw new Error("生成请求的参考资料已变化，请重新发起请求");
-        const validate = () => {
+        const validate = async () => {
           if (!binding.parentTaskId) return;
-          const task = this.db.getTask(binding.parentTaskId);
-          if (!task || this.db.isTaskEffectiveArchived(task.id)
+          const task = await this.db.readTask(binding.parentTaskId, { includeExpertBinding: false });
+          if (!task || await this.db.isTaskEffectiveArchivedAsync(task.id)
             || (task.projectId ?? undefined) !== binding.projectId || (task.spaceId ?? undefined) !== binding.workspaceId
-            || resolvedPathKey(this.resolveTaskExecutionWorkspaceCwd(task.id)) !== resolvedPathKey(binding.parentCwd ?? binding.cwd)) throw new Error("辅助会话的任务作用域已变化，请重新发起");
+            || resolvedPathKey(await this.resolveTaskExecutionWorkspaceCwdAsync(task.id)) !== resolvedPathKey(binding.parentCwd ?? binding.cwd)) throw new Error("辅助会话的任务作用域已变化，请重新发起");
         };
-        validate();
+        await validate();
         const readOnly = binding.kind === "btw";
         const shared = readOnly && binding.parentTaskId ? await durableDomainTools([
-          ...(binding.projectId ? [createProjectPlanExtension({ taskId: binding.parentTaskId, resolveProjectId: () => { validate(); return binding.projectId ?? null; },
+          ...(binding.projectId ? [createProjectPlanExtension({ taskId: binding.parentTaskId, resolveProjectId: () => { void validate(); return binding.projectId ?? null; },
             service: this.projectService, getPermissionMode: () => "readonly" })] : []),
           createMemoryExtension({ taskId: binding.parentTaskId, service: this.memoryService, readOnly: true,
-            getPermissionMode: () => "readonly", resolveProjectId: () => { validate(); return binding.projectId ?? null; },
+            getPermissionMode: () => "readonly", resolveProjectId: () => { void validate(); return binding.projectId ?? null; },
             resolveWorkspaceId: () => binding.workspaceId ?? null }),
         ], { cwd: binding.cwd, models, taskId: binding.parentTaskId }) : { tools: [], contextHooks: [] };
         const allowed = new Set(readOnly ? ["read", "ls", "find", "grep", "project_plan_list", "project_plan_get", "memory_search", "memory_get", "memory_history"] : []);
@@ -6975,11 +7344,15 @@ export class AgentService {
         };
         const evidenceProjection: DurableBotOptions["evidenceProjection"] = readOnly && binding.parentTaskId ? {
           memory: this.memoryService, enabled: () => this.settingsStore.read().memoryEnabled,
-          scope: () => { validate(); return { taskId: binding.parentTaskId, projectId: binding.projectId, workspaceId: binding.workspaceId }; },
-          supplementalEvidence: () => [{ id: `conversation:${binding.parentTaskId}`, kind: "conversation",
-            revision: createHash("sha256").update(binding.snapshot ?? "").digest("hex"), text: binding.snapshot ?? "", validate },
-            ...this.libraryWorkspaceContext.projectionSources(binding.parentTaskId!, true)],
-          validateEvidenceAccess: access => this.libraryWorkspaceContext.validateEvidenceAccess(binding.parentTaskId!, access),
+          scope: async () => { await validate(); return { taskId: binding.parentTaskId, projectId: binding.projectId, workspaceId: binding.workspaceId }; },
+          supplementalEvidence: async () => {
+            await validate();
+            const sources = await this.libraryWorkspaceContext.readProjectionSources(binding.parentTaskId!, true);
+            return [{ id: `conversation:${binding.parentTaskId}`, kind: "conversation",
+              revision: createHash("sha256").update(binding.snapshot ?? "").digest("hex"), text: binding.snapshot ?? "", validate },
+              ...sources];
+          },
+          validateEvidenceAccess: access => this.libraryWorkspaceContext.readEvidenceAccess(binding.parentTaskId!, access),
         } : undefined;
         return {
           onSnapshot: input.onSnapshot ?? (() => {}),
@@ -6989,14 +7362,14 @@ export class AgentService {
           tools: readOnly ? [...createDurableReadOnlyTools(binding.cwd), ...shared.tools.filter(tool => allowed.has(tool.name)).map(tool => ({ ...tool, replay: "safe" as const }))] : [],
           toolAllowed: permit,
           toolHooks: { beforeTool: async call => {
-            validate();
+            await validate();
             if (!permit(call.name)) return { block: "该辅助会话没有此工具权限" };
             if (!["read", "ls", "find", "grep"].includes(call.name)) return;
             const policy = new TaskFileAccessPolicy({ taskId: binding.parentTaskId ?? binding.id, taskRoot: binding.cwd });
             const path = policy.assertAllowed("read", typeof call.arguments.path === "string" ? call.arguments.path : ".");
             return { arguments: { ...call.arguments, path } };
           } },
-          contextHooks: [() => { validate(); return undefined; }, ...shared.contextHooks],
+          contextHooks: [async () => { await validate(); return undefined; }, ...shared.contextHooks],
           evidenceProjection,
           onResponse: (message, identity) => usage(message, identity.conversationId, identity.generationTaskId),
           onEntries: entries => { for (const entry of entries) if (entry.byTaskId !== undefined) for (const message of entry.model ?? [])
@@ -7215,7 +7588,8 @@ export class AgentService {
       } else if (req.externalWrite?.scope === "task-dir" && req.externalWrite.path?.trim()) {
         // 持久化 canonical 目录写 grant（词法 + realpath 固化），并放行本次
         const canonical = canonicalizeExternalGrantPath(req.externalWrite.path.trim());
-        this.db.addTaskWriteGrant(req.taskId, canonical);
+        if (this.db.coreIdentity) void this.db.addTaskWriteGrantAsync(req.taskId, canonical);
+        else this.db.addTaskWriteGrant(req.taskId, canonical);
         this.sessionApprovals.addWriteGrant(req.taskId, canonical);
         decision = { kind: "allow-task-dir", path: canonical };
       } else {
@@ -7277,8 +7651,8 @@ export class AgentService {
   }
 
   private async gitCodeReview(taskId: string) {
-    if (typeof taskId !== "string" || !this.db.getTask(taskId)) return null;
-    return GitCodeReview.open(this.resolveTaskExecutionWorkspaceCwd(taskId));
+    if (typeof taskId !== "string" || !await this.db.readTask(taskId, { includeExpertBinding: false })) return null;
+    return GitCodeReview.open(await this.resolveTaskExecutionWorkspaceCwdAsync(taskId));
   }
 
   async codeReviewGitRefs(taskId: string) {
@@ -7318,6 +7692,31 @@ export class AgentService {
   /** 将备份写回原始路径 */
   restoreBackup(req: AgentRestoreBackupRequest): Promise<FileBackupInfoDto> {
     return this.backups.restoreWithRuntime(this.db.runtimeAuditReader, req.taskId, req.backupId);
+  }
+
+  async setPermissionModeAsync(req: AgentSetPermissionModeRequest): Promise<boolean> {
+    if (!this.db.coreIdentity) return this.setPermissionMode(req);
+    const task = await this.db.readTask(req.taskId, { includeExpertBinding: false });
+    if (task) void this.db.writeTaskRecord({
+      id: task.id, title: task.title, updatedAt: task.updatedAt, permissionMode: "auto",
+    }, { preserveTitle: true });
+    const entry = this.registry.get(req.taskId);
+    if (!entry) return Boolean(task);
+
+    const pendingToolCallIds = this.registry.setPermissionMode(req.taskId, req.permissionMode);
+    if (entry.permissionMode === "auto") this.pendingActions.removeTask(req.taskId);
+    if (entry.permissionMode === "auto" && pendingToolCallIds.length > 0 && entry.assistantMessageId) {
+      for (const toolCallId of pendingToolCallIds) {
+        this.emitPatch({
+          type: "tool_update",
+          taskId: req.taskId,
+          messageId: entry.assistantMessageId,
+          toolCallId,
+          status: "running",
+        });
+      }
+    }
+    return true;
   }
 
   setPermissionMode(req: AgentSetPermissionModeRequest): boolean {
@@ -7808,7 +8207,7 @@ export class AgentService {
     const rawPath = input.path;
     if (!rawPath) return;
     // P0 §10.1：taskRoot 来自 resolver（不信任 session cwd）；session cwd 仅一致性断言
-    const taskRoot = this.getTaskRoot(taskId);
+    const taskRoot = await this.getTaskRootAsync(taskId);
     const sessionCwd = session.sessionManager.getCwd();
     if (normalizePathForComparison(taskRoot) !== normalizePathForComparison(sessionCwd)) {
       console.warn(

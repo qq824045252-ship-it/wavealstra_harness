@@ -339,7 +339,7 @@ export class RemoteAccessServer {
         // ACP 外部 Agent：在电脑端起真实 ACP 进程执行本轮（长任务，流式结果走 /v1/events）
         if (request.method === "POST" && action === "acp") {
           const body = remoteAcpPromptSchema.parse(await readJson(request, PROMPT_BODY_LIMIT));
-          const result = this.options.commands.acpPromptExisting(taskId, body.agentId, body);
+          const result = await this.options.commands.acpPromptExisting(taskId, body.agentId, body);
           this.options.events.publish("task.changed", { taskId });
           return replyJson(202, result);
         }
@@ -368,9 +368,9 @@ export class RemoteAccessServer {
         const interactionId = decodeURIComponent(interactionMatch[2]);
         if (interactionMatch[3] === "respond") {
           const body = remoteInteractionAnswerSchema.parse(await readJson(request));
-          return replyJson(200, this.options.commands.respondToInteraction(taskId, interactionId, body.answer));
+          return replyJson(200, await this.options.commands.respondToInteraction(taskId, interactionId, body.answer));
         }
-        return replyJson(200, this.options.commands.cancelInteraction(taskId, interactionId));
+        return replyJson(200, await this.options.commands.cancelInteraction(taskId, interactionId));
       }
       const approvalMatch = /^\/v1\/tasks\/([^/]+)\/actions\/([^/]+)\/respond$/.exec(path);
       if (request.method === "POST" && approvalMatch) {

@@ -32,7 +32,28 @@ export type RuntimeMemoryRecordsQuery =
   | { kind: "candidateList"; status?: MemoryCandidateDto["status"]; limit: number }
   | { kind: "candidateReviewSupported" }
   | { kind: "installedSkillGrounding"; installedSkillId: string; candidateId: string; sourceMemoryIds: string[] }
-  | { kind: "stats" };
+  | { kind: "stats" }
+  | { kind: "distinctProjectionScopes" }
+  | { kind: "projects"; includeArchived: boolean }
+  | { kind: "candidateById"; id: string }
+  | { kind: "captureReceipt"; sourceKey: string }
+  | { kind: "revisions"; memoryId: string }
+  | { kind: "userWorks"; userId: string }
+  | { kind: "workCaptureFacts"; workId: string; userId: string }
+  | { kind: "assistantScopeContext"; taskId?: string; workId?: string; conversationId?: string; userId: string }
+  | { kind: "dotsDueProjection"; now: number }
+  | ({ kind: "skillEffectivenessQuery" } & (
+    | { action: "byId"; id: string }
+    | { action: "byTurnSkill"; taskId: string; assistantMessageId: string; skillId: string }
+    | { action: "invokedForTurn"; taskId: string; assistantMessageId: string }
+    | { action: "latestInvocationAfter"; skillId: string; candidateId: string; after: number }
+    | { action: "recent"; limit: number; invokedOnly: boolean }
+    | { action: "summaries"; limit: number }
+    | { action: "revisionById"; id: string }
+    | { action: "revisionList"; status?: string; limit: number }
+    | { action: "revisionRefreshFacts"; skillId: string; candidateId?: string }
+    | { action: "revisionStaleCount"; skillId: string; candidateId?: string; keepId: string }
+  ));
 
 type WireScope = Omit<MemoryScopeDto, "scopeId"> & { scopeId: string | null };
 type WireEvidence = Omit<MemoryEvidenceDto, "refTitle" | "excerpt"> & {
@@ -68,7 +89,24 @@ export type RuntimeMemoryRecordsData =
   | { kind: "installedSkillGrounding"; grounded: {
     candidateId: string; scopeType: MemorySkillCandidateDto["scopeType"]; scopeId: string | null; sourceSignature: string;
   } | null }
-  | { kind: "stats"; stats: MemoryKernelStats };
+  | { kind: "stats"; stats: MemoryKernelStats }
+  | { kind: "distinctProjectionScopes"; scopes: Array<{ scopeType: string; scopeId: string | null }> }
+  | { kind: "projects"; projects: Array<{ id: string; name: string; archived: number }> }
+  | { kind: "candidateById"; candidate: Record<string, unknown> | null }
+  | { kind: "captureReceipt"; receipt: Record<string, unknown> | null }
+  | { kind: "revisions"; revisions: Array<Record<string, unknown>> }
+  | { kind: "userWorks"; workIds: string[] }
+  | { kind: "workCaptureFacts"; work: Record<string, unknown> | null; deliverables?: Array<Record<string, unknown>>; deliverableTotal?: number; blockers?: Array<{ reason: string }>; blockerTotal?: number }
+  | { kind: "assistantScopeContext"; workScope: Record<string, unknown> | null; botSource: Record<string, unknown> | null; directWork: Record<string, unknown> | null; hasGatewayDotsMemory: boolean }
+  | { kind: "dotsDueProjection"; nextDue: number | null; records: Array<{ id: string; revision: number | null }> }
+  | { kind: "skillEffectiveness"; row: Record<string, unknown> | null }
+  | { kind: "skillEffectivenessList"; rows: Array<Record<string, unknown>> }
+  | { kind: "skillEffectivenessLatest"; latest: number | null }
+  | { kind: "skillEffectivenessSummaries"; rows: Array<Record<string, unknown>> }
+  | { kind: "skillRevisionCandidate"; row: Record<string, unknown> | null }
+  | { kind: "skillRevisionCandidateList"; rows: Array<Record<string, unknown>> }
+  | { kind: "skillRevisionRefreshFacts"; negativeRows: Array<Record<string, unknown>>; failedCount: number }
+  | { kind: "skillRevisionStaleCount"; count: number };
 
 export function memoryListQuery(input: MemoryListRequest): MemoryListQuery {
   const query = input.query?.trim();

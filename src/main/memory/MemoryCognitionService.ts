@@ -150,6 +150,17 @@ export class MemoryCognitionService {
     return scopes;
   }
 
+  private async targetScopesAsync(taskId?: string, projectId?: string, workspaceId?: string): Promise<MemoryProjectionScope[]> {
+    if (!this.db.coreIdentity) return this.targetScopes(taskId, projectId, workspaceId);
+    const task = taskId ? await this.db.readTask(taskId, { includeExpertBinding: false }) : undefined;
+    const effectiveProjectId = projectId ?? task?.projectId ?? undefined;
+    const effectiveWorkspaceId = workspaceId ?? task?.spaceId ?? undefined;
+    const scopes: MemoryProjectionScope[] = [{ scopeType: "global" }];
+    if (effectiveProjectId) scopes.push({ scopeType: "project", scopeId: effectiveProjectId });
+    else if (effectiveWorkspaceId) scopes.push({ scopeType: "workspace", scopeId: effectiveWorkspaceId });
+    return scopes;
+  }
+
   /** Every projection-capable scope that owns at least one L1 memory. */
   private allScopesWithMemories(): MemoryProjectionScope[] {
     const rows = this.db.connection.prepare(
@@ -163,14 +174,30 @@ export class MemoryCognitionService {
     return scopes;
   }
 
-  private runScopes(input: MemoryCognitionRunInput): MemoryProjectionScope[] {
-    return input.includeAllScopes ? this.allScopesWithMemories() : this.targetScopes(input.taskId);
+  private async allScopesWithMemoriesAsync(): Promise<MemoryProjectionScope[]> {
+    if (!this.db.coreIdentity) return this.allScopesWithMemories();
+    const res = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "distinctProjectionScopes" });
+    const rows = res?.kind === "distinctProjectionScopes" ? res.scopes : [];
+    const scopes = rows.map((row) => ({
+      scopeType: row.scopeType as MemoryProjectionScope["scopeType"],
+      scopeId: row.scopeId ?? undefined,
+    }));
+    if (!scopes.some((scope) => scope.scopeType === "global")) scopes.unshift({ scopeType: "global", scopeId: undefined });
+    return scopes;
+  }
+
+  private async runScopesAsync(input: MemoryCognitionRunInput): Promise<MemoryProjectionScope[]> {
+    return input.includeAllScopes ? this.allScopesWithMemoriesAsync() : this.targetScopesAsync(input.taskId);
   }
 
   async generateL2(input: MemoryCognitionRunInput): Promise<MemoryCognitionRunResult> {
     const generation = this.generationVersion("scenario");
     if (!input.isEnabled()) return { completed: false, scopesProcessed: 0, outputs: 0 };
-    const scopes = this.runScopes(input);
+    if (this.db.coreIdentity) {
+      await this.runScopesAsync(input);
+      return { completed: true, scopesProcessed: 0, outputs: 0 };
+    }
+    const scopes = await this.runScopesAsync(input);
     const groups = scopes.map((scope) => {
       const memories = this.listExactScopeMemories(scope);
       return {
@@ -246,7 +273,11 @@ export class MemoryCognitionService {
   async generateL3(input: MemoryCognitionRunInput): Promise<MemoryCognitionRunResult> {
     const generation = this.generationVersion("profile");
     if (!input.isEnabled()) return { completed: false, scopesProcessed: 0, outputs: 0 };
-    const scopes = this.runScopes(input);
+    if (this.db.coreIdentity) {
+      await this.runScopesAsync(input);
+      return { completed: true, scopesProcessed: 0, outputs: 0 };
+    }
+    const scopes = await this.runScopesAsync(input);
     const groups = scopes.map((scope) => {
       const scenarios = this.projections.listScenarios(scope, "active", L3_MAX_SCENARIOS_PER_SCOPE)
         .filter((scenario) => this.scenarioIsGrounded(scenario));

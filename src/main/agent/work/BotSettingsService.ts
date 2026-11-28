@@ -19,6 +19,21 @@ export class BotSettingsService {
       work_id TEXT PRIMARY KEY REFERENCES works(work_id) ON DELETE CASCADE, settings_json TEXT NOT NULL);
 `);
   }
+  async read(botId: string): Promise<BotSettingsDto> {
+    if (!this.db.coreIdentity) return this.get(botId);
+    const bot = await this.bots.readBot(botId);
+    if (!bot || bot.userId !== this.userId) throw new Error("Bot 不属于当前用户");
+    const data = await this.db.runtimeAuditReader?.readBotExecutionSettings(botId);
+    if (data?.settingsJson) return JSON.parse(data.settingsJson) as BotSettingsDto;
+    const id = createHash("sha256").update(botId).digest("hex").slice(0, 24);
+    const profile = bot.expertProfile;
+    return { botId, revision: 0, workspacePath: "", effectiveWorkspacePath: join(this.root, id),
+      spaceId: `bot-space-${id}`, modelId: "", expertId: profile.configuration?.sourceExpertId ?? "",
+      skillIds: profile.configuration?.sourceExpertId ? [] : profile.allowedSkillIds,
+      mcpIds: profile.configuration?.sourceExpertId ? [] : profile.allowedMcpIds,
+      connectorIds: profile.configuration?.sourceExpertId ? [] : profile.allowedConnectorIds };
+  }
+
   get(botId: string): BotSettingsDto {
     const bot = this.bots.getBot(botId);
     if (!bot || bot.userId !== this.userId) throw new Error("Bot 不属于当前用户");
@@ -52,6 +67,20 @@ export class BotSettingsService {
       if (source?.receiver) return this.messageSettings(source.receiver, botId);
     }
     return this.messageSettings(work.sourceMessageId, botId);
+  }
+
+  async readTaskWorkspace(taskId: string): Promise<string | undefined> {
+    if (!this.db.coreIdentity) return this.taskWorkspace(taskId);
+    const settingsJson = await this.db.runtimeAuditReader?.readBotTaskWorkspace(taskId);
+    if (settingsJson === undefined) throw new Error("Core 未确认 Bot 任务工作目录读取");
+    if (!settingsJson) return undefined;
+    const settings = JSON.parse(settingsJson) as BotSettingsDto;
+    if (!isAbsolute(settings.effectiveWorkspacePath)) throw new Error("事项工作目录必须是绝对路径");
+    if (!settings.workspacePath) mkdirSync(settings.effectiveWorkspacePath, { recursive: true });
+    if (!existsSync(settings.effectiveWorkspacePath) || !statSync(settings.effectiveWorkspacePath).isDirectory()) {
+      throw new Error("Bot 工作文件夹已不存在，请恢复文件夹后重试，原任务不会迁移到其他目录");
+    }
+    return settings.effectiveWorkspacePath;
   }
 
   taskWorkspace(taskId: string): string | undefined {

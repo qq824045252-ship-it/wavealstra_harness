@@ -241,7 +241,7 @@ export class LibraryIndexMaintenance {
   }
 
   private currentIndexItem(item: LibraryItemDto): LibraryItemDto | undefined {
-    if (!this.db.connection.open) return;
+    if (!this.db.isOpen) return;
     const current = this.repo.getItem(item.id);
     if (!current || current.trashedAt != null) return;
     const expected = indexItemVersion(item);
@@ -461,7 +461,7 @@ export class LibraryIndexMaintenance {
           const item = this.repo.getItem(id);
           if (item && this.repo.isTextSearchable(item.kind)) {
             const indexed = await this.recoverTextIndex(item, opts?.signal);
-            if (!indexed && this.db.connection.open) {
+            if (!indexed && this.db.isOpen) {
               const current = this.repo.getItem(id);
               if (current && current.trashedAt == null) deferred = true;
             }
@@ -785,7 +785,7 @@ export class LibraryIndexMaintenance {
       return;
     }
     const currentSourceItem = (): LibraryItemDto | undefined => {
-      if (!this.db.connection.open) return;
+      if (!this.db.isOpen) return;
       const current = this.repo.getItem(itemId);
       if (current && current.trashedAt == null && current.kind === item.kind && current.mimeType === item.mimeType
           && current.contentHash === item.contentHash && this.files.absolutePath(current) === this.files.absolutePath(item)

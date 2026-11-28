@@ -370,7 +370,7 @@ async function main(): Promise<void> {
       mkdirSync(bare, { recursive: true });
       writeFileSync(join(bare, "x.txt"), "x");
 
-      const reports = env.lifecycle.scanOrphans();
+      const reports = await env.lifecycle.scanOrphans();
       assert.ok(reports.some((r) => r.manifestTaskId === ghostId && r.reason === "no_task_row"));
       assert.ok(reports.some((r) => r.directoryName === "random-folder" && r.reason === "manifest_missing"));
 
@@ -378,7 +378,7 @@ async function main(): Promise<void> {
       const okId = "ok-task";
       const okDir = env.workspace.ensureTaskExecutionWorkspace(okId);
       env.db.upsertTask({ id: okId, title: "ok", updatedAt: Date.now(), cwd: okDir });
-      const reports2 = env.lifecycle.scanOrphans();
+      const reports2 = await env.lifecycle.scanOrphans();
       assert.ok(!reports2.some((r) => r.manifestTaskId === okId));
 
       // 认领 ghost：先补 task 行再 adopt
@@ -389,7 +389,7 @@ async function main(): Promise<void> {
       assert.equal(env.db.getTask(ghostId)?.cwd, env.workspace.resolveTaskExecutionWorkspaceDir(ghostId));
 
       // bare 移入 trash
-      const moved = env.lifecycle.moveOrphanToTrash("random-folder");
+      const moved = await env.lifecycle.moveOrphanToTrash("random-folder");
       assert.ok(existsSync(moved.trashPath));
       assert.ok(!existsSync(bare));
     } finally {

@@ -9,7 +9,7 @@ export interface SkillBatch {
 
 interface DistillOptions {
   enabled: () => boolean;
-  scopeStamp: (taskId: string) => string;
+  scopeStamp: (taskId: string) => string | Promise<string>;
   extract: (turns: MemoryTurnDto[], enabled: () => boolean, batch: SkillBatch) => Promise<unknown>;
 }
 
@@ -29,13 +29,20 @@ export class MemorySkillDistillation {
   start(options: DistillOptions): SkillDistillationProgress {
     if (this.controller) return this.status()!;
     if (!options.enabled()) throw new Error("请先开启记忆，再提炼历史对话。");
+    const isCore = Boolean(this.db.coreIdentity);
     // Only IDs are retained across model calls. Fetch source bodies a batch at a time.
-    const rows = this.db.connection.prepare(`SELECT id, task_id FROM memory_turns
-      WHERE json_extract(metadata_json,'$.skillDistilled') IS NOT 1 ORDER BY task_id,captured_at,rowid`).all() as Array<{ id: string; task_id: string }>;
-    const progress: SkillDistillationProgress = { state: "running", total: rows.length, checked: 0, skipped: 0, created: 0 };
+    const initialRows = isCore
+      ? []
+      : (this.db.connection.prepare(`SELECT id, task_id FROM memory_turns
+          WHERE json_extract(metadata_json,'$.skillDistilled') IS NOT 1 ORDER BY task_id,captured_at,rowid`).all() as Array<{ id: string; task_id: string }>);
+    const progress: SkillDistillationProgress = { state: "running", total: initialRows.length, checked: 0, skipped: 0, created: 0 };
     this.progress = progress;
     const controller = this.controller = new AbortController();
     const run = async () => {
+      const rows = isCore
+        ? (await this.turns.readUndistilledTurns(2000)).map(row => ({ id: row.id, task_id: row.taskId }))
+        : initialRows;
+      progress.total = rows.length;
       const requiresRust = Boolean(this.db.readonly || this.db.runtimeAuditReader?.supervised);
       const mark = requiresRust
         ? null
@@ -47,14 +54,19 @@ export class MemorySkillDistillation {
         while (end < rows.length && end - i < 8 && rows[end].task_id === taskId) end++;
         const batch = rows.slice(i, end);
         i = end;
-        if (!this.turns.canExtractTask(taskId)) { progress.skipped += batch.length; continue; }
-        const turns = batch.flatMap(row => this.turns.get(row.id) ?? []);
+        if (!await this.turns.canExtractTaskAsync(taskId)) { progress.skipped += batch.length; continue; }
+        const turns = isCore
+          ? (await Promise.all(batch.map(row => this.turns.readDetail(row.id)))).filter((t): t is MemoryTurnDto => Boolean(t))
+          : batch.flatMap(row => this.turns.get(row.id) ?? []);
         progress.skipped += batch.length - turns.length;
         if (!turns.length) continue;
         const ids = turns.map(turn => turn.id);
-        const stamp = options.scopeStamp(taskId);
-        const enabled = () => !controller.signal.aborted && options.enabled() && this.turns.canExtractTask(taskId)
-          && this.turns.allExist(ids) && options.scopeStamp(taskId) === stamp;
+        const stamp = await options.scopeStamp(taskId);
+        let stale = false;
+        const extractable = await this.turns.canExtractTaskAsync(taskId);
+        const allPresent = await this.turns.allExistAsync(ids);
+        const enabled = () => !stale && !controller.signal.aborted && options.enabled() && extractable && allPresent
+          && (!isCore ? (this.turns.canExtractTask(taskId) && this.turns.allExist(ids)) : true);
         let completed = false;
         const complete = (created: number) => {
           if (!enabled()) throw new Error("来源对话或归属已改变，请继续提炼。");

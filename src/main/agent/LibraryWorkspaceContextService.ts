@@ -99,6 +99,27 @@ export class LibraryWorkspaceContextService {
     }
   }
 
+  async readAttachments(taskId: string): Promise<string | null> {
+    if (!this.db.runtimeAuditReader?.supervised) return this.attachments(taskId);
+    const scope = await this.readCoreTaskScope({ taskId });
+    if (!scope || !scope.attachedItemIds.length) return null;
+    const byId = new Map(scope.items.map((item) => [item.id, item]));
+    const library = this.library();
+    const lines = scope.attachedItemIds
+      .map((id) => byId.get(id))
+      .filter((item): item is LibraryItemDto => Boolean(item))
+      .map((item) => {
+        const path = library.absolutePath(item);
+        return `- [${item.kind}] ${item.title} · id=${item.id}${path ? ` · path=${path}` : ""}`;
+      });
+    if (lines.length === 0) return null;
+    return [
+      "## 已附加到本任务的资料（显式引用）",
+      ...lines,
+      "这些资料由用户/任务显式附加。需要内容时用 library_read 读取文本类；二进制/办公类返回受管路径，需要文件工具或预览读取；不要假设可访问任务目录之外的任意路径。",
+    ].join("\n");
+  }
+
   attachedItemIds(taskId: string): ReadonlySet<string> {
     try {
       const library = this.library();
@@ -356,6 +377,25 @@ export class LibraryWorkspaceContextService {
     const attachments = this.attachments(parentTaskId);
     // Evidence is supplied by the transient session's own request projection.
     return mapBtwProjectContextSegments(segments.filter((segment) => !isEvidenceSegment(segment.id)), context, { catalog, attachments });
+  }
+
+  async renderBtwProjectContextSegmentsAsync(
+    segments: ReadonlyArray<{ id: string; content: string }>,
+    parentTaskId: string,
+  ): Promise<string[]> {
+    if (!this.db.coreIdentity) return this.renderBtwProjectContextSegments(segments, parentTaskId);
+    const task = await this.db.readTask(parentTaskId, { includeExpertBinding: false });
+    const projectId = task?.projectId ?? null;
+    const [context, catalog, attachments] = await Promise.all([
+      projectId ? this.projectContext.readResolvedProject(projectId) : Promise.resolve(null),
+      this.readCatalog(parentTaskId, false, projectId, task?.spaceId ?? null),
+      this.readAttachments(parentTaskId),
+    ]);
+    return mapBtwProjectContextSegments(
+      segments.filter((segment) => !isEvidenceSegment(segment.id)),
+      context,
+      { catalog, attachments },
+    );
   }
 
   resourceLocator(): WorkspaceResourceLocator {

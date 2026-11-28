@@ -134,7 +134,12 @@ export class RemoteAccessController {
   cancelPairingSession(id: string): void { this.pairing.cancel(id); }
   /** Paired-device Work access; every call goes through the desktop host service. */
   private workBridge() {
-    return createRemoteWorkBridge({ db: this.db.connection, works: this.agent.getWorkService(),
+    // The Work projection journal still runs on a local SQL connection. A Core-owned
+    // database has none, so the Work routes stay off until Work moves to Core; the rest
+    // of Remote Access must still start.
+    const connection = this.db.fixtureConnection;
+    if (!connection) return undefined;
+    return createRemoteWorkBridge({ db: connection, works: this.agent.getWorkService(),
       userId: LOCAL_USER_ID });
   }
 

@@ -195,8 +195,8 @@ export class MemorySemanticProvider {
   }
 
   private readIndexableMemory(id: string): IndexableMemory | undefined {
-    if (!this.db.connection.open) return;
-    return this.db.connection.prepare(`SELECT id,status,kind,title,content,content_hash AS contentHash
+    if (!this.db.isOpen || !this.db.fixtureConnection) return;
+    return this.db.fixtureConnection.prepare(`SELECT id,status,kind,title,content,content_hash AS contentHash
       FROM memory_records WHERE id=? AND status='active'`).get(id) as IndexableMemory | undefined;
   }
 
@@ -244,6 +244,9 @@ export class MemorySemanticProvider {
 
   async search(query: string, scope: MemorySearchScope, accept: (id: string, contentHash: string) => boolean,
     limit = 20, threshold = 0.50): Promise<MemorySemanticHit[]> {
+    if (this.db.runtimeAuditReader?.supervised || !this.db.fixtureConnection) {
+      throw new SemanticUnavailableError("Core 模式下应使用 MemoryCoreRecall 执行语义检索");
+    }
     const q = query.trim();
     if (!q || !scope.scopes.length) return [];
     const queryVec = await this.runtime.embed(q);

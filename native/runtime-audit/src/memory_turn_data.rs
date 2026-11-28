@@ -37,6 +37,7 @@ pub enum Query {
     },
     Tasks,
     SkillLearningStatus,
+    UndistilledTurns,
 }
 
 #[derive(Serialize)]
@@ -153,6 +154,22 @@ pub fn read(db: &Connection, query: Query, user_id: &str) -> Result<Json> {
             Ok(json!({"kind": "tasks", "tasks": tasks}))
         }
         Query::SkillLearningStatus => skill_learning_status(db, user_id),
+        Query::UndistilledTurns => {
+            let mut stmt = db.prepare(
+                "SELECT id, task_id FROM memory_turns
+                 WHERE coalesce(json_extract_string(metadata_json, '$.skillDistilled'), '') NOT IN ('1', 'true')
+                 ORDER BY task_id, captured_at, id",
+            )?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(json!({
+                        "id": row.get::<_, String>(0)?,
+                        "taskId": row.get::<_, String>(1)?,
+                    }))
+                })?
+                .collect::<duckdb::Result<Vec<_>>>()?;
+            Ok(json!({ "kind": "undistilledTurns", "rows": rows }))
+        }
     }
 }
 

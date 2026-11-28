@@ -10,6 +10,7 @@ import { durableText } from "../agent/durable/DurableTurnProjection";
 import { durableRegisteredArtifact } from "../agent/durable/DurableArtifactRegistration";
 import { durableHistoryIdentity } from "../agent/durable/DurableHistoryIdentity";
 import { dotsTextCall } from "./DotsTaskEvidence";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 
 export interface NativeResultHit {
   source: "native"; taskId: string; title: string; link: string; status: "completed";
@@ -49,7 +50,7 @@ export async function readNativeResultText(directory: string, answerEntryId: num
 
 /** Search accepted answers and host-registered files in the selected conversation's read snapshot. */
 export async function nativeResultHits(task: {id: string; title: string; link: string}, directory: string,
-  query: string, delegated: Set<string>, limit: number, db: Database.Database) {
+  query: string, delegated: Set<string>, limit: number, db?: Database.Database, runtime?: RuntimeAuditReader) {
   const hits: NativeResultHit[] = [];
   const storage = await openDurablePassiveStorage(directory, context);
   if (!storage) return hits;
@@ -86,11 +87,30 @@ export async function nativeResultHits(task: {id: string; title: string; link: s
         } while (entries);
         // Historical results without native receipts may have only an artifact index link.
         // For receipted calls the registered snapshot carries the verified file version.
-        const indexed = db.prepare(`SELECT DISTINCT a.id,a.entry_file,r.tool_call_id FROM artifact_message_refs r
-          JOIN artifacts a ON a.id=r.artifact_id AND a.task_id=r.task_id
-          WHERE r.task_id=? AND r.message_id IN (SELECT value FROM json_each(?)) AND r.tool_call_id IS NOT NULL
-            AND a.source_type='workspace-file' AND a.entry_file IS NOT NULL`)
-          .all(task.id,JSON.stringify([...messageIds])) as {id:string;entry_file:string;tool_call_id:string}[];
+        let indexed: {id:string;entry_file:string;tool_call_id:string}[] = [];
+        if (db) {
+          indexed = db.prepare(`SELECT DISTINCT a.id,a.entry_file,r.tool_call_id FROM artifact_message_refs r
+            JOIN artifacts a ON a.id=r.artifact_id AND a.task_id=r.task_id
+            WHERE r.task_id=? AND r.message_id IN (SELECT value FROM json_each(?)) AND r.tool_call_id IS NOT NULL
+              AND a.source_type='workspace-file' AND a.entry_file IS NOT NULL`)
+            .all(task.id,JSON.stringify([...messageIds])) as {id:string;entry_file:string;tool_call_id:string}[];
+        } else if (runtime) {
+          const [refs, snapshots] = await Promise.all([
+            runtime.artifactMessageRefs(task.id),
+            runtime.artifactSnapshots([task.id]),
+          ]);
+          const artifactsById = new Map((snapshots?.flatMap(s => s.artifacts) ?? []).map(a => [a.id, a]));
+          const seen = new Set<string>();
+          for (const ref of refs ?? []) {
+            if (!messageIds.has(ref.messageId) || !ref.toolCallId) continue;
+            const artifact = artifactsById.get(ref.artifactId);
+            if (!artifact || artifact.source?.type !== "workspace-file" || !artifact.source.entryFile) continue;
+            const key = `${artifact.id}\0${artifact.source.entryFile}\0${ref.toolCallId}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            indexed.push({ id: artifact.id, entry_file: artifact.source.entryFile, tool_call_id: ref.toolCallId });
+          }
+        }
         for (const row of indexed) {
           if (receiptedCalls.has(row.tool_call_id) || files.has(row.entry_file)) continue;
           const name = basename(row.entry_file);

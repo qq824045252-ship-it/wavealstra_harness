@@ -30,6 +30,7 @@ import type {
 export interface ConversationBranchAgentPort {
   isTaskBusy(taskId: string): boolean;
   resolveTaskExecutionWorkspaceCwd(taskId: string): string;
+  resolveTaskExecutionWorkspaceCwdAsync?(taskId: string): Promise<string>;
   getAppSettings(): { conversationBranchEnabled?: boolean; taskConnectorIds?: Record<string, string[]> };
   setTaskConnectorIds(taskId: string, connectorIds: string[]): void;
   previewConversationBranch(request: CreateConversationBranchRequest): Promise<DurableBranchAnchor>;
@@ -71,17 +72,19 @@ export class ConversationBranchService {
       return failure("INVALID_REQUEST", "对话分支功能未开启。");
     }
     if (req.position !== "after_user" && req.position !== "after_reply") return failure("INVALID_REQUEST", "分支位置无效。");
-    const task = this.deps.db.getTask(req.sourceTaskId);
+    const task = await this.deps.db.readTask(req.sourceTaskId, { includeExpertBinding: false });
     if (!task) return failure("TASK_NOT_FOUND", "找不到源任务。");
-    if (this.isTrashed(task.id)) return failure("TASK_TRASHED", "任务已进入回收区，无法创建分支。");
+    if (await this.isTrashedAsync(task.id)) return failure("TASK_TRASHED", "任务已进入回收区，无法创建分支。");
     if (SPECIAL_TASK_PREFIXES.some((p) => task.id.startsWith(p))) {
       return failure("TASK_SPECIAL", "网关/定时/临时会话不支持创建分支。");
     }
     if (this.deps.agent.isTaskBusy(task.id)) {
       return failure("TASK_BUSY", "当前任务仍在运行，请先停止生成后再创建分支。");
     }
-    const sourceCwd = this.deps.agent.resolveTaskExecutionWorkspaceCwd(task.id);
-    const strategy = this.resolveStrategy(task, req.workspaceStrategy);
+    const sourceCwd = this.deps.agent.resolveTaskExecutionWorkspaceCwdAsync
+      ? await this.deps.agent.resolveTaskExecutionWorkspaceCwdAsync(task.id)
+      : this.deps.agent.resolveTaskExecutionWorkspaceCwd(task.id);
+    const strategy = await this.resolveStrategyAsync(task, req.workspaceStrategy);
     const preview: ConversationBranchPreviewDto = { ok: true, strategy };
     if (strategy === "current_snapshot") {
       const snapshot = this.deps.brancher.preflight(sourceCwd);
@@ -131,12 +134,12 @@ export class ConversationBranchService {
     }
 
     // §5.4 幂等：相同 requestId 返回同一个 child
-    const existing = this.deps.db.findConversationBranchByRequestId(req.requestId);
+    const existing = await this.deps.db.readConversationBranchByRequestId(req.requestId);
     if (existing) {
       if (existing.parentTaskId !== req.sourceTaskId || existing.sourcePosition !== req.position) {
         return fail("INVALID_REQUEST", "请求键已被另一个分支请求使用。");
       }
-      const task = this.deps.db.getTask(existing.childTaskId);
+      const task = await this.deps.db.readTask(existing.childTaskId, { includeExpertBinding: false });
       if (task) {
         return {
           ok: true,
@@ -152,9 +155,9 @@ export class ConversationBranchService {
     }
 
     // ---- §6.2 校验顺序 ----
-    const task = this.deps.db.getTask(req.sourceTaskId);
+    const task = await this.deps.db.readTask(req.sourceTaskId, { includeExpertBinding: false });
     if (!task) return fail("TASK_NOT_FOUND", "找不到源任务。");
-    if (this.isTrashed(task.id)) {
+    if (await this.isTrashedAsync(task.id)) {
       return fail("TASK_TRASHED", "任务已进入回收区，无法创建分支。");
     }
     if (SPECIAL_TASK_PREFIXES.some((p) => task.id.startsWith(p))) {
@@ -164,7 +167,9 @@ export class ConversationBranchService {
       return fail("TASK_BUSY", "当前任务仍在运行，请先停止生成后再创建分支。");
     }
 
-    const sourceCwd = this.deps.agent.resolveTaskExecutionWorkspaceCwd(task.id);
+    const sourceCwd = this.deps.agent.resolveTaskExecutionWorkspaceCwdAsync
+      ? await this.deps.agent.resolveTaskExecutionWorkspaceCwdAsync(task.id)
+      : this.deps.agent.resolveTaskExecutionWorkspaceCwd(task.id);
     let resolved: DurableBranchAnchor;
     try {
       resolved = await this.deps.agent.previewConversationBranch(req);
@@ -174,7 +179,7 @@ export class ConversationBranchService {
     }
 
     const childTaskId = `task-${randomUUID()}`;
-    const strategy = this.resolveStrategy(task, req.workspaceStrategy);
+    const strategy = await this.resolveStrategyAsync(task, req.workspaceStrategy);
     if (strategy === "current_snapshot") {
       const snapshot = this.deps.brancher.preflight(sourceCwd);
       if (snapshot.overLimit && req.workspaceStrategy === undefined) {
@@ -238,10 +243,10 @@ export class ConversationBranchService {
     // ---- §10.1 DB 单事务 commit point ----
     let childTask: TaskDto;
     try {
-      const parentBranch = this.deps.db.getConversationBranchInfo(task.id);
+      const parentBranch = await this.deps.db.readConversationBranchInfo(task.id);
       const candidate: TaskDto = {
         id: childTaskId,
-        title: this.confirmBranchTitle(task.title, proposedTitle),
+        title: await this.confirmBranchTitleAsync(task.title, proposedTitle),
         spaceId: task.spaceId ?? undefined,
         projectId: task.projectId ?? undefined,
         // §3.4 派生状态：结束于助手消息 → completed；结束于用户消息 → pending
@@ -268,7 +273,7 @@ export class ConversationBranchService {
         createdAt: Date.now(),
         task: candidate,
       };
-      if (this.deps.db.connection.readonly || this.deps.db.runtimeAuditReader?.supervised) {
+      if (this.deps.db.readonly || this.deps.db.runtimeAuditReader?.supervised) {
         await this.deps.db.createConversationBranchTaskAsync(branchParams);
         this.deps.agent.commitConversationBranch(childTaskId, childCwd, materialized);
       } else {
@@ -297,9 +302,9 @@ export class ConversationBranchService {
       }
     }
 
-    const branch = this.deps.db.getConversationBranchInfo(childTaskId)!;
+    const branch = (await this.deps.db.readConversationBranchInfo(childTaskId))!;
     // §13.1 采样确认：真实 TaskDto 从 DB 读回（拿 DB committed 行，避免内存构造漂移）
-    const committedTask = this.deps.db.getTask(childTaskId) ?? childTask;
+    const committedTask = (await this.deps.db.readTask(childTaskId, { includeExpertBinding: false })) ?? childTask;
 
     // ---- Phase 4：克隆「分支点之前」的产物（§9.2；失败不阻断创建） ----
     let inheritedArtifactCount = 0;
@@ -354,6 +359,20 @@ export class ConversationBranchService {
     return result.rows;
   }
 
+  private async resolveStrategyAsync(
+    task: TaskDto,
+    requested?: "shared_space" | "current_snapshot" | "conversation_only",
+  ): Promise<"shared_space" | "current_snapshot" | "conversation_only"> {
+    if (!this.deps.db.coreIdentity) return this.resolveStrategy(task, requested);
+    const space = task.spaceId ? await this.deps.db.readSpace(task.spaceId) : undefined;
+    const spacePath = space && !space.archived && !space.effectiveArchived && !space.pathMissing ? space.path : undefined;
+    if (spacePath) return "shared_space";
+    if (requested === "conversation_only" || requested === "current_snapshot") {
+      return requested;
+    }
+    return "current_snapshot";
+  }
+
   /** Space 绑定 → shared_space（强制）；否则请求策略或默认 current_snapshot（§8.2/§8.3） */
   private resolveStrategy(
     task: TaskDto,
@@ -367,8 +386,23 @@ export class ConversationBranchService {
     return "current_snapshot";
   }
 
+  private async isTrashedAsync(taskId: string): Promise<boolean> {
+    if (!this.deps.db.coreIdentity) return this.isTrashed(taskId);
+    return (await this.deps.db.readTaskExecutionWorkspaceState(taskId))?.state === "trashed";
+  }
+
   private isTrashed(taskId: string): boolean {
     return this.deps.db.getTaskExecutionWorkspaceState(taskId)?.state === "trashed";
+  }
+
+  private async confirmBranchTitleAsync(sourceTitle: string, proposedTitle?: string): Promise<string> {
+    if (this.deps.db.coreIdentity) {
+      if (proposedTitle) return proposedTitle;
+      const computed = await this.deps.db.runtimeAuditReader?.branchTitle(sourceTitle, DOTS_TASK_ID);
+      if (computed) return computed;
+      return `${sourceTitle || "新任务"}（分支）`;
+    }
+    return this.confirmBranchTitle(sourceTitle, proposedTitle);
   }
 
   /** §4.3 标题防重：{原标题}（分支）/（分支 2）/（分支 3）… */
