@@ -2,6 +2,92 @@ use crate::database::{DbError, classify_duckdb_error};
 use duckdb::{Connection, OptionalExt, params, types::ValueRef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+/// A streaming turn projects far more revisions than anyone reads: each one only moves
+/// `updated_at` while the status stays put, so every delta used to cost a write transaction.
+/// Collapsing repeats of the same running status to one touch per window keeps a token stream
+/// from turning into a write per token. Terminal and waiting statuses are never collapsed, so a
+/// finished turn cannot look like it is still running.
+const SNAPSHOT_TOUCH_WINDOW_MS: i64 = 2_000;
+const SNAPSHOT_TOUCH_LIMIT: usize = 2_048;
+
+struct SnapshotTouch {
+    status: String,
+    written_at_ms: i64,
+}
+
+fn snapshot_touches() -> &'static Mutex<HashMap<String, SnapshotTouch>> {
+    static TOUCHES: OnceLock<Mutex<HashMap<String, SnapshotTouch>>> = OnceLock::new();
+    TOUCHES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn snapshot_touch_is_collapsible(status: &str) -> bool {
+    !matches!(status, "completed" | "failed" | "stopped" | "pending")
+}
+
+/// Answers a projection that would not change anything a reader can observe, so it never opens
+/// a transaction. `None` means the projection still needs the write path.
+fn collapsible_snapshot_reply(
+    db: &Connection,
+    task_id: &str,
+    status: &str,
+    candidate: Option<f64>,
+    workspaces: &[MessageWorkspace],
+) -> crate::Result<Option<Reply>> {
+    if !workspaces.is_empty() || !snapshot_touch_is_collapsible(status) {
+        return Ok(None);
+    }
+    let stored: Option<(String, Option<f64>)> = db
+        .prepare("SELECT status, CAST(updated_at AS DOUBLE) FROM tasks WHERE id = ?1")?
+        .query_row([task_id], |row| Ok((row.get(0)?, row.get(1).ok())))
+        .optional()?;
+    let Some((stored_status, stored_activity)) = stored else {
+        return Ok(None);
+    };
+    if stored_status != status {
+        return Ok(None);
+    }
+    // The ordering guard only moves `updated_at` forward, so a projection that is not strictly
+    // newer than the stored time cannot change either column.
+    let advances = matches!((candidate, stored_activity), (Some(at), Some(stored)) if at > stored);
+    if !advances {
+        return Ok(Some(Reply::Applied {
+            activity_at: stored_activity,
+            workspaces: Vec::new(),
+        }));
+    }
+    let now = crate::core_lease::now_ms() as i64;
+    let recent = snapshot_touches()
+        .lock()
+        .map(|touches| {
+            touches.get(task_id).is_some_and(|touch| {
+                touch.status == status && now - touch.written_at_ms < SNAPSHOT_TOUCH_WINDOW_MS
+            })
+        })
+        .unwrap_or(false);
+    Ok(recent.then(|| Reply::Applied {
+        activity_at: stored_activity.or(candidate),
+        workspaces: Vec::new(),
+    }))
+}
+
+fn remember_snapshot_touch(task_id: &str, status: &str) {
+    let Ok(mut touches) = snapshot_touches().lock() else {
+        return;
+    };
+    if touches.len() >= SNAPSHOT_TOUCH_LIMIT && !touches.contains_key(task_id) {
+        touches.clear();
+    }
+    touches.insert(
+        task_id.to_string(),
+        SnapshotTouch {
+            status: status.to_string(),
+            written_at_ms: crate::core_lease::now_ms() as i64,
+        },
+    );
+}
 
 #[derive(Deserialize)]
 #[serde(
@@ -401,11 +487,34 @@ pub fn write(db: &mut Connection, request: &Request) -> Reply {
             Err(error) => Reply::Rejected { message: error.to_string() },
         };
     }
+    if let Request::Snapshot {
+        task_id,
+        status,
+        activity_at,
+        workspaces,
+    } = request
+    {
+        let candidate = activity_at.filter(|value| value.is_finite() && *value > 0.0);
+        match collapsible_snapshot_reply(db, task_id, status, candidate, workspaces) {
+            Ok(Some(reply)) => return reply,
+            Ok(None) => {}
+            Err(error) => {
+                return Reply::Rejected {
+                    message: error.to_string(),
+                };
+            }
+        }
+    }
     match apply(db, request) {
-        Ok((activity_at, workspaces)) => Reply::Applied {
-            activity_at,
-            workspaces,
-        },
+        Ok((activity_at, workspaces)) => {
+            if let Request::Snapshot { task_id, status, .. } = request {
+                remember_snapshot_touch(task_id, status);
+            }
+            Reply::Applied {
+                activity_at,
+                workspaces,
+            }
+        }
         Err(error) if matches!(classify_duckdb_error(&error.to_string()), DbError::Busy(_)) => {
             Reply::NeedsHost
         }
@@ -831,6 +940,112 @@ mod read_tests {
             )?;
         }
 
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod snapshot_touch_tests {
+    use super::*;
+
+    fn task_db() -> crate::Result<Connection> {
+        let db = Connection::open_in_memory()?;
+        db.execute_batch(
+            "CREATE TABLE tasks(id VARCHAR PRIMARY KEY, status VARCHAR, updated_at BIGINT);
+             INSERT INTO tasks VALUES ('touch-a','in_progress',1000),('touch-b','in_progress',1000);",
+        )?;
+        Ok(db)
+    }
+
+    fn collapsed(reply: Option<Reply>) -> bool {
+        matches!(reply, Some(Reply::Applied { .. }))
+    }
+
+    #[test]
+    fn running_projections_collapse_within_the_window_but_terminal_ones_never_do() -> crate::Result<()>
+    {
+        let db = task_db()?;
+        // The stored time is already past the projection, so the ordering guard would no-op.
+        assert!(collapsed(collapsible_snapshot_reply(
+            &db,
+            "touch-a",
+            "in_progress",
+            Some(900.0),
+            &[]
+        )?));
+        // An advancing projection has to land once before anything can be collapsed.
+        assert!(!collapsed(collapsible_snapshot_reply(
+            &db,
+            "touch-a",
+            "in_progress",
+            Some(3_000.0),
+            &[]
+        )?));
+        remember_snapshot_touch("touch-a", "in_progress");
+        assert!(collapsed(collapsible_snapshot_reply(
+            &db,
+            "touch-a",
+            "in_progress",
+            Some(4_000.0),
+            &[]
+        )?));
+        // A waiting or finished status is what readers act on: never collapse it.
+        for status in ["completed", "failed", "stopped", "pending"] {
+            assert!(!collapsed(collapsible_snapshot_reply(
+                &db,
+                "touch-a",
+                status,
+                Some(4_000.0),
+                &[]
+            )?));
+        }
+        // A status change is visible immediately even inside the window.
+        assert!(!collapsed(collapsible_snapshot_reply(
+            &db,
+            "touch-a",
+            "in_progress",
+            Some(4_000.0),
+            &[MessageWorkspace {
+                message_id: "m-1".into(),
+                cwd: "/workspace".into()
+            }]
+        )?));
+        Ok(())
+    }
+
+    #[test]
+    fn the_window_expires_and_unknown_tasks_keep_the_write_path() -> crate::Result<()> {
+        let db = task_db()?;
+        snapshot_touches().lock().unwrap().insert(
+            "touch-b".into(),
+            SnapshotTouch {
+                status: "in_progress".into(),
+                written_at_ms: crate::core_lease::now_ms() as i64 - SNAPSHOT_TOUCH_WINDOW_MS - 1,
+            },
+        );
+        assert!(!collapsed(collapsible_snapshot_reply(
+            &db,
+            "touch-b",
+            "in_progress",
+            Some(4_000.0),
+            &[]
+        )?));
+        // A task this memo never saw, and one the table does not hold, must not be answered
+        // from memory.
+        assert!(!collapsed(collapsible_snapshot_reply(
+            &db,
+            "touch-c",
+            "in_progress",
+            Some(4_000.0),
+            &[]
+        )?));
+        assert!(!collapsed(collapsible_snapshot_reply(
+            &db,
+            "missing",
+            "in_progress",
+            Some(4_000.0),
+            &[]
+        )?));
         Ok(())
     }
 }
