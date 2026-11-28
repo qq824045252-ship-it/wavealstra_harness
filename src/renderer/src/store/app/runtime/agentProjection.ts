@@ -39,7 +39,9 @@ export function createAgentProjectionActions(
           // Only arrivals during the await can require another read.
           const covered = flight.buffered.splice(0);
           flight.overflow = false;
-          const history = await storeContext.getApi()?.agent?.loadTaskHistory?.(taskId);
+          // A stored read cannot serve a baseline: it drops epoch/revision on purpose.
+          // Only the live writer can answer with the version later deltas apply against.
+          const history = await storeContext.getApi()?.agent?.loadTaskHistory?.(taskId, undefined, { liveBaseline: true });
           if (!ownsRead()) return;
           const latest = current();
           const read = history?.durable;

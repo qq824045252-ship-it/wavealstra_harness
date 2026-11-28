@@ -9,6 +9,7 @@ import type {
   AgentSubmissionReceipt,
   AgentUiPatch,
   AuthLoginRequest,
+  TaskHistoryTarget,
 } from "../../shared/agent-ipc";
 import { DOTS_TASK_ID } from "../../shared/dots";
 import type { ConversationGoalVersionWitness } from "../../shared/conversation-goal";
@@ -827,10 +828,12 @@ export class PiNodeHost {
     catch { if (dotsRecovery) return deferred; }
     if (existing?.receipt) {
       await helpers.reportProgress({ kind: "submission_receipt", result: existing }).catch(() => undefined);
+      await this.flushDurableSnapshot(agent, req.taskId, helpers);
       if (existing.receipt.status === "done") return { status: "completed", result: existing };
       if (existing.receipt.status === "unanswered") return { status: "unknown", result: existing };
       if (payload.waitForSettled === false) return { status: "completed", result: existing };
       const settled = await agent.waitForSubmission(existing.receipt);
+      await this.flushDurableSnapshot(agent, req.taskId, helpers);
       return this.settledResult(settled);
     }
 
@@ -847,12 +850,38 @@ export class PiNodeHost {
     const accepted = await agent.prompt(req, { durableAdmissionOnly: payload.durableAdmissionOnly ?? true,
       foregroundUser: dispatch.execution.sourceRole === "ui" && !dotsRecovery });
     await helpers.reportProgress({ kind: "submission_receipt", result: accepted }).catch(() => undefined);
+    await this.flushDurableSnapshot(agent, req.taskId, helpers);
     if (accepted.cancelled) return { status: "cancelled", result: accepted };
     if (accepted.error) return { status: "failed", result: accepted, errorMessage: accepted.error.message };
     if (!accepted.receipt) return { status: "completed", result: accepted };
     if (payload.waitForSettled === false) return { status: "completed", result: accepted };
     const settled = await agent.waitForSubmission(accepted.receipt);
+    await this.flushDurableSnapshot(agent, req.taskId, helpers);
     return this.settledResult(settled);
+  }
+
+  /**
+   * The renderer only applies `durable_delta` when it already holds the writer's
+   * epoch/revision. Storage reads (`DurableReadOnlyHistory`) deliberately drop both —
+   * the epoch is per-runtime and revision restarts at 0 — so a window that reloaded
+   * while this host kept the task open can never bootstrap from `history` alone:
+   * every delta turns into a resync that throws and the bubble stays on "发送中…".
+   * Pushing the authoritative snapshot at turn start and at settle gives each turn a
+   * baseline the renderer can continue from.
+   */
+  private async flushDurableSnapshot(
+    agent: AgentService,
+    taskId: string,
+    helpers: ActiveProgressReporter,
+  ): Promise<void> {
+    const history = await agent.loadTaskHistory(taskId, undefined, "current").catch(() => undefined);
+    const snapshot = history?.durable;
+    if (snapshot && typeof snapshot.epoch === "string" && typeof snapshot.revision === "number") {
+      await helpers.reportProgress({
+        kind: "ui_patch",
+        patch: { type: "durable_snapshot", taskId, snapshot },
+      }).catch(() => undefined);
+    }
   }
 
   private settledResult(settled: Awaited<ReturnType<AgentService["waitForSubmission"]>>) {
@@ -891,6 +920,13 @@ export class PiNodeHost {
         const res = payload.wait
           ? await agent.waitForSubmission(receipt)
           : await agent.submissionStatus(receipt);
+        return { status: "completed", result: res };
+      }
+      // Answers the thin client's resync with the live writer's epoch/revision, which
+      // the storage-backed read cannot provide. See flushDurableSnapshot.
+      case "durableSnapshot": {
+        const target = String(payload.taskId ?? dispatch.execution.taskId);
+        const res = await agent.loadTaskHistory(target, payload.beforeEntryId as TaskHistoryTarget | undefined, "current");
         return { status: "completed", result: res };
       }
       case "newDotsConversation": {

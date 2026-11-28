@@ -371,7 +371,8 @@ export interface PreloadApi {
     getSubagentConfig: () => Promise<SubagentConfigDto>;
     saveSubagentConfig: (config: SubagentConfigPatch) => Promise<SubagentConfigDto>;
     getContextUsage: (taskId: string) => Promise<ContextUsageDto | null>;
-    loadTaskHistory: (taskId: string, beforeEntryId?: TaskHistoryTarget) => Promise<TaskHistoryDto>;
+    loadTaskHistory: (taskId: string, beforeEntryId?: TaskHistoryTarget,
+      options?: { liveBaseline?: boolean }) => Promise<TaskHistoryDto>;
     listTaskUserQuestions: (taskId: string, query?: TaskUserQuestionsQuery) => Promise<TaskUserQuestionsDto>;
     generateTaskTitle: (taskId: string) => Promise<TaskTitleSuggestionDto>;
     listLoginProviders: () => Promise<import("../shared/agent-ipc").LoginProviderDto[]>;

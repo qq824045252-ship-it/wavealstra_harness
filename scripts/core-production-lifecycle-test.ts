@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { verifyDotsRoutingTurns } from "./core-dots-routing-turn-cases";
 import { DOTS_TASK_ID } from "../src/shared/dots";
+import type { AgentUiPatch } from "../src/shared/agent-ipc";
 import { AgentService } from "../src/main/agent/AgentService";
 import { ExecutionAttemptRepository } from "../src/main/agent/ExecutionAttemptRepository";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
@@ -348,6 +349,8 @@ async function main(): Promise<void> {
       });
       ui.addHooks({ onEvent: ev => mainAgent?.handleCoreExecutionEvent(ev) });
       await mainAgent.init();
+      const patches: AgentUiPatch[] = [];
+      const stopPatches = mainAgent.onPatch(patch => patches.push(patch));
       let firstConversation: string | undefined;
       for (const phase of ["fresh", "existing", "new"]) {
         if (phase === "existing") {
@@ -366,12 +369,28 @@ async function main(): Promise<void> {
         assert.equal(task.id, DOTS_TASK_ID);
         const text = phase === "fresh" ? "好久不见" : "dots-ordinary-" + phase;
         console.log("Desktop Dots prompt", phase, JSON.stringify(text));
+        const patchStart = patches.length;
         const sent = await mainAgent.prompt({ taskId: DOTS_TASK_ID, userMessageId: "dots-ordinary-" + phase, assistantMessageId: "dots-reply-" + phase,
           text, modelId: "fixture/model" });
         assert.equal(sent.error, undefined, JSON.stringify(sent.error));
         assert(sent.receipt, "desktop Dots admission receipt");
         const completion = await mainAgent.waitForSubmission(sent.receipt);
         assert.equal(completion.error, undefined, JSON.stringify(completion.error));
+        // A renderer that reloaded while this host kept the task open holds no epoch, so every
+        // durable_delta would resync. The turn must therefore ship an authoritative baseline.
+        const turnPatches = patches.slice(patchStart);
+        const isDotsPatch = (patch: AgentUiPatch) => "taskId" in patch && patch.taskId === DOTS_TASK_ID;
+        const snapshotAt = turnPatches.findIndex(patch => patch.type === "durable_snapshot" && isDotsPatch(patch));
+        assert(snapshotAt >= 0, `turn shipped no durable_snapshot: ${turnPatches.map(p => p.type).join(",")}`);
+        const baseline = turnPatches[snapshotAt] as { snapshot?: { epoch?: unknown; revision?: unknown } };
+        assert.equal(typeof baseline.snapshot?.epoch, "string", "baseline carries the writer epoch");
+        assert.equal(typeof baseline.snapshot?.revision, "number", "baseline carries the writer revision");
+        // Storage reads drop the writer version on purpose; only the live Pi Node Host can answer with it.
+        const storedHistory = await mainAgent.loadTaskHistory(DOTS_TASK_ID);
+        assert.equal(storedHistory.durable?.epoch, undefined, "stored history must not invent an epoch");
+        const liveHistory = await mainAgent.loadTaskHistory(DOTS_TASK_ID, undefined, "current", { liveBaseline: true });
+        assert.equal(typeof liveHistory.durable?.epoch, "string", "live baseline comes from the Pi Node Host");
+        assert.equal(typeof liveHistory.durable?.revision, "number", "live baseline carries a revision");
         const history = await mainAgent.loadTaskHistory(DOTS_TASK_ID);
         assert(history.messages.some(row => row.role === "user" && row.text.includes(text)));
         assert(history.messages.some(row => row.role === "assistant" && row.text.includes("Acknowledged " + text)),
@@ -391,6 +410,7 @@ async function main(): Promise<void> {
       const attempts = process.env.MYBUDDY_SQLITE_ATTEMPTS!;
       assert.equal(existsSync(attempts) ? readFileSync(attempts, "utf8") : "", "");
       console.log("PASS no SQLite open attempted by the desktop service or Pi Host");
+      stopPatches();
       return;
     }
     await db.writeWorkspaceUpsert({ id: "story-space", name: "Story Workspace", path: workspaceDir });

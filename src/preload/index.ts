@@ -621,8 +621,9 @@ const api = {
       ipcRenderer.invoke(AgentIpc.saveSubagentConfig, config),
     getContextUsage: (taskId: string): Promise<ContextUsageDto | null> =>
       ipcRenderer.invoke(AgentIpc.getContextUsage, taskId),
-    loadTaskHistory: (taskId: string, beforeEntryId?: TaskHistoryTarget): Promise<TaskHistoryDto> =>
-      ipcRenderer.invoke(AgentIpc.loadTaskHistory, taskId, beforeEntryId),
+    loadTaskHistory: (taskId: string, beforeEntryId?: TaskHistoryTarget,
+      options?: { liveBaseline?: boolean }): Promise<TaskHistoryDto> =>
+      ipcRenderer.invoke(AgentIpc.loadTaskHistory, taskId, beforeEntryId, options),
     listTaskUserQuestions: (taskId: string, query?: TaskUserQuestionsQuery): Promise<TaskUserQuestionsDto> =>
       ipcRenderer.invoke(AgentIpc.listTaskUserQuestions, taskId, query),
     generateTaskTitle: (taskId: string): Promise<TaskTitleSuggestionDto> =>

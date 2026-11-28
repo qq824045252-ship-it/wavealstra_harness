@@ -6884,9 +6884,23 @@ export class AgentService {
     );
   }
 
-  async loadTaskHistory(taskId: string, beforeEntryId?: TaskHistoryTarget, source: "stored" | "current" = "stored"): Promise<TaskHistoryDto> {
+  async loadTaskHistory(
+    taskId: string,
+    beforeEntryId?: TaskHistoryTarget,
+    source: "stored" | "current" = "stored",
+    options?: { liveBaseline?: boolean },
+  ): Promise<TaskHistoryDto> {
     if (this.durableBots?.owns(taskId)) return this.durableBots.history(taskId, beforeEntryId, source);
     if (!this.durableBots) {
+      // In isolated-client mode the task's writer lives in the Pi Node Host, and only it
+      // can answer with the epoch/revision the renderer needs to keep applying deltas
+      // after a window reload. The read-only view below strips both on purpose (epoch is
+      // per-runtime, revision restarts at 0), so callers that need a stream baseline ask
+      // for the live host explicitly and fall back to the stored view.
+      if (options?.liveBaseline && this.executionMode === "isolated-client") {
+        const live = await this.loadLiveDurableHistory(taskId, beforeEntryId);
+        if (live) return live;
+      }
       const binding = await this.durableBindingForTask(taskId);
       if (binding && await durableStorageExists(binding.directory, this.runtimeAuditReader)) {
         const history = await readDurableReadOnlyHistory({
@@ -6929,6 +6943,33 @@ export class AgentService {
       console.warn("[AgentService] loadTaskHistory failed", err);
       return { messages: [], sessionFile: row.sessionFile, cwd: row.cwd,
         historyError: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * Asks the Pi Node Host for its live durable history. Returns undefined when no host
+   * owns the task (never started, no durable storage) so callers fall back to storage.
+   */
+  private async loadLiveDurableHistory(
+    taskId: string,
+    beforeEntryId?: TaskHistoryTarget,
+  ): Promise<TaskHistoryDto | undefined> {
+    if (!this.coreClientProvider?.()) return undefined;
+    const requestId = `pi-ctrl-snapshot:${taskId}:${randomUUID()}`;
+    try {
+      const history = await this.submitCorePiExecution<TaskHistoryDto>({
+        executionId: requestId,
+        idempotencyKey: requestId,
+        taskId,
+        kind: "pi_control",
+        payload: { controlAction: "durableSnapshot", taskId, ...(beforeEntryId === undefined ? {} : { beforeEntryId }) },
+        timeoutMs: 15_000,
+      });
+      const durable = history?.durable as { epoch?: unknown } | undefined;
+      return durable && typeof durable.epoch === "string" ? history : undefined;
+    } catch (error) {
+      console.warn("[AgentService] live durable snapshot unavailable", taskId, error);
+      return undefined;
     }
   }
 

@@ -1837,9 +1837,10 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(UsageIpc.dashboard, (_e, rangeDays: number) =>
     agentService.usageStats.readReport({ kind: "dashboard", rangeDays: clampRange(rangeDays) }),
   );
-  ipcMain.handle(AgentIpc.loadTaskHistory, async (_e, taskId: string, beforeEntryId?: import("../shared/agent-ipc").TaskHistoryTarget) => {
+  ipcMain.handle(AgentIpc.loadTaskHistory, async (_e, taskId: string, beforeEntryId?: import("../shared/agent-ipc").TaskHistoryTarget,
+    options?: { liveBaseline?: boolean }) => {
     const [nativeHistory, externalHistory] = await Promise.all([
-      agentService.loadTaskHistory(taskId, beforeEntryId, "current"),
+      agentService.loadTaskHistory(taskId, beforeEntryId, "current", options),
       externalAgentRuntime.readHistory(taskId),
     ]);
     if (!externalHistory.messages.length) return nativeHistory;
