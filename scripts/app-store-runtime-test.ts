@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import { createStore } from "zustand/vanilla";
-import type {
-  AgentUiPatch,
-  SpaceDto,
-  TaskDto,
-  TaskHistoryDto,
-} from "../src/shared/agent-ipc";
+import type { AgentUiPatch, SpaceDto, TaskDto, TaskHistoryDto } from "../src/shared/agent-ipc";
+import type { DurableBotSnapshot } from "../src/shared/durable-bot";
 import type {
   ArtifactCreatedEvent,
   ArtifactRemovedEvent,
@@ -838,6 +834,51 @@ async function testExternalTaskDiscoveryKeepsApprovals(): Promise<void> {
   assert(!stale.store.getState().tasks.some(item => item.id === taskId), "retired runtime cannot insert a discovered task");
 }
 
+/**
+ * `readDurableReadOnlyHistory` strips epoch/revision on purpose. Its `busy` flag
+ * therefore only echoes the last persisted state, so a finished turn could keep
+ * rendering "正在准备回复…" under an answered reply. The projection downgrades it
+ * and the next epoch-bearing snapshot from the live writer takes it back.
+ */
+function testStoredReadCannotClaimBusy(): void {
+  const harness = createRuntimeHarness();
+  harness.store.setState({
+    ...createAgentProjectionActions(harness.context),
+    reconcileTaskMessageArtifacts: () => undefined,
+  } as unknown as Partial<AppState>);
+  const task = () => harness.store.getState().tasks[0];
+  // The read-only history path hands the renderer an epoch-less snapshot; the DTO
+  // type requires one, so the fixture casts deliberately (see the assertion below).
+  const snapshot = (extra: Record<string, unknown>) =>
+    ({
+      backend: "pi-durable",
+      historyId: "history-a",
+      conversationId: "conversation-a",
+      toolMode: "native",
+      busy: true,
+      status: "running",
+      queued: 0,
+      pendingInputs: [],
+      compacting: false,
+      messages: [{ id: "message-b", role: "assistant", text: "done", createdAt: 2, finalAssistantReply: true }],
+      ...extra,
+    }) as unknown as DurableBotSnapshot;
+  harness.store
+    .getState()
+    .applyAgentPatch({ type: "durable_snapshot", taskId: "task-a", snapshot: snapshot({}) });
+  assert.equal(task().durable?.busy, false, "a stored read must not claim the task is busy");
+  assert.notEqual(task().status, "in_progress", "a closed stored read must not look in progress");
+  harness.store
+    .getState()
+    .applyAgentPatch({
+      type: "durable_snapshot",
+      taskId: "task-a",
+      snapshot: snapshot({ epoch: "epoch-live", revision: 4 }),
+    });
+  assert.equal(task().durable?.busy, true, "a live writer's busy flag survives projection");
+  assert.equal(task().status, "in_progress");
+}
+
 async function main(): Promise<void> {
   testCoreDeltasImmediatelyReachStore();
   testAdjacentDeltaBoundaries();
@@ -851,8 +892,9 @@ async function main(): Promise<void> {
   await testExternalHistoryFollowsItsRuntimeLifetime();
   await testExternalTaskDiscoveryKeepsApprovals();
   testStoreResourcesOutliveRuntimeDisposal();
+  testStoredReadCannotClaimBusy();
   console.log(
-    "app store runtime: ok (stream ordering, lifecycle ownership, stale async reads, store resource lifetime)",
+    "app store runtime: ok (stream ordering, lifecycle ownership, stale async reads, store resource lifetime, stored-read busy downgrade)",
   );
 }
 

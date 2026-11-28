@@ -71,6 +71,13 @@ export function projectDurableHistory(storeContext: AppContext, taskId: string, 
       messages.splice(next < 0 ? messages.length : next, 0, { ...previous, streaming: false });
     }
   }
+  // A stored read cannot prove a live writer: `readDurableReadOnlyHistory` drops
+  // epoch/revision on purpose, so its `busy` flag only echoes the last persisted
+  // state and can outlive the turn that wrote it. Trusting it re-marks a finished
+  // reply as streaming, which is the ghost "正在准备回复…" under an answered turn.
+  // A running host pushes an epoch-bearing snapshot during the same turn
+  // (PiNodeHost.flushDurableSnapshot) and takes the flag back over.
+  const durable = snapshot.epoch === undefined && snapshot.busy ? { ...snapshot, busy: false } : snapshot;
   set((state) => {
     const prior = state.tasks.find((task) => task.id === taskId);
     const localInputs = prior?.botPendingSubmissions;
@@ -83,7 +90,7 @@ export function projectDurableHistory(storeContext: AppContext, taskId: string, 
       ...prior,
       id: taskId,
       welcomeMode: prior?.welcomeMode,
-      durable: snapshot,
+      durable,
       historyWindow: prior?.historyWindow?.historyId === snapshot.historyId ? prior.historyWindow : undefined,
       historyError: undefined,
       messages,
@@ -96,7 +103,7 @@ export function projectDurableHistory(storeContext: AppContext, taskId: string, 
       // 任务时间只取主进程回填的权威活动时间（DB 单调投影），不再从消息时间自己推：
       // 占位行的 createdAt 不是事实，旧写法会让侧栏出现 epoch 0（“20774 天”）。
       updatedAt: advanceActivity(prior?.updatedAt, snapshot.activityAt),
-      status: durableTaskStatus(snapshot),
+      status: durableTaskStatus(durable),
     };
     return {
       tasks: prior

@@ -888,6 +888,8 @@ export default function ChatView(): React.JSX.Element {
           </div>}
         </div>
         {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}
+        {/* 同步失败原先只在滚动区顶部渲染，停在底部时完全看不见；再在输入框上方露一次。 */}
+        {task.historyError && <div className="durable-bot-state" role="alert" data-testid="history-error-bottom">{task.historyError}</div>}
         <SessionHistoryRecoveryNotice recovery={task.sessionRecovery} />
         <TaskModelRecoveryNotice recovery={task.modelRecovery} />
         <BrowserLoginNotice taskId={task.id} />
